@@ -8,6 +8,9 @@ from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from database import users_collection
+from bson import ObjectId
+
 
 # Load from env if present, otherwise defaults
 JWT_SECRET = os.getenv("JWT_SECRET", "replace_me_with_a_strong_secret")

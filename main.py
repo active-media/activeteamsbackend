@@ -1,18 +1,14 @@
 import os
 from datetime import datetime, timedelta, time as time_type
 from bson import ObjectId
-from dotenv import load_dotenv
 from typing import List
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMembersRequest
+from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest
 from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token
 import math
 import secrets
-
-
-load_dotenv()
+from database import db, events_collection, people_collection, users_collection
 
 app = FastAPI()
 
@@ -23,14 +19,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-MONGO_URI = os.getenv("MONGO_URI")
-client = AsyncIOMotorClient(MONGO_URI)
-db = client["active-teams-db"]
-events_collection = db["Events"]
-people_collection = db["People"]
-users_collection = db["Users"]
-
 def sanitize_document(doc):
     """Recursively sanitize document to replace NaN/Infinity float values with None."""
     for k, v in doc.items():
@@ -120,7 +108,8 @@ async def login(user: UserLogin):
     }
 
 # EVENT ENDPOINTS
-@app.post("/events", dependencies=[Depends(require_role("admin"))])
+# http://localhost:8000/event
+@app.post("/event", dependencies=[Depends(require_role("admin"))])
 async def create_event(event: Event):
     try:
         event_data = event.dict()
@@ -171,42 +160,75 @@ async def create_cell_event(payload: CellEventCreate, current=Depends(get_curren
         raise HTTPException(status_code=500, detail=str(e))
 
 # Capturing people into cells
-# http://localhost:8000/events/cell/{event_id}/members
-@app.post("/events/cell/{event_id}/members")
-async def add_members_to_cell_event(event_id: str, payload: AddMembersRequest, current=Depends(get_current_user)):
-    try:
-        event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
-        if not event:
-            raise HTTPException(status_code=404, detail="Cell event not found")
+# http://localhost:8000/events/{event_id}/checkin
+@app.post("/events/{event_id}/checkin", dependencies=[Depends(require_role("registrant", "admin"))])
+async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesRequest, current=Depends(get_current_user)):
+    event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
+    if not event:
+        raise HTTPException(status_code=404, detail="Cell event not found")
 
-        role = current.get("role")
-        user_id = current.get("user_id")
-        if role != "admin" and str(event.get("leader_id")) != str(user_id):
-            raise HTTPException(status_code=403, detail="Not authorized to modify this cell event")
+    role = current.get("role")
+    user_id = current.get("user_id")
+    if role != "admin" and str(event.get("leader_id")) != str(user_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-        valid_member_ids: List[str] = []
-        for mid in payload.member_ids:
-            try:
-                person = await people_collection.find_one({"_id": ObjectId(mid)})
-            except Exception:
-                person = await people_collection.find_one({"Name": {"$regex": f"^{mid}$", "$options": "i"}})
-            if not person:
-                continue
-            valid_member_ids.append(str(person["_id"]))
+    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
 
-        if not valid_member_ids:
-            raise HTTPException(status_code=400, detail="No valid member ids provided")
+    # Check if member already checked in
+    members = event.get("members", [])
+    if any(m.get("id") == str(person["_id"]) for m in members):
+        raise HTTPException(status_code=400, detail="Person already checked in")
 
-        await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
-            {"$addToSet": {"members": {"$each": valid_member_ids}}},
-        )
-        return {"message": f"Added {len(valid_member_ids)} members to the cell event"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    member_obj = {
+        "id": str(person["_id"]),
+        "name": person["Name"],
+        "email": person.get("Email", ""),
+        "leader": person.get("Leader", ""),
+        "checkin_time": datetime.utcnow().isoformat(),
+    }
 
+    await events_collection.update_one(
+        {"_id": ObjectId(event_id)},
+        {
+            "$push": {"members": member_obj},
+            "$inc": {"total_attendance": 1}
+        }
+    )
+
+    return {"message": f"{person['Name']} checked in successfully to the cell event."}
+
+# http://localhost:8000/events/6897bcb2016b71e188b5119a/uncheckin
+@app.post("/events/{event_id}/uncheckin", dependencies=[Depends(require_role("registrant", "admin"))])
+async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest, current=Depends(get_current_user)):
+    event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
+    if not event:
+        raise HTTPException(status_code=404, detail="Cell event not found")
+
+    role = current.get("role")
+    user_id = current.get("user_id")
+    if role != "admin" and str(event.get("leader_id")) != str(user_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    update_result = await events_collection.update_one(
+        {"_id": ObjectId(event_id)},
+        {"$pull": {"members": {"id": str(person["_id"])}}},
+    )
+
+    if update_result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Person not found in this cell event")
+
+    await events_collection.update_one(
+        {"_id": ObjectId(event_id)},
+        {"$inc": {"total_attendance": -1}}
+    )
+
+    return {"message": f"{person['Name']} has been removed from the cell event."}
 
 @app.get("/events/cell")
 # http://localhost:8000/events/cell
@@ -273,7 +295,6 @@ async def remove_member_from_cell(event_id: str, member_id: str, current=Depends
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # CHECKIN AND UNCHECKIN ENDPOINTS
 @app.post("/checkin", dependencies=[Depends(require_role("registrant", "admin"))])
