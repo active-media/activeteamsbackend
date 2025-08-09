@@ -338,7 +338,7 @@ async def delete_event(event_id: str):
 # Search People
 # -------------------------
 # http://localhost:8000/people/search
-@app.get("/people/search")
+@app.get("/people/search", dependencies=[Depends(require_role("admin", "registrant"))])
 async def search_people(name: str = Query(..., min_length=1)):
     try:
         cursor = people_collection.find({"Name": {"$regex": name, "$options": "i"}}).limit(50)
