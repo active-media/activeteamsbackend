@@ -64,3 +64,23 @@ class AddMembersRequest(BaseModel):
 class RefreshTokenRequest(BaseModel):
     refresh_token_id: str
     refresh_token: str
+
+# Nested contacted_person model
+class ContactedPerson(BaseModel):
+    name: str
+    phone: str
+    email: EmailStr
+
+
+# Main task model
+class TaskModel(BaseModel):
+    
+    memberID: str
+    name: str
+    contacted_person: ContactedPerson
+    followup_date: datetime
+    status: str
+
+    class Config:
+        validate_by_name = True
+        arbitrary_types_allowed = True

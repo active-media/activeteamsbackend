@@ -16,7 +16,8 @@ from auth.models import (
     UserLogin,
     CellEventCreate,
     AddMembersRequest,
-    RefreshTokenRequest
+    RefreshTokenRequest,
+    TaskModel
 )
 from auth.utils import (
     hash_password,
@@ -62,6 +63,7 @@ db = client["active-teams-db"]
 events_collection = db["Events"]
 people_collection = db["People"]
 users_collection = db["Users"]
+Tasks_collection = db["Tasks"]
 
 
 @app.on_event("startup")
@@ -574,3 +576,26 @@ async def remove_member_from_cell(event_id: str, member_id: str, current=Depends
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# -------------------------
+# Tasks Management
+# -------------------------
+
+# Create a new task
+# POST /tasks
+@app.post("/tasks")
+async def create_task(task: TaskModel):
+    task_dict = task.dict()
+    result = await db["Tasks"].insert_one(task_dict)
+    return {"message": "Task created", "id": str(result.inserted_id)}
+
+# Retrieve all tasks
+# GET /tasks
+@app.get("/tasks")
+async def get_tasks():
+    tasks = []
+    cursor = db["Tasks"].find({})
+    async for task in cursor:
+        task["_id"] = str(task["_id"])
+        tasks.append(task)
+    return tasks
