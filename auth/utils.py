@@ -1,9 +1,8 @@
 # auth/utils.py
 # Requires: pip install python-jose[cryptography] passlib[bcrypt]
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, time as time_type, timedelta
 from typing import Optional, Dict, Any
-
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
@@ -73,3 +72,58 @@ def require_role(*allowed_roles: str):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return payload
     return _checker
+
+# Weekday map used for recurring events
+WEEKDAY_MAP = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+def get_next_occurrence_single(start_dt: datetime, recurring_day: str) -> datetime:
+    if recurring_day is None:
+        return start_dt
+
+    target_weekday = WEEKDAY_MAP[recurring_day.lower()]
+    today = datetime.utcnow().date()
+    today_weekday = today.weekday()
+    days_ahead = (target_weekday - today_weekday) % 7
+
+    candidate_date = today + timedelta(days=days_ahead)
+
+    start_date_only = start_dt.date()
+    if candidate_date < start_date_only:
+        candidate_date = candidate_date + timedelta(days=7)
+
+    return datetime.combine(candidate_date, start_dt.time())
+
+
+async def get_leader_cell_name_async(leader_id: str) -> str:
+    try:
+        doc = await users_collection.find_one({"_id": ObjectId(leader_id)})
+    except Exception:
+        doc = await users_collection.find_one({"user_id": leader_id})
+    if doc:
+        if "cell_name" in doc and doc["cell_name"]:
+            return doc["cell_name"]
+        name_parts = []
+        if doc.get("name"):
+            name_parts.append(doc["name"])
+        if doc.get("surname"):
+            name_parts.append(doc["surname"])
+        if name_parts:
+            return " ".join(name_parts) + "'s cell"
+    return f"Cell of {leader_id}"
+
+def parse_time_string(t: Optional[str]) -> Optional[time_type]:
+    if not t:
+        return None
+    try:
+        hh, mm = t.split(":")
+        return time_type(int(hh), int(mm))
+    except Exception:
+        return None
