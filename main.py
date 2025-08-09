@@ -26,6 +26,7 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client["active-teams-db"]
 users_collection = db["Users"]
+Tasks_collection = db["Tasks"]
 
 
 
@@ -38,6 +39,7 @@ app.include_router(auth_router)
 
 
 # Routes
+
 
 @app.get("/")
 async def root():
