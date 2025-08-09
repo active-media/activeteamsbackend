@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from bson import ObjectId
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin
@@ -63,6 +63,43 @@ async def login(user: UserLogin):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     return {"message": "Login successful"}
+
+
+    # --- GET profile ---
+@app.get("/profile/{user_id}")
+async def get_profile(user_id: str):
+    try:
+        user = await db["Users"].find_one({"_id": ObjectId(user_id)}, {"password": 0, "confirm_password": 0})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user["_id"] = str(user["_id"])  # Convert ObjectId to string
+    return user
+
+
+# --- PUT profile ---
+@app.put("/profile/{user_id}")
+async def update_profile(user_id: str, profile_data: dict = Body(...)):
+    try:
+        existing = await db["Users"].find_one({"_id": ObjectId(user_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prevent password from being updated here
+    profile_data.pop("password", None)
+    profile_data.pop("confirm_password", None)
+
+    await db["Users"].update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": profile_data}
+    )
+    return {"message": "Profile updated successfully"}
 
 # Create Event
 @app.post("/events")
@@ -169,7 +206,6 @@ async def delete_event(event_id: str):
         return {"message": "Event deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 # Search People
