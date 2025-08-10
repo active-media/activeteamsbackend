@@ -4,7 +4,7 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
-from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token
+from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection
@@ -167,41 +167,55 @@ async def logout(current=Depends(get_current_user)):
 
 
 # --- FORGOT PASSWORD ---
+# http://localhost:8000/forgot-password
 @app.post("/forgot-password")
-async def forgot_password(email: str = Body(...)):
+async def forgot_password(payload: ForgotPasswordRequest):
+    email = payload.email
     user = await users_collection.find_one({"email": email})
     if not user:
-        # To avoid leaking info, respond success anyway
         return {"message": "If your email exists, you will receive a password reset email shortly."}
 
-    # Generate a reset token (you can use a JWT or a secure random token)
-    reset_token = create_access_token({"user_id": str(user["_id"])}, expires_delta=timedelta(hours=1))
+    reset_token = create_access_token(
+        {"user_id": str(user["_id"])},
+        expires_delta=timedelta(hours=1),
+    )
     reset_link = f"https://yourfrontend.com/reset-password?token={reset_token}"
 
     status_code = send_reset_password_email(email, reset_link)
     if not status_code or status_code >= 400:
         raise HTTPException(status_code=500, detail="Failed to send reset email")
 
-    return {"message": "If your email exists, you will receive a password reset email shortly."}
+    return {
+        "message": "If your email exists, you will receive a password reset email shortly.",
+        "reset_link": reset_link,
+        "token": reset_token
+    }
 
 
 # --- RESET PASSWORD ---
 # http://localhost:8000/reset-password
+
 @app.post("/reset-password")
 async def reset_password(data: ResetPasswordRequest):
-    user = await users_collection.find_one({
-        "reset_password_token": data.token,
-        "reset_password_expires": {"$gt": datetime.utcnow()}
-    })
-    if not user:
+    try:
+        # Verify the JWT token and get payload data
+        payload = decode_access_token(data.token)
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Invalid token payload")
+
     hashed_pw = hash_password(data.new_password)
-    await users_collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {"password": hashed_pw},
-         "$unset": {"reset_password_token": "", "reset_password_expires": ""}}
+
+    result = await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"password": hashed_pw}}
     )
+
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found or password unchanged")
 
     return {"message": "Password has been reset successfully."}
 

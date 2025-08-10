@@ -85,7 +85,7 @@ class RefreshTokenRequest(BaseModel):
 
 # ===== Forgot / Reset Password =====
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    email: str
 
 class ResetPasswordRequest(BaseModel):
     token: str
