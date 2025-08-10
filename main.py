@@ -585,16 +585,40 @@ async def remove_member_from_cell(event_id: str, member_id: str, current=Depends
 # POST /tasks
 @app.post("/tasks")
 async def create_task(task: TaskModel):
+    print("Received task:", task)
     task_dict = task.dict()
-    result = await db["Tasks"].insert_one(task_dict)
+    result = await Tasks_collection.insert_one(task_dict)
     return {"message": "Task created", "id": str(result.inserted_id)}
+
 
 # Retrieve all tasks
 # GET /tasks
+
 @app.get("/tasks")
-async def get_tasks():
+async def get_tasks(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+):
+    query = {}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                date_filter["$gte"] = start_dt
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+        if end_date:
+            try:
+                # Add one day to include entire end date
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+                date_filter["$lt"] = end_dt
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        query["followup_date"] = date_filter
+
     tasks = []
-    cursor = db["Tasks"].find({})
+    cursor = db["Tasks"].find(query)
     async for task in cursor:
         task["_id"] = str(task["_id"])
         tasks.append(task)
