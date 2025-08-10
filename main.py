@@ -233,6 +233,98 @@ async def create_event(event: Event):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# http://localhost:8000/events
+@app.get("/events", dependencies=[Depends(require_role("registrant", "admin"))])
+async def get_all_events(current=Depends(get_current_user)):
+    try:
+        events = []
+        cursor = events_collection.find()
+        async for event in cursor:
+            event["_id"] = str(event["_id"])
+            # Convert datetime objects to ISO strings for JSON serialization
+            if "date" in event and isinstance(event["date"], datetime):
+                event["date"] = event["date"].isoformat()
+            if "start_date" in event and isinstance(event["start_date"], datetime):
+                event["start_date"] = event["start_date"].isoformat()
+            if "created_at" in event and isinstance(event["created_at"], datetime):
+                event["created_at"] = event["created_at"].isoformat()
+            
+            event = sanitize_document(event)
+            events.append(event)
+        return {"events": events}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# http://localhost:8000/events/type/{event_type}
+@app.get("/events/type/{event_type}", dependencies=[Depends(require_role("registrant", "admin"))])
+async def get_events_by_type(event_type: str = Path(...), current=Depends(get_current_user)):
+    try:
+        events = []
+        # Use "type" field to match your existing cell events structure
+        cursor = events_collection.find({"type": event_type})
+        async for event in cursor:
+            event["_id"] = str(event["_id"])
+            # Convert datetime objects to ISO strings for JSON serialization
+            if "date" in event and isinstance(event["date"], datetime):
+                event["date"] = event["date"].isoformat()
+            if "start_date" in event and isinstance(event["start_date"], datetime):
+                event["start_date"] = event["start_date"].isoformat()
+            if "created_at" in event and isinstance(event["created_at"], datetime):
+                event["created_at"] = event["created_at"].isoformat()
+            
+            event = sanitize_document(event)
+            events.append(event)
+        return {"events": events}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# http://localhost:8000/events/{event_id}
+@app.put("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
+async def update_event(event: Event, event_id: str = Path(...), current=Depends(get_current_user)):
+    try:
+        existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not existing_event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        update_data = event.dict()
+        if "date" in update_data and isinstance(update_data["date"], str):
+            update_data["date"] = datetime.fromisoformat(update_data["date"])
+        
+        update_data["updated_at"] = datetime.utcnow()
+        update_data["updated_by"] = current.get("user_id")
+        
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Event not found or no changes made")
+        
+        return {"message": "Event updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# http://localhost:8000/events/{event_id}
+@app.delete("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
+async def delete_event(event_id: str = Path(...), current=Depends(get_current_user)):
+    try:
+        existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not existing_event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        result = await events_collection.delete_one({"_id": ObjectId(event_id)})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        return {"message": "Event deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # -------------------------
 # Check-in (registrant or admin)
 # -------------------------
@@ -626,3 +718,94 @@ async def delete_person(person_id: str = Path(...)):
         return {"message": "Person deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# PROFILE ENDPOINTS
+# http://localhost:8000/profile/{user_id}
+@app.get("/profile/{user_id}", dependencies=[Depends(require_role("registrant", "admin"))])
+async def get_profile(user_id: str = Path(...), current=Depends(get_current_user)):
+    try:
+        # Users can only view their own profile unless they're admin
+        current_user_id = current.get("user_id")
+        current_role = current.get("role")
+        
+        if current_role != "admin" and current_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to view this profile")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Remove sensitive data from response
+        user["_id"] = str(user["_id"])
+        user.pop("password", None)
+        user.pop("confirm_password", None)
+        user.pop("refresh_token_hash", None)
+        user.pop("refresh_token_id", None)
+        user.pop("refresh_token_expires", None)
+        
+        user = sanitize_document(user)
+        return user
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# http://localhost:8000/profile/{user_id}
+# http://localhost:8000/profile/6898bfb17aee3715c27039ae
+@app.put("/profile/{user_id}", dependencies=[Depends(require_role("registrant", "user", "admin"))])
+async def update_profile(
+    profile_data: dict = Body(...),
+    user_id: str = Path(...),
+    current=Depends(get_current_user)
+):
+    try:
+        current_user_id = current.get("user_id")
+        current_role = current.get("role")
+
+        # Only admin can update any profile; others only their own
+        if current_role != "admin" and current_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+
+        # Sensitive fields no one should update
+        sensitive_fields = [
+            "password", "confirm_password", "refresh_token_hash",
+            "refresh_token_id", "refresh_token_expires", "_id"
+        ]
+        for field in sensitive_fields:
+            profile_data.pop(field, None)
+
+        # Only admin can update role
+        if current_role != "admin":
+            profile_data.pop("role", None)
+
+        # Make sure user exists
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # No valid fields to update
+        if not profile_data:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        # Add update metadata
+        profile_data["updated_at"] = datetime.utcnow()
+        profile_data["updated_by"] = current_user_id
+
+        # Apply update
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": profile_data}
+        )
+
+        if result.modified_count == 0:
+            return {"message": "No changes made"}
+
+        return {"message": "Profile updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
