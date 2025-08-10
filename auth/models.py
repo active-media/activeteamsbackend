@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, Literal, List
 from datetime import datetime
 
@@ -44,23 +44,41 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
 
+
 class CellEventCreate(BaseModel):
-    # minimal required fields to create a cell event
     service_name: str
-    leader_id: str  # user_id of leader (as string)
-    start_date: datetime  # first occurrence date/time (ISO string)
-    start_time: Optional[str] = None  # "18:00" optional separate time
-    recurring: bool = False
-    recurring_day: Optional[Literal[
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
-    ]] = None
-    # optional initial members
+    leader_id: str
+    start_date: datetime
+    start_time: str
+    recurring: bool
+    recurring_day: Optional[
+        Literal[
+            "monday", "tuesday", "wednesday", "thursday",
+            "friday", "saturday", "sunday"
+        ]
+    ] = None
     members: Optional[List[str]] = []
 
+    @field_validator("recurring_day", mode="before")
+    def normalize_day(cls, v):
+        if v:
+            return v.lower()
+        return v
 
-class AddMembersRequest(BaseModel):
-    member_ids: List[str]
+    def model_dump(self, **kwargs):
+        """Override output to capitalize the day when returning data."""
+        data = super().model_dump(**kwargs)
+        if data.get("recurring_day"):
+            data["recurring_day"] = data["recurring_day"].capitalize()
+        return data
+    
+class AddMemberNamesRequest(BaseModel):
+      name: str
 
+class RemoveMemberRequest(BaseModel):
+    name: str
+    
+# ===== Refresh Token =====
 class RefreshTokenRequest(BaseModel):
     refresh_token_id: str
     refresh_token: str
@@ -84,3 +102,10 @@ class TaskModel(BaseModel):
     class Config:
         validate_by_name = True
         arbitrary_types_allowed = True
+# ===== Forgot / Reset Password =====
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
