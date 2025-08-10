@@ -72,12 +72,21 @@ class CellEventCreate(BaseModel):
             data["recurring_day"] = data["recurring_day"].capitalize()
         return data
     
+class AddMemberNamesRequest(BaseModel):
+      name: str
+
+class RemoveMemberRequest(BaseModel):
+    name: str
+    
+# ===== Refresh Token =====
 class RefreshTokenRequest(BaseModel):
     refresh_token_id: str
     refresh_token: str
 
-class AddMemberNamesRequest(BaseModel):
-     name: str
+# ===== Forgot / Reset Password =====
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
 
-class RemoveMemberRequest(BaseModel):
-    name: str
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str

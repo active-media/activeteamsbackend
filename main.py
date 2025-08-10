@@ -1,14 +1,14 @@
 import os
-from datetime import datetime, timedelta, time as time_type
+from datetime import datetime, timedelta
 from bson import ObjectId
-from typing import List
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest
+from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
 from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection
+from auth.email_utils import send_reset_password_email
 
 app = FastAPI()
 
@@ -60,11 +60,11 @@ async def signup(user: UserCreate):
     await db["Users"].insert_one(user_dict)
     return {"message": "User created successfully"}
 
-# http://localhost:8000/login
-
+# JWT CONFIG
 JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
+# http://localhost:8000/login
 @app.post("/login")
 async def login(user: UserLogin):
     existing = await users_collection.find_one({"email": user.email})
@@ -107,6 +107,104 @@ async def login(user: UserLogin):
         "refresh_token": refresh_plain,
     }
 
+
+# http://localhost:8000/refresh-token
+@app.post("/refresh-token")
+async def refresh_token(payload: RefreshTokenRequest = Body(...)):
+    user = await users_collection.find_one({"refresh_token_id": payload.refresh_token_id})
+    if (
+        not user
+        or not user.get("refresh_token_hash")
+        or not verify_password(payload.refresh_token, user["refresh_token_hash"])
+        or not user.get("refresh_token_expires")
+        or user["refresh_token_expires"] < datetime.utcnow()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
+    token = create_access_token(
+        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "registrant")},
+        expires_delta=token_expires,
+    )
+
+    # Rotate refresh token on each refresh for extra security
+    new_refresh_token_id = secrets.token_urlsafe(16)
+    new_refresh_plain = secrets.token_urlsafe(32)
+    new_refresh_hash = hash_password(new_refresh_plain)
+    new_refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "refresh_token_id": new_refresh_token_id,
+            "refresh_token_hash": new_refresh_hash,
+            "refresh_token_expires": new_refresh_expires,
+        }},
+    )
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "refresh_token_id": new_refresh_token_id,
+        "refresh_token": new_refresh_plain,
+    }
+
+# http://localhost:8000/logout
+@app.post("/logout")
+async def logout(current=Depends(get_current_user)):
+    user_id = current.get("user_id")
+    await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "refresh_token_id": None,
+                "refresh_token_hash": None,
+                "refresh_token_expires": None,
+            }
+        },
+    )
+    return {"message": "Logged out successfully"}
+
+
+# --- FORGOT PASSWORD ---
+@app.post("/forgot-password")
+async def forgot_password(email: str = Body(...)):
+    user = await users_collection.find_one({"email": email})
+    if not user:
+        # To avoid leaking info, respond success anyway
+        return {"message": "If your email exists, you will receive a password reset email shortly."}
+
+    # Generate a reset token (you can use a JWT or a secure random token)
+    reset_token = create_access_token({"user_id": str(user["_id"])}, expires_delta=timedelta(hours=1))
+    reset_link = f"https://yourfrontend.com/reset-password?token={reset_token}"
+
+    status_code = send_reset_password_email(email, reset_link)
+    if not status_code or status_code >= 400:
+        raise HTTPException(status_code=500, detail="Failed to send reset email")
+
+    return {"message": "If your email exists, you will receive a password reset email shortly."}
+
+
+# --- RESET PASSWORD ---
+# http://localhost:8000/reset-password
+@app.post("/reset-password")
+async def reset_password(data: ResetPasswordRequest):
+    user = await users_collection.find_one({
+        "reset_password_token": data.token,
+        "reset_password_expires": {"$gt": datetime.utcnow()}
+    })
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    hashed_pw = hash_password(data.new_password)
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password": hashed_pw},
+         "$unset": {"reset_password_token": "", "reset_password_expires": ""}}
+    )
+
+    return {"message": "Password has been reset successfully."}
+
 # EVENT ENDPOINTS
 # http://localhost:8000/event
 @app.post("/event", dependencies=[Depends(require_role("admin"))])
@@ -118,6 +216,60 @@ async def create_event(event: Event):
             event_data["attendees"] = []
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# -------------------------
+# Check-in (registrant or admin)
+# -------------------------
+# http://localhost:8000/checkin
+@app.post("/checkin", dependencies=[Depends(require_role("registrant", "admin"))])
+async def check_in_person(checkin: CheckIn, current=Depends(get_current_user)):
+    try:
+        event = await events_collection.find_one({"_id": ObjectId(checkin.event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        person = await people_collection.find_one({"Name": {"$regex": f"^{checkin.name}$", "$options": "i"}})
+        if not person:
+            raise HTTPException(status_code=400, detail="Person not found in people database")
+
+        already_checked = any(a.get("name", "").lower() == checkin.name.lower() for a in event.get("attendees", []))
+        if already_checked:
+            raise HTTPException(status_code=400, detail="Person already checked in")
+
+        attendee_record = {
+            "name": checkin.name,
+            "time": datetime.utcnow(),
+            "performed_by": current.get("user_id"),
+        }
+
+        await events_collection.update_one(
+            {"_id": ObjectId(checkin.event_id)},
+            {"$push": {"attendees": attendee_record}, "$inc": {"total_attendance": 1}},
+        )
+        return {"message": f"{checkin.name} checked in successfully."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# -------------------------
+# View Check-ins (registrant/admin required)
+# -------------------------
+@app.get("/checkins/{event_id}", dependencies=[Depends(require_role("registrant", "admin"))])
+async def get_checkins(event_id: str, current=Depends(get_current_user)):
+    try:
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        return {
+            "event_id": event_id,
+            "service_name": event.get("service_name"),
+            "attendees": event.get("attendees", []),
+            "total_attendance": event.get("total_attendance", 0),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
