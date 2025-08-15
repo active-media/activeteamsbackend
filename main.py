@@ -1,14 +1,15 @@
 import os
 from datetime import datetime, timedelta
 from bson import ObjectId
-from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
+from fastapi import Body, FastAPI, HTTPException, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
-from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
+from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection
+from database import db, events_collection, people_collection, users_collection, task_collection
 from auth.email_utils import send_reset_password_email
+from typing import Optional
 
 app = FastAPI()
 
@@ -19,6 +20,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 def sanitize_document(doc):
     """Recursively sanitize document to replace NaN/Infinity float values with None."""
     for k, v in doc.items():
@@ -107,7 +109,6 @@ async def login(user: UserLogin):
         "refresh_token": refresh_plain,
     }
 
-
 # http://localhost:8000/refresh-token
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
@@ -151,8 +152,7 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
 
 # http://localhost:8000/logout
 @app.post("/logout")
-async def logout(current=Depends(get_current_user)):
-    user_id = current.get("user_id")
+async def logout(user_id: str = Body(..., embed=True)):
     await users_collection.update_one(
         {"_id": ObjectId(user_id)},
         {
@@ -164,7 +164,6 @@ async def logout(current=Depends(get_current_user)):
         },
     )
     return {"message": "Logged out successfully"}
-
 
 # --- FORGOT PASSWORD ---
 # http://localhost:8000/forgot-password
@@ -191,10 +190,8 @@ async def forgot_password(payload: ForgotPasswordRequest):
         "token": reset_token
     }
 
-
 # --- RESET PASSWORD ---
 # http://localhost:8000/reset-password
-
 @app.post("/reset-password")
 async def reset_password(data: ResetPasswordRequest):
     try:
@@ -221,7 +218,7 @@ async def reset_password(data: ResetPasswordRequest):
 
 # EVENT ENDPOINTS
 # http://localhost:8000/event
-@app.post("/event", dependencies=[Depends(require_role("admin"))])
+@app.post("/event")
 async def create_event(event: Event):
     try:
         event_data = event.dict()
@@ -234,8 +231,8 @@ async def create_event(event: Event):
         raise HTTPException(status_code=500, detail=str(e))
 
 # http://localhost:8000/events
-@app.get("/events", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_all_events(current=Depends(get_current_user)):
+@app.get("/events")
+async def get_all_events():
     try:
         events = []
         cursor = events_collection.find()
@@ -256,8 +253,8 @@ async def get_all_events(current=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # http://localhost:8000/events/type/{event_type}
-@app.get("/events/type/{event_type}", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_events_by_type(event_type: str = Path(...), current=Depends(get_current_user)):
+@app.get("/events/type/{event_type}")
+async def get_events_by_type(event_type: str = Path(...)):
     try:
         events = []
         # Use "type" field to match your existing cell events structure
@@ -279,8 +276,8 @@ async def get_events_by_type(event_type: str = Path(...), current=Depends(get_cu
         raise HTTPException(status_code=500, detail=str(e))
 
 # http://localhost:8000/events/{event_id}
-@app.put("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
-async def update_event(event: Event, event_id: str = Path(...), current=Depends(get_current_user)):
+@app.put("/events/{event_id}")
+async def update_event(event: Event, event_id: str = Path(...), user_id: str = Body(None, embed=True)):
     try:
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
@@ -291,7 +288,8 @@ async def update_event(event: Event, event_id: str = Path(...), current=Depends(
             update_data["date"] = datetime.fromisoformat(update_data["date"])
         
         update_data["updated_at"] = datetime.utcnow()
-        update_data["updated_by"] = current.get("user_id")
+        if user_id:
+            update_data["updated_by"] = user_id
         
         result = await events_collection.update_one(
             {"_id": ObjectId(event_id)},
@@ -308,8 +306,8 @@ async def update_event(event: Event, event_id: str = Path(...), current=Depends(
         raise HTTPException(status_code=500, detail=str(e))
 
 # http://localhost:8000/events/{event_id}
-@app.delete("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
-async def delete_event(event_id: str = Path(...), current=Depends(get_current_user)):
+@app.delete("/events/{event_id}")
+async def delete_event(event_id: str = Path(...)):
     try:
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
@@ -324,13 +322,13 @@ async def delete_event(event_id: str = Path(...), current=Depends(get_current_us
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 # -------------------------
-# Check-in (registrant or admin)
+# Check-in
 # -------------------------
 # http://localhost:8000/checkin
-@app.post("/checkin", dependencies=[Depends(require_role("registrant", "admin"))])
-async def check_in_person(checkin: CheckIn, current=Depends(get_current_user)):
+@app.post("/checkin")
+async def check_in_person(checkin: CheckIn, user_id: str = Body(None, embed=True)):
     try:
         event = await events_collection.find_one({"_id": ObjectId(checkin.event_id)})
         if not event:
@@ -347,8 +345,9 @@ async def check_in_person(checkin: CheckIn, current=Depends(get_current_user)):
         attendee_record = {
             "name": checkin.name,
             "time": datetime.utcnow(),
-            "performed_by": current.get("user_id"),
         }
+        if user_id:
+            attendee_record["performed_by"] = user_id
 
         await events_collection.update_one(
             {"_id": ObjectId(checkin.event_id)},
@@ -361,10 +360,10 @@ async def check_in_person(checkin: CheckIn, current=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------------
-# View Check-ins (registrant/admin required)
+# View Check-ins
 # -------------------------
-@app.get("/checkins/{event_id}", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_checkins(event_id: str, current=Depends(get_current_user)):
+@app.get("/checkins/{event_id}")
+async def get_checkins(event_id: str):
     try:
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
@@ -383,8 +382,8 @@ async def get_checkins(event_id: str, current=Depends(get_current_user)):
 # Cell event creation and management
 # -------------------------
 # http://localhost:8000/events/cell
-@app.post("/events/cell", dependencies=[Depends(require_role("admin"))])
-async def create_cell_event(payload: CellEventCreate, current=Depends(get_current_user)):
+@app.post("/events/cell")
+async def create_cell_event(payload: CellEventCreate, user_id: str = Body(None, embed=True)):
     try:
         if payload.recurring and not payload.recurring_day:
             raise HTTPException(status_code=400, detail="recurring_day is required when recurring=True")
@@ -405,10 +404,11 @@ async def create_cell_event(payload: CellEventCreate, current=Depends(get_curren
             "recurring": payload.recurring,
             "recurring_day": payload.recurring_day,
             "members": payload.members or [],
-            "created_by": current.get("user_id"),
             "created_at": datetime.utcnow(),
             "total_attendance": 0,
         }
+        if user_id:
+            event_doc["created_by"] = user_id
 
         result = await events_collection.insert_one(event_doc)
         return {"message": "Cell event created", "id": str(result.inserted_id)}
@@ -419,16 +419,11 @@ async def create_cell_event(payload: CellEventCreate, current=Depends(get_curren
 
 # Capturing people into cells
 # http://localhost:8000/events/{event_id}/checkin
-@app.post("/events/{event_id}/checkin", dependencies=[Depends(require_role("registrant", "admin"))])
-async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesRequest, current=Depends(get_current_user)):
+@app.post("/events/{event_id}/checkin")
+async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesRequest):
     event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
     if not event:
         raise HTTPException(status_code=404, detail="Cell event not found")
-
-    role = current.get("role")
-    user_id = current.get("user_id")
-    if role != "admin" and str(event.get("leader_id")) != str(user_id):
-        raise HTTPException(status_code=403, detail="Not authorized")
 
     person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
     if not person:
@@ -457,17 +452,12 @@ async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesReque
 
     return {"message": f"{person['Name']} checked in successfully to the cell event."}
 
-# http://localhost:8000/events/6897bcb2016b71e188b5119a/uncheckin
-@app.post("/events/{event_id}/uncheckin", dependencies=[Depends(require_role("registrant", "admin"))])
-async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest, current=Depends(get_current_user)):
+# http://localhost:8000/events/{event_id}/uncheckin
+@app.post("/events/{event_id}/uncheckin")
+async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest):
     event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
     if not event:
         raise HTTPException(status_code=404, detail="Cell event not found")
-
-    role = current.get("role")
-    user_id = current.get("user_id")
-    if role != "admin" and str(event.get("leader_id")) != str(user_id):
-        raise HTTPException(status_code=403, detail="Not authorized")
 
     person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
     if not person:
@@ -490,14 +480,9 @@ async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest, curr
 
 @app.get("/events/cell")
 # http://localhost:8000/events/cell
-async def list_cell_events(current=Depends(get_current_user)):
+async def list_cell_events():
     try:
-        role = current.get("role")
-        user_id = current.get("user_id")
-        if role == "admin":
-            cursor = events_collection.find({"type": "cell"})
-        else:
-            cursor = events_collection.find({"type": "cell", "leader_id": user_id})
+        cursor = events_collection.find({"type": "cell"})
 
         results = []
         async for e in cursor:
@@ -534,16 +519,11 @@ async def list_cell_events(current=Depends(get_current_user)):
 # Removing people from cell
 # http://localhost:8000/events/cell/{event_id}/members/{member_id}
 @app.delete("/events/cell/{event_id}/members/{member_id}")
-async def remove_member_from_cell(event_id: str, member_id: str, current=Depends(get_current_user)):
+async def remove_member_from_cell(event_id: str, member_id: str):
     try:
         event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
         if not event:
             raise HTTPException(status_code=404, detail="Cell event not found")
-
-        role = current.get("role")
-        user_id = current.get("user_id")
-        if role != "admin" and str(event.get("leader_id")) != str(user_id):
-            raise HTTPException(status_code=403, detail="Not authorized")
 
         update_result = await events_collection.update_one({"_id": ObjectId(event_id)}, {"$pull": {"members": member_id}})
         if update_result.modified_count == 0:
@@ -554,53 +534,8 @@ async def remove_member_from_cell(event_id: str, member_id: str, current=Depends
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# CHECKIN AND UNCHECKIN ENDPOINTS
-@app.post("/checkin", dependencies=[Depends(require_role("registrant", "admin"))])
-async def check_in_person(checkin: CheckIn):
-    try:
-        event = await events_collection.find_one({"_id": ObjectId(checkin.event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-
-        person = await people_collection.find_one({"Name": {"$regex": f"^{checkin.name}$", "$options": "i"}})
-        if not person:
-            raise HTTPException(status_code=400, detail="Person not found in people database")
-
-        already_checked = any(a["name"].lower() == checkin.name.lower() for a in event.get("attendees", []))
-        if already_checked:
-            raise HTTPException(status_code=400, detail="Person already checked in")
-
-        await events_collection.update_one(
-            {"_id": ObjectId(checkin.event_id)},
-            {
-                "$push": {"attendees": {"name": checkin.name, "time": datetime.now()}},
-                "$inc": {"total_attendance": 1}
-            }
-        )
-        return {"message": f"{checkin.name} checked in successfully."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# http://localhost:8000/checkins/{event_id}
-@app.get("/checkins/{event_id}", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_checkins(event_id: str):
-    try:
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-
-        event = sanitize_document(event)
-        return {
-            "event_id": event_id,
-            "service_name": event.get("service_name"),
-            "attendees": event.get("attendees", []),
-            "total_attendance": event.get("total_attendance", 0)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # http://localhost:8000/uncapture
-@app.post("/uncapture", dependencies=[Depends(require_role("registrant", "admin"))])
+@app.post("/uncapture")
 async def uncapture_person(data: UncaptureRequest):
     try:
         update_result = await events_collection.update_one(
@@ -619,7 +554,7 @@ async def uncapture_person(data: UncaptureRequest):
 
 # PEOPLE ENDPOINTS
 # http://localhost:8000/people?page=1&perPage=10
-@app.get("/people", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
     perPage: int = Query(100, ge=1, le=500),
@@ -664,7 +599,7 @@ async def get_people(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/search", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people/search")
 async def search_people(name: str = Query(..., min_length=1)):
     try:
         cursor = people_collection.find({"Name": {"$regex": name, "$options": "i"}})
@@ -677,7 +612,7 @@ async def search_people(name: str = Query(..., min_length=1)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/{person_id}", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
     try:
         person = await people_collection.find_one({"_id": ObjectId(person_id)})
@@ -689,7 +624,7 @@ async def get_person_by_id(person_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/people", dependencies=[Depends(require_role("registrant", "admin"))])
+@app.post("/people")
 async def create_or_update_person(person_data: dict = Body(...)):
     try:
         if "_id" in person_data:  # Update existing person
@@ -708,8 +643,8 @@ async def create_or_update_person(person_data: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/people/{person_id}", dependencies=[Depends(require_role("registrant", "admin"))])
-@app.delete("/person/{person_id}", dependencies=[Depends(require_role("registrant", "admin"))])
+@app.delete("/people/{person_id}")
+@app.delete("/person/{person_id}")
 async def delete_person(person_id: str = Path(...)):
     try:
         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
@@ -719,19 +654,11 @@ async def delete_person(person_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # PROFILE ENDPOINTS
 # http://localhost:8000/profile/{user_id}
-@app.get("/profile/{user_id}", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_profile(user_id: str = Path(...), current=Depends(get_current_user)):
+@app.get("/profile/{user_id}")
+async def get_profile(user_id: str = Path(...)):
     try:
-        # Users can only view their own profile unless they're admin
-        current_user_id = current.get("user_id")
-        current_role = current.get("role")
-        
-        if current_role != "admin" and current_user_id != user_id:
-            raise HTTPException(status_code=403, detail="Not authorized to view this profile")
-        
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -751,23 +678,14 @@ async def get_profile(user_id: str = Path(...), current=Depends(get_current_user
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # http://localhost:8000/profile/{user_id}
-# http://localhost:8000/profile/6898bfb17aee3715c27039ae
-@app.put("/profile/{user_id}", dependencies=[Depends(require_role("registrant", "user", "admin"))])
+@app.put("/profile/{user_id}")
 async def update_profile(
     profile_data: dict = Body(...),
     user_id: str = Path(...),
-    current=Depends(get_current_user)
+    updated_by: str = Body(None, embed=True)
 ):
     try:
-        current_user_id = current.get("user_id")
-        current_role = current.get("role")
-
-        # Only admin can update any profile; others only their own
-        if current_role != "admin" and current_user_id != user_id:
-            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
-
         # Sensitive fields no one should update
         sensitive_fields = [
             "password", "confirm_password", "refresh_token_hash",
@@ -775,10 +693,6 @@ async def update_profile(
         ]
         for field in sensitive_fields:
             profile_data.pop(field, None)
-
-        # Only admin can update role
-        if current_role != "admin":
-            profile_data.pop("role", None)
 
         # Make sure user exists
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
@@ -791,7 +705,8 @@ async def update_profile(
 
         # Add update metadata
         profile_data["updated_at"] = datetime.utcnow()
-        profile_data["updated_by"] = current_user_id
+        if updated_by:
+            profile_data["updated_by"] = updated_by
 
         # Apply update
         result = await users_collection.update_one(
@@ -808,4 +723,48 @@ async def update_profile(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        
+
+# -------------------------
+# Tasks Management
+# -------------------------
+
+# Create a new task
+# POST /tasks
+@app.post("/tasks")
+async def create_task(task: TaskModel):
+    print("Received task:", task)
+    task_dict = task.dict()
+    result = await task_collection.insert_one(task_dict)
+    return {"message": "Task created", "id": str(result.inserted_id)}
+
+# Retrieve all tasks
+# GET /tasks
+@app.get("/tasks")
+async def get_tasks(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+):
+    query = {}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                date_filter["$gte"] = start_dt
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+        if end_date:
+            try:
+                # Add one day to include entire end date
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+                date_filter["$lt"] = end_dt
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        query["followup_date"] = date_filter
+
+    tasks = []
+    cursor = db["Tasks"].find(query)
+    async for task in cursor:
+        task["_id"] = str(task["_id"])
+        tasks.append(task)
+    return tasks
