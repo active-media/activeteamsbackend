@@ -22,7 +22,7 @@ class UserLogin(BaseModel):
 class Event(BaseModel):
     eventType: str
     service_name: str
-    date: str 
+    date: datetime    
     location: str
     total_attendance: int = 0
     attendees: list[dict] = []

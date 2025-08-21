@@ -225,13 +225,16 @@ async def reset_password(data: ResetPasswordRequest):
 async def create_event(event: Event):
     try:
         event_data = event.dict()
-        event_data["date"] = datetime.fromisoformat(event_data["date"])
+        print("Received event data:", event_data)  # Debug print
+
         if "attendees" not in event_data:
             event_data["attendees"] = []
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 # http://localhost:8000/events
 @app.get("/events", dependencies=[Depends(require_role("registrant", "admin"))])
