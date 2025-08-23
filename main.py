@@ -9,12 +9,12 @@ import math
 import secrets
 from database import db, events_collection, people_collection, users_collection
 from auth.email_utils import send_reset_password_email
-
+# from models import EventCreate
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,7 +55,7 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
-        "role": "user"  # default role; adjust as needed
+        # "role": "admin"  # default role; adjust as needed
     }
     await db["Users"].insert_one(user_dict)
     return {"message": "User created successfully"}
@@ -221,18 +221,21 @@ async def reset_password(data: ResetPasswordRequest):
 
 # EVENT ENDPOINTS
 # http://localhost:8000/event
-@app.post("/event", dependencies=[Depends(require_role("admin"))])
+@app.post("/event")
 async def create_event(event: Event):
     try:
         event_data = event.dict()
-        print("Received event data:", event_data)  # Debug print
+        event_data["attendees"] = []
+        event_data["total_attendance"] = 0
 
-        if "attendees" not in event_data:
-            event_data["attendees"] = []
         result = await events_collection.insert_one(event_data)
-        return {"message": "Event created", "id": str(result.inserted_id)}
+        event_data["_id"] = str(result.inserted_id)
+
+        return {"message": "Event created", "event": event_data}
     except Exception as e:
+        print("Error creating event:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 

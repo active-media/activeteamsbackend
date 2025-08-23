@@ -19,13 +19,26 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+# class Event(BaseModel):
+#     eventType: str
+#     service_name: str
+#     date: datetime    
+#     location: str
+#     total_attendance: int = 0
+#     attendees: list[dict] = []
 class Event(BaseModel):
-    eventType: str
-    service_name: str
-    date: datetime    
+    eventType: str                # Category/type like Workshop, Seminar, etc.
+    eventName: str                # ✅ This is now the actual name of the event
+    date: datetime
     location: str
-    total_attendance: int = 0
-    attendees: list[dict] = []
+
+    # Optional fields
+    recurringDays: Optional[List[str]] = None
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    isTicketed: Optional[bool] = None
+    price: Optional[float] = None
+    price: Optional[float] = None
 
 class CheckIn(BaseModel):
     event_id: str
