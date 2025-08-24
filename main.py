@@ -3,12 +3,14 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
+from auth.models import CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
 from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection
 from auth.email_utils import send_reset_password_email
+from auth.models import EventCreate
+
 # from models import EventCreate
 app = FastAPI()
 
@@ -221,40 +223,46 @@ async def reset_password(data: ResetPasswordRequest):
 
 # EVENT ENDPOINTS
 # http://localhost:8000/event
-@app.post("/event")
-async def create_event(event: Event):
+@app.post("/api/events")
+async def create_event(event: EventCreate):
     try:
-        event_data = event.dict()
-        event_data["attendees"] = []
-        event_data["total_attendance"] = 0
-
-        result = await events_collection.insert_one(event_data)
-        event_data["_id"] = str(result.inserted_id)
-
-        return {"message": "Event created", "event": event_data}
+        print("Received event:", event)
+        new_event = event.dict()
+        print("Event dict:", new_event)
+        
+        # Optional: Validate 'date' field manually if needed
+        if new_event.get("date") is None and new_event.get("recurringDays"):
+            print("Recurring event, date is None, this is expected.")
+        elif new_event.get("date") is None:
+            raise ValueError("Date is required for non-recurring events.")
+        
+        new_event["_id"] = str(ObjectId())
+        new_event["attendees"] = []
+        new_event["total_attendance"] = 0
+        
+        result = await db["Events"].insert_one(new_event)
+        print("Insert result:", result.inserted_id)
+        
+        return {"message": "Event created", "event": new_event}
     except Exception as e:
         print("Error creating event:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
 # http://localhost:8000/events
-@app.get("/events", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_all_events(current=Depends(get_current_user)):
+@app.get("/events")
+async def get_all_events():
     try:
         events = []
         cursor = events_collection.find()
         async for event in cursor:
             event["_id"] = str(event["_id"])
-            # Convert datetime objects to ISO strings for JSON serialization
             if "date" in event and isinstance(event["date"], datetime):
                 event["date"] = event["date"].isoformat()
             if "start_date" in event and isinstance(event["start_date"], datetime):
                 event["start_date"] = event["start_date"].isoformat()
             if "created_at" in event and isinstance(event["created_at"], datetime):
                 event["created_at"] = event["created_at"].isoformat()
-            
             event = sanitize_document(event)
             events.append(event)
         return {"events": events}
@@ -262,37 +270,43 @@ async def get_all_events(current=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # http://localhost:8000/events/type/{event_type}
-@app.get("/events/type/{event_type}", dependencies=[Depends(require_role("registrant", "admin"))])
-async def get_events_by_type(event_type: str = Path(...), current=Depends(get_current_user)):
+from fastapi import Path, HTTPException
+
+@app.get("/events/type/{event_type}")
+async def get_events_by_type(event_type: str = Path(...)):
     try:
         events = []
-        # Use "type" field to match your existing cell events structure
         cursor = events_collection.find({"type": event_type})
         async for event in cursor:
             event["_id"] = str(event["_id"])
-            # Convert datetime objects to ISO strings for JSON serialization
             if "date" in event and isinstance(event["date"], datetime):
                 event["date"] = event["date"].isoformat()
             if "start_date" in event and isinstance(event["start_date"], datetime):
                 event["start_date"] = event["start_date"].isoformat()
             if "created_at" in event and isinstance(event["created_at"], datetime):
                 event["created_at"] = event["created_at"].isoformat()
-            
             event = sanitize_document(event)
             events.append(event)
         return {"events": events}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
 # http://localhost:8000/events/{event_id}
-@app.put("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
-async def update_event(event: Event, event_id: str = Path(...), current=Depends(get_current_user)):
+@app.put("/events/{event_id}")
+async def update_event(event: EventCreate, event_id: str = Path(...), current=Depends(get_current_user)):
     try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
         
         update_data = event.dict()
+        update_data.pop("_id", None)
+
         if "date" in update_data and isinstance(update_data["date"], str):
             update_data["date"] = datetime.fromisoformat(update_data["date"])
         
@@ -312,6 +326,7 @@ async def update_event(event: Event, event_id: str = Path(...), current=Depends(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # http://localhost:8000/events/{event_id}
 @app.delete("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
