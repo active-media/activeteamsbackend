@@ -112,7 +112,7 @@ class Batch(BaseModel):
     createdBy: dict
     processed: bool = False
     contributions: list[dict] = []
-=======
+
 
 # Nested contacted_person model
 class ContactedPerson(BaseModel):
