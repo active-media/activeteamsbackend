@@ -808,4 +808,125 @@ async def update_profile(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        
+# -----------------------
+# Batch-Specific Contributions
+# -----------------------
+@app.get("/financial-reports/batches/{batch_id}/collections")
+async def get_batch_collections(batch_id: str, user=Depends(verify_token)):
+    batch = db.batches.find_one({"batchId": batch_id})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch.get("contributions", [])
+
+@app.post("/financial-reports/batches/{batch_id}/collections")
+async def add_collection(batch_id: str, data: Contribution, user=Depends(verify_token)):
+    batch = db.batches.find_one({"batchId": batch_id})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    contrib_id = f"contrib_{uuid4()}"
+    new_contrib = {
+        "id": contrib_id,
+        "batchId": batch_id,
+        "name": data.name,
+        "date": data.date,
+        "amount": float(data.amount),
+        "method": data.method,
+        "account": data.account,
+        "description": data.description or "",
+        "createdBy": {"id": user["sub"], "name": user["name"]},
+        "createdAt": _utcnow().isoformat(),
+    }
+
+    db.batches.update_one({"batchId": batch_id}, {"$push": {"contributions": new_contrib}})
+    db.contributions.insert_one(new_contrib)
+    return new_contrib
+
+@app.put("/financial-reports/batches/{batch_id}/collections/{collection_id}")
+async def update_collection(batch_id: str, collection_id: str, data: Contribution, user=Depends(verify_token)):
+    batch = db.batches.find_one({"batchId": batch_id})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    updated = None
+    contributions = []
+    for c in batch.get("contributions", []):
+        if c["id"] == collection_id:
+            c.update(data.dict())
+            updated = c
+        contributions.append(c)
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    db.batches.update_one({"batchId": batch_id}, {"$set": {"contributions": contributions}})
+    db.contributions.update_one({"id": collection_id}, {"$set": updated})
+    return updated
+
+@app.delete("/financial-reports/batches/{batch_id}/collections/{collection_id}")
+async def delete_collection(batch_id: str, collection_id: str, user=Depends(verify_token)):
+    batch = db.batches.find_one({"batchId": batch_id})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    contributions = [c for c in batch.get("contributions", []) if c["id"] != collection_id]
+    if len(contributions) == len(batch.get("contributions", [])):
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    db.batches.update_one({"batchId": batch_id}, {"$set": {"contributions": contributions}})
+    db.contributions.delete_one({"id": collection_id})
+    return {"status": "success", "deletedId": collection_id}
+
+# -----------------------
+# Global Contributions
+# -----------------------
+@app.get("/financial-reports/contributions")
+async def get_global_contributions(user=Depends(verify_token)):
+    return list(db.contributions.find({}, {"_id": 0}))
+
+@app.post("/financial-reports/contributions")
+async def add_global_contribution(data: Contribution, user=Depends(verify_token)):
+    contrib_id = f"contrib_{uuid4()}"
+    new_contrib = {
+        "id": contrib_id,
+        "batchId": None,
+        "name": data.name,
+        "date": data.date,
+        "amount": float(data.amount),
+        "method": data.method,
+        "account": data.account,
+        "description": data.description or "",
+        "createdBy": {"id": user["sub"], "name": user["name"]},
+        "createdAt": _utcnow().isoformat(),
+    }
+    db.contributions.insert_one(new_contrib)
+    return new_contrib
+
+@app.put("/financial-reports/contributions/{contrib_id}")
+async def update_global_contribution(contrib_id: str, data: Contribution, user=Depends(verify_token)):
+    updated = data.dict()
+    result = db.contributions.update_one({"id": contrib_id}, {"$set": updated})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Contribution not found")
+    return updated
+
+@app.delete("/financial-reports/contributions/{contrib_id}")
+async def delete_global_contribution(contrib_id: str, user=Depends(verify_token)):
+    result = db.contributions.delete_one({"id": contrib_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Contribution not found")
+    return {"status": "success", "deletedId": contrib_id}
+
+# -----------------------
+# Batch CRUD (Optional)
+# -----------------------
+@app.get("/financial-reports/batches")
+async def get_batches(user=Depends(verify_token)):
+    return list(db.batches.find({}, {"_id": 0}))
+
+@app.post("/financial-reports/batches")
+async def add_batch(data: Batch, user=Depends(verify_token)):
+    if db.batches.find_one({"batchId": data.batchId}):
+        raise HTTPException(status_code=400, detail="Batch ID already exists")
+    db.batches.insert_one(data.dict())
+    return data

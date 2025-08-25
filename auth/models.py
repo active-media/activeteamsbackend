@@ -90,3 +90,24 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+# Contribution and Batch models
+class Contribution(BaseModel):
+    name: str
+    date: str
+    amount: float
+    method: str
+    account: str
+    description: str | None = None
+
+class Batch(BaseModel):
+    batchId: str
+    designation: str
+    period: str
+    serviceDate: str
+    totalAmount: float
+    allocated: float
+    unallocated: float
+    createdBy: dict
+    processed: bool = False
+    contributions: list[dict] = []
