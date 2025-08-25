@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel
+from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel , TaskUpdate
 from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 from datetime import datetime, time as time_type, timedelta
@@ -11,6 +11,8 @@ import secrets
 from database import db, events_collection, people_collection, users_collection, Tasks_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
+from pymongo import ReturnDocument
+
 
 
 app = FastAPI()
@@ -858,3 +860,24 @@ async def get_tasks(
         task["_id"] = str(task["_id"])
         tasks.append(task)
     return tasks
+
+@app.put("/tasks/{task_id}")
+async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
+    if not ObjectId.is_valid(task_id):
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
+
+    result = await Tasks_collection.find_one_and_update(
+        {"_id": ObjectId(task_id)},
+        {"$set": updated_task},
+        return_document=True  # from pymongo import ReturnDocument
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Convert ObjectId to str before returning
+    result["_id"] = str(result["_id"])
+    return result
+
