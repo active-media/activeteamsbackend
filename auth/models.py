@@ -104,9 +104,11 @@ class TaskModel(BaseModel):
 
     memberID: str
     name: str
+    taskType: str
     contacted_person: ContactedPerson
     followup_date: datetime
     status: str
+    type: str
 
     class Config:
         validate_by_name = True

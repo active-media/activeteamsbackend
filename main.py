@@ -812,10 +812,6 @@ async def update_profile(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
-
-    
-
-
 # -------------------------
 # Tasks Management
 # -------------------------
