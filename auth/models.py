@@ -31,6 +31,7 @@ class EventBase(BaseModel):
     eventType: str
     eventName: str
     date: Optional[datetime] = None
+    time: Optional[str] = None
     recurringDays: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None

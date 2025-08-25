@@ -11,6 +11,7 @@ from database import db, events_collection, people_collection, users_collection
 from auth.email_utils import send_reset_password_email
 from auth.models import EventCreate
 
+
 # from models import EventCreate
 app = FastAPI()
 
@@ -226,7 +227,8 @@ async def reset_password(data: ResetPasswordRequest):
 @app.post("/api/events")
 async def create_event(event: EventCreate):
     try:
-        print("Received event:", event)
+        print("✅ Event payload received in POST:", event)
+
         new_event = event.dict()
         print("Event dict:", new_event)
         
@@ -240,7 +242,7 @@ async def create_event(event: EventCreate):
         new_event["attendees"] = []
         new_event["total_attendance"] = 0
         
-        result = await db["Events"].insert_one(new_event)
+        result = await events_collection.insert_one(new_event)
         print("Insert result:", result.inserted_id)
         
         return {"message": "Event created", "event": new_event}
@@ -275,9 +277,11 @@ from fastapi import Path, HTTPException
 @app.get("/events/type/{event_type}")
 async def get_events_by_type(event_type: str = Path(...)):
     try:
+        print(f"Fetching events of type: {event_type}")
         events = []
-        cursor = events_collection.find({"type": event_type})
+        cursor = events_collection.find({"eventType": event_type})
         async for event in cursor:
+            print("Event found:", event)  # Log each event
             event["_id"] = str(event["_id"])
             if "date" in event and isinstance(event["date"], datetime):
                 event["date"] = event["date"].isoformat()
@@ -290,6 +294,7 @@ async def get_events_by_type(event_type: str = Path(...)):
         return {"events": events}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
