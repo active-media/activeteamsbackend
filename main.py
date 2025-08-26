@@ -3,13 +3,16 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest
+from auth.models import CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel
 from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
+from datetime import datetime, time as time_type, timedelta
 import secrets
-from database import db, events_collection, people_collection, users_collection
+from database import db, events_collection, people_collection, users_collection, Tasks_collection
 from auth.email_utils import send_reset_password_email
 from auth.models import EventCreate
+
+from typing import Optional, Literal, List
 
 
 # from models import EventCreate
@@ -835,3 +838,49 @@ async def update_profile(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
         
+# -------------------------
+# Tasks Management
+# -------------------------
+
+# Create a new task
+# POST /tasks
+@app.post("/tasks")
+async def create_task(task: TaskModel):
+    print("Received task:", task)
+    task_dict = task.dict()
+    result = await Tasks_collection.insert_one(task_dict)
+    return {"message": "Task created", "id": str(result.inserted_id)}
+
+
+# Retrieve all tasks
+# GET /tasks
+
+@app.get("/tasks")
+async def get_tasks(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+):
+    query = {}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                date_filter["$gte"] = start_dt
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+        if end_date:
+            try:
+                # Add one day to include entire end date
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+                date_filter["$lt"] = end_dt
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        query["followup_date"] = date_filter
+
+    tasks = []
+    cursor = db["Tasks"].find(query)
+    async for task in cursor:
+        task["_id"] = str(task["_id"])
+        tasks.append(task)
+    return tasks
