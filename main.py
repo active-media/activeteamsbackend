@@ -831,7 +831,7 @@ async def create_task(task: TaskModel):
 # Retrieve all tasks
 # GET /tasks
 
-@app.get("/tasks")
+@app.get("/tasks", response_model=List[TaskModel])
 async def get_tasks(
     start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
@@ -857,8 +857,12 @@ async def get_tasks(
     tasks = []
     cursor = db["Tasks"].find(query)
     async for task in cursor:
-        task["_id"] = str(task["_id"])
-        tasks.append(task)
+        task["_id"] = str(task["_id"])  # stringify ObjectId
+        try:
+            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
+        except Exception as e:
+            print(f"Skipping invalid task: {e}, task={task}")
+
     return tasks
 
 @app.put("/tasks/{task_id}")
