@@ -3,24 +3,23 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel
+from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel , TaskUpdate
 from auth.utils import hash_password, verify_password, require_role, get_current_user, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 from datetime import datetime, time as time_type, timedelta
 import secrets
 from database import db, events_collection, people_collection, users_collection, Tasks_collection
 from auth.email_utils import send_reset_password_email
-from auth.models import EventCreate
-
 from typing import Optional, Literal, List
+from pymongo import ReturnDocument
 
 
-# from models import EventCreate
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,7 +60,7 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
-        # "role": "admin"  # default role; adjust as needed
+        "role": "user"  # default role; adjust as needed
     }
     await db["Users"].insert_one(user_dict)
     return {"message": "User created successfully"}
@@ -227,47 +226,34 @@ async def reset_password(data: ResetPasswordRequest):
 
 # EVENT ENDPOINTS
 # http://localhost:8000/event
-@app.post("/api/events")
-async def create_event(event: EventCreate):
+@app.post("/event", dependencies=[Depends(require_role("admin"))])
+async def create_event(event: Event):
     try:
-        print("✅ Event payload received in POST:", event)
-
-        new_event = event.dict()
-        print("Event dict:", new_event)
-        
-        # Optional: Validate 'date' field manually if needed
-        if new_event.get("date") is None and new_event.get("recurringDays"):
-            print("Recurring event, date is None, this is expected.")
-        elif new_event.get("date") is None:
-            raise ValueError("Date is required for non-recurring events.")
-        
-        new_event["_id"] = str(ObjectId())
-        new_event["attendees"] = []
-        new_event["total_attendance"] = 0
-        
-        result = await events_collection.insert_one(new_event)
-        print("Insert result:", result.inserted_id)
-        
-        return {"message": "Event created", "event": new_event}
+        event_data = event.dict()
+        event_data["date"] = datetime.fromisoformat(event_data["date"])
+        if "attendees" not in event_data:
+            event_data["attendees"] = []
+        result = await events_collection.insert_one(event_data)
+        return {"message": "Event created", "id": str(result.inserted_id)}
     except Exception as e:
-        print("Error creating event:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # http://localhost:8000/events
-@app.get("/events")
-async def get_all_events():
+@app.get("/events", dependencies=[Depends(require_role("registrant", "admin"))])
+async def get_all_events(current=Depends(get_current_user)):
     try:
         events = []
         cursor = events_collection.find()
         async for event in cursor:
             event["_id"] = str(event["_id"])
+            # Convert datetime objects to ISO strings for JSON serialization
             if "date" in event and isinstance(event["date"], datetime):
                 event["date"] = event["date"].isoformat()
             if "start_date" in event and isinstance(event["start_date"], datetime):
                 event["start_date"] = event["start_date"].isoformat()
             if "created_at" in event and isinstance(event["created_at"], datetime):
                 event["created_at"] = event["created_at"].isoformat()
+            
             event = sanitize_document(event)
             events.append(event)
         return {"events": events}
@@ -275,46 +261,37 @@ async def get_all_events():
         raise HTTPException(status_code=500, detail=str(e))
 
 # http://localhost:8000/events/type/{event_type}
-from fastapi import Path, HTTPException
-
-@app.get("/events/type/{event_type}")
-async def get_events_by_type(event_type: str = Path(...)):
+@app.get("/events/type/{event_type}", dependencies=[Depends(require_role("registrant", "admin"))])
+async def get_events_by_type(event_type: str = Path(...), current=Depends(get_current_user)):
     try:
-        print(f"Fetching events of type: {event_type}")
         events = []
-        cursor = events_collection.find({"eventType": event_type})
+        # Use "type" field to match your existing cell events structure
+        cursor = events_collection.find({"type": event_type})
         async for event in cursor:
-            print("Event found:", event)  # Log each event
             event["_id"] = str(event["_id"])
+            # Convert datetime objects to ISO strings for JSON serialization
             if "date" in event and isinstance(event["date"], datetime):
                 event["date"] = event["date"].isoformat()
             if "start_date" in event and isinstance(event["start_date"], datetime):
                 event["start_date"] = event["start_date"].isoformat()
             if "created_at" in event and isinstance(event["created_at"], datetime):
                 event["created_at"] = event["created_at"].isoformat()
+            
             event = sanitize_document(event)
             events.append(event)
         return {"events": events}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
 # http://localhost:8000/events/{event_id}
-@app.put("/events/{event_id}")
-async def update_event(event: EventCreate, event_id: str = Path(...), current=Depends(get_current_user)):
+@app.put("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
+async def update_event(event: Event, event_id: str = Path(...), current=Depends(get_current_user)):
     try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
-
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
         
         update_data = event.dict()
-        update_data.pop("_id", None)
-
         if "date" in update_data and isinstance(update_data["date"], str):
             update_data["date"] = datetime.fromisoformat(update_data["date"])
         
@@ -334,7 +311,6 @@ async def update_event(event: EventCreate, event_id: str = Path(...), current=De
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # http://localhost:8000/events/{event_id}
 @app.delete("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
@@ -884,3 +860,24 @@ async def get_tasks(
         task["_id"] = str(task["_id"])
         tasks.append(task)
     return tasks
+
+@app.put("/tasks/{task_id}")
+async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
+    if not ObjectId.is_valid(task_id):
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
+
+    result = await Tasks_collection.find_one_and_update(
+        {"_id": ObjectId(task_id)},
+        {"$set": updated_task},
+        return_document=True  # from pymongo import ReturnDocument
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Convert ObjectId to str before returning
+    result["_id"] = str(result["_id"])
+    return result
+

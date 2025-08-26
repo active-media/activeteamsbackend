@@ -147,3 +147,17 @@ class TaskModel(BaseModel):
     class Config:
         validate_by_name = True
         arbitrary_types_allowed = True
+
+
+class PersonInfo(BaseModel):
+    name: Optional[str]
+    phone: Optional[str]
+    email: Optional[str]
+
+class TaskUpdate(BaseModel):
+    name: Optional[str]
+    taskType: Optional[str]
+    contacted_person: Optional[PersonInfo]
+    followup_date: Optional[str]
+    status: Optional[str]
+    type: Optional[str]
