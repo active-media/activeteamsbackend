@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, EmailStr, field_validator, Field
-from typing import Optional, Literal, List
-from datetime import datetime
-from fastapi.exceptions import RequestValidationError
-from bson import ObjectId
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+
+from pydantic import BaseModel, Field, EmailStr, field_validator
+
+from typing import Optional, List, Literal
+from datetime import datetime
+from bson import ObjectId
 
 
 app = FastAPI()
@@ -27,6 +29,9 @@ class UserLogin(BaseModel):
     password: str
 
 # ===== Event Models =====
+
+
+
 class EventBase(BaseModel):
     eventType: str
     eventName: str
@@ -36,12 +41,13 @@ class EventBase(BaseModel):
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: Optional[bool] = False
-    price: Optional[float] = 0.0
+    isTicketed: bool = False
+    price: float = 0.0
 
 class EventCreate(EventBase):
-    # No need to redefine fields unless overriding defaults
-    pass # override default None with empty list
+    """Schema for creating events (inherits from EventBase)."""
+    pass
+
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
