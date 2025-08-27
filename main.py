@@ -240,13 +240,18 @@ async def reset_password(data: ResetPasswordRequest):
     return {"message": "Password has been reset successfully."}
 
 # EVENT ENDPOINTS
+
+# -------------------------
+# EVENT ENDPOINTS
+# -------------------------
+
 # http://localhost:8000/event
 @app.post("/event")
 async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
         
-        # Existing date handling...
+        # Date handling
         if "date" in event_data and isinstance(event_data["date"], str):
             try:
                 event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
@@ -255,15 +260,20 @@ async def create_event(event: EventCreate):
         elif "date" not in event_data or not event_data["date"]:
             event_data["date"] = datetime.utcnow()
         
-        # Ensure attendees field exists
+        # Ensure attendees and total_attendance
         event_data.setdefault("attendees", [])
         event_data.setdefault("total_attendance", len(event_data["attendees"]))
         
         # Add creation timestamp
         event_data["created_at"] = datetime.utcnow()
+        event_data["updated_at"] = datetime.utcnow()
         
-        # ✅ Add status field
-        event_data["status"] = "open"  # default when event is created
+        # Add status
+        event_data["status"] = "open"
+        
+        # Add ticket info
+        event_data["isTicketed"] = getattr(event, "isTicketed", False)
+        event_data["price"] = getattr(event, "price", None)
         
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
@@ -279,35 +289,30 @@ async def create_event(event: EventCreate):
 async def get_all_events():
     try:
         events = []
-        cursor = events_collection.find()
+        cursor = events_collection.find().sort("created_at", -1)
         async for event in cursor:
             event["_id"] = str(event["_id"])
-            
-            # Convert datetime objects to ISO strings for JSON serialization
             event = convert_datetime_to_iso(event)
-            
-            # Sanitize the document
             event = sanitize_document(event)
             events.append(event)
-            
         return {"events": events}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
+
 
 # http://localhost:8000/events/type/{event_type}
 @app.get("/events/type/{event_type}")
 async def get_events_by_type(event_type: str = Path(...)):
     try:
         events = []
-        # Use "type" field to match your existing cell events structure
-        cursor = events_collection.find({"eventType": event_type})
+        cursor = events_collection.find({
+            "eventType": event_type,
+            "status": "open"
+        }).sort("created_at", -1)
+        
         async for event in cursor:
             event["_id"] = str(event["_id"])
-            
-            # Convert datetime objects to ISO strings for JSON serialization
             event = convert_datetime_to_iso(event)
-            
-            # Sanitize the document
             event = sanitize_document(event)
             events.append(event)
             
@@ -315,11 +320,11 @@ async def get_events_by_type(event_type: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving events by type: {str(e)}")
 
+
 # http://localhost:8000/events/{event_id}
 @app.get("/events/{event_id}")
 async def get_event_by_id(event_id: str = Path(...)):
     try:
-        # Validate ObjectId format
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
             
@@ -328,11 +333,7 @@ async def get_event_by_id(event_id: str = Path(...)):
             raise HTTPException(status_code=404, detail="Event not found")
         
         event["_id"] = str(event["_id"])
-        
-        # Convert datetime objects to ISO strings
         event = convert_datetime_to_iso(event)
-        
-        # Sanitize the document
         event = sanitize_document(event)
         
         return event
@@ -341,11 +342,11 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
+
 # http://localhost:8000/events/{event_id}
 @app.put("/events/{event_id}")
 async def update_event(event: EventCreate, event_id: str = Path(...)):
     try:
-        # Validate ObjectId format
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
             
@@ -355,14 +356,18 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
         
         update_data = event.dict(exclude_unset=True)
         
-        # Handle date conversion more safely
         if "date" in update_data and isinstance(update_data["date"], str):
             try:
                 update_data["date"] = datetime.fromisoformat(update_data["date"].replace("Z", "+00:00"))
             except ValueError:
                 update_data["date"] = datetime.fromisoformat(update_data["date"])
         
-        # Add update timestamp
+        # Handle ticket info
+        if "isTicketed" in update_data:
+            update_data["isTicketed"] = update_data["isTicketed"]
+        if "price" in update_data:
+            update_data["price"] = update_data["price"]
+        
         update_data["updated_at"] = datetime.utcnow()
         
         result = await events_collection.update_one(
@@ -381,11 +386,24 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
+
+# Close event
+@app.patch("/allevents/{event_id}")
+async def close_event(event_id: str = Path(...), attendees: list = None, did_not_meet: bool = False):
+    try:
+        update_data = {"status": "closed", "updated_at": datetime.utcnow()}
+        if attendees:
+            update_data["attendees"] = attendees
+        await events_collection.update_one({"_id": ObjectId(event_id)}, {"$set": update_data})
+        return {"message": "Event closed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
+
+
 # http://localhost:8000/events/{event_id}
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
-        # Validate ObjectId format
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
             
@@ -402,7 +420,53 @@ async def delete_event(event_id: str = Path(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
-    
+
+
+@app.get("/cells/upcoming")
+async def get_upcoming_cells():
+    try:
+        now_utc = datetime.utcnow()
+        
+        # Calculate "show from" datetime for each day
+        # 11 PM previous day SAST -> 21:00 UTC
+        show_from_utc = now_utc.replace(hour=21, minute=0, second=0, microsecond=0)
+        if now_utc.hour < 21:
+            show_from_utc -= timedelta(days=1)
+
+        one_week_later = now_utc + timedelta(days=7)
+
+        cells = []
+        cursor = events_collection.find({
+            "type": "cell",
+            "status": "open"
+        }).sort("created_at", -1)
+
+        async for event in cursor:
+            start_date = event.get("start_date")
+            if isinstance(start_date, str):
+                start_date = datetime.fromisoformat(start_date)
+
+            # Only consider the next occurrence for recurring cells
+            next_occurrence = start_date
+            if event.get("recurring") and event.get("recurring_day") is not None:
+                next_occurrence = get_next_occurrence_single(start_date, event.get("recurring_day"))
+
+            # Only show if next occurrence is within the next week and after "show from"
+            if next_occurrence <= one_week_later and next_occurrence >= show_from_utc:
+                event["_id"] = str(event["_id"])
+                event["next_occurrence"] = next_occurrence.isoformat()
+                event = sanitize_document(convert_datetime_to_iso(event))
+                cells.append(event)
+
+        return {"cells": cells}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving upcoming cells: {str(e)}")
+
+
+
+
+
 # -------------------------
 # Check-in (no auth required)
 # -------------------------
