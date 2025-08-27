@@ -245,33 +245,34 @@ async def reset_password(data: ResetPasswordRequest):
 async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
-        # Handle date conversion more safely
+        
+        # Existing date handling...
         if "date" in event_data and isinstance(event_data["date"], str):
             try:
                 event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
             except ValueError:
-                # Try parsing as ISO format without timezone
                 event_data["date"] = datetime.fromisoformat(event_data["date"])
         elif "date" not in event_data or not event_data["date"]:
             event_data["date"] = datetime.utcnow()
-            
+        
         # Ensure attendees field exists
-        if "attendees" not in event_data:
-            event_data["attendees"] = []
-            
-        # Initialize total_attendance if not present
-        if "total_attendance" not in event_data:
-            event_data["total_attendance"] = len(event_data["attendees"])
-            
+        event_data.setdefault("attendees", [])
+        event_data.setdefault("total_attendance", len(event_data["attendees"]))
+        
         # Add creation timestamp
         event_data["created_at"] = datetime.utcnow()
         
+        # ✅ Add status field
+        event_data["status"] = "open"  # default when event is created
+        
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
+    
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+
 
 # http://localhost:8000/events
 @app.get("/events")
