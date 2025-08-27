@@ -569,11 +569,16 @@ async def get_people(
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
-            query["DateOfBirth"] = dob
+            query["Birthday"] = dob  # map to DB field
         if location:
-            query["Location"] = {"$regex": location, "$options": "i"}
+            query["Address"] = {"$regex": location, "$options": "i"}
         if leader:
-            query["Leader"] = {"$regex": leader, "$options": "i"}
+            # Match any of the leader fields
+            query["$or"] = [
+                {"Leader @12": {"$regex": leader, "$options": "i"}},
+                {"Leader @144": {"$regex": leader, "$options": "i"}},
+                {"Leader @ 1728": {"$regex": leader, "$options": "i"}}
+            ]
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
@@ -581,8 +586,25 @@ async def get_people(
         people_list = []
         async for person in cursor:
             person["_id"] = str(person["_id"])
-            person = sanitize_document(person)
-            people_list.append(person)
+            # 🔹 normalize fields
+            mapped = {
+                "_id": person["_id"],
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Phone": person.get("Number", ""),
+                "Email": person.get("Email", ""),
+                "Location": person.get("Address", ""),
+                "Gender": person.get("Gender", ""),
+                "DateOfBirth": person.get("Birthday", ""),
+                "Leader": (
+                    person.get("Leader @12")
+                    or person.get("Leader @144")
+                    or person.get("Leader @ 1728")
+                    or ""
+                ),
+                "Stage": person.get("Stage", "Win"),
+            }
+            people_list.append(mapped)
 
         total_count = await people_collection.count_documents(query)
         return {
@@ -594,6 +616,7 @@ async def get_people(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/people/search")
 async def search_people(name: str = Query(..., min_length=1)):
     try:
@@ -601,11 +624,11 @@ async def search_people(name: str = Query(..., min_length=1)):
         people = []
         async for p in cursor:
             p["_id"] = str(p["_id"])
-            p = sanitize_document(p)
-            people.append({"_id": p["_id"], "Name": p["Name"]})
+            people.append({"_id": p["_id"], "Name": p.get("Name", "")})
         return {"results": people}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
@@ -614,10 +637,27 @@ async def get_person_by_id(person_id: str = Path(...)):
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
         person["_id"] = str(person["_id"])
-        person = sanitize_document(person)
-        return person
+        mapped = {
+            "_id": person["_id"],
+            "Name": person.get("Name", ""),
+            "Surname": person.get("Surname", ""),
+            "Phone": person.get("Number", ""),
+            "Email": person.get("Email", ""),
+            "Location": person.get("Address", ""),
+            "Gender": person.get("Gender", ""),
+            "DateOfBirth": person.get("Birthday", ""),
+            "Leader": (
+                person.get("Leader @12")
+                or person.get("Leader @144")
+                or person.get("Leader @ 1728")
+                or ""
+            ),
+            "Stage": person.get("Stage", "Win"),
+        }
+        return mapped
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/people")
 async def create_or_update_person(person_data: dict = Body(...)):
@@ -638,8 +678,8 @@ async def create_or_update_person(person_data: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.delete("/people/{person_id}")
-@app.delete("/person/{person_id}")
 async def delete_person(person_id: str = Path(...)):
     try:
         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
