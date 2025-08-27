@@ -167,3 +167,22 @@ class TaskUpdate(BaseModel):
     followup_date: Optional[str]
     status: Optional[str]
     type: Optional[str]
+
+    # Adding new Person in the Event screen
+class Person(BaseModel):
+    invitedBy: str
+    name: str
+    surname: str
+    gender: str
+    email: str
+    mobile: str
+    dob: str
+    address: str
+    leaders: list[str]
+
+@app.post("/people")
+async def create_person(person: Person):
+    person_dict = person.dict()
+    result = await people_collection.insert_one(person_dict)
+    person_dict["_id"] = str(result.inserted_id)
+    return {"message": "Person created successfully", "person": person_dict}
