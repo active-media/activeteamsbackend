@@ -1,1 +1,9 @@
 uvicorn[standard]
+fastapi
+pydantic
+python-jose
+passlib[bcrypt]
+pymongo
+bson
+sendgrid
+python-dotenv
