@@ -32,13 +32,6 @@ class UserLogin(BaseModel):
 
 
 
-class CellEventCreate(BaseModel):
-    service_name: str
-    leader_id: str
-    start_date: datetime
-    start_time: str
-
-
 class EventBase(BaseModel):
     eventType: str
     eventName: str
@@ -54,26 +47,7 @@ class EventBase(BaseModel):
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
-    recurring: bool
-    recurring_day: Optional[
-        Literal[
-            "monday", "tuesday", "wednesday", "thursday",
-            "friday", "saturday", "sunday"
-        ]
-    ] = None
-    members: Optional[List[str]] = []
 
-    @field_validator("recurring_day", mode="before")
-    def normalize_day(cls, v):
-        if v:
-            return v.lower()
-        return v
-
-    def model_dump(self, **kwargs):
-        data = super().model_dump(**kwargs)
-        if data.get("recurring_day"):
-            data["recurring_day"] = data["recurring_day"].capitalize()
-        return data
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
