@@ -24,6 +24,9 @@ app.add_middleware(
 
 def sanitize_document(doc):
     """Recursively sanitize document to replace NaN/Infinity float values with None."""
+    if not isinstance(doc, dict):
+        return doc
+    
     for k, v in doc.items():
         if isinstance(v, float):
             if math.isnan(v) or math.isinf(v):
@@ -37,6 +40,22 @@ def sanitize_document(doc):
                 elif isinstance(v[i], float) and (math.isnan(v[i]) or math.isinf(v[i])):
                     v[i] = None
     return doc
+
+def convert_datetime_to_iso(obj):
+    """Convert datetime objects to ISO strings recursively."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, datetime):
+                obj[key] = value.isoformat()
+            elif isinstance(value, (dict, list)):
+                obj[key] = convert_datetime_to_iso(value)
+    elif isinstance(obj, list):
+        for i in range(len(obj)):
+            if isinstance(obj[i], datetime):
+                obj[i] = obj[i].isoformat()
+            elif isinstance(obj[i], (dict, list)):
+                obj[i] = convert_datetime_to_iso(obj[i])
+    return obj
 
 # SIGNUP AND LOGIN ENDPOINTS (kept for user management)
 # http://localhost:8000/signup
@@ -218,40 +237,55 @@ async def reset_password(data: ResetPasswordRequest):
     return {"message": "Password has been reset successfully."}
 
 # EVENT ENDPOINTS
+
+# -------------------------
+# EVENT ENDPOINTS
+# -------------------------
+
 # http://localhost:8000/event
 @app.post("/event")
 async def create_event(event: Event):
     try:
         event_data = event.dict()
-        event_data["date"] = datetime.fromisoformat(event_data["date"])
-        if "attendees" not in event_data:
-            event_data["attendees"] = []
+        
+        # Date handling
+        if "date" in event_data and isinstance(event_data["date"], str):
+            try:
+                event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
+            except ValueError:
+                event_data["date"] = datetime.fromisoformat(event_data["date"])
+        elif "date" not in event_data or not event_data["date"]:
+            event_data["date"] = datetime.utcnow()
+        
+        # Ensure attendees and total_attendance
+        event_data.setdefault("attendees", [])
+        event_data.setdefault("total_attendance", len(event_data["attendees"]))
+        
+        # Add creation timestamp
+        event_data["created_at"] = datetime.utcnow()
+        event_data["updated_at"] = datetime.utcnow()
+        
+        # Add status
+        event_data["status"] = "open"
+        
+        # Add ticket info
+        event_data["isTicketed"] = getattr(event, "isTicketed", False)
+        event_data["price"] = getattr(event, "price", None)
+        
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
+    
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
 # http://localhost:8000/events
 @app.get("/events")
 async def get_all_events():
     try:
         events = []
-        cursor = events_collection.find()
-        async for event in cursor:
-            event["_id"] = str(event["_id"])
-            # Convert datetime objects to ISO strings for JSON serialization
-            if "date" in event and isinstance(event["date"], datetime):
-                event["date"] = event["date"].isoformat()
-            if "start_date" in event and isinstance(event["start_date"], datetime):
-                event["start_date"] = event["start_date"].isoformat()
-            if "created_at" in event and isinstance(event["created_at"], datetime):
-                event["created_at"] = event["created_at"].isoformat()
-            
-            event = sanitize_document(event)
-            events.append(event)
-        return {"events": events}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)  
 
 # http://localhost:8000/events/type/{event_type}
 @app.get("/events/type/{event_type}")
@@ -262,31 +296,63 @@ async def get_events_by_type(event_type: str = Path(...)):
         cursor = events_collection.find({"type": event_type})
         async for event in cursor:
             event["_id"] = str(event["_id"])
-            # Convert datetime objects to ISO strings for JSON serialization
-            if "date" in event and isinstance(event["date"], datetime):
-                event["date"] = event["date"].isoformat()
-            if "start_date" in event and isinstance(event["start_date"], datetime):
-                event["start_date"] = event["start_date"].isoformat()
-            if "created_at" in event and isinstance(event["created_at"], datetime):
-                event["created_at"] = event["created_at"].isoformat()
-            
-            event = sanitize_document(event)
+            event = convert_datetime_to_iso(event)  
+            event = sanitize_document(event)        
             events.append(event)
+
         return {"events": events}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
+
+
+
 
 # http://localhost:8000/events/{event_id}
 @app.put("/events/{event_id}")
 async def update_event(event: Event, event_id: str = Path(...)):
     try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        event["_id"] = str(event["_id"])
+        event = convert_datetime_to_iso(event)
+        event = sanitize_document(event)
+        
+        return event
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
+
+
+# http://localhost:8000/events/{event_id}
+@app.put("/events/{event_id}")
+async def update_event(event: EventCreate, event_id: str = Path(...)):
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        update_data = event.dict()
+        update_data = event.dict(exclude_unset=True)
+        
         if "date" in update_data and isinstance(update_data["date"], str):
-            update_data["date"] = datetime.fromisoformat(update_data["date"])
+            try:
+                update_data["date"] = datetime.fromisoformat(update_data["date"].replace("Z", "+00:00"))
+            except ValueError:
+                update_data["date"] = datetime.fromisoformat(update_data["date"])
+        
+        # Handle ticket info
+        if "isTicketed" in update_data:
+            update_data["isTicketed"] = update_data["isTicketed"]
+        if "price" in update_data:
+            update_data["price"] = update_data["price"]
         
         update_data["updated_at"] = datetime.utcnow()
         
@@ -296,18 +362,37 @@ async def update_event(event: Event, event_id: str = Path(...)):
         )
         
         if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Event not found or no changes made")
+            return {"message": "No changes were made to the event"}
         
         return {"message": "Event updated successfully"}
     except HTTPException:
         raise
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
+
+
+# Close event
+@app.patch("/allevents/{event_id}")
+async def close_event(event_id: str = Path(...), attendees: list = None, did_not_meet: bool = False):
+    try:
+        update_data = {"status": "closed", "updated_at": datetime.utcnow()}
+        if attendees:
+            update_data["attendees"] = attendees
+        await events_collection.update_one({"_id": ObjectId(event_id)}, {"$set": update_data})
+        return {"message": "Event closed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
+
 
 # http://localhost:8000/events/{event_id}
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
@@ -320,8 +405,54 @@ async def delete_event(event_id: str = Path(...)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
+
+
+@app.get("/cells/upcoming")
+async def get_upcoming_cells():
+    try:
+        now_utc = datetime.utcnow()
+        
+        # Calculate "show from" datetime for each day
+        # 11 PM previous day SAST -> 21:00 UTC
+        show_from_utc = now_utc.replace(hour=21, minute=0, second=0, microsecond=0)
+        if now_utc.hour < 21:
+            show_from_utc -= timedelta(days=1)
+
+        one_week_later = now_utc + timedelta(days=7)
+
+        cells = []
+        cursor = events_collection.find({
+            "type": "cell",
+            "status": "open"
+        }).sort("created_at", -1)
+
+        async for event in cursor:
+            start_date = event.get("start_date")
+            if isinstance(start_date, str):
+                start_date = datetime.fromisoformat(start_date)
+
+            # Only consider the next occurrence for recurring cells
+            next_occurrence = start_date
+            if event.get("recurring") and event.get("recurring_day") is not None:
+                next_occurrence = get_next_occurrence_single(start_date, event.get("recurring_day"))
+
+            # Only show if next occurrence is within the next week and after "show from"
+            if next_occurrence <= one_week_later and next_occurrence >= show_from_utc:
+                event["_id"] = str(event["_id"])
+                event["next_occurrence"] = next_occurrence.isoformat()
+                event = sanitize_document(convert_datetime_to_iso(event))
+                cells.append(event)
+
+        return {"cells": cells}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving upcoming cells: {str(e)}")
+
+
+
+
+
 # -------------------------
 # Check-in (no auth required)
 # -------------------------
@@ -329,32 +460,52 @@ async def delete_event(event_id: str = Path(...)):
 @app.post("/checkin")
 async def check_in_person(checkin: CheckIn):
     try:
+        # Validate event ID format
+        if not ObjectId.is_valid(checkin.event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
         event = await events_collection.find_one({"_id": ObjectId(checkin.event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        person = await people_collection.find_one({"Name": {"$regex": f"^{checkin.name}$", "$options": "i"}})
+        # Validate person name is not empty
+        if not checkin.name or checkin.name.strip() == "":
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+
+        person = await people_collection.find_one({"Name": {"$regex": f"^{checkin.name.strip()}$", "$options": "i"}})
         if not person:
             raise HTTPException(status_code=400, detail="Person not found in people database")
 
-        already_checked = any(a.get("name", "").lower() == checkin.name.lower() for a in event.get("attendees", []))
+        # Check if person already checked in (case-insensitive)
+        already_checked = any(
+            a.get("name", "").lower() == checkin.name.strip().lower() 
+            for a in event.get("attendees", [])
+        )
         if already_checked:
             raise HTTPException(status_code=400, detail="Person already checked in")
 
         attendee_record = {
-            "name": checkin.name,
+            "name": checkin.name.strip(),
             "time": datetime.utcnow(),
         }
 
-        await events_collection.update_one(
+        # Update event with new attendee
+        result = await events_collection.update_one(
             {"_id": ObjectId(checkin.event_id)},
-            {"$push": {"attendees": attendee_record}, "$inc": {"total_attendance": 1}},
+            {
+                "$push": {"attendees": attendee_record}, 
+                "$inc": {"total_attendance": 1}
+            },
         )
-        return {"message": f"{checkin.name} checked in successfully."}
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to check in person")
+            
+        return {"message": f"{checkin.name.strip()} checked in successfully."}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error during check-in: {str(e)}")
 
 # -------------------------
 # View Check-ins
@@ -362,18 +513,30 @@ async def check_in_person(checkin: CheckIn):
 @app.get("/checkins/{event_id}")
 async def get_checkins(event_id: str):
     try:
+        # Validate event ID format
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        # Convert datetime objects in attendees to ISO strings
+        attendees = event.get("attendees", [])
+        for attendee in attendees:
+            if "time" in attendee and isinstance(attendee["time"], datetime):
+                attendee["time"] = attendee["time"].isoformat()
+
         return {
             "event_id": event_id,
-            "service_name": event.get("service_name"),
-            "attendees": event.get("attendees", []),
+            "service_name": event.get("service_name", ""),
+            "attendees": attendees,
             "total_attendance": event.get("total_attendance", 0),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error retrieving check-ins: {str(e)}")
 
 # -------------------------
 # Cell event creation and management
@@ -386,10 +549,14 @@ async def create_cell_event(payload: CellEventCreate):
             raise HTTPException(status_code=400, detail="recurring_day is required when recurring=True")
 
         start_dt = payload.start_date
-        parsed_time = parse_time_string(payload.start_time)
-        if parsed_time:
-            start_dt = datetime.combine(start_dt.date(), parsed_time)
+        
+        # Parse time if provided
+        if payload.start_time:
+            parsed_time = parse_time_string(payload.start_time)
+            if parsed_time:
+                start_dt = datetime.combine(start_dt.date(), parsed_time)
 
+        # Get cell name
         cell_name = await get_leader_cell_name_async(payload.leader_id)
 
         event_doc = {
@@ -402,7 +569,7 @@ async def create_cell_event(payload: CellEventCreate):
             "recurring_day": payload.recurring_day,
             "members": payload.members or [],
             "created_at": datetime.utcnow(),
-            "total_attendance": 0,
+            "total_attendance": len(payload.members) if payload.members else 0,
         }
 
         result = await events_collection.insert_one(event_doc)
@@ -410,7 +577,7 @@ async def create_cell_event(payload: CellEventCreate):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error creating cell event: {str(e)}")
 
 # Capturing people into cells
 # http://localhost:8000/events/{event_id}/checkin
@@ -424,28 +591,29 @@ async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesReque
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    # Check if member already checked in
-    members = event.get("members", [])
-    if any(m.get("id") == str(person["_id"]) for m in members):
-        raise HTTPException(status_code=400, detail="Person already checked in")
+        # Check if member already checked in
+        members = event.get("members", [])
+        if any(m.get("id") == str(person["_id"]) for m in members):
+            raise HTTPException(status_code=400, detail="Person already checked in")
 
-    member_obj = {
-        "id": str(person["_id"]),
-        "name": person["Name"],
-        "email": person.get("Email", ""),
-        "leader": person.get("Leader", ""),
-        "checkin_time": datetime.utcnow().isoformat(),
-    }
-
-    await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {
-            "$push": {"members": member_obj},
-            "$inc": {"total_attendance": 1}
+        member_obj = {
+            "id": str(person["_id"]),
+            "name": person["Name"],
+            "email": person.get("Email", ""),
+            "leader": person.get("Leader", ""),
+            "checkin_time": datetime.utcnow().isoformat(),
         }
-    )
 
-    return {"message": f"{person['Name']} checked in successfully to the cell event."}
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {
+                "$push": {"members": member_obj},
+                "$inc": {"total_attendance": 1}
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to check in member")
 
 # http://localhost:8000/events/{event_id}/uncheckin
 @app.post("/events/{event_id}/uncheckin")
@@ -458,20 +626,29 @@ async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest):
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    update_result = await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {"$pull": {"members": {"id": str(person["_id"])}}},
-    )
+        person = await people_collection.find_one({"Name": {"$regex": f"^{data.name.strip()}$", "$options": "i"}})
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    if update_result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Person not found in this cell event")
+        update_result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$pull": {"members": {"id": str(person["_id"])}}},
+        )
 
-    await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {"$inc": {"total_attendance": -1}}
-    )
+        if update_result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found in this cell event")
 
-    return {"message": f"{person['Name']} has been removed from the cell event."}
+        # Decrement attendance count
+        await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$inc": {"total_attendance": -1}}
+        )
+
+        return {"message": f"{person['Name']} has been removed from the cell event."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error removing member: {str(e)}")
 
 @app.get("/events/cell")
 # http://localhost:8000/events/cell
@@ -509,20 +686,31 @@ async def list_cell_events():
             })
         return {"results": results}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error listing cell events: {str(e)}")
 
 # Removing people from cell
 # http://localhost:8000/events/cell/{event_id}/members/{member_id}
 @app.delete("/events/cell/{event_id}/members/{member_id}")
 async def remove_member_from_cell(event_id: str, member_id: str):
     try:
+        # Validate event ID format
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
         event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
         if not event:
             raise HTTPException(status_code=404, detail="Cell event not found")
 
         update_result = await events_collection.update_one({"_id": ObjectId(event_id)}, {"$pull": {"members": member_id}})
         if update_result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Member not found on event")
+            raise HTTPException(status_code=404, detail="Member not found in event")
+            
+        # Decrement attendance count
+        await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$inc": {"total_attendance": -1}}
+        )
+        
         return {"message": "Member removed"}
     except HTTPException:
         raise
@@ -533,19 +721,29 @@ async def remove_member_from_cell(event_id: str, member_id: str):
 @app.post("/uncapture")
 async def uncapture_person(data: UncaptureRequest):
     try:
+        # Validate event ID format
+        if not ObjectId.is_valid(data.event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
+        # Validate name
+        if not data.name or data.name.strip() == "":
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+            
         update_result = await events_collection.update_one(
             {"_id": ObjectId(data.event_id)},
             {
-                "$pull": {"attendees": {"name": data.name}},
+                "$pull": {"attendees": {"name": {"$regex": f"^{data.name.strip()}$", "$options": "i"}}},
                 "$inc": {"total_attendance": -1}
             }
         )
         if update_result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found or already removed")
 
-        return {"message": f"{data.name} removed from check-ins."}
+        return {"message": f"{data.name.strip()} removed from check-ins."}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error uncapturing person: {str(e)}")
 
 # PEOPLE ENDPOINTS
 # http://localhost:8000/people?page=1&perPage=10
@@ -582,8 +780,8 @@ async def get_people(
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
+        people = []
         cursor = people_collection.find(query).skip(skip).limit(perPage)
-        people_list = []
         async for person in cursor:
             person["_id"] = str(person["_id"])
             # 🔹 normalize fields
@@ -606,13 +804,14 @@ async def get_people(
             }
             people_list.append(mapped)
 
-        total_count = await people_collection.count_documents(query)
+        total = await people_collection.count_documents(query)
         return {
+            "people": people,
+            "total": total,
             "page": page,
-            "perPage": perPage,
-            "total": total_count,
-            "results": people_list
+            "perPage": perPage
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
