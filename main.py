@@ -627,20 +627,20 @@ async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest):
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
-            person = await people_collection.find_one({"Name": {"$regex": f"^{data.name.strip()}$", "$options": "i"}})
-            if not person:
-                raise HTTPException(status_code=404, detail="Person not found")
+        person = await people_collection.find_one({"Name": {"$regex": f"^{data.name.strip()}$", "$options": "i"}})
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-            update_result = await events_collection.update_one(
+        update_result = await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {"$pull": {"members": {"id": str(person["_id"])}}},
             )
 
-            if update_result.modified_count == 0:
+        if update_result.modified_count == 0:
                 raise HTTPException(status_code=404, detail="Person not found in this cell event")
 
             # Decrement attendance count
-            await events_collection.update_one(
+        await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {"$inc": {"total_attendance": -1}}
             )
