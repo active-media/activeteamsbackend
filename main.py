@@ -6,20 +6,26 @@ from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
 
-# Import your models
+# -------------------------
+# Models
+# -------------------------
 from auth.models import (
     Person, TaskModel, TaskUpdate, UserCreate, UserLogin,
     CheckIn, UncaptureRequest, CellEventCreate,
     AddMemberNamesRequest, RemoveMemberRequest
 )
 
-# Import collections from database.py
+# -------------------------
+# Database
+# -------------------------
 from database import (
     users_collection, events_collection, tasks_collection,
     people_collection, cells_collection
 )
 
-# Import utils
+# -------------------------
+# Utils
+# -------------------------
 from utils import verify_password, hash_password, get_current_user, require_role
 
 # -------------------------
@@ -35,10 +41,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
         for err in exc.errors()
     ]
-    return JSONResponse(
-        status_code=422,
-        content={"errors": formatted}
-    )
+    return JSONResponse(status_code=422, content={"errors": formatted})
 
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
@@ -120,6 +123,13 @@ async def get_tasks_by_member(member_id: str):
         tasks.append(t)
     return {"tasks": tasks}
 
+@app.post("/tasks", dependencies=[Depends(require_role("admin"))])
+async def create_task(task: TaskModel):
+    task_dict = task.dict()
+    result = await tasks_collection.insert_one(task_dict)
+    task_dict["_id"] = str(result.inserted_id)
+    return {"message": "Task created successfully", "task": task_dict}
+
 @app.patch("/tasks/{task_id}", dependencies=[Depends(require_role("admin"))])
 async def update_task(task_id: str, update: TaskUpdate):
     task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
@@ -172,6 +182,28 @@ async def filter_events(
         e["_id"] = str(e["_id"])
         events.append(e)
     return {"events": events}
+
+@app.post("/events", dependencies=[Depends(require_role("admin"))])
+async def create_event(event: CellEventCreate):
+    event_dict = event.dict()
+    result = await events_collection.insert_one(event_dict)
+    event_dict["_id"] = str(result.inserted_id)
+    return {"message": "Event created successfully", "event": event_dict}
+
+@app.patch("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
+async def update_event(event_id: str, update: dict = Body(...)):
+    event = await events_collection.find_one({"_id": ObjectId(event_id)})
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    await events_collection.update_one({"_id": ObjectId(event_id)}, {"$set": update})
+    return {"message": "Event updated successfully"}
+
+@app.delete("/events/{event_id}", dependencies=[Depends(require_role("admin"))])
+async def delete_event(event_id: str):
+    result = await events_collection.delete_one({"_id": ObjectId(event_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return {"message": "Event deleted successfully"}
 
 # -------------------------
 # Check-in / Uncapture Endpoints
