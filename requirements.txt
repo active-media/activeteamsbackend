@@ -8,3 +8,4 @@ bson
 sendgrid
 python-dotenv
 pydantic[email]
+motor
