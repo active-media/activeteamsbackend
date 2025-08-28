@@ -549,10 +549,11 @@ async def uncapture_person(data: UncaptureRequest):
 
 # PEOPLE ENDPOINTS
 # http://localhost:8000/people?page=1&perPage=10
+# http://localhost:8000/people?page=1&perPage=10
 @app.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
-    perPage: int = Query(100, ge=1, le=500),
+    perPage: int = Query(100, ge=0),  # allow 0 = fetch all
     name: str = None,
     gender: str = None,
     dob: str = None,
@@ -561,7 +562,6 @@ async def get_people(
     stage: str = None
 ):
     try:
-        skip = (page - 1) * perPage
         query = {}
 
         if name:
@@ -573,7 +573,6 @@ async def get_people(
         if location:
             query["Address"] = {"$regex": location, "$options": "i"}
         if leader:
-            # Match any of the leader fields
             query["$or"] = [
                 {"Leader @12": {"$regex": leader, "$options": "i"}},
                 {"Leader @144": {"$regex": leader, "$options": "i"}},
@@ -582,11 +581,16 @@ async def get_people(
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
-        cursor = people_collection.find(query).skip(skip).limit(perPage)
+        # ✅ Pagination OR Fetch All
+        if perPage == 0:  
+            cursor = people_collection.find(query)  # fetch all
+        else:
+            skip = (page - 1) * perPage
+            cursor = people_collection.find(query).skip(skip).limit(perPage)
+
         people_list = []
         async for person in cursor:
             person["_id"] = str(person["_id"])
-            # 🔹 normalize fields
             mapped = {
                 "_id": person["_id"],
                 "Name": person.get("Name", ""),
@@ -613,19 +617,6 @@ async def get_people(
             "total": total_count,
             "results": people_list
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/people/search")
-async def search_people(name: str = Query(..., min_length=1)):
-    try:
-        cursor = people_collection.find({"Name": {"$regex": name, "$options": "i"}})
-        people = []
-        async for p in cursor:
-            p["_id"] = str(p["_id"])
-            people.append({"_id": p["_id"], "Name": p.get("Name", "")})
-        return {"results": people}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
