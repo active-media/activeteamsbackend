@@ -22,6 +22,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+def _utcnow():
+    return datetime.now(timezone.utc)
 def sanitize_document(doc):
     """Recursively sanitize document to replace NaN/Infinity float values with None."""
     for k, v in doc.items():

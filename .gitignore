@@ -4,6 +4,7 @@ npm-debug.log*
 
 # Python virtual environment
 venv/
+.venv/
 env/
 .env
 __pycache__/
