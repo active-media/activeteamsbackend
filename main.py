@@ -284,27 +284,11 @@ async def create_event(event: EventCreate):
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
 
-# http://localhost:8000/events
-@app.get("/events")
-async def get_all_events():
-    try:
-        events = []
-        cursor = events_collection.find().sort("created_at", -1)
-        async for event in cursor:
-            event["_id"] = str(event["_id"])
-            event = convert_datetime_to_iso(event)
-            event = sanitize_document(event)
-            events.append(event)
-        return {"events": events}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
-
-
 @app.get("/events")
 async def get_events():
     try:
         events = []
-        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)  # 👈 fetch open events, newest first
+        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)  
 
         async for event in cursor:
             event["_id"] = str(event["_id"])
@@ -315,6 +299,7 @@ async def get_events():
         return {"events": events}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
+
 
 
 
