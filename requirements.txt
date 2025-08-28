@@ -1,5 +1,5 @@
 # Core FastAPI stack
-fastapi==0.116.1
+fastapi[all]==0.101.1
 uvicorn[standard]==0.35.0
 starlette==0.47.3
 werkzeug==3.1.3

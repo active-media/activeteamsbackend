@@ -1,4 +1,5 @@
 # main.py
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, Request, Depends, Body, Query
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -6,6 +7,20 @@ from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
 
+
+origins = [
+    "https://activeteams.netlify.app",  # your frontend
+    "http://localhost:5173",             # local dev (Vite default)
+]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,        # can be ["*"] for testing, but not recommended in prod
+    allow_credentials=True,
+    allow_methods=["*"],          # GET, POST, PUT, DELETE, etc
+    allow_headers=["*"],          # Accepts all headers
+)
 # -------------------------
 # Models
 # -------------------------
