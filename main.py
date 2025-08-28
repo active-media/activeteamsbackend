@@ -283,7 +283,7 @@ async def create_event(event: Event):
 # http://localhost:8000/events
 @app.get("/events")
 async def get_all_events():
-    try:
+
         events = []
         cursor = events_collection.find({"status": "open"}).sort("created_at", -1)  
 
@@ -619,34 +619,34 @@ async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesReque
 @app.post("/events/{event_id}/uncheckin")
 async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest):
     event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
-    if not event:
-        raise HTTPException(status_code=404, detail="Cell event not found")
+    try:
+        if not event:
+            raise HTTPException(status_code=404, detail="Cell event not found")
 
-    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-        person = await people_collection.find_one({"Name": {"$regex": f"^{data.name.strip()}$", "$options": "i"}})
+        person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
-        update_result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
-            {"$pull": {"members": {"id": str(person["_id"])}}},
-        )
+            person = await people_collection.find_one({"Name": {"$regex": f"^{data.name.strip()}$", "$options": "i"}})
+            if not person:
+                raise HTTPException(status_code=404, detail="Person not found")
 
-        if update_result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found in this cell event")
+            update_result = await events_collection.update_one(
+                {"_id": ObjectId(event_id)},
+                {"$pull": {"members": {"id": str(person["_id"])}}},
+            )
 
-        # Decrement attendance count
-        await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
-            {"$inc": {"total_attendance": -1}}
-        )
+            if update_result.modified_count == 0:
+                raise HTTPException(status_code=404, detail="Person not found in this cell event")
+
+            # Decrement attendance count
+            await events_collection.update_one(
+                {"_id": ObjectId(event_id)},
+                {"$inc": {"total_attendance": -1}}
+            )
 
         return {"message": f"{person['Name']} has been removed from the cell event."}
-    except HTTPException:
-        raise
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error removing member: {str(e)}")
 
