@@ -7,3 +7,4 @@ pymongo
 bson
 sendgrid
 python-dotenv
+pydantic[email]
