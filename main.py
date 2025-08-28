@@ -20,7 +20,7 @@ from auth.models import (
 # -------------------------
 from database import (
     users_collection, events_collection, tasks_collection,
-    people_collection, cells_collection
+    people_collection
 )
 
 # -------------------------
@@ -241,26 +241,26 @@ async def uncapture_person(request: UncaptureRequest):
 @app.post("/cells", dependencies=[Depends(require_role("admin"))])
 async def create_cell_event(cell: CellEventCreate):
     cell_dict = cell.dict()
-    result = await cells_collection.insert_one(cell_dict)
+    result = await events_collection.insert_one(cell_dict)
     cell_dict["_id"] = str(result.inserted_id)
     return {"message": "Cell event created", "cell": cell_dict}
 
 @app.post("/cells/{cell_id}/add_member", dependencies=[Depends(require_role("admin"))])
 async def add_member(cell_id: str, member: AddMemberNamesRequest):
-    cell = await cells_collection.find_one({"_id": ObjectId(cell_id)})
+    cell = await events_collection.find_one({"_id": ObjectId(cell_id)})
     if not cell:
         raise HTTPException(status_code=404, detail="Cell not found")
     members = cell.get("members", [])
     if member.name not in members:
         members.append(member.name)
-        await cells_collection.update_one({"_id": ObjectId(cell_id)}, {"$set": {"members": members}})
+        await events_collection.update_one({"_id": ObjectId(cell_id)}, {"$set": {"members": members}})
     return {"message": f"{member.name} added to cell"}
 
 @app.post("/cells/{cell_id}/remove_member", dependencies=[Depends(require_role("admin"))])
 async def remove_member(cell_id: str, member: RemoveMemberRequest):
-    cell = await cells_collection.find_one({"_id": ObjectId(cell_id)})
+    cell = await events_collection.find_one({"_id": ObjectId(cell_id)})
     if not cell:
         raise HTTPException(status_code=404, detail="Cell not found")
     members = [m for m in cell.get("members", []) if m != member.name]
-    await cells_collection.update_one({"_id": ObjectId(cell_id)}, {"$set": {"members": members}})
+    await events_collection.update_one({"_id": ObjectId(cell_id)}, {"$set": {"members": members}})
     return {"message": f"{member.name} removed from cell"}
