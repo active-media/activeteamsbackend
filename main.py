@@ -300,25 +300,22 @@ async def get_all_events():
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
 
 
-# http://localhost:8000/events/type/{event_type}
-@app.get("/events/type/{event_type}")
-async def get_events_by_type(event_type: str = Path(...)):
+@app.get("/events")
+async def get_events():
     try:
         events = []
-        cursor = events_collection.find({
-            "eventType": event_type,
-            "status": "open"
-        }).sort("created_at", -1)
-        
+        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)  # 👈 fetch open events, newest first
+
         async for event in cursor:
             event["_id"] = str(event["_id"])
-            event = convert_datetime_to_iso(event)
-            event = sanitize_document(event)
+            event = convert_datetime_to_iso(event)  
+            event = sanitize_document(event)        
             events.append(event)
-            
+
         return {"events": events}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving events by type: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
+
 
 
 # http://localhost:8000/events/{event_id}
