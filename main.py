@@ -624,7 +624,7 @@ async def uncapture_person(data: UncaptureRequest):
 
 # PEOPLE ENDPOINTS
 # http://localhost:8000/people?page=1&perPage=10
-@app.get("/people", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
     perPage: int = Query(100, ge=1, le=500),
@@ -669,7 +669,7 @@ async def get_people(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/search", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people/search")
 async def search_people(name: str = Query(..., min_length=1)):
     try:
         cursor = people_collection.find({"Name": {"$regex": name, "$options": "i"}})
@@ -682,7 +682,7 @@ async def search_people(name: str = Query(..., min_length=1)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/{person_id}", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
     try:
         person = await people_collection.find_one({"_id": ObjectId(person_id)})
@@ -694,7 +694,7 @@ async def get_person_by_id(person_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/people", dependencies=[Depends(require_role("registrant", "admin"))])
+@app.post("/people")
 async def create_or_update_person(person_data: dict = Body(...)):
     try:
         if "_id" in person_data:  # Update existing person
@@ -713,8 +713,8 @@ async def create_or_update_person(person_data: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/people/{person_id}", dependencies=[Depends(require_role("registrant", "admin"))])
-@app.delete("/person/{person_id}", dependencies=[Depends(require_role("registrant", "admin"))])
+@app.delete("/people/{person_id}")
+@app.delete("/person/{person_id}")
 async def delete_person(person_id: str = Path(...)):
     try:
         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
