@@ -81,14 +81,14 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 # -------------------------
 # People Endpoints
 # -------------------------
-@app.post("/people", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.post("/people")
 async def create_person(person: Person):
     person_dict = person.dict()
     result = await people_collection.insert_one(person_dict)
     person_dict["_id"] = str(result.inserted_id)
     return {"message": "Person created successfully", "person": person_dict}
 
-@app.get("/people/{person_id}", dependencies=[Depends(require_role("admin", "registrant"))])
+@app.get("/people/{person_id}")
 async def get_person(person_id: str):
     if not ObjectId.is_valid(person_id):
         raise HTTPException(status_code=400, detail="Invalid person ID format")
@@ -97,6 +97,25 @@ async def get_person(person_id: str):
         raise HTTPException(status_code=404, detail="Person not found")
     person["_id"] = str(person["_id"])
     return person
+
+@app.get("/people")
+async def list_people(name: Optional[str] = None, perPage: int = 100):
+    query = {}
+    if name:
+        # case-insensitive search for Name or Surname
+        query["$or"] = [
+            {"Name": {"$regex": name, "$options": "i"}},
+            {"Surname": {"$regex": name, "$options": "i"}}
+        ]
+
+    cursor = people_collection.find(query).limit(perPage)
+    people = []
+    async for person in cursor:
+        person["_id"] = str(person["_id"])
+        people.append(person)
+
+    return {"people": people}
+
 
 @app.patch("/people/{person_id}", dependencies=[Depends(require_role("admin"))])
 async def update_person(person_id: str, update: dict = Body(...)):
@@ -168,48 +187,47 @@ async def delete_task(task_id: str):
 # -------------------------
 # Event Endpoints
 # -------------------------
-@app.post("/event")
+# -------------------------
+# Event Endpoints
+# -------------------------
+@app.post("/events")
 async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
-        
-        # Date handling
-        if "date" in event_data and isinstance(event_data["date"], str):
-            try:
-                event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
-            except ValueError:
-                event_data["date"] = datetime.fromisoformat(event_data["date"])
-        elif "date" not in event_data or not event_data["date"]:
+
+        # Parse date
+        if "date" in event_data and event_data["date"]:
+            if isinstance(event_data["date"], str):
+                try:
+                    event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid date format")
+        else:
             event_data["date"] = datetime.utcnow()
-        
-        # Ensure attendees and total_attendance
+
+        # Defaults
         event_data.setdefault("attendees", [])
-        event_data.setdefault("total_attendance", len(event_data["attendees"]))
-        
-        # Add creation timestamp
+        event_data["total_attendance"] = len(event_data["attendees"])
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
-        
-        # Add status
         event_data["status"] = "open"
-        
-        # Add ticket info
         event_data["isTicketed"] = getattr(event, "isTicketed", False)
         event_data["price"] = getattr(event, "price", None)
-        
+
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
-    
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+
 
 @app.get("/events")
 async def get_events():
     try:
         events = []
-        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)  # fetch open events, newest first
+        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)
 
         async for event in cursor:
             event["_id"] = str(event["_id"])
@@ -220,6 +238,7 @@ async def get_events():
         return {"events": events}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
+
 
 @app.get("/events/{event_id}")
 async def get_event_by_id(event_id: str = Path(...)):
@@ -314,6 +333,8 @@ async def delete_event(event_id: str = Path(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
+
+
 
 @app.get("/cells/upcoming")
 async def get_upcoming_cells():
