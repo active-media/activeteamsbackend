@@ -549,7 +549,6 @@ async def uncapture_person(data: UncaptureRequest):
 
 # PEOPLE ENDPOINTS
 # http://localhost:8000/people?page=1&perPage=10
-# http://localhost:8000/people?page=1&perPage=10
 @app.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
@@ -569,7 +568,7 @@ async def get_people(
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
-            query["Birthday"] = dob  # map to DB field
+            query["Birthday"] = dob
         if location:
             query["Address"] = {"$regex": location, "$options": "i"}
         if leader:
@@ -581,9 +580,9 @@ async def get_people(
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
-        # ✅ Pagination OR Fetch All
-        if perPage == 0:  
-            cursor = people_collection.find(query)  # fetch all
+        # Pagination or fetch all
+        if perPage == 0:
+            cursor = people_collection.find(query)
         else:
             skip = (page - 1) * perPage
             cursor = people_collection.find(query).skip(skip).limit(perPage)
@@ -607,6 +606,7 @@ async def get_people(
                     or ""
                 ),
                 "Stage": person.get("Stage", "Win"),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat()
             }
             people_list.append(mapped)
 
@@ -619,7 +619,6 @@ async def get_people(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
@@ -644,49 +643,29 @@ async def get_person_by_id(person_id: str = Path(...)):
                 or ""
             ),
             "Stage": person.get("Stage", "Win"),
+            "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat()
         }
         return mapped
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/people")
-async def create_or_update_person(person_data: dict = Body(...)):
+@app.patch("/people/{person_id}")
+async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
     try:
-        # Update existing person
-        if "_id" in person_data:
-            person_id = person_data["_id"]
-            del person_data["_id"]
-            result = await people_collection.update_one(
-                {"_id": ObjectId(person_id)},
-                {"$set": person_data}
-            )
-            if result.modified_count == 0:
-                raise HTTPException(status_code=404, detail="Person not found or no changes made")
-            return {"message": "Person updated successfully"}
+        # Ensure UpdatedAt is always set
+        update_data["UpdatedAt"] = datetime.utcnow().isoformat()
 
-        # Check for duplicates before creating
-        query = {}
-        if "email" in person_data and person_data["email"]:
-            query["email"] = person_data["email"].strip().lower()
-        else:
-            # fallback: name + surname + dob
-            query = {
-                "name": person_data.get("name", "").strip(),
-                "surname": person_data.get("surname", "").strip(),
-                "dob": person_data.get("dob", "")
-            }
+        result = await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": update_data}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-        existing_person = await people_collection.find_one(query)
-        if existing_person:
-            raise HTTPException(status_code=400, detail="Person already exists")
-
-        # Insert new person
-        result = await people_collection.insert_one(person_data)
-        return {"message": "Person created successfully", "id": str(result.inserted_id)}
+        return {"message": "Person updated successfully"}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.delete("/people/{person_id}")
 async def delete_person(person_id: str = Path(...)):
