@@ -29,9 +29,6 @@ class UserLogin(BaseModel):
     password: str
 
 # ===== Event Models =====
-
-
-
 class EventBase(BaseModel):
     eventType: str
     eventName: str
@@ -47,8 +44,6 @@ class EventBase(BaseModel):
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
-
-
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     formatted = [
