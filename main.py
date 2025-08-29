@@ -1,10 +1,10 @@
 # main.py
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, Request, Depends, Body, Query
+from fastapi import FastAPI, HTTPException, Request, Depends, Body, Query ,Path
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime  ,time as time_type, timedelta
 from bson import ObjectId
 
 # -------------------------
@@ -20,7 +20,7 @@ from auth.models import (
 # Database
 # -------------------------
 from database import (
-    users_collection, events_collection, tasks_collection,
+    db, users_collection, events_collection, tasks_collection,
     people_collection
 )
 
@@ -117,48 +117,97 @@ async def delete_person(person_id: str):
     return {"message": "Person deleted successfully"}
 
 # -------------------------
-# Task Endpoints
+# Tasks Management
 # -------------------------
-@app.get("/tasks", dependencies=[Depends(require_role("admin", "registrant"))])
-async def get_all_tasks():
-    tasks = []
-    cursor = tasks_collection.find()
-    async for t in cursor:
-        t["_id"] = str(t["_id"])
-        tasks.append(t)
-    return {"tasks": tasks}
 
-@app.get("/tasks/member/{member_id}", dependencies=[Depends(require_role("admin", "registrant"))])
-async def get_tasks_by_member(member_id: str):
-    tasks = []
-    cursor = tasks_collection.find({"memberID": member_id})
-    async for t in cursor:
-        t["_id"] = str(t["_id"])
-        tasks.append(t)
-    return {"tasks": tasks}
+# Create a new task
 
-@app.post("/tasks", dependencies=[Depends(require_role("admin"))])
+# POST /tasks
+
+@app.post("/tasks")
+
 async def create_task(task: TaskModel):
+
+    print("Received task:", task)
+
     task_dict = task.dict()
+
     result = await tasks_collection.insert_one(task_dict)
-    task_dict["_id"] = str(result.inserted_id)
-    return {"message": "Task created successfully", "task": task_dict}
 
-@app.patch("/tasks/{task_id}", dependencies=[Depends(require_role("admin"))])
-async def update_task(task_id: str, update: TaskUpdate):
-    task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    update_dict = {k: v for k, v in update.dict(exclude_unset=True).items()}
-    await tasks_collection.update_one({"_id": ObjectId(task_id)}, {"$set": update_dict})
-    return {"message": "Task updated successfully"}
+    return {"message": "Task created", "id": str(result.inserted_id)}
 
-@app.delete("/tasks/{task_id}", dependencies=[Depends(require_role("admin"))])
-async def delete_task(task_id: str):
-    result = await tasks_collection.delete_one({"_id": ObjectId(task_id)})
-    if result.deleted_count == 0:
+# Retrieve all tasks
+
+# GET /tasks
+
+@app.get("/tasks", response_model=List[TaskModel])
+
+async def get_tasks(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+):
+
+    query = {}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                date_filter["$gte"] = start_dt
+
+            except ValueError:
+
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+
+            try:
+                # Add one day to include entire end date
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+                date_filter["$lt"] = end_dt
+
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        query["followup_date"] = date_filter
+
+    tasks = []
+
+    cursor = db["Tasks"].find(query)
+    async for task in cursor:
+        task["_id"] = str(task["_id"])  # stringify ObjectId
+        try:
+            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
+        except Exception as e:
+            print(f"Skipping invalid task: {e}, task={task}")
+
+    return tasks 
+
+
+
+@app.put("/tasks/{task_id}")
+
+async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
+    if not ObjectId.is_valid(task_id):
+
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
+
+    result = await tasks_collection.find_one_and_update(
+        {"_id": ObjectId(task_id)},
+        {"$set": updated_task},
+        return_document=True  # from pymongo import ReturnDocument
+
+    )
+
+    if not result:
+
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"message": "Task deleted successfully"}
+    # Convert ObjectId to str before returning
+
+    result["_id"] = str(result["_id"])
+
+    return result
 
 # -------------------------
 # Event Endpoints
