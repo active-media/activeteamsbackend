@@ -9,6 +9,7 @@ from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from database import users_collection
 from bson import ObjectId
+from datetime import datetime
 
 # ==============================
 # CONFIG
@@ -59,6 +60,21 @@ def decode_access_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has expired")
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+
+def convert_datetime_to_iso(doc: dict) -> dict:
+    """
+    Recursively converts all datetime values in a dict to ISO 8601 strings.
+    """
+    for key, value in doc.items():
+        if isinstance(value, datetime):
+            doc[key] = value.isoformat()
+        elif isinstance(value, dict):
+            doc[key] = convert_datetime_to_iso(value)
+        elif isinstance(value, list):
+            doc[key] = [convert_datetime_to_iso(v) if isinstance(v, dict) else v for v in value]
+    return doc
+
 
 # ==============================
 # REFRESH TOKEN HANDLING
@@ -130,6 +146,24 @@ def require_role(*allowed_roles: str):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return payload
     return _checker
+    
+def sanitize_document(doc: dict) -> dict:
+    """
+    Recursively convert ObjectId and other non-serializable fields.
+    """
+    from bson import ObjectId
+
+    def sanitize(value):
+        if isinstance(value, ObjectId):
+            return str(value)
+        elif isinstance(value, dict):
+            return sanitize_document(value)
+        elif isinstance(value, list):
+            return [sanitize(v) for v in value]
+        return value
+
+    return {k: sanitize(v) for k, v in doc.items()}
+
 
 # ==============================
 # OTHER EXISTING UTILS (unchanged)
