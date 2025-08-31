@@ -1,9 +1,10 @@
+
 import os
 from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import Event, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel
+from auth.models import EventBase, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -220,7 +221,7 @@ async def reset_password(data: ResetPasswordRequest):
 # EVENT ENDPOINTS
 # http://localhost:8000/event
 @app.post("/event")
-async def create_event(event: Event):
+async def create_event(event: EventBase):
     try:
         event_data = event.dict()
         event_data["date"] = datetime.fromisoformat(event_data["date"])
@@ -278,7 +279,7 @@ async def get_events_by_type(event_type: str = Path(...)):
 
 # http://localhost:8000/events/{event_id}
 @app.put("/events/{event_id}")
-async def update_event(event: Event, event_id: str = Path(...)):
+async def update_event(event: EventBase, event_id: str = Path(...)):
     try:
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
@@ -547,107 +548,227 @@ async def uncapture_person(data: UncaptureRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# PEOPLE ENDPOINTS
-# http://localhost:8000/people?page=1&perPage=10
-@app.get("/people")
-async def get_people(
-    page: int = Query(1, ge=1),
-    perPage: int = Query(100, ge=1, le=500),
-    name: str = None,
-    gender: str = None,
-    dob: str = None,
-    location: str = None,
-    leader: str = None,
-    stage: str = None
-):
-    try:
-        skip = (page - 1) * perPage
-        query = {}
 
-        if name:
-            query["Name"] = {"$regex": name, "$options": "i"}
-        if gender:
-            query["Gender"] = {"$regex": gender, "$options": "i"}
-        if dob:
-            query["DateOfBirth"] = dob
-        if location:
-            query["Location"] = {"$regex": location, "$options": "i"}
-        if leader:
-            query["Leader"] = {"$regex": leader, "$options": "i"}
-        if stage:
-            query["Stage"] = {"$regex": stage, "$options": "i"}
+# async def get_people(
+#     page: int = Query(1, ge=1),
+#     perPage: int = Query(100, ge=1, le=500),
+#     name: Optional[str] = None,
+#     gender: Optional[str] = None,
+#     dob: Optional[str] = None,
+#     location: Optional[str] = None,
+#     leader: Optional[str] = None,
+#     stage: Optional[str] = None
+# ):
+#     try:
+#         # Compute the skip value for pagination
+#         skip = (page - 1) * perPage
 
-        cursor = people_collection.find(query).skip(skip).limit(perPage)
-        people_list = []
-        async for person in cursor:
-            person["_id"] = str(person["_id"])
-            person = sanitize_document(person)
-            people_list.append(person)
+#         query = {}
 
-        total_count = await people_collection.count_documents(query)
-        return {
-            "page": page,
-            "perPage": perPage,
-            "total": total_count,
-            "results": people_list
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         # Construct the query based on provided parameters
+#         if name:
+#             query["Name"] = {"$regex": name, "$options": "i"}
+#         if gender:
+#             query["Gender"] = {"$regex": gender, "$options": "i"}
+#         if dob:
+#             query["DateOfBirth"] = dob
+#         if location:
+#             query["Location"] = {"$regex": location, "$options": "i"}
+#         if leader:
+#             query["$or"] = [
+#                 {"Leader @12": {"$regex": leader, "$options": "i"}},
+#                 {"Leader @144": {"$regex": leader, "$options": "i"}},
+#                 {"Leader @ 1728": {"$regex": leader, "$options": "i"}}
+#             ]
+#         if stage:
+#             query["Stage"] = {"$regex": stage, "$options": "i"}
 
-@app.get("/people/search")
-async def search_people(name: str = Query(..., min_length=1)):
-    try:
-        cursor = people_collection.find({"Name": {"$regex": name, "$options": "i"}})
-        people = []
-        async for p in cursor:
-            p["_id"] = str(p["_id"])
-            p = sanitize_document(p)
-            people.append({"_id": p["_id"], "Name": p["Name"]})
-        return {"results": people}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         # Fetch the people list with pagination and apply the query
+#         cursor = people_collection.find(query).skip(skip).limit(perPage)
 
-@app.get("/people/{person_id}")
-async def get_person_by_id(person_id: str = Path(...)):
-    try:
-        person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        if not person:
-            raise HTTPException(status_code=404, detail="Person not found")
-        person["_id"] = str(person["_id"])
-        person = sanitize_document(person)
-        return person
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         people_list = []
+#         async for person in cursor:
+#             person["_id"] = str(person["_id"])  # Convert the ObjectId to string
+#             sanitized_person = sanitize_document(person)  # Sanitize the person document
 
-@app.post("/people")
-async def create_or_update_person(person_data: dict = Body(...)):
-    try:
-        if "_id" in person_data:  # Update existing person
-            person_id = person_data["_id"]
-            del person_data["_id"]
-            result = await people_collection.update_one(
-                {"_id": ObjectId(person_id)},
-                {"$set": person_data}
-            )
-            if result.modified_count == 0:
-                raise HTTPException(status_code=404, detail="Person not found or no changes made")
-            return {"message": "Person updated successfully"}
-        else:  # Create new person
-            result = await people_collection.insert_one(person_data)
-            return {"message": "Person created successfully", "id": str(result.inserted_id)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#             # Collect leader fields (Leader @12, Leader @144, Leader @1728)
+#             leader_data = {
+#                 "Leader @12": person.get("Leader @12", ""),
+#                 "Leader @144": person.get("Leader @144", ""),
+#                 "Leader @ 1728": person.get("Leader @ 1728", "")
+#             }
 
-@app.delete("/people/{person_id}")
-@app.delete("/person/{person_id}")
-async def delete_person(person_id: str = Path(...)):
-    try:
-        result = await people_collection.delete_one({"_id": ObjectId(person_id)})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found")
-        return {"message": "Person deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#             # Add leader information to the sanitized person data
+#             sanitized_person.update(leader_data)
+#             people_list.append(sanitized_person)
+
+#         # Fetch total count for pagination metadata
+#         total_count = await people_collection.count_documents(query)
+
+#         # Return paginated response
+#         return {
+#             "page": page,
+#             "perPage": perPage,
+#             "total": total_count,
+#             "results": people_list
+#         }
+    
+#     except Exception as e:
+#         # logging.error(f"Error occurred while fetching people: {e}")
+#         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# @app.get("/people/{person_id}")
+# async def get_person_by_id(person_id: str = Path(...)):
+#     try:
+#         person = await people_collection.find_one({"_id": ObjectId(person_id)})
+#         if not person:
+#             raise HTTPException(status_code=404, detail="Person not found")
+#         person["_id"] = str(person["_id"])
+#         mapped = {
+#             "_id": person["_id"],
+#             "Name": person.get("Name", ""),
+#             "Surname": person.get("Surname", ""),
+#             "Phone": person.get("Number", ""),
+#             "Email": person.get("Email", ""),
+#             "Location": person.get("Address", ""),
+#             "Gender": person.get("Gender", ""),
+#             "DateOfBirth": person.get("Birthday", ""),
+#             "Leader": (
+#                 person.get("Leader @12")
+#                 or person.get("Leader @144")
+#                 or person.get("Leader @ 1728")
+#                 or ""
+#             ),
+#             "Stage": person.get("Stage", "Win"),
+#             "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat()
+#         }
+#         return mapped
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+# def normalize_person_data(data: dict) -> dict:
+#     return {
+#         "name": data.get("Name") or data.get("name"),
+#         "surname": data.get("Surname") or data.get("surname"),
+#         "phone": data.get("Number") or data.get("phone"),
+#         "email": data.get("Email") or data.get("email"),
+#         "homeAddress": data.get("Address") or data.get("homeAddress"),
+#         "dob": data.get("Birthday") or data.get("dob"),
+#         "gender": data.get("Gender") or data.get("gender"),
+#         "invitedBy": data.get("invitedBy"),
+#         "leader12": data.get("Leader @12") or data.get("leader12"),
+#         "leader144": data.get("Leader @144") or data.get("leader144"),
+#         "leader1728": data.get("Leader @ 1728") or data.get("leader1728"),
+#         # Add other fields if necessary
+#     }
+
+# @app.patch("/people/{person_id}")
+# async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
+#     try:
+#         normalized_data = normalize_person_data(update_data)
+#         normalized_data["updatedAt"] = datetime.utcnow().isoformat()
+
+#         result = await people_collection.update_one(
+#             {"_id": ObjectId(person_id)},
+#             {"$set": normalized_data}
+#         )
+#         if result.matched_count == 0:
+#             raise HTTPException(status_code=404, detail="Person not found")
+
+#         # Fetch the updated person document
+#         updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
+
+#         if not updated_person:
+#             raise HTTPException(status_code=404, detail="Person not found after update")
+
+#         # Normalize the updated person before returning
+#         normalized_person = normalize_person_data(updated_person)
+#         normalized_person["_id"] = str(updated_person["_id"])
+
+#         return normalized_person
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+# @app.post("/people")
+# async def create_person(person_data: PersonCreate):
+#     try:
+#         # Check if email already exists
+#         existing_person = await people_collection.find_one({"Email": person_data.email})
+#         if existing_person:
+#             raise HTTPException(
+#                 status_code=400, 
+#                 detail=f"A person with email '{person_data.email}' already exists"
+#             )
+
+#         # Prepare the document for insertion
+#         person_doc = {
+#             "Name": person_data.name.strip(),
+#             "Surname": person_data.surname.strip() if person_data.surname else "",
+#             "Email": person_data.email.lower().strip(),
+#             "Number": person_data.phone.strip() if person_data.phone else "",
+#             "Address": person_data.homeAddress.strip() if person_data.homeAddress else "",
+#             "Gender": person_data.gender.strip() if person_data.gender else "",
+#             "Birthday": person_data.dob.strip() if person_data.dob else "",
+#             "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
+#             "Leader @12": person_data.leader12.strip() if person_data.leader12 else "",
+#             "Leader @144": person_data.leader144.strip() if person_data.leader144 else "",
+#             "Leader @ 1728": person_data.leader1728.strip() if person_data.leader1728 else "",
+#             "Stage": person_data.stage or "Win",
+#             "Present": False,  # Default to not present
+#             "CreatedAt": datetime.utcnow().isoformat(),
+#             "UpdatedAt": datetime.utcnow().isoformat()
+#         }
+
+#         # Insert the person into the database
+#         result = await people_collection.insert_one(person_doc)
+        
+#         # Prepare response data
+#         created_person = {
+#             "_id": str(result.inserted_id),
+#             "Name": person_doc["Name"],
+#             "Surname": person_doc["Surname"],
+#             "Email": person_doc["Email"],
+#             "Phone": person_doc["Number"],
+#             "Location": person_doc["Address"],
+#             "Gender": person_doc["Gender"],
+#             "DateOfBirth": person_doc["Birthday"],
+#             "InvitedBy": person_doc["InvitedBy"],
+#             "Leader @12": person_doc["Leader @12"],
+#             "Leader @144": person_doc["Leader @144"],
+#             "Leader @ 1728": person_doc["Leader @ 1728"],
+#             "Stage": person_doc["Stage"],
+#             "Present": person_doc["Present"],
+#             "CreatedAt": person_doc["CreatedAt"],
+#             "UpdatedAt": person_doc["UpdatedAt"]
+#         }
+
+#         return {
+#             "message": "Person created successfully",
+#             "id": str(result.inserted_id),
+#             "_id": str(result.inserted_id),
+#             "person": created_person
+#         }
+
+#     except HTTPException:
+#         # Re-raise HTTP exceptions (like duplicate email)
+#         raise
+#     except Exception as e:
+#         # Log the error for debugging
+#         print(f"Error creating person: {e}")
+#         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+# @app.delete("/people/{person_id}")
+# async def delete_person(person_id: str = Path(...)):
+#     try:
+#         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
+#         if result.deleted_count == 0:
+#             raise HTTPException(status_code=404, detail="Person not found")
+#         return {"message": "Person deleted successfully"}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 # PROFILE ENDPOINTS
 # http://localhost:8000/profile/{user_id}
@@ -714,4 +835,371 @@ async def update_profile(
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# PEOPLE ENDPOINTS
+@app.get("/people")
+async def get_people(
+    page: int = Query(1, ge=1),
+    perPage: int = Query(100, ge=0),  # Allow 0 to fetch all
+    name: Optional[str] = None,
+    gender: Optional[str] = None,
+    dob: Optional[str] = None,
+    location: Optional[str] = None,
+    leader: Optional[str] = None,
+    stage: Optional[str] = None
+):
+    try:
+        query = {}
+
+        # Construct the query based on provided parameters
+        if name:
+            query["Name"] = {"$regex": name, "$options": "i"}
+        if gender:
+            query["Gender"] = {"$regex": gender, "$options": "i"}
+        if dob:
+            query["DateOfBirth"] = dob
+        if location:
+            query["$or"] = [
+                {"Location": {"$regex": location, "$options": "i"}},
+                {"HomeAddress": {"$regex": location, "$options": "i"}}
+            ]
+        if leader:
+            query["$or"] = [
+                {"Leader @12": {"$regex": leader, "$options": "i"}},
+                {"Leader @144": {"$regex": leader, "$options": "i"}},
+                {"Leader @ 1728": {"$regex": leader, "$options": "i"}}
+            ]
+        if stage:
+            query["Stage"] = {"$regex": stage, "$options": "i"}
+
+        # Handle pagination or fetch all
+        if perPage == 0:
+            # Fetch all documents
+            cursor = people_collection.find(query)
+        else:
+            # Paginated fetch
+            skip = (page - 1) * perPage
+            cursor = people_collection.find(query).skip(skip).limit(perPage)
+
+        people_list = []
+        async for person in cursor:
+            person["_id"] = str(person["_id"])
+            
+            # Map to consistent field names with all leader fields included
+            mapped = {
+                "_id": person["_id"],
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Phone": person.get("Number", ""),  # Maps Number -> Phone
+                "Email": person.get("Email", ""),
+                "Location": person.get("HomeAddress") or person.get("Location", ""),  # Handle both
+                "Gender": person.get("Gender", ""),
+                "DateOfBirth": person.get("Birthday") or person.get("DateOfBirth", ""),  # Handle both
+                "HomeAddress": person.get("HomeAddress") or person.get("Address", ""),
+                "InvitedBy": person.get("InvitedBy", ""),
+                # Include ALL leader fields separately
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @ 1728": person.get("Leader @ 1728", ""),
+                # Primary leader field (for backwards compatibility)
+                "Leader": (
+                    person.get("Leader @12") or 
+                    person.get("Leader @144") or 
+                    person.get("Leader @ 1728") or 
+                    ""
+                ),
+                "Stage": person.get("Stage", "Win"),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "CreatedAt": person.get("CreatedAt") or datetime.utcnow().isoformat(),
+                "Present": person.get("Present", False)
+            }
+            people_list.append(mapped)
+
+        # Get total count for pagination metadata
+        total_count = await people_collection.count_documents(query)
+
+        return {
+            "page": page,
+            "perPage": perPage,
+            "total": total_count,
+            "results": people_list
+        }
+        
+    except Exception as e:
+        print(f"Error fetching people: {e}")  # Add logging for debugging
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+@app.get("/people/{person_id}")
+async def get_person_by_id(person_id: str = Path(...)):
+    try:
+        person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        
+        person["_id"] = str(person["_id"])
+        mapped = {
+            "_id": person["_id"],
+            "Name": person.get("Name", ""),
+            "Surname": person.get("Surname", ""),
+            "Phone": person.get("Number", ""),
+            "Email": person.get("Email", ""),
+            "Location": person.get("Address") or person.get("Location", ""),
+            "Gender": person.get("Gender", ""),
+            "DateOfBirth": person.get("Birthday") or person.get("DateOfBirth", ""),
+            "HomeAddress": person.get("Address") or person.get("HomeAddress", ""),
+            "InvitedBy": person.get("InvitedBy", ""),
+            # Include ALL leader fields
+            "Leader @12": person.get("Leader @12", ""),
+            "Leader @144": person.get("Leader @144", ""),
+            "Leader @ 1728": person.get("Leader @ 1728", ""),
+            "Leader": (
+                person.get("Leader @12") or 
+                person.get("Leader @144") or 
+                person.get("Leader @ 1728") or 
+                ""
+            ),
+            "Stage": person.get("Stage", "Win"),
+            "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+            "CreatedAt": person.get("CreatedAt") or datetime.utcnow().isoformat(),
+            "Present": person.get("Present", False)
+        }
+        return mapped
+    except Exception as e:
+        print(f"Error fetching person by ID: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def normalize_person_data(data: dict) -> dict:
+    """Normalize person data for database operations"""
+    return {
+        "Name": data.get("Name") or data.get("name", ""),
+        "Surname": data.get("Surname") or data.get("surname", ""),
+        "Number": data.get("Number") or data.get("number", ""),  # Store as Number
+        "Email": data.get("Email") or data.get("email", ""),
+        "HomeAddress": data.get("HomeAddress") or data.get("address") or data.get("location", ""),
+        "Birthday": data.get("Birthday") or data.get("dob", ""),  # Store as Birthday
+        "Gender": data.get("Gender") or data.get("gender", ""),
+        "InvitedBy": data.get("InvitedBy") or data.get("invitedBy", ""),
+        "Leader @12": data.get("Leader @12") or data.get("leader12", ""),
+        "Leader @144": data.get("Leader @144") or data.get("leader144", ""),
+        "Leader @ 1728": data.get("Leader @ 1728") or data.get("leader1728", ""),
+        "Stage": data.get("Stage") or data.get("stage", "Win"),
+        "Present": data.get("Present", False),
+        "UpdatedAt": datetime.utcnow().isoformat()
+    }
+
+
+@app.patch("/people/{person_id}")
+async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
+    try:
+        normalized_data = normalize_person_data(update_data)
+        
+        result = await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": normalized_data}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        # Fetch the updated person document
+        updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not updated_person:
+            raise HTTPException(status_code=404, detail="Person not found after update")
+
+        # Return the updated person in the same format as GET
+        updated_person["_id"] = str(updated_person["_id"])
+        mapped = {
+            "_id": updated_person["_id"],
+            "Name": updated_person.get("Name", ""),
+            "Surname": updated_person.get("Surname", ""),
+            "Phone": updated_person.get("Number", ""),
+            "Email": updated_person.get("Email", ""),
+            "Location": updated_person.get("HomeAddress", ""),
+            "Gender": updated_person.get("Gender", ""),
+            "DateOfBirth": updated_person.get("Birthday", ""),
+            "HomeAddress": updated_person.get("HomeAddress", ""),
+            "InvitedBy": updated_person.get("InvitedBy", ""),
+            "Leader @12": updated_person.get("Leader @12", ""),
+            "Leader @144": updated_person.get("Leader @144", ""),
+            "Leader @ 1728": updated_person.get("Leader @ 1728", ""),
+            "Leader": (
+                updated_person.get("Leader @12") or 
+                updated_person.get("Leader @144") or 
+                updated_person.get("Leader @ 1728") or 
+                ""
+            ),
+            "Stage": updated_person.get("Stage", "Win"),
+            "UpdatedAt": updated_person.get("UpdatedAt"),
+            "Present": updated_person.get("Present", False)
+        }
+        return mapped
+
+    except Exception as e:
+        print(f"Error updating person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# @app.post("/people")
+# async def create_person(person_data: PersonCreate):
+#     try:
+#         # Check if email already exists
+#         if person_data.email:
+#             existing_person = await people_collection.find_one({"Email": person_data.email})
+#             if existing_person:
+#                 raise HTTPException(
+#                     status_code=400, 
+#                     detail=f"A person with email '{person_data.email}' already exists"
+#                 )
+
+#         # Prepare the document for insertion
+#         person_doc = {
+#             "Name": person_data.name.strip(),
+#             "Surname": person_data.surname.strip() if person_data.surname else "",
+#             "Email": person_data.email.lower().strip() if person_data.email else "",
+#             "Number": person_data.number.strip() if person_data.number else "",
+#             "HomeAddress": person_data.address.strip() if person_data.address else "",
+#             "Gender": person_data.gender.strip() if person_data.gender else "",
+#             "Birthday": person_data.dob.strip() if person_data.dob else "",
+#             "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
+#             "Leader @12": getattr(person_data, 'leader12', '') or "",
+#             "Leader @144": getattr(person_data, 'leader144', '') or "",
+#             "Leader @ 1728": getattr(person_data, 'leader1728', '') or "",
+#             "Stage": person_data.stage or "Win",
+#             "Present": False,  # Default to not present
+#             "CreatedAt": datetime.utcnow().isoformat(),
+#             "UpdatedAt": datetime.utcnow().isoformat()
+#         }
+
+#         # Insert the person into the database
+#         result = await people_collection.insert_one(person_doc)
+        
+#         # Return the created person in consistent format
+#         created_person = {
+#             "_id": str(result.inserted_id),
+#             "Name": person_doc["Name"],
+#             "Surname": person_doc["Surname"],
+#             "Email": person_doc["Email"],
+#             "Phone": person_doc["Number"],
+#             # "Location": person_doc["Address"],
+#             "Gender": person_doc["Gender"],
+#             "DateOfBirth": person_doc["Birthday"],
+#             "HomeAddress": person_doc["HomeAddress"],
+#             "InvitedBy": person_doc["InvitedBy"],
+#             "Leader @12": person_doc["Leader @12"],
+#             "Leader @144": person_doc["Leader @144"],
+#             "Leader @ 1728": person_doc["Leader @ 1728"],
+#             "Leader": (
+#                 person_doc["Leader @12"] or 
+#                 person_doc["Leader @144"] or 
+#                 person_doc["Leader @ 1728"] or 
+#                 ""
+#             ),
+#             "Stage": person_doc["Stage"],
+#             "Present": person_doc["Present"],
+#             "CreatedAt": person_doc["CreatedAt"],
+#             "UpdatedAt": person_doc["UpdatedAt"]
+#         }
+
+#         return {
+#             "message": "Person created successfully",
+#             "id": str(result.inserted_id),
+#             "_id": str(result.inserted_id),
+#             "person": created_person
+#         }
+
+#     except HTTPException:
+#         # Re-raise HTTP exceptions (like duplicate email)
+#         raise
+#     except Exception as e:
+#         # Log the error for debugging
+#         print(f"Error creating person: {e}")
+#         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/people")
+async def create_person(person_data: PersonCreate):
+    try:
+        # Normalize email
+        email = person_data.email.lower().strip()
+
+        # Check if email already exists
+        if email:
+            existing_person = await people_collection.find_one({"Email": email})
+            if existing_person:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"A person with email '{email}' already exists"
+                )
+
+        # Extract leader fields from the list
+        leader12 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
+        leader144 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
+        leader1728 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
+
+        # Prepare the document
+        person_doc = {
+            "Name": person_data.name.strip(),
+            "Surname": person_data.surname.strip(),
+            "Email": email,
+            "Number": person_data.number.strip(),
+            "HomeAddress": person_data.address.strip(),
+            "Gender": person_data.gender.strip(),
+            "Birthday": person_data.dob.strip(),
+            "InvitedBy": person_data.invitedBy.strip(),
+            "Leader @12": leader12,
+            "Leader @144": leader144,
+            "Leader @ 1728": leader1728,
+            "Stage": person_data.stage or "Win",
+            "Present": False,
+            "CreatedAt": datetime.utcnow().isoformat(),
+            "UpdatedAt": datetime.utcnow().isoformat()
+        }
+
+        # Insert into MongoDB
+        result = await people_collection.insert_one(person_doc)
+
+        # Return the created person object
+        created_person = {
+            "_id": str(result.inserted_id),
+            "Name": person_doc["Name"],
+            "Surname": person_doc["Surname"],
+            "Email": person_doc["Email"],
+            "Phone": person_doc["Number"],
+            "Gender": person_doc["Gender"],
+            "DateOfBirth": person_doc["Birthday"],
+            "HomeAddress": person_doc["HomeAddress"],
+            "InvitedBy": person_doc["InvitedBy"],
+            "Leader @12": person_doc["Leader @12"],
+            "Leader @144": person_doc["Leader @144"],
+            "Leader @ 1728": person_doc["Leader @ 1728"],
+            "Leader": leader12 or leader144 or leader1728,
+            "Stage": person_doc["Stage"],
+            "Present": person_doc["Present"],
+            "CreatedAt": person_doc["CreatedAt"],
+            "UpdatedAt": person_doc["UpdatedAt"]
+        }
+
+        return {
+            "message": "Person created successfully",
+            "id": str(result.inserted_id),
+            "_id": str(result.inserted_id),
+            "person": created_person
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating person: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.delete("/people/{person_id}")
+async def delete_person(person_id: str = Path(...)):
+    try:
+        result = await people_collection.delete_one({"_id": ObjectId(person_id)})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+        return {"message": "Person deleted successfully"}
+    except Exception as e:
+        print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
