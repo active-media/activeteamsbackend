@@ -314,6 +314,19 @@ async def close_event(event_id: str = Path(...), attendees: list = None, did_not
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
 
+
+# Pseudo Python example
+@app.route('/events')
+def get_events():
+    status = request.args.get('status')
+    if status == 'open':
+        query = {"status": {"$ne": "closed"}}
+    else:
+        query = {}
+    events = db.events.find(query)
+    return jsonify(events)
+
+
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
