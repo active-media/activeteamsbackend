@@ -222,12 +222,19 @@ async def create_event(event: EventCreate):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
-
 @app.get("/events")
-async def get_events():
+async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):
     try:
+        query = {}
+        if status == "open":
+            # Filter for events that are not closed
+            query = {"status": {"$ne": "closed"}}
+        elif status:
+            # Filter by exact status if provided (e.g. status=closed)
+            query = {"status": status}
+
         events = []
-        cursor = events_collection.find({"status": "open"}).sort("created_at", -1)
+        cursor = events_collection.find(query).sort("created_at", -1)
 
         async for event in cursor:
             event["_id"] = str(event["_id"])
