@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, Field
 from typing import Optional, Literal, List
 from datetime import datetime
 
@@ -111,3 +111,19 @@ class TaskModel(BaseModel):
     class Config:
         validate_by_name = True
         arbitrary_types_allowed = True
+
+
+
+class PersonCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    surname: Optional[str] = Field(None, max_length=100)
+    email: EmailStr
+    phone: Optional[str] = Field(None, max_length=20)
+    homeAddress: Optional[str] = Field(None, max_length=500)
+    gender: Optional[str] = Field(None, max_length=20)
+    dob: Optional[str] = Field(None)  # Date of birth as string
+    invitedBy: Optional[str] = Field(None, max_length=100)
+    leader12: Optional[str] = Field(None, max_length=100)
+    leader144: Optional[str] = Field(None, max_length=100)
+    leader1728: Optional[str] = Field(None, max_length=100)
+    stage: Optional[str] = Field("Win", max_length=50)
