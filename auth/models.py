@@ -1,8 +1,17 @@
-from pydantic import BaseModel, EmailStr, field_validator, Field
-from typing import Optional, Literal, List
-from datetime import datetime
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
-# User creation model with role
+from pydantic import BaseModel, Field, EmailStr, field_validator
+
+from typing import Optional, List, Literal
+from datetime import datetime
+from bson import ObjectId
+
+
+app = FastAPI()
+
+# ===== User Creation =====
 class UserCreate(BaseModel):
     name: str
     surname: str
@@ -13,20 +22,45 @@ class UserCreate(BaseModel):
     email: EmailStr
     gender: str
     password: str
-    role: Optional[str] = None  # Optional role; default to 'user' in signup logic
+    role: Optional[str] = None  # Optional; default to 'user' in logic
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class Event(BaseModel):
+# ===== Event Models =====
+class EventBase(BaseModel):
     eventType: str
-    service_name: str
-    date: str 
+    eventName: str
+    date: Optional[datetime] = None
+    time: Optional[str] = None
+    recurringDays: List[str] = Field(default_factory=list)
     location: str
-    total_attendance: int = 0
-    attendees: list[dict] = []
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    isTicketed: bool = False
+    price: float = 0.0
 
+class EventCreate(EventBase):
+    """Schema for creating events (inherits from EventBase)."""
+    pass
+
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    formatted = [
+        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={"errors": formatted}
+    )
+
+class EventInDB(EventBase):
+    _id: str  # MongoDB ObjectId as string
+    attendees: List[dict] = []
+    total_attendance: int = 0
+
+# ===== Attendance =====
 class CheckIn(BaseModel):
     event_id: str
     name: str
@@ -35,7 +69,7 @@ class UncaptureRequest(BaseModel):
     event_id: str
     name: str
 
-# Authentication models
+# ===== Auth Tokens =====
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str
@@ -44,7 +78,7 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
 
-
+# ===== Cell Events =====
 class CellEventCreate(BaseModel):
     service_name: str
     leader_id: str
@@ -66,30 +100,31 @@ class CellEventCreate(BaseModel):
         return v
 
     def model_dump(self, **kwargs):
-        """Override output to capitalize the day when returning data."""
         data = super().model_dump(**kwargs)
         if data.get("recurring_day"):
             data["recurring_day"] = data["recurring_day"].capitalize()
         return data
-    
+
+# ===== Cell Member Management =====
 class AddMemberNamesRequest(BaseModel):
-      name: str
+    name: str
 
 class RemoveMemberRequest(BaseModel):
     name: str
-    
-# ===== Refresh Token =====
-class RefreshTokenRequest(BaseModel):
-    refresh_token_id: str
-    refresh_token: str
 
-# ===== Forgot / Reset Password =====
+# ===== Password Reset =====
 class ForgotPasswordRequest(BaseModel):
     email: str
 
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+# ===== Refresh Token =====
+class RefreshTokenRequest(BaseModel):
+    refresh_token_id: str
+    refresh_token: str
+
 
 
 # Nested contacted_person model
@@ -104,26 +139,45 @@ class TaskModel(BaseModel):
 
     memberID: str
     name: str
+    taskType: str
     contacted_person: ContactedPerson
     followup_date: datetime
     status: str
+    type: str
 
     class Config:
         validate_by_name = True
         arbitrary_types_allowed = True
 
 
+class PersonInfo(BaseModel):
+    name: Optional[str]
+    phone: Optional[str]
+    email: Optional[str]
 
-class PersonCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    surname: Optional[str] = Field(None, max_length=100)
-    email: EmailStr
-    phone: Optional[str] = Field(None, max_length=20)
-    homeAddress: Optional[str] = Field(None, max_length=500)
-    gender: Optional[str] = Field(None, max_length=20)
-    dob: Optional[str] = Field(None)  # Date of birth as string
-    invitedBy: Optional[str] = Field(None, max_length=100)
-    leader12: Optional[str] = Field(None, max_length=100)
-    leader144: Optional[str] = Field(None, max_length=100)
-    leader1728: Optional[str] = Field(None, max_length=100)
-    stage: Optional[str] = Field("Win", max_length=50)
+class TaskUpdate(BaseModel):
+    name: Optional[str]
+    taskType: Optional[str]
+    contacted_person: Optional[PersonInfo]
+    followup_date: Optional[str]
+    status: Optional[str]
+    type: Optional[str]
+
+    # Adding new Person in the Event screen
+class Person(BaseModel):
+    invitedBy: str
+    name: str
+    surname: str
+    gender: str
+    email: str
+    mobile: str
+    dob: str
+    address: str
+    leaders: list[str]
+
+@app.post("/people")
+async def create_person(person: Person):
+    person_dict = person.dict()
+    result = await people_collection.insert_one(person_dict)
+    person_dict["_id"] = str(result.inserted_id)
+    return {"message": "Person created successfully", "person": person_dict}
