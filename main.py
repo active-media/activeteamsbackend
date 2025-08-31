@@ -976,9 +976,9 @@ def normalize_person_data(data: dict) -> dict:
     return {
         "Name": data.get("Name") or data.get("name", ""),
         "Surname": data.get("Surname") or data.get("surname", ""),
-        "Number": data.get("Number") or data.get("phone", ""),  # Store as Number
+        "Number": data.get("Number") or data.get("number", ""),  # Store as Number
         "Email": data.get("Email") or data.get("email", ""),
-        "HomeAddress": data.get("HomeAddress") or data.get("homeAddress") or data.get("location", ""),
+        "HomeAddress": data.get("HomeAddress") or data.get("address") or data.get("location", ""),
         "Birthday": data.get("Birthday") or data.get("dob", ""),  # Store as Birthday
         "Gender": data.get("Gender") or data.get("gender", ""),
         "InvitedBy": data.get("InvitedBy") or data.get("invitedBy", ""),
@@ -1041,61 +1041,139 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# @app.post("/people")
+# async def create_person(person_data: PersonCreate):
+#     try:
+#         # Check if email already exists
+#         if person_data.email:
+#             existing_person = await people_collection.find_one({"Email": person_data.email})
+#             if existing_person:
+#                 raise HTTPException(
+#                     status_code=400, 
+#                     detail=f"A person with email '{person_data.email}' already exists"
+#                 )
+
+#         # Prepare the document for insertion
+#         person_doc = {
+#             "Name": person_data.name.strip(),
+#             "Surname": person_data.surname.strip() if person_data.surname else "",
+#             "Email": person_data.email.lower().strip() if person_data.email else "",
+#             "Number": person_data.number.strip() if person_data.number else "",
+#             "HomeAddress": person_data.address.strip() if person_data.address else "",
+#             "Gender": person_data.gender.strip() if person_data.gender else "",
+#             "Birthday": person_data.dob.strip() if person_data.dob else "",
+#             "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
+#             "Leader @12": getattr(person_data, 'leader12', '') or "",
+#             "Leader @144": getattr(person_data, 'leader144', '') or "",
+#             "Leader @ 1728": getattr(person_data, 'leader1728', '') or "",
+#             "Stage": person_data.stage or "Win",
+#             "Present": False,  # Default to not present
+#             "CreatedAt": datetime.utcnow().isoformat(),
+#             "UpdatedAt": datetime.utcnow().isoformat()
+#         }
+
+#         # Insert the person into the database
+#         result = await people_collection.insert_one(person_doc)
+        
+#         # Return the created person in consistent format
+#         created_person = {
+#             "_id": str(result.inserted_id),
+#             "Name": person_doc["Name"],
+#             "Surname": person_doc["Surname"],
+#             "Email": person_doc["Email"],
+#             "Phone": person_doc["Number"],
+#             # "Location": person_doc["Address"],
+#             "Gender": person_doc["Gender"],
+#             "DateOfBirth": person_doc["Birthday"],
+#             "HomeAddress": person_doc["HomeAddress"],
+#             "InvitedBy": person_doc["InvitedBy"],
+#             "Leader @12": person_doc["Leader @12"],
+#             "Leader @144": person_doc["Leader @144"],
+#             "Leader @ 1728": person_doc["Leader @ 1728"],
+#             "Leader": (
+#                 person_doc["Leader @12"] or 
+#                 person_doc["Leader @144"] or 
+#                 person_doc["Leader @ 1728"] or 
+#                 ""
+#             ),
+#             "Stage": person_doc["Stage"],
+#             "Present": person_doc["Present"],
+#             "CreatedAt": person_doc["CreatedAt"],
+#             "UpdatedAt": person_doc["UpdatedAt"]
+#         }
+
+#         return {
+#             "message": "Person created successfully",
+#             "id": str(result.inserted_id),
+#             "_id": str(result.inserted_id),
+#             "person": created_person
+#         }
+
+#     except HTTPException:
+#         # Re-raise HTTP exceptions (like duplicate email)
+#         raise
+#     except Exception as e:
+#         # Log the error for debugging
+#         print(f"Error creating person: {e}")
+#         raise HTTPException(status_code=500, detail="Internal Server Error")
+
 @app.post("/people")
 async def create_person(person_data: PersonCreate):
     try:
+        # Normalize email
+        email = person_data.email.lower().strip()
+
         # Check if email already exists
-        if person_data.email:
-            existing_person = await people_collection.find_one({"Email": person_data.email})
+        if email:
+            existing_person = await people_collection.find_one({"Email": email})
             if existing_person:
                 raise HTTPException(
-                    status_code=400, 
-                    detail=f"A person with email '{person_data.email}' already exists"
+                    status_code=400,
+                    detail=f"A person with email '{email}' already exists"
                 )
 
-        # Prepare the document for insertion
+        # Extract leader fields from the list
+        leader12 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
+        leader144 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
+        leader1728 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
+
+        # Prepare the document
         person_doc = {
             "Name": person_data.name.strip(),
-            "Surname": person_data.surname.strip() if person_data.surname else "",
-            "Email": person_data.email.lower().strip() if person_data.email else "",
-            "Number": person_data.phone.strip() if person_data.phone else "",
-            "HomeAddress": person_data.homeAddress.strip() if person_data.homeAddress else "",
-            "Gender": person_data.gender.strip() if person_data.gender else "",
-            "Birthday": person_data.dob.strip() if person_data.dob else "",
-            "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
-            "Leader @12": getattr(person_data, 'leader12', '') or "",
-            "Leader @144": getattr(person_data, 'leader144', '') or "",
-            "Leader @ 1728": getattr(person_data, 'leader1728', '') or "",
+            "Surname": person_data.surname.strip(),
+            "Email": email,
+            "Number": person_data.number.strip(),
+            "HomeAddress": person_data.address.strip(),
+            "Gender": person_data.gender.strip(),
+            "Birthday": person_data.dob.strip(),
+            "InvitedBy": person_data.invitedBy.strip(),
+            "Leader @12": leader12,
+            "Leader @144": leader144,
+            "Leader @ 1728": leader1728,
             "Stage": person_data.stage or "Win",
-            "Present": False,  # Default to not present
+            "Present": False,
             "CreatedAt": datetime.utcnow().isoformat(),
             "UpdatedAt": datetime.utcnow().isoformat()
         }
 
-        # Insert the person into the database
+        # Insert into MongoDB
         result = await people_collection.insert_one(person_doc)
-        
-        # Return the created person in consistent format
+
+        # Return the created person object
         created_person = {
             "_id": str(result.inserted_id),
             "Name": person_doc["Name"],
             "Surname": person_doc["Surname"],
             "Email": person_doc["Email"],
             "Phone": person_doc["Number"],
-            # "Location": person_doc["Address"],
             "Gender": person_doc["Gender"],
             "DateOfBirth": person_doc["Birthday"],
-            "HomeAddress": person_doc["homeAddress"],
+            "HomeAddress": person_doc["HomeAddress"],
             "InvitedBy": person_doc["InvitedBy"],
             "Leader @12": person_doc["Leader @12"],
             "Leader @144": person_doc["Leader @144"],
             "Leader @ 1728": person_doc["Leader @ 1728"],
-            "Leader": (
-                person_doc["Leader @12"] or 
-                person_doc["Leader @144"] or 
-                person_doc["Leader @ 1728"] or 
-                ""
-            ),
+            "Leader": leader12 or leader144 or leader1728,
             "Stage": person_doc["Stage"],
             "Present": person_doc["Present"],
             "CreatedAt": person_doc["CreatedAt"],
@@ -1110,13 +1188,10 @@ async def create_person(person_data: PersonCreate):
         }
 
     except HTTPException:
-        # Re-raise HTTP exceptions (like duplicate email)
         raise
     except Exception as e:
-        # Log the error for debugging
         print(f"Error creating person: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
-
 
 @app.delete("/people/{person_id}")
 async def delete_person(person_id: str = Path(...)):

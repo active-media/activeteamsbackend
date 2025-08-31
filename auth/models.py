@@ -170,7 +170,8 @@ class PersonCreate(BaseModel):
     surname: str
     gender: str
     email: str
-    mobile: str
+    number: str
     dob: str
     address: str
     leaders: list[str]
+    stage: Literal["Win"]
