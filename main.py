@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventBase, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
+from auth.models import EventBase, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate ,TaskUpdate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection
+from database import db, events_collection, people_collection, users_collection ,Tasks_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 
@@ -1207,3 +1207,97 @@ async def delete_person(person_id: str = Path(...)):
     except Exception as e:
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+# -------------------------
+# Tasks Management
+# -------------------------
+
+# Create a new task
+
+# POST /tasks
+
+@app.post("/tasks")
+
+async def create_task(task: TaskModel):
+
+    print("Received task:", task)
+
+    task_dict = task.dict()
+
+    result = await Tasks_collection.insert_one(task_dict)
+
+    return {"message": "Task created", "id": str(result.inserted_id)}
+
+# Retrieve all tasks
+
+# GET /tasks
+
+@app.get("/tasks", response_model=List[TaskModel])
+
+async def get_tasks(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+):
+
+    query = {}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                date_filter["$gte"] = start_dt
+
+            except ValueError:
+
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+
+            try:
+                # Add one day to include entire end date
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+                date_filter["$lt"] = end_dt
+
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        query["followup_date"] = date_filter
+
+    tasks = []
+
+    cursor = db["Tasks"].find(query)
+    async for task in cursor:
+        task["_id"] = str(task["_id"])  # stringify ObjectId
+        try:
+            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
+        except Exception as e:
+            print(f"Skipping invalid task: {e}, task={task}")
+
+    return tasks 
+
+
+
+@app.put("/tasks/{task_id}")
+
+async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
+    if not ObjectId.is_valid(task_id):
+
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
+
+    result = await Tasks_collection.find_one_and_update(
+        {"_id": ObjectId(task_id)},
+        {"$set": updated_task},
+        return_document=True  # from pymongo import ReturnDocument
+
+    )
+
+    if not result:
+
+        raise HTTPException(status_code=404, detail="Task not found")
+    # Convert ObjectId to str before returning
+
+    result["_id"] = str(result["_id"])
+
+    return result
