@@ -4,7 +4,6 @@ pydantic
 python-jose
 passlib[bcrypt]
 pymongo
-bson
 sendgrid
 python-dotenv
 pydantic[email]
