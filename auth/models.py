@@ -49,7 +49,6 @@ class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
 
-
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     formatted = [
         {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
@@ -169,20 +168,14 @@ class TaskUpdate(BaseModel):
     type: Optional[str]
 
     # Adding new Person in the Event screen
-class Person(BaseModel):
+class PersonCreate(BaseModel):
     invitedBy: str
     name: str
     surname: str
     gender: str
     email: str
-    mobile: str
+    number: str
     dob: str
     address: str
     leaders: list[str]
-
-@app.post("/people")
-async def create_person(person: Person):
-    person_dict = person.dict()
-    result = await people_collection.insert_one(person_dict)
-    person_dict["_id"] = str(result.inserted_id)
-    return {"message": "Person created successfully", "person": person_dict}
+    stage: Literal["Win"]
