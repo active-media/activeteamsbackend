@@ -173,27 +173,31 @@ async def logout(user_id: str = Body(..., embed=True)):
 
 # --- FORGOT PASSWORD ---
 # http://localhost:8000/forgot-password
+# In FastAPI backend (keep your existing imports)
+
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest):
     email = payload.email
     user = await users_collection.find_one({"email": email})
     if not user:
-        return {"message": "If your email exists, you will receive a password reset email shortly."}
+        # Still return 200 to avoid leaking email existence
+        return {
+            "message": "If your email exists, you will receive a password reset email shortly.",
+            "reset_link": None,
+        }
 
+    # Generate token
     reset_token = create_access_token(
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1),
     )
-    reset_link = f"https://yourfrontend.com/reset-password?token={reset_token}"
+    reset_link = f"https://active-teams-iota.vercel.app/reset-password?token={reset_token}"
 
-    status_code = send_reset_password_email(email, reset_link)
-    if not status_code or status_code >= 400:
-        raise HTTPException(status_code=500, detail="Failed to send reset email")
-
+    # ✅ NO EMAIL SENDING HERE
     return {
-        "message": "If your email exists, you will receive a password reset email shortly.",
+        "message": "Reset link generated successfully.",
         "reset_link": reset_link,
-        "token": reset_token
+        "token": reset_token  # Optional: useful for debugging
     }
 
 # --- RESET PASSWORD ---
