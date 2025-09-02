@@ -6,6 +6,7 @@ npm-debug.log*
 venv/
 .venv/
 env/
+.venv/
 .env
 __pycache__/
 *.pyc
