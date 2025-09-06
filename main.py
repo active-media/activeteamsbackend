@@ -190,7 +190,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1),
     )
-    reset_link = f"https://active-teams-iota.vercel.app/reset-password?token={reset_token}"
+    reset_link = f"https://68bc1f78a1d6bd2f613f0b0f--active-teams-frontend.netlify.app/reset-password?token={reset_token}"
 
     # ✅ NO EMAIL SENDING HERE
     return {
@@ -1133,7 +1133,6 @@ async def get_people(
         print(f"Error fetching people: {e}")  # Add logging for debugging
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
     try:
@@ -1242,83 +1241,6 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
     except Exception as e:
         print(f"Error updating person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.post("/people")
-# async def create_person(person_data: PersonCreate):
-#     try:
-#         # Check if email already exists
-#         if person_data.email:
-#             existing_person = await people_collection.find_one({"Email": person_data.email})
-#             if existing_person:
-#                 raise HTTPException(
-#                     status_code=400, 
-#                     detail=f"A person with email '{person_data.email}' already exists"
-#                 )
-
-#         # Prepare the document for insertion
-#         person_doc = {
-#             "Name": person_data.name.strip(),
-#             "Surname": person_data.surname.strip() if person_data.surname else "",
-#             "Email": person_data.email.lower().strip() if person_data.email else "",
-#             "Number": person_data.number.strip() if person_data.number else "",
-#             "HomeAddress": person_data.address.strip() if person_data.address else "",
-#             "Gender": person_data.gender.strip() if person_data.gender else "",
-#             "Birthday": person_data.dob.strip() if person_data.dob else "",
-#             "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
-#             "Leader @12": getattr(person_data, 'leader12', '') or "",
-#             "Leader @144": getattr(person_data, 'leader144', '') or "",
-#             "Leader @ 1728": getattr(person_data, 'leader1728', '') or "",
-#             "Stage": person_data.stage or "Win",
-#             "Present": False,  # Default to not present
-#             "CreatedAt": datetime.utcnow().isoformat(),
-#             "UpdatedAt": datetime.utcnow().isoformat()
-#         }
-
-#         # Insert the person into the database
-#         result = await people_collection.insert_one(person_doc)
-        
-#         # Return the created person in consistent format
-#         created_person = {
-#             "_id": str(result.inserted_id),
-#             "Name": person_doc["Name"],
-#             "Surname": person_doc["Surname"],
-#             "Email": person_doc["Email"],
-#             "Phone": person_doc["Number"],
-#             # "Location": person_doc["Address"],
-#             "Gender": person_doc["Gender"],
-#             "DateOfBirth": person_doc["Birthday"],
-#             "HomeAddress": person_doc["HomeAddress"],
-#             "InvitedBy": person_doc["InvitedBy"],
-#             "Leader @12": person_doc["Leader @12"],
-#             "Leader @144": person_doc["Leader @144"],
-#             "Leader @ 1728": person_doc["Leader @ 1728"],
-#             "Leader": (
-#                 person_doc["Leader @12"] or 
-#                 person_doc["Leader @144"] or 
-#                 person_doc["Leader @ 1728"] or 
-#                 ""
-#             ),
-#             "Stage": person_doc["Stage"],
-#             "Present": person_doc["Present"],
-#             "CreatedAt": person_doc["CreatedAt"],
-#             "UpdatedAt": person_doc["UpdatedAt"]
-#         }
-
-#         return {
-#             "message": "Person created successfully",
-#             "id": str(result.inserted_id),
-#             "_id": str(result.inserted_id),
-#             "person": created_person
-#         }
-
-#     except HTTPException:
-#         # Re-raise HTTP exceptions (like duplicate email)
-#         raise
-#     except Exception as e:
-#         # Log the error for debugging
-#         print(f"Error creating person: {e}")
-#         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/people")
 async def create_person(person_data: PersonCreate):
