@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, APIRouter
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import Optional, List, Literal
 from datetime import datetime
 from bson import ObjectId
-
 
 app = FastAPI()
 
@@ -78,7 +77,41 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
 
+
+
+# ===== Event Models =====
+
+
+
+# ===== Event Models =====
+class EventBase(BaseModel):
+    eventType: str
+    eventName: str
+    date: Optional[datetime] = None
+    time: Optional[str] = None
+    recurringDays: List[str] = Field(default_factory=list)
+    location: str
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    isTicketed: bool = False
+    price: float = 0.0
+
+class EventCreate(EventBase):
+    """Schema for creating events (inherits from EventBase)."""
+    pass
+
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    formatted = [
+        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={"errors": formatted}
+    )
+
 # ===== Cell Events =====
+
 class CellEventCreate(BaseModel):
     service_name: str
     leader_id: str
@@ -105,8 +138,10 @@ class CellEventCreate(BaseModel):
             data["recurring_day"] = data["recurring_day"].capitalize()
         return data
 
-# ===== Cell Member Management =====
 class AddMemberNamesRequest(BaseModel):
+    name: str
+
+class RemoveMemberRequest(BaseModel):
     name: str
 
 class RemoveMemberRequest(BaseModel):
