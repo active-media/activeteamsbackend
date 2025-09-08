@@ -688,7 +688,7 @@ async def remove_member_from_cell(event_id: str, member_id: str):
         raise HTTPException(status_code=404, detail="Member not found on event")
     return {"message": "Member removed"}
     
-# -------------------------
+
 # Check-in (no auth required)
 # -------------------------
 # http://localhost:8000/checkin
