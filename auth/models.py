@@ -109,6 +109,31 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         content={"errors": formatted}
     )
+# ============= PProfile Update =============
+
+class UserProfile(BaseModel):
+    id: str  # stringified ObjectId
+    name: str
+    surname: str
+    date_of_birth: str
+    home_address: str
+    invited_by: Optional[str]
+    phone_number: str
+    email: EmailStr
+    gender: str
+    role: Optional[str] = "user"
+
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str]
+    surname: Optional[str]
+    date_of_birth: Optional[str]  # or date/datetime if you're parsing it
+    home_address: Optional[str]
+    invited_by: Optional[str]
+    phone_number: Optional[str]
+    email: Optional[EmailStr]
+    gender: Optional[str]
+
 
 # ===== Cell Events =====
 

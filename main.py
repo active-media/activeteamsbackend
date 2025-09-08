@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, time
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
+from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -984,70 +984,61 @@ async def uncapture_person(data: UncaptureRequest):
 
 # PROFILE ENDPOINTS
 # http://localhost:8000/profile/{user_id}
-@app.get("/profile/{user_id}")
+@app.get("/profile/{user_id}", response_model=UserProfile)
 async def get_profile(user_id: str = Path(...)):
-    try:
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Remove sensitive data from response
-        user["_id"] = str(user["_id"])
-        user.pop("password", None)
-        user.pop("confirm_password", None)
-        user.pop("refresh_token_hash", None)
-        user.pop("refresh_token_id", None)
-        user.pop("refresh_token_expires", None)
-        
-        user = sanitize_document(user)
-        return user
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID")
 
-# http://localhost:8000/profile/{user_id}
-@app.put("/profile/{user_id}")
-async def update_profile(
-    profile_data: dict = Body(...),
-    user_id: str = Path(...)
-):
-    try:
-        # Sensitive fields no one should update
-        sensitive_fields = [
-            "password", "confirm_password", "refresh_token_hash",
-            "refresh_token_id", "refresh_token_expires", "_id"
-        ]
-        for field in sensitive_fields:
-            profile_data.pop(field, None)
+    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-        # Make sure user exists
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "id": str(user["_id"]),
+        "name": user.get("name", ""),
+        "surname": user.get("surname", ""),
+        "date_of_birth": user.get("date_of_birth", ""),
+        "home_address": user.get("home_address", ""),
+        "invited_by": user.get("invited_by", ""),
+        "phone_number": user.get("phone_number", ""),
+        "email": user.get("email", ""),
+        "gender": user.get("gender", ""),
+        "role": user.get("role", "user"),  # role still returned here
+    }
 
-        # No valid fields to update
-        if not profile_data:
-            raise HTTPException(status_code=400, detail="No valid fields to update")
 
-        # Add update metadata
-        profile_data["updated_at"] = datetime.utcnow()
+@app.put("/profile/{user_id}", response_model=UserProfile)
+async def update_profile(user_id: str, profile_update: UserProfileUpdate = Body(...)):
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        # Apply update
-        result = await users_collection.update_one(
-            {"_id": ObjectId(user_id)},
-            {"$set": profile_data}
-        )
+    existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-        if result.modified_count == 0:
-            return {"message": "No changes made"}
+    update_data = profile_update.dict(exclude_unset=True)  # only fields sent in request
 
-        return {"message": "Profile updated successfully"}
+    # No longer removing "role" here — role can be updated
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Update the user document in DB
+    await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+
+    # Fetch updated user to return
+    updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
+
+    return {
+        "id": str(updated_user["_id"]),
+        "name": updated_user.get("name", ""),
+        "surname": updated_user.get("surname", ""),
+        "date_of_birth": updated_user.get("date_of_birth", ""),
+        "home_address": updated_user.get("home_address", ""),
+        "invited_by": updated_user.get("invited_by", ""),
+        "phone_number": updated_user.get("phone_number", ""),
+        "email": updated_user.get("email", ""),
+        "gender": updated_user.get("gender", ""),
+        "role": updated_user.get("role", "user"),
+    }
+
 
 # PEOPLE ENDPOINTS
 @app.get("/people")
