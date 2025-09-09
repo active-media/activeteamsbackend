@@ -2,7 +2,7 @@
 import os
 from datetime import datetime, timedelta, time
 from bson import ObjectId
-from fastapi import Body, FastAPI, HTTPException, Query, Path
+from fastapi import Body, FastAPI, HTTPException, Query, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
@@ -12,6 +12,7 @@ from database import db, events_collection, people_collection, users_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
+
 
 
 app = FastAPI()
@@ -982,8 +983,9 @@ async def uncapture_person(data: UncaptureRequest):
 #     except Exception as e:
 #         raise HTTPException(status_code=500, detail=str(e))
 
-# PROFILE ENDPOINTS
-# http://localhost:8000/profile/{user_id}
+# ---PROFILE ENDPOINTS---
+
+# GET user profile by ID
 @app.get("/profile/{user_id}", response_model=UserProfile)
 async def get_profile(user_id: str = Path(...)):
     if not ObjectId.is_valid(user_id):
@@ -1003,10 +1005,10 @@ async def get_profile(user_id: str = Path(...)):
         "phone_number": user.get("phone_number", ""),
         "email": user.get("email", ""),
         "gender": user.get("gender", ""),
-        "role": user.get("role", "user"),  # role still returned here
+        "role": user.get("role", "user"),
     }
 
-
+# PUT update user profile by ID
 @app.put("/profile/{user_id}", response_model=UserProfile)
 async def update_profile(user_id: str, profile_update: UserProfileUpdate = Body(...)):
     if not ObjectId.is_valid(user_id):
@@ -1016,9 +1018,7 @@ async def update_profile(user_id: str, profile_update: UserProfileUpdate = Body(
     if not existing_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    update_data = profile_update.dict(exclude_unset=True)  # only fields sent in request
-
-    # No longer removing "role" here — role can be updated
+    update_data = profile_update.dict(exclude_unset=True)
 
     # Update the user document in DB
     await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
