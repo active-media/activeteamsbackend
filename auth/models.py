@@ -28,17 +28,42 @@ class UserLogin(BaseModel):
     password: str
 
 # ===== Event Models =====
+# Update your Event model (if you're using Pydantic models)
+from pydantic import BaseModel
+from typing import Optional, List, Dict
+from datetime import datetime
+
 class EventBase(BaseModel):
-    eventType: str
     eventName: str
-    date: Optional[datetime] = None
-    time: Optional[str] = None
-    recurringDays: List[str] = Field(default_factory=list)
+    eventType: str
+    eventLeader: str
     location: str
-    eventLeader: Optional[str] = None
-    description: Optional[str] = None
+    description: str
     isTicketed: bool = False
-    price: float = 0.0
+    price: Optional[float] = None
+    date: Optional[datetime] = None
+    recurring_day: List[str] = []
+    
+    # New fields for leader positions
+    leaderPosition: Optional[int] = None
+    leaders: Optional[Dict[str, Optional[str]]] = {
+        "12": None,
+        "144": None, 
+        "1728": None
+    }
+
+# class EventUpdate(BaseModel):
+#     eventName: Optional[str] = None
+#     eventType: Optional[str] = None
+#     eventLeader: Optional[str] = None
+#     location: Optional[str] = None
+#     description: Optional[str] = None
+#     isTicketed: Optional[bool] = None
+#     price: Optional[float] = None
+#     date: Optional[datetime] = None
+#     recurring_day: Optional[List[str]] = None
+#     leaderPosition: Optional[int] = None
+#     leaders: Optional[Dict[str, Optional[str]]] = None
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
@@ -76,10 +101,6 @@ class TokenResponse(BaseModel):
 class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
-
-
-
-# ===== Event Models =====
 
 
 
