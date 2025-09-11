@@ -391,7 +391,7 @@ async def close_event(event_id: str = Path(...), attendees: list = None, did_not
 
 
 # Pseudo Python example
-@app.route('/events')
+@app.post('/events')
 def get_events():
     status = request.args.get('status')
     if status == 'open':
