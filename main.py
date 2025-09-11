@@ -1197,7 +1197,39 @@ def normalize_person_data(data: dict) -> dict:
 @app.patch("/people/{person_id}")
 async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
     try:
-        normalized_data = normalize_person_data(update_data)
+        # Use the updated normalize function that only includes provided fields
+        normalized_data = {}
+        
+        # Only add fields that are actually provided in the request
+        if "Name" in update_data or "name" in update_data:
+            normalized_data["Name"] = update_data.get("Name") or update_data.get("name", "")
+        if "Surname" in update_data or "surname" in update_data:
+            normalized_data["Surname"] = update_data.get("Surname") or update_data.get("surname", "")
+        if "Number" in update_data or "number" in update_data:
+            normalized_data["Number"] = update_data.get("Number") or update_data.get("number", "")
+        if "Email" in update_data or "email" in update_data:
+            normalized_data["Email"] = update_data.get("Email") or update_data.get("email", "")
+        if "HomeAddress" in update_data or "address" in update_data or "location" in update_data:
+            normalized_data["HomeAddress"] = update_data.get("HomeAddress") or update_data.get("address") or update_data.get("location", "")
+        if "Birthday" in update_data or "dob" in update_data:
+            normalized_data["Birthday"] = update_data.get("Birthday") or update_data.get("dob", "")
+        if "Gender" in update_data or "gender" in update_data:
+            normalized_data["Gender"] = update_data.get("Gender") or update_data.get("gender", "")
+        if "InvitedBy" in update_data or "invitedBy" in update_data:
+            normalized_data["InvitedBy"] = update_data.get("InvitedBy") or update_data.get("invitedBy", "")
+        if "Leader @12" in update_data or "leader12" in update_data:
+            normalized_data["Leader @12"] = update_data.get("Leader @12") or update_data.get("leader12", "")
+        if "Leader @144" in update_data or "leader144" in update_data:
+            normalized_data["Leader @144"] = update_data.get("Leader @144") or update_data.get("leader144", "")
+        if "Leader @ 1728" in update_data or "leader1728" in update_data:
+            normalized_data["Leader @ 1728"] = update_data.get("Leader @ 1728") or update_data.get("leader1728", "")
+        if "Stage" in update_data or "stage" in update_data:
+            normalized_data["Stage"] = update_data.get("Stage") or update_data.get("stage", "Win")
+        if "Present" in update_data:
+            normalized_data["Present"] = update_data.get("Present", False)
+        
+        # Always update the timestamp
+        normalized_data["UpdatedAt"] = datetime.utcnow().isoformat()
         
         result = await people_collection.update_one(
             {"_id": ObjectId(person_id)},
@@ -1242,7 +1274,6 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
     except Exception as e:
         print(f"Error updating person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # @app.post("/people")
 # async def create_person(person_data: PersonCreate):
