@@ -236,13 +236,26 @@ def convert_datetime_to_iso(doc):
         return doc
 
 
+# Define a helper function to get leader info
+async def get_leader_info(leader_name: str, people_collection):
+    person = await people_collection.find_one({"Name": leader_name})
+    if not person:
+        raise HTTPException(status_code=404, detail=f"Leader '{leader_name}' not found")
+
+    return {
+        "leader12": person.get("Leader @12") or "",
+        "leader144": person.get("Leader @144") or "",
+        "email": person.get("Email") or "",
+        "position": person.get("Position")  # optional if you use it
+    }
+
 @app.post("/events")
 async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
 
         # Parse date
-        if "date" in event_data and event_data["date"]:
+        if event_data.get("date"):
             if isinstance(event_data["date"], str):
                 try:
                     event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
@@ -260,34 +273,22 @@ async def create_event(event: EventCreate):
         event_data["isTicketed"] = getattr(event, "isTicketed", False)
         event_data["price"] = getattr(event, "price", None)
 
-               # Auto-assign leader roles if it's a Cell event
+        # Auto-assign leader roles if it's a Cell event
         if event_data.get("eventType", "").lower().strip() == "cell":
             leader_name = event_data.get("eventLeader", "").strip()
-
             if leader_name:
-                try:
-                    leader_info = await get_leader_info(leader_name)
-                    event_data["leaderPosition"] = leader_info["position"]
+                leader_info = await get_leader_info(leader_name, people_collection)
+                event_data["leader12"] = leader_info["leader12"]
+                event_data["leader144"] = leader_info["leader144"]
+                event_data["email"] = leader_info["email"]
 
-                    event_data["leaders"] = {
-                        "12": leader_name if leader_info["position"] == 12 else None,
-                        "144": leader_name if leader_info["position"] == 144 else None,
-                        "1728": leader_name if leader_info["position"] == 1728 else None
-                    }
-                except HTTPException:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Leader '{leader_name}' not found in the system."
-                    )
-
+        # Insert into DB
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
 
-
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+
 
 @app.get("/events")
 async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):
@@ -523,41 +524,54 @@ def parse_time_string(time_str: str) -> Optional[time]:
     try:
         return datetime.strptime(time_str, "%H:%M").time()
     except Exception:
-        return No
-
+        return None
 @app.post("/events/cell")
 async def create_cell_event(payload: CellEventCreate):
     try:
         if payload.recurring and not payload.recurring_day:
             raise HTTPException(status_code=400, detail="recurring_day is required when recurring=True")
 
+        # Parse start date + time
         start_dt = payload.start_date
         parsed_time = parse_time_string(payload.start_time)
         if parsed_time:
             start_dt = datetime.combine(start_dt.date(), parsed_time)
 
-        # Replace this with your actual async leader cell name fetch function
-        cell_name = await get_leader_cell_name_async(payload.leader_id)
+        # Simply use whatever is typed in frontend for leaders
+        leaders_filled = []
+        for leader_input in payload.leaders or []:
+            leaders_filled.append({
+                "slot": leader_input.get("slot"),
+                "name": leader_input.get("name"),
+                "id": None  # No DB lookup
+            })
 
+        # Create event document
         event_doc = {
             "type": "cell",
             "service_name": payload.service_name,
-            "leader_id": payload.leader_id,
-            "cell_name": cell_name,
+            "leaders": leaders_filled,
             "start_date": start_dt,
             "recurring": payload.recurring,
             "recurring_day": payload.recurring_day,
             "members": payload.members or [],
+            "details": payload.details or "",
             "created_at": datetime.utcnow(),
             "total_attendance": 0,
         }
 
+        # Insert into DB
         result = await events_collection.insert_one(event_doc)
         return {"message": "Cell event created", "id": str(result.inserted_id)}
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error creating cell event: {str(e)}")
+
+
+
+
 
 
 @app.get("/events/cell/{cell_id}/common-attendees")
@@ -680,88 +694,8 @@ async def list_cell_events():
         return {"results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
 
-# --------Endpoints to add leaders from cell events --------
 
-# Add this to your FastAPI backend
-
-@app.get("/leaders")
-async def get_all_leaders():
-    """Get all unique leaders from the people collection"""
-    try:
-        # Get all people and extract unique leaders
-        people = await people_collection.find({}).to_list(length=None)
-        
-        leaders = {}
-        
-        for person in people:
-            # Check Leader @12
-            if person.get("Leader @12"):
-                leader_name = person["Leader @12"].strip()
-                if leader_name:
-                    leaders[leader_name.lower()] = {
-                        "name": leader_name,
-                        "position": 12
-                    }
-            
-            # Check Leader @144  
-            if person.get("Leader @144"):
-                leader_name = person["Leader @144"].strip()
-                if leader_name:
-                    leaders[leader_name.lower()] = {
-                        "name": leader_name,
-                        "position": 144
-                    }
-            
-            # Check Leader @ 1728
-            if person.get("Leader @ 1728"):
-                leader_name = person["Leader @ 1728"].strip()
-                if leader_name:
-                    leaders[leader_name.lower()] = {
-                        "name": leader_name,
-                        "position": 1728
-                    }
-        
-        return {"leaders": leaders}
-    except Exception as e:
-        print(f"Error fetching leaders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/leader/{leader_name}")
-async def get_leader_info(leader_name: str):
-    """Get specific leader information and position"""
-    try:
-        leader_key = leader_name.lower().strip()
-        
-        # Find people with this leader
-        people_with_leader = await people_collection.find({
-            "$or": [
-                {"Leader @12": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                {"Leader @144": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                {"Leader @ 1728": {"$regex": f"^{leader_name}$", "$options": "i"}}
-            ]
-        }).to_list(length=1)
-        
-        if not people_with_leader:
-            raise HTTPException(status_code=404, detail="Leader not found")
-        
-        person = people_with_leader[0]
-        leader_info = {"name": leader_name, "position": None}
-        
-        if person.get("Leader @12", "").lower() == leader_key:
-            leader_info["position"] = 12
-        elif person.get("Leader @144", "").lower() == leader_key:
-            leader_info["position"] = 144
-        elif person.get("Leader @ 1728", "").lower() == leader_key:
-            leader_info["position"] = 1728
-            
-        return leader_info
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error fetching leader info: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/events/{event_id}/checkin")
@@ -782,9 +716,15 @@ async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesReque
         "id": str(person["_id"]),
         "name": person["Name"],
         "email": person.get("Email", ""),
-        "leader": person.get("Leader", ""),
+        "leader": (
+            person.get("Leader @12") or 
+            person.get("Leader @144") or 
+            person.get("Leader @ 1728") or 
+            ""
+        ),
         "checkin_time": datetime.utcnow().isoformat(),
     }
+
 
     await events_collection.update_one(
         {"_id": ObjectId(event_id)},
