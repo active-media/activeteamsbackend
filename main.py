@@ -306,29 +306,6 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
 
         async for event in cursor:
             event["_id"] = str(event["_id"])
-
-            # Auto-fill leaders for legacy events if missing
-            if event.get("eventType", "").lower().strip() == "cell" and not event.get("leaders"):
-                leader_name = event.get("eventLeader", "").strip()
-
-                if leader_name:
-                    try:
-                        leader_info = await get_leader_info(leader_name)
-                        event["leaderPosition"] = leader_info["position"]
-                        event["leaders"] = {
-                            "12": leader_name if leader_info["position"] == 12 else None,
-                            "144": leader_name if leader_info["position"] == 144 else None,
-                            "1728": leader_name if leader_info["position"] == 1728 else None
-                        }
-
-                        # Save back to DB
-                        await events_collection.update_one(
-                            {"_id": ObjectId(event["_id"])},
-                            {"$set": {"leaders": event["leaders"], "leaderPosition": event["leaderPosition"]}}
-                        )
-                    except:
-                        event["leaders"] = {"12": None, "144": None, "1728": None}
-
             event = convert_datetime_to_iso(event)
             event = sanitize_document(event)
             events.append(event)
@@ -358,7 +335,7 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
-@app.put("/events/{event_id}")
+@app.patch("/events/{event_id}")
 async def update_event(event: EventCreate, event_id: str = Path(...)):
     try:
         if not ObjectId.is_valid(event_id):
@@ -375,26 +352,7 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
                 update_data["date"] = datetime.fromisoformat(update_data["date"].replace("Z", "+00:00"))
             except ValueError:
                 update_data["date"] = datetime.fromisoformat(update_data["date"])
-                # Handle leader role assignment if Cell event
-        if update_data.get("eventType", "").lower().strip() == "cell":
-            leader_name = update_data.get("eventLeader", "").strip()
-
-            if leader_name:
-                try:
-                    leader_info = await get_leader_info(leader_name)
-                    update_data["leaderPosition"] = leader_info["position"]
-
-                    update_data["leaders"] = {
-                        "12": leader_name if leader_info["position"] == 12 else None,
-                        "144": leader_name if leader_info["position"] == 144 else None,
-                        "1728": leader_name if leader_info["position"] == 1728 else None
-                    }
-                except HTTPException:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Leader '{leader_name}' not found in the system."
-                    )
-
+        
         # Handle ticket info
         if "isTicketed" in update_data:
             update_data["isTicketed"] = update_data["isTicketed"]
@@ -419,7 +377,7 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
-@app.put("/allevents/{event_id}")
+@app.patch("/allevents/{event_id}")
 async def close_event(event_id: str = Path(...), attendees: list = None, did_not_meet: bool = False):
     try:
         update_data = {"status": "closed", "updated_at": datetime.utcnow()}
@@ -1282,7 +1240,39 @@ def normalize_person_data(data: dict) -> dict:
 @app.patch("/people/{person_id}")
 async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
     try:
-        normalized_data = normalize_person_data(update_data)
+        # Use the updated normalize function that only includes provided fields
+        normalized_data = {}
+        
+        # Only add fields that are actually provided in the request
+        if "Name" in update_data or "name" in update_data:
+            normalized_data["Name"] = update_data.get("Name") or update_data.get("name", "")
+        if "Surname" in update_data or "surname" in update_data:
+            normalized_data["Surname"] = update_data.get("Surname") or update_data.get("surname", "")
+        if "Number" in update_data or "number" in update_data:
+            normalized_data["Number"] = update_data.get("Number") or update_data.get("number", "")
+        if "Email" in update_data or "email" in update_data:
+            normalized_data["Email"] = update_data.get("Email") or update_data.get("email", "")
+        if "HomeAddress" in update_data or "address" in update_data or "location" in update_data:
+            normalized_data["HomeAddress"] = update_data.get("HomeAddress") or update_data.get("address") or update_data.get("location", "")
+        if "Birthday" in update_data or "dob" in update_data:
+            normalized_data["Birthday"] = update_data.get("Birthday") or update_data.get("dob", "")
+        if "Gender" in update_data or "gender" in update_data:
+            normalized_data["Gender"] = update_data.get("Gender") or update_data.get("gender", "")
+        if "InvitedBy" in update_data or "invitedBy" in update_data:
+            normalized_data["InvitedBy"] = update_data.get("InvitedBy") or update_data.get("invitedBy", "")
+        if "Leader @12" in update_data or "leader12" in update_data:
+            normalized_data["Leader @12"] = update_data.get("Leader @12") or update_data.get("leader12", "")
+        if "Leader @144" in update_data or "leader144" in update_data:
+            normalized_data["Leader @144"] = update_data.get("Leader @144") or update_data.get("leader144", "")
+        if "Leader @ 1728" in update_data or "leader1728" in update_data:
+            normalized_data["Leader @ 1728"] = update_data.get("Leader @ 1728") or update_data.get("leader1728", "")
+        if "Stage" in update_data or "stage" in update_data:
+            normalized_data["Stage"] = update_data.get("Stage") or update_data.get("stage", "Win")
+        if "Present" in update_data:
+            normalized_data["Present"] = update_data.get("Present", False)
+        
+        # Always update the timestamp
+        normalized_data["UpdatedAt"] = datetime.utcnow().isoformat()
         
         result = await people_collection.update_one(
             {"_id": ObjectId(person_id)},
@@ -1327,7 +1317,6 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
     except Exception as e:
         print(f"Error updating person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # @app.post("/people")
 # async def create_person(person_data: PersonCreate):
