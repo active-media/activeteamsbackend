@@ -71,6 +71,8 @@ JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
 # http://localhost:8000/login
+
+
 @app.post("/login")
 async def login(user: UserLogin):
     existing = await users_collection.find_one({"email": user.email})
@@ -94,7 +96,7 @@ async def login(user: UserLogin):
     refresh_hash = hash_password(refresh_plain)
     refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-    # Store refresh token data in DB
+    # Store refresh token in DB
     await users_collection.update_one(
         {"_id": existing["_id"]},
         {
@@ -106,13 +108,24 @@ async def login(user: UserLogin):
         }
     )
 
+    # Build user object for frontend
+    user_data = {
+        "id": str(existing["_id"]),
+        "email": existing["email"],
+        "name": existing.get("name", ""),  # Optional: include more fields
+        "role": existing.get("role", "registrant"),
+    }
+
+    # Return all expected data
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "refresh_token_id": refresh_token_id,
         "refresh_token": refresh_plain,
+        "user": user_data  # 👈 Add this line
     }
 
+   
 # http://localhost:8000/refresh-token
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
@@ -335,7 +348,7 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
-@app.patch("/events/{event_id}")
+@app.put("/events/{event_id}")
 async def update_event(event: EventCreate, event_id: str = Path(...)):
     try:
         if not ObjectId.is_valid(event_id):
@@ -377,7 +390,7 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
-@app.patch("/allevents/{event_id}")
+@app.put("/allevents/{event_id}")
 async def close_event(event_id: str = Path(...), attendees: list = None, did_not_meet: bool = False):
     try:
         update_data = {"status": "closed", "updated_at": datetime.utcnow()}
