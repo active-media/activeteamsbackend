@@ -1,4 +1,3 @@
-
 import os
 from datetime import datetime, timedelta, time
 from bson import ObjectId
@@ -12,11 +11,7 @@ from database import db, events_collection, people_collection, users_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
-
-
-
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,6 +66,23 @@ JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
 # http://localhost:8000/login
+# @app.post("/login")
+# async def login(user: UserLogin):
+#     existing = await users_collection.find_one({"email": user.email})
+#     if not existing or not verify_password(user.password, existing["password"]):
+#         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+#     # Create access token
+#     token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
+#     access_token = create_access_token(
+#         data={
+#             "user_id": str(existing["_id"]),
+#             "email": existing["email"],
+#             "role": existing.get("role", "registrant")
+#         },
+#         expires_delta=token_expires,
+#     )
+
 @app.post("/login")
 async def login(user: UserLogin):
     existing = await users_collection.find_one({"email": user.email})
@@ -87,6 +99,24 @@ async def login(user: UserLogin):
         },
         expires_delta=token_expires,
     )
+
+    # Return both token AND user information
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(existing["_id"]),  # ← This is what the frontend needs!
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "registrant"),
+            "date_of_birth": existing.get("date_of_birth", ""),
+            "home_address": existing.get("home_address", ""),
+            "phone_number": existing.get("phone_number", ""),
+            "gender": existing.get("gender", ""),
+            "invited_by": existing.get("invited_by", "")
+        }
+    }
 
     # Create refresh token
     refresh_token_id = secrets.token_urlsafe(16)
@@ -682,9 +712,6 @@ async def list_cell_events():
     
 
 # --------Endpoints to add leaders from cell events --------
-
-# Add this to your FastAPI backend
-
 @app.get("/leaders")
 async def get_all_leaders():
     """Get all unique leaders from the people collection"""
@@ -906,229 +933,7 @@ async def uncapture_person(data: UncaptureRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# async def get_people(
-#     page: int = Query(1, ge=1),
-#     perPage: int = Query(100, ge=1, le=500),
-#     name: Optional[str] = None,
-#     gender: Optional[str] = None,
-#     dob: Optional[str] = None,
-#     location: Optional[str] = None,
-#     leader: Optional[str] = None,
-#     stage: Optional[str] = None
-# ):
-#     try:
-#         # Compute the skip value for pagination
-#         skip = (page - 1) * perPage
-
-#         query = {}
-
-#         # Construct the query based on provided parameters
-#         if name:
-#             query["Name"] = {"$regex": name, "$options": "i"}
-#         if gender:
-#             query["Gender"] = {"$regex": gender, "$options": "i"}
-#         if dob:
-#             query["DateOfBirth"] = dob
-#         if location:
-#             query["Location"] = {"$regex": location, "$options": "i"}
-#         if leader:
-#             query["$or"] = [
-#                 {"Leader @12": {"$regex": leader, "$options": "i"}},
-#                 {"Leader @144": {"$regex": leader, "$options": "i"}},
-#                 {"Leader @ 1728": {"$regex": leader, "$options": "i"}}
-#             ]
-#         if stage:
-#             query["Stage"] = {"$regex": stage, "$options": "i"}
-
-#         # Fetch the people list with pagination and apply the query
-#         cursor = people_collection.find(query).skip(skip).limit(perPage)
-
-#         people_list = []
-#         async for person in cursor:
-#             person["_id"] = str(person["_id"])  # Convert the ObjectId to string
-#             sanitized_person = sanitize_document(person)  # Sanitize the person document
-
-#             # Collect leader fields (Leader @12, Leader @144, Leader @1728)
-#             leader_data = {
-#                 "Leader @12": person.get("Leader @12", ""),
-#                 "Leader @144": person.get("Leader @144", ""),
-#                 "Leader @ 1728": person.get("Leader @ 1728", "")
-#             }
-
-#             # Add leader information to the sanitized person data
-#             sanitized_person.update(leader_data)
-#             people_list.append(sanitized_person)
-
-#         # Fetch total count for pagination metadata
-#         total_count = await people_collection.count_documents(query)
-
-#         # Return paginated response
-#         return {
-#             "page": page,
-#             "perPage": perPage,
-#             "total": total_count,
-#             "results": people_list
-#         }
-    
-#     except Exception as e:
-#         # logging.error(f"Error occurred while fetching people: {e}")
-#         raise HTTPException(status_code=500, detail="Internal Server Error")
-
-# @app.get("/people/{person_id}")
-# async def get_person_by_id(person_id: str = Path(...)):
-#     try:
-#         person = await people_collection.find_one({"_id": ObjectId(person_id)})
-#         if not person:
-#             raise HTTPException(status_code=404, detail="Person not found")
-#         person["_id"] = str(person["_id"])
-#         mapped = {
-#             "_id": person["_id"],
-#             "Name": person.get("Name", ""),
-#             "Surname": person.get("Surname", ""),
-#             "Phone": person.get("Number", ""),
-#             "Email": person.get("Email", ""),
-#             "Location": person.get("Address", ""),
-#             "Gender": person.get("Gender", ""),
-#             "DateOfBirth": person.get("Birthday", ""),
-#             "Leader": (
-#                 person.get("Leader @12")
-#                 or person.get("Leader @144")
-#                 or person.get("Leader @ 1728")
-#                 or ""
-#             ),
-#             "Stage": person.get("Stage", "Win"),
-#             "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat()
-#         }
-#         return mapped
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-# def normalize_person_data(data: dict) -> dict:
-#     return {
-#         "name": data.get("Name") or data.get("name"),
-#         "surname": data.get("Surname") or data.get("surname"),
-#         "phone": data.get("Number") or data.get("phone"),
-#         "email": data.get("Email") or data.get("email"),
-#         "homeAddress": data.get("Address") or data.get("homeAddress"),
-#         "dob": data.get("Birthday") or data.get("dob"),
-#         "gender": data.get("Gender") or data.get("gender"),
-#         "invitedBy": data.get("invitedBy"),
-#         "leader12": data.get("Leader @12") or data.get("leader12"),
-#         "leader144": data.get("Leader @144") or data.get("leader144"),
-#         "leader1728": data.get("Leader @ 1728") or data.get("leader1728"),
-#         # Add other fields if necessary
-#     }
-
-# @app.patch("/people/{person_id}")
-# async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
-#     try:
-#         normalized_data = normalize_person_data(update_data)
-#         normalized_data["updatedAt"] = datetime.utcnow().isoformat()
-
-#         result = await people_collection.update_one(
-#             {"_id": ObjectId(person_id)},
-#             {"$set": normalized_data}
-#         )
-#         if result.matched_count == 0:
-#             raise HTTPException(status_code=404, detail="Person not found")
-
-#         # Fetch the updated person document
-#         updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
-
-#         if not updated_person:
-#             raise HTTPException(status_code=404, detail="Person not found after update")
-
-#         # Normalize the updated person before returning
-#         normalized_person = normalize_person_data(updated_person)
-#         normalized_person["_id"] = str(updated_person["_id"])
-
-#         return normalized_person
-
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.post("/people")
-# async def create_person(person_data: PersonCreate):
-#     try:
-#         # Check if email already exists
-#         existing_person = await people_collection.find_one({"Email": person_data.email})
-#         if existing_person:
-#             raise HTTPException(
-#                 status_code=400, 
-#                 detail=f"A person with email '{person_data.email}' already exists"
-#             )
-
-#         # Prepare the document for insertion
-#         person_doc = {
-#             "Name": person_data.name.strip(),
-#             "Surname": person_data.surname.strip() if person_data.surname else "",
-#             "Email": person_data.email.lower().strip(),
-#             "Number": person_data.phone.strip() if person_data.phone else "",
-#             "Address": person_data.homeAddress.strip() if person_data.homeAddress else "",
-#             "Gender": person_data.gender.strip() if person_data.gender else "",
-#             "Birthday": person_data.dob.strip() if person_data.dob else "",
-#             "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
-#             "Leader @12": person_data.leader12.strip() if person_data.leader12 else "",
-#             "Leader @144": person_data.leader144.strip() if person_data.leader144 else "",
-#             "Leader @ 1728": person_data.leader1728.strip() if person_data.leader1728 else "",
-#             "Stage": person_data.stage or "Win",
-#             "Present": False,  # Default to not present
-#             "CreatedAt": datetime.utcnow().isoformat(),
-#             "UpdatedAt": datetime.utcnow().isoformat()
-#         }
-
-#         # Insert the person into the database
-#         result = await people_collection.insert_one(person_doc)
-        
-#         # Prepare response data
-#         created_person = {
-#             "_id": str(result.inserted_id),
-#             "Name": person_doc["Name"],
-#             "Surname": person_doc["Surname"],
-#             "Email": person_doc["Email"],
-#             "Phone": person_doc["Number"],
-#             "Location": person_doc["Address"],
-#             "Gender": person_doc["Gender"],
-#             "DateOfBirth": person_doc["Birthday"],
-#             "InvitedBy": person_doc["InvitedBy"],
-#             "Leader @12": person_doc["Leader @12"],
-#             "Leader @144": person_doc["Leader @144"],
-#             "Leader @ 1728": person_doc["Leader @ 1728"],
-#             "Stage": person_doc["Stage"],
-#             "Present": person_doc["Present"],
-#             "CreatedAt": person_doc["CreatedAt"],
-#             "UpdatedAt": person_doc["UpdatedAt"]
-#         }
-
-#         return {
-#             "message": "Person created successfully",
-#             "id": str(result.inserted_id),
-#             "_id": str(result.inserted_id),
-#             "person": created_person
-#         }
-
-#     except HTTPException:
-#         # Re-raise HTTP exceptions (like duplicate email)
-#         raise
-#     except Exception as e:
-#         # Log the error for debugging
-#         print(f"Error creating person: {e}")
-#         raise HTTPException(status_code=500, detail="Internal Server Error")
-
-
-# @app.delete("/people/{person_id}")
-# async def delete_person(person_id: str = Path(...)):
-#     try:
-#         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
-#         if result.deleted_count == 0:
-#             raise HTTPException(status_code=404, detail="Person not found")
-#         return {"message": "Person deleted successfully"}
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
 # ---PROFILE ENDPOINTS---
-
 # GET user profile by ID
 @app.get("/profile/{user_id}", response_model=UserProfile)
 async def get_profile(user_id: str = Path(...)):
@@ -1387,82 +1192,6 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
         print(f"Error updating person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# @app.post("/people")
-# async def create_person(person_data: PersonCreate):
-#     try:
-#         # Check if email already exists
-#         if person_data.email:
-#             existing_person = await people_collection.find_one({"Email": person_data.email})
-#             if existing_person:
-#                 raise HTTPException(
-#                     status_code=400, 
-#                     detail=f"A person with email '{person_data.email}' already exists"
-#                 )
-
-#         # Prepare the document for insertion
-#         person_doc = {
-#             "Name": person_data.name.strip(),
-#             "Surname": person_data.surname.strip() if person_data.surname else "",
-#             "Email": person_data.email.lower().strip() if person_data.email else "",
-#             "Number": person_data.number.strip() if person_data.number else "",
-#             "HomeAddress": person_data.address.strip() if person_data.address else "",
-#             "Gender": person_data.gender.strip() if person_data.gender else "",
-#             "Birthday": person_data.dob.strip() if person_data.dob else "",
-#             "InvitedBy": person_data.invitedBy.strip() if person_data.invitedBy else "",
-#             "Leader @12": getattr(person_data, 'leader12', '') or "",
-#             "Leader @144": getattr(person_data, 'leader144', '') or "",
-#             "Leader @ 1728": getattr(person_data, 'leader1728', '') or "",
-#             "Stage": person_data.stage or "Win",
-#             "Present": False,  # Default to not present
-#             "CreatedAt": datetime.utcnow().isoformat(),
-#             "UpdatedAt": datetime.utcnow().isoformat()
-#         }
-
-#         # Insert the person into the database
-#         result = await people_collection.insert_one(person_doc)
-        
-#         # Return the created person in consistent format
-#         created_person = {
-#             "_id": str(result.inserted_id),
-#             "Name": person_doc["Name"],
-#             "Surname": person_doc["Surname"],
-#             "Email": person_doc["Email"],
-#             "Phone": person_doc["Number"],
-#             # "Location": person_doc["Address"],
-#             "Gender": person_doc["Gender"],
-#             "DateOfBirth": person_doc["Birthday"],
-#             "HomeAddress": person_doc["HomeAddress"],
-#             "InvitedBy": person_doc["InvitedBy"],
-#             "Leader @12": person_doc["Leader @12"],
-#             "Leader @144": person_doc["Leader @144"],
-#             "Leader @ 1728": person_doc["Leader @ 1728"],
-#             "Leader": (
-#                 person_doc["Leader @12"] or 
-#                 person_doc["Leader @144"] or 
-#                 person_doc["Leader @ 1728"] or 
-#                 ""
-#             ),
-#             "Stage": person_doc["Stage"],
-#             "Present": person_doc["Present"],
-#             "CreatedAt": person_doc["CreatedAt"],
-#             "UpdatedAt": person_doc["UpdatedAt"]
-#         }
-
-#         return {
-#             "message": "Person created successfully",
-#             "id": str(result.inserted_id),
-#             "_id": str(result.inserted_id),
-#             "person": created_person
-#         }
-
-#     except HTTPException:
-#         # Re-raise HTTP exceptions (like duplicate email)
-#         raise
-#     except Exception as e:
-#         # Log the error for debugging
-#         print(f"Error creating person: {e}")
-#         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post("/people")
 async def create_person(person_data: PersonCreate):
