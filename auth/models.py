@@ -163,11 +163,17 @@ class CellEventCreate(BaseModel):
             data["recurring_day"] = data["recurring_day"].capitalize()
         return data
 
+
+
+    def model_dump(self, **kwargs):
+        data = super().model_dump(**kwargs)
+        if data.get("recurring_day"):
+            data["recurring_day"] = data["recurring_day"].capitalize()
+        return data
+
 class AddMemberNamesRequest(BaseModel):
     name: str
 
-class RemoveMemberRequest(BaseModel):
-    name: str
 
 class RemoveMemberRequest(BaseModel):
     name: str
