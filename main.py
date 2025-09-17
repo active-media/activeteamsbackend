@@ -349,7 +349,7 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
             query = {"status": status}
 
         events = []
-        cursor = cells_collection.find(query).sort("created_at", -1)
+        cursor = events_collection.find(query).sort("created_at", -1)
 
         async for event in cursor:
             event["_id"] = str(event["_id"])
