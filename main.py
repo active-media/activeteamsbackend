@@ -16,8 +16,7 @@ from auth.utils import get_current_user
 from auth.models import UserProfile
 from datetime import datetime, timezone
 import logging
-
-
+import pytz
 
 
 app = FastAPI()
@@ -386,6 +385,124 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
 
 
+# ----------------------------
+#  📅 Fetch user's upcoming cell events
+@app.get("/events/cells-user")
+async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
+    try:
+        email = current_user.get("email")
+        if not email:
+            return {"error": "User email not found in token", "status": "failed"}
+
+        # Set current timezone
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_str = today.strftime("%Y-%m-%d")
+        today_day_name = today.strftime("%A")  # e.g., "Wednesday"
+
+        query = {
+            "Email": email,
+            "Event Type": "Cells",
+            "Status": {"$ne": "closed"}
+        }
+
+        cursor = cells_collection.find(query)
+        today_events = []
+
+        # For deduplication
+        seen_event_keys = set()
+
+        async for event in cursor:
+            event_name = event.get("Event Name", "")
+            recurring_day = event.get("Day")
+            event_date_str = event.get("Date Of Event")
+            time_str = event.get("Time", "19:00")
+
+            # First, check if it's a manually scheduled event for today
+            matched_today = False
+            if event_date_str:
+                try:
+                    if isinstance(event_date_str, datetime):
+                        event_date = event_date_str
+                    else:
+                        event_date = datetime.strptime(event_date_str, "%Y-%m-%d")
+
+                    if event_date.strftime("%Y-%m-%d") == today_str:
+                        matched_today = True
+                        event_datetime = event_date.replace(
+                            hour=int(time_str.split(":")[0]),
+                            minute=int(time_str.split(":")[1]),
+                            second=0,
+                            microsecond=0,
+                            tzinfo=timezone
+                        )
+
+                        dedup_key = f"{event_name}-{event_datetime.date()}"
+                        if dedup_key not in seen_event_keys:
+                            seen_event_keys.add(dedup_key)
+                            today_events.append({
+                                "_id": str(event["_id"]),
+                                "eventName": event_name,
+                                "eventType": "Cell",
+                                "date": event_datetime.isoformat(),
+                                "location": event.get("Address", ""),
+                                "status": event.get("Status", "Incomplete").lower(),
+                                "eventLeaderName": event.get("Leader", "Not specified"),
+                                "eventLeaderEmail": event.get("Email", "Not specified"),
+                                "leader12": event.get("Leader at 12", ""),
+                                "time": time_str,
+                                "recurringDays": [recurring_day] if recurring_day else [],
+                                "isTicketed": False,
+                                "price": 0,
+                                "isVirtual": False
+                            })
+                except ValueError:
+                    continue  # Skip invalid dates
+
+            # Now handle recurring cell for today's weekday (e.g. Wednesday)
+            if not matched_today and recurring_day == today_day_name:
+                # Generate a "virtual" instance for today
+                virtual_date = today.replace(
+                    hour=int(time_str.split(":")[0]),
+                    minute=int(time_str.split(":")[1]),
+                    second=0,
+                    microsecond=0
+                )
+
+                dedup_key = f"{event_name}-{virtual_date.date()}"
+                if dedup_key not in seen_event_keys:
+                    seen_event_keys.add(dedup_key)
+                    today_events.append({
+                        "_id": str(event["_id"]),
+                        "eventName": event_name,
+                        "eventType": "Cell",
+                        "date": virtual_date.isoformat(),
+                        "location": event.get("Address", ""),
+                        "status": event.get("Status", "Incomplete").lower(),
+                        "eventLeaderName": event.get("Leader", "Not specified"),
+                        "eventLeaderEmail": event.get("Email", "Not specified"),
+                        "leader12": event.get("Leader at 12", ""),
+                        "time": time_str,
+                        "recurringDays": [recurring_day],
+                        "isTicketed": False,
+                        "price": 0,
+                        "isVirtual": True
+                    })
+
+        # Sort by date and return
+        today_events.sort(key=lambda e: datetime.fromisoformat(e["date"]))
+
+        return {
+            "user_email": email,
+            "total_events": len(today_events),
+            "events": today_events,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logging.error(f"Error in get_user_cell_events: {e}")
+        return {"error": str(e), "status": "failed"}
+    
 @app.get("/events/{event_id}")
 async def get_event_by_id(event_id: str = Path(...)):
     try:
@@ -553,73 +670,6 @@ async def debug_emails():
         }
 
     except Exception as e:
-        return {"error": str(e)}
-
-
-# ----------------------------
-# 📅 Fetch user's upcoming cell events
-# ----------------------------
-
-
-
-@app.get("/events/cell/my-upcoming")
-async def get_my_upcoming_cell_events(
-    current_user: UserProfile = Depends(get_current_user),
-    date: Optional[str] = Query(None),
-    day: Optional[str] = Query(None)
-):
-    """
-    Returns upcoming 'Cell' events for the logged-in user,
-    optionally filtered by a starting date or day of week.
-    """
-    try:
-        email = current_user.get("email") if isinstance(current_user, dict) else current_user.email
-
-        query = {
-            "$and": [
-                {"$or": [{"Email": email}, {"email": email}]},
-                {"Event Type": "Cells"}
-            ]
-        }
-
-        # Add date filter if provided
-        if date:
-            try:
-                filter_date = datetime.strptime(date, "%Y-%m-%d")
-                filter_date = filter_date.replace(tzinfo=timezone.utc)
-                query["$and"].append({"Date Of Event": {"$gte": filter_date}})
-            except ValueError:
-                return {"error": "Invalid date format. Use YYYY-MM-DD."}
-
-        # Add day filter if provided
-        if day:
-            query["$and"].append({"Day": {"$regex": f"^{day}$", "$options": "i"}})
-
-        cursor = cells_collection.find(query).sort("Date Of Event", 1).limit(5)
-        events = []
-        async for event in cursor:
-            events.append({
-                "Event Name": event.get("Event Name"),
-                "Event Type": event.get("Event Type"),
-                "Email": event.get("Email") or event.get("email"),
-                "Date Of Event": event.get("Date Of Event"),
-                "Reoccurring": event.get("Reoccurring"),
-                "Day": event.get("Day")
-            })
-
-        total_user_events = await cells_collection.count_documents(query)
-        total_cell_events = await cells_collection.count_documents({"Event Type": "Cells"})
-
-        return {
-            "user_email": email,
-            "filters": {"date": date, "day": day},
-            "sample_events": events,
-            "total_user_events": total_user_events,
-            "total_cell_events": total_cell_events,
-        }
-
-    except Exception as e:
-        logging.error(f"Error in get_my_upcoming_cell_events: {e}")
         return {"error": str(e)}
     
 # --------Endpoints to add leaders from cell events --------
