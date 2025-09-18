@@ -13,10 +13,12 @@ from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
 from auth.utils import get_current_user  
-from auth.models import UserProfile
+from auth.models import UserProfile, AttendanceSubmission
 from datetime import datetime, timezone
 import logging
 import pytz
+
+
 
 
 app = FastAPI()
@@ -528,87 +530,74 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-            
+        
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
         
+        # Get only fields that are set
         update_data = event.dict(exclude_unset=True)
-        
+
+        # 🔥 Handle stringified ISO datetime
         if "date" in update_data and isinstance(update_data["date"], str):
             try:
                 update_data["date"] = datetime.fromisoformat(update_data["date"].replace("Z", "+00:00"))
-            except ValueError:
-                update_data["date"] = datetime.fromisoformat(update_data["date"])
-                # Handle leader role assignment if Cell event
-        if update_data.get("eventType", "").lower().strip() == "cell":
-            leader_name = update_data.get("eventLeader", "").strip()
+            except ValueError as ve:
+                raise HTTPException(status_code=422, detail=f"Invalid date format: {str(ve)}")
 
-            if leader_name:
-                try:
-                    leader_info = await get_leader_info(leader_name)
-                    update_data["leaderPosition"] = leader_info["position"]
+        # 🔧 Optional: Clean up empty fields (like empty string price for ticketed=False)
+        if not update_data.get("isTicketed"):
+            update_data["price"] = None
 
-                    update_data["leaders"] = {
-                        "12": leader_name if leader_info["position"] == 12 else None,
-                        "144": leader_name if leader_info["position"] == 144 else None,
-                        "1728": leader_name if leader_info["position"] == 1728 else None
-                    }
-                except HTTPException:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Leader '{leader_name}' not found in the system."
-                    )
-
-        # Handle ticket info
-        if "isTicketed" in update_data:
-            update_data["isTicketed"] = update_data["isTicketed"]
-        if "price" in update_data:
-            update_data["price"] = update_data["price"]
-        
-        update_data["updated_at"] = datetime.utcnow()
-        
         result = await events_collection.update_one(
             {"_id": ObjectId(event_id)},
             {"$set": update_data}
         )
-        
+
         if result.modified_count == 0:
-            return {"message": "No changes were made to the event"}
-        
-        return {"message": "Event updated successfully"}
+            return {"message": "No changes were made to the event", "success": True}
+
+        return {"message": "Event updated successfully", "success": True}
+
     except HTTPException:
         raise
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
-@app.put("/allevents/{event_id}")
-async def close_event(event_id: str = Path(...), attendees: list = None, did_not_meet: bool = False):
+@app.put("/submit-attendance/{event_id}")
+async def close_event(
+    event_id: str = Path(...),
+    submission: AttendanceSubmission = Body(...)
+):
     try:
-        update_data = {"status": "closed", "updated_at": datetime.utcnow()}
-        if attendees is not None:
-            update_data["attendees"] = attendees
-            update_data["total_attendance"] = len(attendees)
-        await events_collection.update_one({"_id": ObjectId(event_id)}, {"$set": update_data})
-        return {"message": "Event closed successfully"}
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        update_data = {
+            "status": "closed",
+            "updated_at": datetime.utcnow(),
+            "attendees": [a.dict() for a in submission.attendees],
+            "total_attendance": len(submission.attendees)
+        }
+
+        if submission.did_not_meet:
+            update_data["total_attendance"] = 0
+            update_data["attendees"] = []
+
+        await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+
+        return {"message": "Event attendance submitted and closed."}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
-
-
-# Pseudo Python example
-@app.post('/events')
-def get_events():
-    status = request.args.get('status')
-    if status == 'open':
-        query = {"status": {"$ne": "closed"}}
-    else:
-        query = {}
-    events = db.events.find(query)
-    return jsonify(events)
-
-
+        raise HTTPException(status_code=500, detail=f"Error submitting attendance: {str(e)}")
+    
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
