@@ -2,7 +2,7 @@
 import os
 from datetime import datetime, timedelta
 from bson import ObjectId
-from fastapi import Body, FastAPI, HTTPException, Query, Path
+from fastapi import Body, FastAPI, HTTPException, Query, Path ,Depends
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, TaskUpdate, EventCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
@@ -10,6 +10,9 @@ import math
 import secrets
 from database import db, events_collection, people_collection, users_collection ,Tasks_collection
 from typing import Optional, List
+import pytz
+import logging
+from auth.utils import get_current_user  
 
 
 app = FastAPI()
@@ -1338,17 +1341,27 @@ async def delete_person(person_id: str = Path(...)):
 
 # POST /tasks
 
+from fastapi.encoders import jsonable_encoder
+
 @app.post("/tasks")
+async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
+    try:
+        # Convert Pydantic model to dict
+        new_task_dict = task.dict()
+        # Attach the creator's email for backward compatibility
+        new_task_dict["assignedfor"] = current_user["email"]
 
-async def create_task(task: TaskModel):
+        # Insert into MongoDB
+        result = await db["tasks"].insert_one(new_task_dict)
 
-    print("Received task:", task)
+        # Add the MongoDB _id as a string for the response
+        new_task_dict["_id"] = str(result.inserted_id)
 
-    task_dict = task.dict()
+        # Encode safely for JSON response
+        return {"status": "success", "task": jsonable_encoder(new_task_dict)}
 
-    result = await Tasks_collection.insert_one(task_dict)
-
-    return {"message": "Task created", "id": str(result.inserted_id)}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 # Retrieve all tasks
 
@@ -1422,3 +1435,101 @@ async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
     result["_id"] = str(result["_id"])
 
     return result
+@app.get("/tasks/user-tasks")
+async def get_user_tasks(current_user: dict = Depends(get_current_user)):
+    try:
+        email = current_user.get("email")
+        if not email:
+            return {"error": "User email not found in token", "status": "failed"}
+
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_str = today.strftime("%Y-%m-%d")
+        today_day_name = today.strftime("%A")
+
+        # Query tasks by assignedfor only
+        query = {"assignedfor": email}
+
+        cursor = Tasks_collection.find(query)
+        today_tasks = []
+        seen_task_keys = set()
+
+        async for task in cursor:
+            task_name = task.get("name", "Unnamed Task")
+            task_type = task.get("taskType", "")
+            task_date_str = task.get("followup_date")
+            recurring_day = task.get("recurring_day")
+            time_str = task.get("time", "09:00")
+
+            matched_today = False
+            task_datetime = None
+
+            if task_date_str:
+                if isinstance(task_date_str, datetime):
+                    task_datetime = task_date_str
+                else:
+                    try:
+                        task_datetime = datetime.fromisoformat(task_date_str)
+                        task_datetime = task_datetime.astimezone(timezone)
+                    except ValueError:
+                        logging.warning(f"Invalid date format: {task_date_str}")
+                        task_datetime = None
+
+                if task_datetime and task_datetime.strftime("%Y-%m-%d") == today_str:
+                    matched_today = True
+
+            assigned_email = task.get("assignedfor", "Not assigned")
+
+            if matched_today:
+                dedup_key = f"{task_name}-{task_datetime.date()}"
+                if dedup_key not in seen_task_keys:
+                    seen_task_keys.add(dedup_key)
+                    today_tasks.append({
+                        "_id": str(task["_id"]),
+                        "taskName": task_name,
+                        "taskType": task_type,
+                        "date": task_datetime.isoformat(),
+                        "status": task.get("status", "Pending").lower(),
+                        "assignedTo": assigned_email,
+                        "isRecurring": bool(recurring_day),
+                        "recurringDays": [recurring_day] if recurring_day else [],
+                        "isVirtual": False,
+                        "contacted_person": task.get("contacted_person", {})
+                    })
+
+            # Recurring tasks
+            if not matched_today and recurring_day == today_day_name:
+                virtual_date = today.replace(
+                    hour=int(time_str.split(":")[0]),
+                    minute=int(time_str.split(":")[1]),
+                    second=0,
+                    microsecond=0
+                )
+                dedup_key = f"{task_name}-{virtual_date.date()}"
+                if dedup_key not in seen_task_keys:
+                    seen_task_keys.add(dedup_key)
+                    today_tasks.append({
+                        "_id": str(task["_id"]),
+                        "taskName": task_name,
+                        "taskType": task_type,
+                        "date": virtual_date.isoformat(),
+                        "status": task.get("status", "Pending").lower(),
+                        "assignedTo": assigned_email,
+                        "isRecurring": True,
+                        "recurringDays": [recurring_day],
+                        "isVirtual": True,
+                        "contacted_person": task.get("contacted_person", {})
+                    })
+
+        today_tasks.sort(key=lambda t: datetime.fromisoformat(t["date"]))
+
+        return {
+            "user_email": email,
+            "total_tasks": len(today_tasks),
+            "tasks": today_tasks,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logging.error(f"Error in get_user_tasks: {e}")
+        return {"error": str(e), "status": "failed"}

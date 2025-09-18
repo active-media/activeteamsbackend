@@ -148,6 +148,7 @@ class TaskModel(BaseModel):
     followup_date: datetime
     status: str
     type: str
+    assignedfor: str
 
     class Config:
         validate_by_name = True
