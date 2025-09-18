@@ -462,7 +462,7 @@ async def close_event(event_id: str = Path(...), attendees: list = None, did_not
 
 # Pseudo Python example
 @app.post('/events')
-def get_events():
+def get_events(): 
     status = request.args.get('status')
     if status == 'open':
         query = {"status": {"$ne": "closed"}}
