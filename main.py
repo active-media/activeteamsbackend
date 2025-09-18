@@ -233,7 +233,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1),
     )
-    reset_link = f"http://localhost:5173/reset-password?token={reset_token}"
+    reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
 
     status_code = send_reset_password_email(email, reset_link)
     if not status_code or status_code >= 400:
