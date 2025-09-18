@@ -33,16 +33,30 @@ class EventBase(BaseModel):
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurringDays: List[str] = Field(default_factory=list)
+    recurring_day: Optional[List[str]] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: bool = False
-    price: float = 0.0
+    isTicketed: Optional[bool] = False
+    price: Optional[float] = 0.0
+    userEmail: Optional[str] = None
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
+    email: Optional[str] = None
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
+
+# ===== Attendance Submission =====
+class Attendee(BaseModel):
+    name: str
+    time: Optional[datetime] = None  # Auto-populated or passed in
+
+class AttendanceSubmission(BaseModel):
+    attendees: List[Attendee]
+    did_not_meet: Optional[bool] = False
+
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     formatted = [
@@ -77,25 +91,20 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
 
-
-
-# ===== Event Models =====
-
-
-
 # ===== Event Models =====
 class EventBase(BaseModel):
     eventType: str
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurringDays: List[str] = Field(default_factory=list)
+    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
     isTicketed: bool = False
-    price: float = 0.0
-
+    price: Optional[float] = None  # Allow null values
+    userEmail: Optional[str] = None  # Add this field your frontend sends
+    # Add any other fields your frontend might send
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
@@ -163,11 +172,17 @@ class CellEventCreate(BaseModel):
             data["recurring_day"] = data["recurring_day"].capitalize()
         return data
 
+
+
+    def model_dump(self, **kwargs):
+        data = super().model_dump(**kwargs)
+        if data.get("recurring_day"):
+            data["recurring_day"] = data["recurring_day"].capitalize()
+        return data
+
 class AddMemberNamesRequest(BaseModel):
     name: str
 
-class RemoveMemberRequest(BaseModel):
-    name: str
 
 class RemoveMemberRequest(BaseModel):
     name: str
