@@ -4,7 +4,7 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
+from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -338,6 +338,26 @@ async def create_event(event: EventCreate):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+
+@app.post("/event-types")
+async def create_event_type(event_type: EventTypeCreate, request: Request):
+    try:
+        if not event_type.name or not event_type.description:
+            raise HTTPException(status_code=400, detail="Name and description are required.")
+
+        event_type_data = event_type.dict()
+        event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
+        result = await events_collection.insert_one(event_type_data)
+
+        return {
+            "message": "Event type created successfully",
+            "id": str(result.inserted_id),
+            "name": event_type.name
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
+
 
 @app.get("/events")
 async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):

@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException, Request, APIRouter
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
 from pydantic import BaseModel, Field, EmailStr, field_validator
 
@@ -67,6 +69,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         content={"errors": formatted}
     )
+
+# ===== EventTypes =====
+class EventTypeCreate(BaseModel):
+    name: str
+    isTicketed: Optional[bool] = False
+    isGlobal: Optional[bool] = False
+    hasPersonSteps: Optional[bool] = False
+    description: str
+    createdAt: Optional[datetime] = None
+
+
 
 class EventInDB(EventBase):
     _id: str  # MongoDB ObjectId as string
