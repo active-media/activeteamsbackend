@@ -347,6 +347,7 @@ async def create_event_type(event_type: EventTypeCreate, request: Request):
 
         event_type_data = event_type.dict()
         event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
+        event_type_data["isEventType"] = True  # ✅ mark as event type
         result = await events_collection.insert_one(event_type_data)
 
         return {
@@ -354,9 +355,24 @@ async def create_event_type(event_type: EventTypeCreate, request: Request):
             "id": str(result.inserted_id),
             "name": event_type.name
         }
+    
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
+    
+
+@app.get("/event-types")
+async def get_event_types():
+    try:
+        cursor = events_collection.find({"isEventType": True}).sort("createdAt", 1)
+        event_types = []
+        async for et in cursor:
+            et["_id"] = str(et["_id"])
+            event_types.append(et)
+        return event_types
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching event types: {str(e)}")
+
 
 
 @app.get("/events")
@@ -399,7 +415,8 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
                         event["leaders"] = {"12": None, "144": None, "1728": None}
 
             event = convert_datetime_to_iso(event)
-            event = sanitize_document(event)
+            # event = sanitize_document(event)
+            print(event)
             events.append(event)
 
         return {"events": events}
@@ -422,14 +439,23 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         today_str = today.strftime("%Y-%m-%d")
         today_day_name = today.strftime("%A")  # e.g., "Wednesday"
 
+        email = current_user.get("email")
+        if not email:
+            return {"error": "User email not found in token", "status": "failed"}
+        
         query = {
-            "Email": email,
             "Event Type": "Cells",
-            "Status": {"$ne": "closed"}
+            "Status": {"$ne": "closed"},
+            "$or": [
+                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                {"Leader": {"$regex": f"^{email}$", "$options": "i"}},
+                {"Leader at 12": {"$regex": f"^{email}$", "$options": "i"}},
+                {"Leader at 144": {"$regex": f"^{email}$", "$options": "i"}}
+            ]
         }
-
+        
         cursor = cells_collection.find(query)
-        today_events = []
+
 
         # For deduplication
         seen_event_keys = set()

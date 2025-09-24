@@ -52,8 +52,18 @@ class EventCreate(EventBase):
 
 # ===== Attendance Submission =====
 class Attendee(BaseModel):
-    name: str
-    time: Optional[datetime] = None  # Auto-populated or passed in
+    id: Optional[str] = None
+    name: Optional[str] = None  # for basic events
+    fullName: Optional[str] = None  # for cell events
+    leader12: Optional[str] = None
+    leader144: Optional[str] = None
+    time: Optional[datetime] = None
+
+    @field_validator("name", mode="before")
+    def set_name_if_fullName_missing(cls, v, values):
+        # If "name" is missing but "fullName" exists, use that
+        return v or values.get("fullName")
+
 
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
