@@ -273,3 +273,28 @@ class PersonCreate(BaseModel):
     address: str
     leaders: list[str]
     stage: Literal["Win"]
+
+# Models for profile- dont modify
+class UserProfile(BaseModel):
+    id: str
+    name: str
+    surname: str
+    date_of_birth: Optional[str] = ""
+    home_address: Optional[str] = ""
+    invited_by: Optional[str] = ""
+    phone_number: Optional[str] = ""
+    email: str
+    gender: Optional[str] = ""
+    role: str = "user"
+    profile_picture: Optional[str] = ""
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    surname: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    home_address: Optional[str] = None
+    invited_by: Optional[str] = None
+    phone_number: Optional[str] = None
+    email: Optional[str] = None
+    gender: Optional[str] = None
+    profile_picture: Optional[str] = None

@@ -4,7 +4,7 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate
+from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -17,6 +17,10 @@ from auth.models import UserProfile, AttendanceSubmission
 from datetime import datetime, timezone
 import logging
 import pytz
+import base64
+from fastapi import File, UploadFile
+from fastapi.security import HTTPBearer
+oauth2_scheme = HTTPBearer()
 
 
 
@@ -954,10 +958,17 @@ async def uncapture_person(data: UncaptureRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---PROFILE ENDPOINTS---
-# GET user profile by ID
+# --- PROFILE PICTURE ENDPOINTS ---
+
 @app.get("/profile/{user_id}", response_model=UserProfile)
-async def get_profile(user_id: str = Path(...)):
+async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
+    """Get user profile - uses consistent authentication"""
+    # Verify user owns this account
+    token_user_id = current_user.get("user_id")
+    
+    if not token_user_id or token_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this profile")
+
     if not ObjectId.is_valid(user_id):
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
@@ -976,11 +987,22 @@ async def get_profile(user_id: str = Path(...)):
         "email": user.get("email", ""),
         "gender": user.get("gender", ""),
         "role": user.get("role", "user"),
+        "profile_picture": user.get("profile_picture", ""),
     }
 
-# PUT update user profile by ID
 @app.put("/profile/{user_id}", response_model=UserProfile)
-async def update_profile(user_id: str, profile_update: UserProfileUpdate = Body(...)):
+async def update_profile(
+    user_id: str, 
+    profile_update: UserProfileUpdate = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update user profile - uses consistent authentication"""
+    # Verify user owns this account
+    token_user_id = current_user.get("user_id")
+    
+    if not token_user_id or token_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+
     if not ObjectId.is_valid(user_id):
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
@@ -1007,7 +1029,109 @@ async def update_profile(user_id: str, profile_update: UserProfileUpdate = Body(
         "email": updated_user.get("email", ""),
         "gender": updated_user.get("gender", ""),
         "role": updated_user.get("role", "user"),
+        "profile_picture": updated_user.get("profile_picture", ""),
     }
+
+@app.post("/users/{user_id}/avatar")
+async def upload_avatar(
+    user_id: str,
+    avatar: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload profile picture - uses consistent authentication"""
+    try:
+        # Verify user owns this account
+        token_user_id = current_user.get("user_id")
+        
+        if not token_user_id or token_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+        
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        # Validate file type
+        if not avatar.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File must be an image")
+
+        # Validate file size (e.g., max 5MB)
+        contents = await avatar.read()
+        if len(contents) > 5 * 1024 * 1024:  # 5MB
+            raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB")
+        
+        # Convert to base64 for storage
+        image_base64 = base64.b64encode(contents).decode('utf-8')
+        image_data_url = f"data:{avatar.content_type};base64,{image_base64}"
+
+        # Update user with profile picture
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"profile_picture": image_data_url}}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {"message": "Avatar uploaded successfully", "avatarUrl": image_data_url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading avatar: {str(e)}")
+
+@app.put("/users/{user_id}/password")
+async def change_password(
+    user_id: str,
+    password_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Change user password - uses consistent authentication"""
+    try:
+        # Verify user owns this account
+        token_user_id = current_user.get("user_id")
+        
+        if not token_user_id or token_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        current_password = password_data.get("currentPassword")
+        new_password = password_data.get("newPassword")
+
+        if not current_password or not new_password:
+            raise HTTPException(status_code=400, detail="Current password and new password are required")
+
+        # Basic password validation
+        if len(new_password) < 8:
+            raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
+
+        # Get user and verify current password
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Verify current password
+        if not verify_password(current_password, user["password"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+        # Hash new password and update
+        hashed_new_password = hash_password(new_password)
+        
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed_new_password}}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to update password")
+
+        return {"message": "Password updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
+
 
 
 # PEOPLE ENDPOINTS
@@ -1300,3 +1424,5 @@ async def delete_person(person_id: str = Path(...)):
     except Exception as e:
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
