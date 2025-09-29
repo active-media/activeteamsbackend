@@ -296,7 +296,7 @@ async def create_event(event: EventCreate):
         event_data = event.dict()
 
         # Parse date
-        if "date" in event_data and event_data["date"]:
+        if event_data.get("date"):
             if isinstance(event_data["date"], str):
                 try:
                     event_data["date"] = datetime.fromisoformat(event_data["date"].replace("Z", "+00:00"))
@@ -307,7 +307,7 @@ async def create_event(event: EventCreate):
 
         # Defaults
         event_data.setdefault("attendees", [])
-        event_data["total_attendance"] = len(event_data["attendees"])
+        event_data["total_attendance"] = len(event_data.get("attendees", []))
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
         event_data["status"] = "open"
@@ -316,32 +316,91 @@ async def create_event(event: EventCreate):
 
         # Auto-assign leader roles if it's a Cell event
         if event_data.get("eventType", "").lower().strip() == "cell":
-            leader_name = event_data.get("eventLeader", "").strip()
+            leader_name = (event_data.get("eventLeader") or "").strip().lower()
 
-            if leader_name:
-                try:
-                    leader_info = await get_leader_info(leader_name)
-                    event_data["leaderPosition"] = leader_info["position"]
+            # Fetch all people from the database
+            all_people = await people_collection.find({}).to_list(length=None)
 
-                    event_data["leaders"] = {
-                        "12": leader_name if leader_info["position"] == 12 else None,
-                        "144": leader_name if leader_info["position"] == 144 else None,
-                        "1728": leader_name if leader_info["position"] == 1728 else None
-                    }
-                except HTTPException:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Leader '{leader_name}' not found in the system."
-                    )
+            # Map leader1 (position 12) and leader12 (position 144)
+            leader1_match = next(
+                (p["Leader @12"].title() for p in all_people if p.get("Leader @12") and p["Leader @12"].strip().lower() == leader_name),
+                event_data.get("leader1")
+            )
+            leader12_match = next(
+                (p["Leader @144"].title() for p in all_people if p.get("Leader @144") and p["Leader @144"].strip().lower() == leader_name),
+                event_data.get("leader12")
+            )
 
+            event_data["leaders"] = {
+                "1": leader1_match,
+                "12": leader12_match
+            }
+
+        # Insert event into database
         result = await events_collection.insert_one(event_data)
         return {"message": "Event created", "id": str(result.inserted_id)}
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+
+@app.get("/events")
+async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):
+    try:
+        query = {}
+        if status == "open":
+            query = {"status": {"$ne": "closed"}}
+        elif status:
+            query = {"status": status}
+
+        events = []
+        cursor = events_collection.find(query).sort("created_at", -1)
+        all_people = await people_collection.find({}).to_list(length=None)
+
+        async for event in cursor:
+            event["_id"] = str(event["_id"])
+
+            # Auto-fill leaders for legacy events if missing
+            if event.get("eventType", "").lower().strip() == "cell" and not event.get("leaders"):
+                leader_name = (event.get("eventLeader") or "").strip().lower()
+
+                # Find matching leaders in people database
+                leader1_match = next(
+                    (p["Leader @12"].title() for p in all_people
+                     if p.get("Leader @12") and p["Leader @12"].strip().lower() == leader_name),
+                    None
+                )
+                leader12_match = next(
+                    (p["Leader @144"].title() for p in all_people
+                     if p.get("Leader @144") and p["Leader @144"].strip().lower() == leader_name),
+                    None
+                )
+
+                event["leaders"] = {
+                    "1": leader1_match,
+                    "12": leader12_match
+                }
+
+                # Optional: save back to DB
+                await events_collection.update_one(
+                    {"_id": ObjectId(event["_id"])},
+                    {"$set": {"leaders": event["leaders"]}}
+                )
+
+            # Convert datetime fields to ISO strings
+            for k, v in event.items():
+                if isinstance(v, datetime):
+                    event[k] = v.isoformat()
+
+            events.append(event)
+
+        return {"events": events}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
+
     
+    
+# -----------------
 # EVENTS TYPES SECTION
 
 @app.post("/event-types")
@@ -378,55 +437,6 @@ async def get_event_types():
         raise HTTPException(status_code=500, detail=f"Error fetching event types: {str(e)}")
 
 
-
-@app.get("/events")
-async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):
-    try:
-        query = {}
-        if status == "open":
-            # Filter for events that are not closed
-            query = {"status": {"$ne": "closed"}}
-        elif status:
-            # Filter by exact status if provided (e.g. status=closed)
-            query = {"status": status}
-
-        events = []
-        cursor = events_collection.find(query).sort("created_at", -1)
-
-        async for event in cursor:
-            event["_id"] = str(event["_id"])
-
-            # Auto-fill leaders for legacy events if missing
-            if event.get("eventType", "").lower().strip() == "cell" and not event.get("leaders"):
-                leader_name = event.get("eventLeader", "").strip()
-
-                if leader_name:
-                    try:
-                        leader_info = await get_leader_info(leader_name)
-                        event["leaderPosition"] = leader_info["position"]
-                        event["leaders"] = {
-                            "12": leader_name if leader_info["position"] == 12 else None,
-                            "144": leader_name if leader_info["position"] == 144 else None,
-                            "1728": leader_name if leader_info["position"] == 1728 else None
-                        }
-
-                        # Save back to DB
-                        await events_collection.update_one(
-                            {"_id": ObjectId(event["_id"])},
-                            {"$set": {"leaders": event["leaders"], "leaderPosition": event["leaderPosition"]}}
-                        )
-                    except:
-                        event["leaders"] = {"12": None, "144": None, "1728": None}
-
-            event = convert_datetime_to_iso(event)
-            # event = sanitize_document(event)
-            print(event)
-            events.append(event)
-
-        return {"events": events}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
-    
 # CELLS ENDPOINTS SECTION 
 # ----------------------------
 #  Debug email fields & documents
@@ -474,35 +484,39 @@ async def debug_emails():
 async def get_all_leaders():
     """Get all unique leaders from the people collection"""
     try:
-        # Get all people and extract unique leaders
         people = await people_collection.find({}).to_list(length=None)
-        
-        leaders = {}
-        
+        leaders = []
+
         for person in people:
-            # Check Leader @12
+            # Leader @12
             if person.get("Leader @12"):
                 leader_name = person["Leader @12"].strip()
                 if leader_name:
-                    leaders[leader_name.lower()] = {
-                        "name": leader_name,
+                    leaders.append({
+                        "name": leader_name.title(),
                         "position": 12
-                    }
-            
-            # Check Leader @144  
+                    })
+
+            # Leader @144
             if person.get("Leader @144"):
                 leader_name = person["Leader @144"].strip()
                 if leader_name:
-                    leaders[leader_name.lower()] = {
-                        "name": leader_name,
+                    leaders.append({
+                        "name": leader_name.title(),
                         "position": 144
-                    }
-        
-        return {"leaders": leaders}
+                    })
+
+        # Remove duplicates (same name & position)
+        unique_leaders = [dict(t) for t in {tuple(d.items()) for d in leaders}]
+
+        # Sort by position and name for cleaner frontend usage
+        unique_leaders.sort(key=lambda x: (x["position"], x["name"]))
+
+        return {"leaders": unique_leaders}
+
     except Exception as e:
         print(f"Error fetching leaders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 # 📅 Fetch cells based on user hierarchy
