@@ -8,7 +8,7 @@ from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, Un
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, cells_collection
+from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
@@ -1694,3 +1694,254 @@ async def delete_person(person_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=str(e))
     
     
+# STATS ENDPOINTS
+# Add to your FastAPI backend
+# Add to your main.py or stats endpoints file
+
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+@app.get("/stats/overview")
+async def get_stats_overview(period: str = "monthly"):
+    """Get overall statistics for the dashboard with time period filtering"""
+    try:
+        # Calculate date range based on period
+        now = datetime.utcnow()
+        if period == "daily":
+            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=1)
+        elif period == "weekly":
+            start_date = now - timedelta(days=now.weekday())
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=7)
+        else:  # monthly
+            start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if now.month == 12:
+                end_date = now.replace(year=now.year + 1, month=1, day=1)
+            else:
+                end_date = now.replace(month=now.month + 1, day=1)
+
+        # Count outstanding cells (cells with status != "completed" or "closed")
+        # Assuming cells are events with eventType "Cell" and have a status field
+        outstanding_cells = await events_collection.count_documents({
+            "eventType": "Cell",
+            "status": {"$nin": ["completed", "closed", "done"]}
+        })
+        
+        # Count outstanding tasks from tasks collection
+        # Assuming tasks have a status field and are not completed/closed
+        outstanding_tasks = await tasks_collection.count_documents({
+            "status": {"$nin": ["completed", "closed", "done"]}
+        })
+        
+        # Get total people (assuming you have a people collection)
+        total_people = await people_collection.count_documents({})
+        
+        # Get events for the period to calculate attendance and growth
+        # Only include non-cell events for attendance calculation
+        period_events = await events_collection.find({
+            "date": {"$gte": start_date, "$lt": end_date},
+            "status": {"$in": ["completed", "closed"]},
+            "eventType": {"$ne": "Cell"}  # Exclude cells from attendance calculation
+        }).to_list(length=None)
+        
+        # Calculate total attendance for the period
+        total_attendance = sum(event.get("total_attendance", 0) for event in period_events)
+        
+        # Calculate previous period for growth comparison
+        if period == "daily":
+            prev_start = start_date - timedelta(days=1)
+            prev_end = start_date
+        elif period == "weekly":
+            prev_start = start_date - timedelta(days=7)
+            prev_end = start_date
+        else:  # monthly
+            if start_date.month == 1:
+                prev_start = start_date.replace(year=start_date.year - 1, month=12)
+            else:
+                prev_start = start_date.replace(month=start_date.month - 1)
+            prev_end = start_date
+        
+        # Get previous period attendance (exclude cells)
+        prev_events = await events_collection.find({
+            "date": {"$gte": prev_start, "$lt": prev_end},
+            "status": {"$in": ["completed", "closed"]},
+            "eventType": {"$ne": "Cell"}
+        }).to_list(length=None)
+        
+        prev_attendance = sum(event.get("total_attendance", 0) for event in prev_events)
+        
+        # Calculate growth rate
+        if prev_attendance > 0:
+            growth_rate = ((total_attendance - prev_attendance) / prev_attendance) * 100
+        else:
+            growth_rate = 100 if total_attendance > 0 else 0
+        
+        # Calculate weekly/daily attendance breakdown (exclude cells)
+        attendance_breakdown = {}
+        for event in period_events:
+            if event.get("date"):
+                event_date = event["date"]
+                if period == "daily":
+                    # Group by hour for daily view
+                    hour = event_date.hour
+                    key = f"{hour:02d}:00"
+                elif period == "weekly":
+                    # Group by day name for weekly view
+                    key = event_date.strftime("%A")
+                else:
+                    # Group by week number for monthly view
+                    week_num = event_date.isocalendar()[1]
+                    key = f"Week {week_num}"
+                
+                if key not in attendance_breakdown:
+                    attendance_breakdown[key] = 0
+                attendance_breakdown[key] += event.get("total_attendance", 0)
+        
+        return {
+            "outstanding_cells": outstanding_cells,
+            "outstanding_tasks": outstanding_tasks,  # Changed from outstanding_events to outstanding_tasks
+            "total_people": total_people,
+            "total_attendance": total_attendance,
+            "growth_rate": round(growth_rate, 1),
+            "attendance_breakdown": attendance_breakdown,
+            "period": period
+        }
+    except Exception as e:
+        print(f"Error in stats overview: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats/outstanding-items")
+async def get_outstanding_items():
+    """Get detailed outstanding cells and tasks for the dashboard"""
+    try:
+        # Get outstanding cells with details
+        outstanding_cells = await events_collection.find({
+            "eventType": "Cell",
+            "status": {"$nin": ["completed", "closed", "done"]}
+        }).to_list(length=None)
+        
+        # Get outstanding tasks with details
+        outstanding_tasks = await tasks_collection.find({
+            "status": {"$nin": ["completed", "closed", "done"]}
+        }).to_list(length=None)
+        
+        # Format cells data
+        cells_data = []
+        for cell in outstanding_cells:
+            cells_data.append({
+                "name": cell.get("eventLeader", "Unknown Leader"),
+                "location": cell.get("location", "Unknown Location"),
+                "title": cell.get("eventName", "Untitled Cell"),
+                "date": cell.get("date"),
+                "status": cell.get("status", "pending")
+            })
+        
+        # Format tasks data
+        tasks_data = []
+        for task in outstanding_tasks:
+            tasks_data.append({
+                "name": task.get("assignedTo", task.get("eventLeader", "Unassigned")),
+                "email": task.get("email", ""),
+                "title": task.get("taskName", task.get("title", "Untitled Task")),
+                "count": task.get("priority", 1),  # Using priority as count or you can count tasks per person
+                "dueDate": task.get("dueDate", task.get("date")),
+                "status": task.get("status", "pending")
+            })
+        
+        return {
+            "outstanding_cells": cells_data,
+            "outstanding_tasks": tasks_data
+        }
+        
+    except Exception as e:
+        print(f"Error in outstanding items: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats/people-with-tasks")
+async def get_people_capture_stats():
+    """
+    Get team members and how many people they have captured/recruited
+    """
+    try:
+        client = get_database_client()
+        db = client[DB_NAME]
+        
+        # Count how many people each team member has captured
+        pipeline = [
+            {
+                "$match": {
+                    "captured_by": {"$exists": True, "$ne": None}  # Only people who were captured by someone
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$captured_by",  # Group by the person who captured them
+                    "people_captured_count": {"$sum": 1},
+                    "captured_people": {
+                        "$push": {
+                            "name": "$fullName",
+                            "email": "$email", 
+                            "capture_date": "$created_date"  # or whatever field tracks when
+                        }
+                    }
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "people",
+                    "localField": "_id",
+                    "foreignField": "_id",  # or "email" depending on your schema
+                    "as": "capturer_details"
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$capturer_details",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+            {
+                "$project": {
+                    "capturer_id": "$_id",
+                    "capturer_name": {
+                        "$ifNull": ["$capturer_details.fullName", "$capturer_details.name", "Unknown Capturer"]
+                    },
+                    "capturer_email": {
+                        "$ifNull": ["$capturer_details.email", "No email"]
+                    },
+                    "people_captured_count": 1,
+                    "captured_people": 1,
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"people_captured_count": -1}  # Sort by most captures first
+            }
+        ]
+        
+        results = list(db.people.aggregate(pipeline))  # Query the PEOPLE collection
+        
+        if not results:
+            return {
+                "capture_stats": [],
+                "total_capturers": 0,
+                "total_people_captured": 0,
+                "message": "No capture data found"
+            }
+        
+        total_people_captured = sum(item['people_captured_count'] for item in results)
+        
+        return {
+            "capture_stats": results,
+            "total_capturers": len(results),
+            "total_people_captured": total_people_captured,
+            "message": f"Found {len(results)} team members who captured {total_people_captured} people total"
+        }
+        
+    except Exception as e:
+        print(f"Error fetching capture stats: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to fetch capture statistics: {str(e)}"
+        )
