@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException, Request, APIRouter
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
 from pydantic import BaseModel, Field, EmailStr, field_validator
 
@@ -33,16 +35,40 @@ class EventBase(BaseModel):
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurringDays: List[str] = Field(default_factory=list)
+    recurring_day: Optional[List[str]] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: bool = False
-    price: float = 0.0
+    isTicketed: Optional[bool] = False
+    price: Optional[float] = 0.0
+    userEmail: Optional[str] = None
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
+    email: Optional[str] = None
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
+
+# ===== Attendance Submission =====
+class Attendee(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None  # for basic events
+    fullName: Optional[str] = None  # for cell events
+    leader12: Optional[str] = None
+    leader144: Optional[str] = None
+    time: Optional[datetime] = None
+
+    @field_validator("name", mode="before")
+    def set_name_if_fullName_missing(cls, v, values):
+        # If "name" is missing but "fullName" exists, use that
+        return v or values.get("fullName")
+
+
+class AttendanceSubmission(BaseModel):
+    attendees: List[Attendee]
+    did_not_meet: Optional[bool] = False
+
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     formatted = [
@@ -53,6 +79,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         content={"errors": formatted}
     )
+
+# ===== EventTypes =====
+class EventTypeCreate(BaseModel):
+    name: str
+    isTicketed: Optional[bool] = False
+    isGlobal: Optional[bool] = False
+    hasPersonSteps: Optional[bool] = False
+    description: str
+    createdAt: Optional[datetime] = None
+
+
 
 class EventInDB(EventBase):
     _id: str  # MongoDB ObjectId as string
@@ -77,25 +114,20 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
 
-
-
-# ===== Event Models =====
-
-
-
 # ===== Event Models =====
 class EventBase(BaseModel):
     eventType: str
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurringDays: List[str] = Field(default_factory=list)
+    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
     isTicketed: bool = False
-    price: float = 0.0
-
+    price: Optional[float] = None  # Allow null values
+    userEmail: Optional[str] = None  # Add this field your frontend sends
+    # Add any other fields your frontend might send
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
@@ -243,3 +275,28 @@ class PersonCreate(BaseModel):
     address: str
     leaders: list[str]
     stage: Literal["Win"]
+
+# Models for profile- dont modify
+class UserProfile(BaseModel):
+    id: str
+    name: str
+    surname: str
+    date_of_birth: Optional[str] = ""
+    home_address: Optional[str] = ""
+    invited_by: Optional[str] = ""
+    phone_number: Optional[str] = ""
+    email: str
+    gender: Optional[str] = ""
+    role: str = "user"
+    profile_picture: Optional[str] = ""
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    surname: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    home_address: Optional[str] = None
+    invited_by: Optional[str] = None
+    phone_number: Optional[str] = None
+    email: Optional[str] = None
+    gender: Optional[str] = None
+    profile_picture: Optional[str] = None
