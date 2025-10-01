@@ -50,7 +50,7 @@ class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
 
-# ===== Attendance Submission =====
+
 class Attendee(BaseModel):
     id: Optional[str] = None
     name: Optional[str] = None  # for basic events
@@ -64,9 +64,10 @@ class Attendee(BaseModel):
         # If "name" is missing but "fullName" exists, use that
         return v or values.get("fullName")
 
-
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
+    leaderEmail: str  # ✅ required
+    leaderName: str   # ✅ required
     did_not_meet: Optional[bool] = False
 
 
