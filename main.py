@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, time
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
+from auth.models import EventCreate, UserProfile,UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,TaskUpdate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -90,6 +90,7 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 #         expires_delta=token_expires,
 #     )
 
+# LOGIN
 @app.post("/login")
 async def login(user: UserLogin):
     existing = await users_collection.find_one({"email": user.email})
@@ -107,12 +108,12 @@ async def login(user: UserLogin):
         expires_delta=token_expires,
     )
 
-    # Return both token AND user information
+    # Return token + user info
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
-            "id": str(existing["_id"]),  # ← This is what the frontend needs!
+            "id": str(existing["_id"]),
             "email": existing["email"],
             "name": existing.get("name", ""),
             "surname": existing.get("surname", ""),
@@ -125,96 +126,10 @@ async def login(user: UserLogin):
         }
     }
 
-    # Create refresh token
-    refresh_token_id = secrets.token_urlsafe(16)
-    refresh_plain = secrets.token_urlsafe(32)
-    refresh_hash = hash_password(refresh_plain)
-    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
-    # Store refresh token in DB
-    await users_collection.update_one(
-        {"_id": existing["_id"]},
-        {
-            "$set": {
-                "refresh_token_id": refresh_token_id,
-                "refresh_token_hash": refresh_hash,
-                "refresh_token_expires": refresh_expires,
-            }
-        }
-    )
-
-    # Build user object for frontend
-    user_data = {
-        "id": str(existing["_id"]),
-        "email": existing["email"],
-        "name": existing.get("name", ""),  # Optional: include more fields
-        "role": existing.get("role", "registrant"),
-    }
-
-    # Return all expected data
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "refresh_token_id": refresh_token_id,
-        "refresh_token": refresh_plain,
-        "user": user_data  # 👈 Add this line
-    }
-
-   
-# http://localhost:8000/refresh-token
-@app.post("/refresh-token")
-async def refresh_token(payload: RefreshTokenRequest = Body(...)):
-    user = await users_collection.find_one({"refresh_token_id": payload.refresh_token_id})
-    if (
-        not user
-        or not user.get("refresh_token_hash")
-        or not verify_password(payload.refresh_token, user["refresh_token_hash"])
-        or not user.get("refresh_token_expires")
-        or user["refresh_token_expires"] < datetime.utcnow()
-    ):
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
-
-    token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
-    token = create_access_token(
-        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "registrant")},
-        expires_delta=token_expires,
-    )
-
-    # Rotate refresh token on each refresh for extra security
-    new_refresh_token_id = secrets.token_urlsafe(16)
-    new_refresh_plain = secrets.token_urlsafe(32)
-    new_refresh_hash = hash_password(new_refresh_plain)
-    new_refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
-    await users_collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {
-            "refresh_token_id": new_refresh_token_id,
-            "refresh_token_hash": new_refresh_hash,
-            "refresh_token_expires": new_refresh_expires,
-        }},
-    )
-
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "refresh_token_id": new_refresh_token_id,
-        "refresh_token": new_refresh_plain,
-    }
-
-# http://localhost:8000/logout
+# LOGOUT
 @app.post("/logout")
-async def logout(user_id: str = Body(..., embed=True)):
-    await users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {
-            "$set": {
-                "refresh_token_id": None,
-                "refresh_token_hash": None,
-                "refresh_token_expires": None,
-            }
-        },
-    )
+async def logout():
+    # If no refresh tokens, nothing really needs to be done here
     return {"message": "Logged out successfully"}
 
 # --- FORGOT PASSWORD ---
@@ -1300,103 +1215,100 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 # GET /tasks
 
-@app.get("/tasks", response_model=List[TaskModel])
+# @app.get("/tasks", response_model=List[TaskModel])
 
-async def get_tasks(
-    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+# async def get_tasks(
+#     start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+#     end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+# ):
+
+#     query = {}
+#     if start_date or end_date:
+#         date_filter = {}
+#         if start_date:
+#             try:
+#                 start_dt = datetime.fromisoformat(start_date)
+#                 date_filter["$gte"] = start_dt
+
+#             except ValueError:
+
+#                 raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+#         if end_date:
+
+#             try:
+#                 # Add one day to include entire end date
+#                 end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+#                 date_filter["$lt"] = end_dt
+
+#             except ValueError:
+#                 raise HTTPException(status_code=400, detail="Invalid end_date format")
+#         query["followup_date"] = date_filter
+
+#     tasks = []
+
+#     cursor = db["Tasks"].find(query)
+#     async for task in cursor:
+#         task["_id"] = str(task["_id"])  # stringify ObjectId
+#         try:
+#             tasks.append(TaskModel(**task))  # validate + convert with Pydantic
+#         except Exception as e:
+#             print(f"Skipping invalid task: {e}, task={task}")
+
+#     return tasks 
+
+
+
+# @app.put("/tasks/{task_id}")
+
+# async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
+#     if not ObjectId.is_valid(task_id):
+
+#         raise HTTPException(status_code=400, detail="Invalid task ID")
+
+#     updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
+
+#     result = await Tasks_collection.find_one_and_update(
+#         {"_id": ObjectId(task_id)},
+#         {"$set": updated_task},
+#         return_document=True  # from pymongo import ReturnDocument
+
+#     )
+
+#     if not result:
+
+#         raise HTTPException(status_code=404, detail="Task not found")
+#     # Convert ObjectId to str before returning
+
+#     result["_id"] = str(result["_id"])
+
+#     return result
+from bson import ObjectId
+
+@app.get("/tasks")
+async def get_user_tasks(
+    email: str = Query(None),
+    userId: str = Query(None),
+    current_user: dict = Depends(get_current_user)
 ):
-
-    query = {}
-    if start_date or end_date:
-        date_filter = {}
-        if start_date:
-            try:
-                start_dt = datetime.fromisoformat(start_date)
-                date_filter["$gte"] = start_dt
-
-            except ValueError:
-
-                raise HTTPException(status_code=400, detail="Invalid start_date format")
-
-        if end_date:
-
-            try:
-                # Add one day to include entire end date
-                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
-                date_filter["$lt"] = end_dt
-
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format")
-        query["followup_date"] = date_filter
-
-    tasks = []
-
-    cursor = db["Tasks"].find(query)
-    async for task in cursor:
-        task["_id"] = str(task["_id"])  # stringify ObjectId
-        try:
-            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
-        except Exception as e:
-            print(f"Skipping invalid task: {e}, task={task}")
-
-    return tasks 
-
-
-
-@app.put("/tasks/{task_id}")
-
-async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
-    if not ObjectId.is_valid(task_id):
-
-        raise HTTPException(status_code=400, detail="Invalid task ID")
-
-    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
-
-    result = await Tasks_collection.find_one_and_update(
-        {"_id": ObjectId(task_id)},
-        {"$set": updated_task},
-        return_document=True  # from pymongo import ReturnDocument
-
-    )
-
-    if not result:
-
-        raise HTTPException(status_code=404, detail="Task not found")
-    # Convert ObjectId to str before returning
-
-    result["_id"] = str(result["_id"])
-
-    return result
-@app.get("/tasks/user-tasks")
-async def get_user_tasks(current_user: dict = Depends(get_current_user)):
     try:
-        email = current_user.get("email")
-        if not email:
-            return {"error": "User email not found in token", "status": "failed"}
+        # Determine user email
+        user_email = email or (await users_collection.find_one({"_id": ObjectId(userId)})).get("email") if userId else current_user.get("email")
+        if not user_email:
+            return {"error": "User email not found", "status": "failed"}
 
         timezone = pytz.timezone("Africa/Johannesburg")
-        today = datetime.now(timezone)
-        today_str = today.strftime("%Y-%m-%d")
-        today_day_name = today.strftime("%A")
+        
+        # Fetch all tasks for the user
+        cursor = Tasks_collection.find({"assignedfor": user_email})
 
-        # Query tasks by assignedfor only
-        query = {"assignedfor": email}
-
-        cursor = Tasks_collection.find(query)
-        today_tasks = []
-        seen_task_keys = set()
+        all_tasks = []
 
         async for task in cursor:
-            task_name = task.get("name", "Unnamed Task")
-            task_type = task.get("taskType", "")
             task_date_str = task.get("followup_date")
-            recurring_day = task.get("recurring_day")
-            time_str = task.get("time", "09:00")
-
-            matched_today = False
             task_datetime = None
 
+            # Parse followup_date
             if task_date_str:
                 if isinstance(task_date_str, datetime):
                     task_datetime = task_date_str
@@ -1406,60 +1318,27 @@ async def get_user_tasks(current_user: dict = Depends(get_current_user)):
                         task_datetime = task_datetime.astimezone(timezone)
                     except ValueError:
                         logging.warning(f"Invalid date format: {task_date_str}")
-                        task_datetime = None
+                        continue
 
-                if task_datetime and task_datetime.strftime("%Y-%m-%d") == today_str:
-                    matched_today = True
+            all_tasks.append({
+                "_id": str(task["_id"]),
+                "name": task.get("name", "Unnamed Task"),
+                "taskType": task.get("taskType", ""),
+                "followup_date": task_datetime.isoformat() if task_datetime else None,
+                "status": task.get("status", "Open"),
+                "assignedfor": user_email,
+                "type": task.get("type", "call"),
+                "contacted_person": task.get("contacted_person", {}),
+                "isRecurring": bool(task.get("recurring_day")),
+            })
 
-            assigned_email = task.get("assignedfor", "Not assigned")
-
-            if matched_today:
-                dedup_key = f"{task_name}-{task_datetime.date()}"
-                if dedup_key not in seen_task_keys:
-                    seen_task_keys.add(dedup_key)
-                    today_tasks.append({
-                        "_id": str(task["_id"]),
-                        "taskName": task_name,
-                        "taskType": task_type,
-                        "date": task_datetime.isoformat(),
-                        "status": task.get("status", "Pending").lower(),
-                        "assignedTo": assigned_email,
-                        "isRecurring": bool(recurring_day),
-                        "recurringDays": [recurring_day] if recurring_day else [],
-                        "isVirtual": False,
-                        "contacted_person": task.get("contacted_person", {})
-                    })
-
-            # Recurring tasks
-            if not matched_today and recurring_day == today_day_name:
-                virtual_date = today.replace(
-                    hour=int(time_str.split(":")[0]),
-                    minute=int(time_str.split(":")[1]),
-                    second=0,
-                    microsecond=0
-                )
-                dedup_key = f"{task_name}-{virtual_date.date()}"
-                if dedup_key not in seen_task_keys:
-                    seen_task_keys.add(dedup_key)
-                    today_tasks.append({
-                        "_id": str(task["_id"]),
-                        "taskName": task_name,
-                        "taskType": task_type,
-                        "date": virtual_date.isoformat(),
-                        "status": task.get("status", "Pending").lower(),
-                        "assignedTo": assigned_email,
-                        "isRecurring": True,
-                        "recurringDays": [recurring_day],
-                        "isVirtual": True,
-                        "contacted_person": task.get("contacted_person", {})
-                    })
-
-        today_tasks.sort(key=lambda t: datetime.fromisoformat(t["date"]))
+        # Sort by date (newest first)
+        all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
 
         return {
-            "user_email": email,
-            "total_tasks": len(today_tasks),
-            "tasks": today_tasks,
+            "user_email": user_email,
+            "total_tasks": len(all_tasks),
+            "tasks": all_tasks,
             "status": "success"
         }
 
