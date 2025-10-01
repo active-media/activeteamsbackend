@@ -301,3 +301,50 @@ class UserProfileUpdate(BaseModel):
     email: Optional[str] = None
     gender: Optional[str] = None
     profile_picture: Optional[str] = None
+    
+
+class UserListResponse(BaseModel):
+    id: str
+    name: str
+    surname: str
+    email: str
+    role: str
+    date_of_birth: Optional[str] = None
+    phone_number: Optional[str] = None
+    address: Optional[str] = None
+    gender: Optional[str] = None
+    invitedBy: Optional[str] = None
+    leader12: Optional[str] = None
+    leader144: Optional[str] = None
+    leader1728: Optional[str] = None
+    stage: Optional[str] = None
+    created_at: Optional[datetime] = None
+class UserList(BaseModel):
+    users: List[UserListResponse]
+
+class RoleUpdate(BaseModel):
+    role: str
+
+class PermissionUpdate(BaseModel):
+    permission: str
+    enabled: bool
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+class UserCreater(BaseModel):
+    name: str
+    surname: str
+    email: EmailStr
+    password: str
+    phone_number: str
+    date_of_birth: str  # Keep as string for flexibility
+    address: str
+    gender: str
+    invitedBy: Optional[str] = ""
+    leader12: Optional[str] = ""
+    leader144: Optional[str] = ""
+    leader1728: Optional[str] = ""
+    stage: Optional[str] = "Win"
+    role: str
