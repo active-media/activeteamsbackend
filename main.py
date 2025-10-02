@@ -4,11 +4,11 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, EventUpdate
+from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, cells_collection
+from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
@@ -21,9 +21,6 @@ import base64
 from fastapi import File, UploadFile
 from fastapi.security import HTTPBearer
 oauth2_scheme = HTTPBearer()
-
-
-
 
 app = FastAPI()
 app.add_middleware(
@@ -79,24 +76,6 @@ async def signup(user: UserCreate):
 JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-# http://localhost:8000/login
-# @app.post("/login")
-# async def login(user: UserLogin):
-#     existing = await users_collection.find_one({"email": user.email})
-#     if not existing or not verify_password(user.password, existing["password"]):
-#         raise HTTPException(status_code=401, detail="Invalid credentials")
-
-#     # Create access token
-#     token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
-#     access_token = create_access_token(
-#         data={
-#             "user_id": str(existing["_id"]),
-#             "email": existing["email"],
-#             "role": existing.get("role", "registrant")
-#         },
-#         expires_delta=token_expires,
-#     )
-
 @app.post("/login")
 async def login(user: UserLogin):
     existing = await users_collection.find_one({"email": user.email})
@@ -113,24 +92,6 @@ async def login(user: UserLogin):
         },
         expires_delta=token_expires,
     )
-
-    # Return both token AND user information
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": str(existing["_id"]),  # ← This is what the frontend needs!
-            "email": existing["email"],
-            "name": existing.get("name", ""),
-            "surname": existing.get("surname", ""),
-            "role": existing.get("role", "registrant"),
-            "date_of_birth": existing.get("date_of_birth", ""),
-            "home_address": existing.get("home_address", ""),
-            "phone_number": existing.get("phone_number", ""),
-            "gender": existing.get("gender", ""),
-            "invited_by": existing.get("invited_by", "")
-        }
-    }
 
     # Create refresh token
     refresh_token_id = secrets.token_urlsafe(16)
@@ -154,19 +115,25 @@ async def login(user: UserLogin):
     user_data = {
         "id": str(existing["_id"]),
         "email": existing["email"],
-        "name": existing.get("name", ""),  # Optional: include more fields
+        "name": existing.get("name", ""),
+        "surname": existing.get("surname", ""),
         "role": existing.get("role", "registrant"),
+        "date_of_birth": existing.get("date_of_birth", ""),
+        "home_address": existing.get("home_address", ""),
+        "phone_number": existing.get("phone_number", ""),
+        "gender": existing.get("gender", ""),
+        "invited_by": existing.get("invited_by", "")
     }
 
-    # Return all expected data
+    # Return all data (ONE return statement only)
     return {
         "access_token": access_token,
         "token_type": "bearer",
+        "role": existing.get("role", "registrant"),  # Add this line
         "refresh_token_id": refresh_token_id,
         "refresh_token": refresh_plain,
-        "user": user_data  # 👈 Add this line
+        "user": user_data
     }
-
    
 # http://localhost:8000/refresh-token
 @app.post("/refresh-token")
@@ -445,6 +412,7 @@ async def get_event_types():
         return event_types
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching event types: {str(e)}")
+    
 
 
 # CELLS ENDPOINTS SECTION 
@@ -1233,65 +1201,6 @@ async def delete_event(event_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
 
 
-@app.post("/events/{event_id}/checkin")
-async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesRequest):
-    event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
-    if not event:
-        raise HTTPException(status_code=404, detail="Cell event not found")
-
-    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-    members = event.get("members", [])
-    if any(m.get("id") == str(person["_id"]) for m in members):
-        raise HTTPException(status_code=400, detail="Person already checked in")
-
-    member_obj = {
-        "id": str(person["_id"]),
-        "name": person["Name"],
-        "email": person.get("Email", ""),
-        "leader": person.get("Leader", ""),
-        "checkin_time": datetime.utcnow().isoformat(),
-    }
-
-    await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {
-            "$push": {"members": member_obj},
-            "$inc": {"total_attendance": 1}
-        }
-    )
-
-    return {"message": f"{person['Name']} checked in successfully to the cell event."}
-
-
-@app.post("/events/{event_id}/uncheckin")
-async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest):
-    event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
-    if not event:
-        raise HTTPException(status_code=404, detail="Cell event not found")
-
-    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-    update_result = await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {"$pull": {"members": {"id": str(person["_id"])}}},
-    )
-
-    if update_result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Person not found in this cell event")
-
-    await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {"$inc": {"total_attendance": -1}}
-    )
-
-    return {"message": f"{person['Name']} has been removed from the cell event."}
-
-
 @app.delete("/events/cell/{event_id}/members/{member_id}")
 async def remove_member_from_cell(event_id: str, member_id: str):
     event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
@@ -1737,7 +1646,6 @@ def normalize_person_data(data: dict) -> dict:
         "UpdatedAt": datetime.utcnow().isoformat()
     }
 
-
 @app.patch("/people/{person_id}")
 async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
     try:
@@ -1876,13 +1784,13 @@ async def delete_person(person_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=str(e))
     
 
-# -------------------------
-# Tasks Management
-# -------------------------
+# # -------------------------
+# # Tasks Management
+# # -------------------------
 
-# Create a new task
+# # Create a new task
 
-# POST /tasks
+# # POST /tasks
 
 from fastapi.encoders import jsonable_encoder
 
@@ -1941,7 +1849,7 @@ async def get_tasks(
 
     tasks = []
 
-    cursor = db["tasks"].find(query)
+    cursor = db["Tasks"].find(query)
     async for task in cursor:
         task["_id"] = str(task["_id"])  # stringify ObjectId
         try:
@@ -1974,8 +1882,6 @@ async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
 
     result["_id"] = str(result["_id"])
 
-    return result
-from bson import ObjectId
 
 @app.get("/tasks")
 async def get_user_tasks(
