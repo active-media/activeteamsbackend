@@ -4,11 +4,11 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate
+from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, EventUpdate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection
+from database import db, events_collection, people_collection, users_collection, cells_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
@@ -21,6 +21,9 @@ import base64
 from fastapi import File, UploadFile
 from fastapi.security import HTTPBearer
 oauth2_scheme = HTTPBearer()
+
+
+
 
 app = FastAPI()
 app.add_middleware(
@@ -76,6 +79,24 @@ async def signup(user: UserCreate):
 JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
+# http://localhost:8000/login
+# @app.post("/login")
+# async def login(user: UserLogin):
+#     existing = await users_collection.find_one({"email": user.email})
+#     if not existing or not verify_password(user.password, existing["password"]):
+#         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+#     # Create access token
+#     token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
+#     access_token = create_access_token(
+#         data={
+#             "user_id": str(existing["_id"]),
+#             "email": existing["email"],
+#             "role": existing.get("role", "registrant")
+#         },
+#         expires_delta=token_expires,
+#     )
+
 @app.post("/login")
 async def login(user: UserLogin):
     existing = await users_collection.find_one({"email": user.email})
@@ -92,6 +113,24 @@ async def login(user: UserLogin):
         },
         expires_delta=token_expires,
     )
+
+    # Return both token AND user information
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(existing["_id"]),  # ← This is what the frontend needs!
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "registrant"),
+            "date_of_birth": existing.get("date_of_birth", ""),
+            "home_address": existing.get("home_address", ""),
+            "phone_number": existing.get("phone_number", ""),
+            "gender": existing.get("gender", ""),
+            "invited_by": existing.get("invited_by", "")
+        }
+    }
 
     # Create refresh token
     refresh_token_id = secrets.token_urlsafe(16)
@@ -115,25 +154,19 @@ async def login(user: UserLogin):
     user_data = {
         "id": str(existing["_id"]),
         "email": existing["email"],
-        "name": existing.get("name", ""),
-        "surname": existing.get("surname", ""),
+        "name": existing.get("name", ""),  # Optional: include more fields
         "role": existing.get("role", "registrant"),
-        "date_of_birth": existing.get("date_of_birth", ""),
-        "home_address": existing.get("home_address", ""),
-        "phone_number": existing.get("phone_number", ""),
-        "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", "")
     }
 
-    # Return all data (ONE return statement only)
+    # Return all expected data
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "role": existing.get("role", "registrant"),  # Add this line
         "refresh_token_id": refresh_token_id,
         "refresh_token": refresh_plain,
-        "user": user_data
+        "user": user_data  # 👈 Add this line
     }
+
    
 # http://localhost:8000/refresh-token
 @app.post("/refresh-token")
@@ -313,20 +346,22 @@ async def create_event(event: EventCreate):
 @app.get("/events")
 async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):
     try:
-        query = {}
+        query = {"isEventType": {"$ne": True}}  # Exclude event types from events
+
         if status == "open":
-            query = {"status": {"$ne": "closed"}}
+            query["status"] = {"$ne": "closed"}
         elif status:
-            query = {"status": status}
+            query["status"] = status
 
         events = []
-        cursor = events_collection.find(query).sort("created_at", -1)
+        cursor = events_collection.find(query).sort("createdAt", -1)
         all_people = await people_collection.find({}).to_list(length=None)
 
         async for event in cursor:
+            event_id = event["_id"]  # keep original ObjectId
             event["_id"] = str(event["_id"])
 
-            # Auto-fill leaders for legacy events if missing
+            # Auto-fill leaders for legacy cell events if missing
             if event.get("eventType", "").lower().strip() == "cell" and not event.get("leaders"):
                 leader_name = (event.get("eventLeader") or "").strip().lower()
 
@@ -347,9 +382,9 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
                     "12": leader12_match
                 }
 
-                # Optional: save back to DB
+                # Save back to DB with proper ObjectId
                 await events_collection.update_one(
-                    {"_id": ObjectId(event["_id"])},
+                    {"_id": event_id},
                     {"$set": {"leaders": event["leaders"]}}
                 )
 
@@ -365,28 +400,36 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
 
-    
-    
+
 # -----------------
 # EVENTS TYPES SECTION
 
 @app.post("/event-types")
-async def create_event_type(event_type: EventTypeCreate, request: Request):
+async def create_event_type(event_type: EventTypeCreate):
     try:
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
 
+        # Normalize name (e.g., "Cell" not "cell")
+        name = event_type.name.strip().title()
+
+        # Prevent duplicate names
+        exists = await events_collection.find_one({"isEventType": True, "name": name})
+        if exists:
+            raise HTTPException(status_code=400, detail="Event type already exists.")
+
         event_type_data = event_type.dict()
+        event_type_data["name"] = name
         event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
-        event_type_data["isEventType"] = True  # ✅ mark as event type
+        event_type_data["isEventType"] = True
 
         result = await events_collection.insert_one(event_type_data)
-
-        # ✅ Fetch the full document after inserting
         inserted = await events_collection.find_one({"_id": result.inserted_id})
         inserted["_id"] = str(inserted["_id"])
         return inserted
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
 
@@ -440,12 +483,124 @@ async def debug_emails():
             "total_documents": await events_collection.count_documents({}),
             "sample_documents": sample_docs,
             "email_fields_found": email_info,
-            "looking_for_email": "tkgenia1234@gmail.com"
         }
 
     except Exception as e:
         return {"error": str(e)}
+
     
+# Add these test endpoints to your FastAPI application
+# Place them near your other endpoints
+
+@app.get("/test/leader12-debug/{email}")
+async def test_leader12_debug(email: str):
+    """Debug endpoint to see what names are being matched"""
+    try:
+        # Find user's cell record
+        user_cell = await cells_collection.find_one({
+            "Email": {"$regex": f"^{email}$", "$options": "i"}
+        })
+        
+        if not user_cell:
+            return {"error": "User not found", "email": email}
+        
+        user_name = user_cell.get("Leader", "").strip()
+        
+        # Find all cells where this user is Leader at 12 (NO STATUS FILTER)
+        cells_where_leader12 = await cells_collection.find({
+            "Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"},
+            "Event Type": "Cells"
+        }).to_list(length=100)
+        
+        # Also check without Event Type filter
+        cells_where_leader12_any_type = await cells_collection.find({
+            "Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}
+        }).to_list(length=100)
+        
+        # Get today's info
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_day_name = today.strftime("%A")
+        
+        return {
+            "user_email": email,
+            "user_name_from_leader_field": user_name,
+            "today": today.strftime("%Y-%m-%d"),
+            "today_day_name": today_day_name,
+            "cells_found_as_leader12_with_event_type_cells": len(cells_where_leader12),
+            "cells_found_as_leader12_any_type": len(cells_where_leader12_any_type),
+            "cells_details": [
+                {
+                    "event_name": c.get("Event Name"),
+                    "leader": c.get("Leader"),
+                    "leader_at_12": c.get("Leader at 12"),
+                    "email": c.get("Email"),
+                    "status": c.get("Status"),
+                    "day": c.get("Day"),
+                    "date_of_event": str(c.get("Date Of Event")),
+                    "event_type": c.get("Event Type")
+                } 
+                for c in cells_where_leader12[:10]  # First 10 only
+            ]
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in test_leader12_debug: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/test/leader12-by-name/{name}")
+async def test_leader12_by_name(name: str):
+    """Test finding cells by Leader at 12 name directly"""
+    try:
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_day_name = today.strftime("%A")
+        
+        # Find all cells where this name appears in Leader at 12 (NO FILTERS)
+        cells = await cells_collection.find({
+            "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"}
+        }).to_list(length=100)
+        
+        # Also check with Event Type = Cells
+        cells_with_type = await cells_collection.find({
+            "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"},
+            "Event Type": "Cells"
+        }).to_list(length=100)
+        
+        # Check with Status filter
+        cells_not_complete = await cells_collection.find({
+            "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"},
+            "Event Type": "Cells",
+            "Status": {"$nin": ["Complete", "Closed"]}
+        }).to_list(length=100)
+        
+        return {
+            "search_name": name,
+            "today": today.strftime("%Y-%m-%d"),
+            "today_day_name": today_day_name,
+            "total_cells_found": len(cells),
+            "cells_with_event_type": len(cells_with_type),
+            "cells_not_complete_or_closed": len(cells_not_complete),
+            "cells": [
+                {
+                    "event_name": c.get("Event Name"),
+                    "leader": c.get("Leader"),
+                    "leader_at_12": c.get("Leader at 12"),
+                    "email": c.get("Email"),
+                    "status": c.get("Status"),
+                    "day": c.get("Day"),
+                    "date_of_event": str(c.get("Date Of Event")),
+                    "event_type": c.get("Event Type")
+                } 
+                for c in cells[:20]  # First 20
+            ]
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in test_leader12_by_name: {e}")
+        return {"error": str(e)}
+
 # --------Endpoints to add leaders from cell events --------
 @app.get("/leaders")
 async def get_all_leaders():
@@ -487,6 +642,7 @@ async def get_all_leaders():
 
 
 # 📅 Fetch cells based on user hierarchy
+
 @app.get("/events/cells-user")
 async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     try:
@@ -496,17 +652,15 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
 
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
-        today_str = today.strftime("%Y-%m-%d")
         today_day_name = today.strftime("%A")
 
         all_events = []
-        
+
+        # Find user's cell record to get their name
         user_cell = await cells_collection.find_one({
-            "$or": [
-                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-            ]
+            "Email": {"$regex": f"^{email}$", "$options": "i"}
         })
-        
+
         if not user_cell:
             return {
                 "user_email": email,
@@ -515,9 +669,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
                 "events": [],
                 "status": "success"
             }
-            
+
         user_name_in_cells = user_cell.get("Leader", "").strip()
-        
         if not user_name_in_cells:
             return {
                 "user_email": email,
@@ -526,22 +679,28 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
                 "events": [],
                 "status": "success"
             }
-            
+
+        logging.info(f"User '{user_name_in_cells}' (email: {email}) checking cells for {today_day_name}")
+
+        # Query to find all cells where user has any relationship
+        # REMOVED Status filter - show all cells regardless of status
         query = {
             "Event Type": "Cells",
-            "Status": {"$ne": "closed"},
             "$or": [
+                # Their own cell (by email)
                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                # Their own cell (by leader name)
                 {"Leader": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
-                {"Leader at 12": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
-                {"Leader at 144": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}}
+                # Cells they supervise at level 12
+                {"Leader at 12": {"$regex": f"{user_name_in_cells}", "$options": "i"}},
+                # Cells they supervise at level 144
+                {"Leader at 144": {"$regex": f"{user_name_in_cells}", "$options": "i"}}
             ]
         }
-        
+
         cursor = cells_collection.find(query)
         seen_event_keys = set()
-        
-        # Helper function to parse time safely
+
         def parse_time(time_value):
             """Parse time from string or datetime object, return (hour, minute)"""
             if isinstance(time_value, datetime):
@@ -550,107 +709,138 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
                 parts = time_value.split(":")
                 return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
             else:
-                return 19, 0  # Default to 7:00 PM
-        
+                return 19, 0
+
+        def get_relationship(event):
+            """Determine if this is the user's own cell or one they supervise"""
+            event_email = event.get("Email", "").strip().lower()
+            event_leader = event.get("Leader", "").strip()
+            leader_at_12 = event.get("Leader at 12", "").strip()
+            leader_at_144 = event.get("Leader at 144", "").strip()
+
+            user_email_lower = email.lower()
+            user_name_lower = user_name_in_cells.lower()
+
+            # Check if this is their own cell (by email match)
+            if event_email == user_email_lower:
+                return "own_cell"
+            
+            # Check if this is their own cell (by leader name match)
+            if event_leader.lower() == user_name_lower:
+                return "own_cell"
+            
+            # Check if they supervise at level 12
+            if leader_at_12 and user_name_lower in leader_at_12.lower():
+                return "leader12"
+            
+            # Check if they supervise at level 144
+            if leader_at_144 and user_name_lower in leader_at_144.lower():
+                return "leader144"
+            
+            return "supervises"
+
         async for event in cursor:
             event_name = event.get("Event Name", "")
             recurring_day = event.get("Day")
             event_date_str = event.get("Date Of Event")
             time_value = event.get("Time", "19:00")
-            
+
             hour, minute = parse_time(time_value)
             time_str = f"{hour}:{minute:02d}"
-            
-            added = False
-            
-            # Process specific dates
-            if event_date_str:
-                try:
-                    if isinstance(event_date_str, datetime):
-                        event_date = event_date_str
-                    else:
-                        try:
-                            event_date = datetime.strptime(event_date_str, "%d-%m-%Y")
-                        except ValueError:
-                            event_date = datetime.strptime(event_date_str, "%Y-%m-%d")
 
-                    if event_date.date() >= today.date():
-                        event_datetime = event_date.replace(
-                            hour=hour,
-                            minute=minute,
-                            second=0,
-                            microsecond=0,
-                            tzinfo=timezone
-                        )
+            relationship = get_relationship(event)
 
-                        dedup_key = f"{event_name}-{event_datetime.date()}"
-                        if dedup_key not in seen_event_keys:
-                            seen_event_keys.add(dedup_key)
-                            all_events.append({
-                                "_id": str(event["_id"]),
-                                "eventName": event_name,
-                                "eventType": "Cell",
-                                "date": event_datetime.isoformat(),
-                                "location": event.get("Address", ""),
-                                "status": event.get("Status", "Incomplete").lower(),
-                                "eventLeaderName": event.get("Leader", "Not specified"),
-                                "eventLeaderEmail": event.get("Email", "Not specified"),
-                                "leader1": event.get("Leader at 1", ""),
-                                "leader12": event.get("Leader at 12", ""),
-                                "leader144": event.get("Leader at 144", ""),
-                                "time": time_str,
-                                "recurringDays": [recurring_day] if recurring_day else [],
-                                "isTicketed": False,
-                                "price": 0,
-                                "description": event.get("Event Name", ""),
-                                "isVirtual": False,
-                                "relationship": "own_cell" if event.get("Email", "").lower() == email.lower() or event.get("Leader", "").lower() == user_name_in_cells.lower() else "supervises"
-                            })
-                            added = True
-                except ValueError as e:
-                    logging.error(f"Error parsing date '{event_date_str}': {e}")
-                    continue
+            is_today_event = False
+            event_datetime = None
 
-            # Handle recurring cells for today
-            if not added and recurring_day == today_day_name:
-                virtual_date = today.replace(
+            # FIXED: Check if the cell's recurring day matches today
+            if recurring_day and recurring_day.strip().lower() == today_day_name.lower():
+                # This cell is due today because it recurs on this day
+                is_today_event = True
+                event_datetime = today.replace(
                     hour=hour,
                     minute=minute,
                     second=0,
                     microsecond=0
                 )
+            elif event_date_str:
+                # Check if there's a specific date that matches today
+                try:
+                    if isinstance(event_date_str, datetime):
+                        event_date = event_date_str
+                    else:
+                        event_date = parser.isoparse(event_date_str)
 
-                dedup_key = f"{event_name}-{virtual_date.date()}"
-                if dedup_key not in seen_event_keys:
-                    seen_event_keys.add(dedup_key)
-                    all_events.append({
-                        "_id": str(event["_id"]),
-                        "eventName": event_name,
-                        "eventType": "Cell",
-                        "date": virtual_date.isoformat(),
-                        "location": event.get("Address", ""),
-                        "status": event.get("Status", "Incomplete").lower(),
-                        "eventLeaderName": event.get("Leader", "Not specified"),
-                        "eventLeaderEmail": event.get("Email", "Not specified"),
-                        "leader1": event.get("Leader at 1", ""),
-                        "leader12": event.get("Leader at 12", ""),
-                        "leader144": event.get("Leader at 144", ""),
-                        "time": time_str,
-                        "recurringDays": [recurring_day],
-                        "isTicketed": False,
-                        "price": 0,
-                        "description": event.get("Event Name", ""),
-                        "isVirtual": True
-                    })
+                    event_date = event_date.astimezone(timezone)
 
-        all_events.sort(key=lambda e: datetime.fromisoformat(e["date"]))
+                    if event_date.date() == today.date():
+                        is_today_event = True
+                        event_datetime = event_date.replace(
+                            hour=hour,
+                            minute=minute,
+                            second=0,
+                            microsecond=0
+                        )
+                except Exception as e:
+                    logging.error(f"Error parsing date '{event_date_str}': {e}")
+                    continue
+
+            if not is_today_event:
+                continue
+
+            # Deduplicate by event name, leader email, and day
+            # This prevents showing the same recurring cell multiple times
+            dedup_key = f"{event_name}-{event.get('Email', '')}-{recurring_day}"
+            if dedup_key in seen_event_keys:
+                continue
+            seen_event_keys.add(dedup_key)
+
+            all_events.append({
+                "_id": str(event["_id"]),
+                "eventName": event_name,
+                "eventType": "Cell",
+                "date": event_datetime.isoformat() if event_datetime else None,
+                "location": event.get("Address", ""),
+                "status": event.get("Status", "Incomplete").lower(),
+                "eventLeaderName": event.get("Leader", "Not specified"),
+                "eventLeaderEmail": event.get("Email", "Not specified"),
+                "leader1": event.get("Leader at 1", ""),
+                "leader12": event.get("Leader at 12", ""),
+                "leader144": event.get("Leader at 144", ""),
+                "time": time_str,
+                "recurringDays": [recurring_day] if recurring_day else [],
+                "isTicketed": False,
+                "price": 0,
+                "description": event.get("Event Name", ""),
+                "isVirtual": bool(recurring_day),  # Virtual if recurring (has a day set)
+                "relationship": relationship
+            })
+
+        # Sort all events by date/time ascending
+        all_events.sort(key=lambda e: datetime.fromisoformat(e["date"]) if e["date"] else datetime.max)
+
+        # Categorize events by relationship
+        own_cells = [e for e in all_events if e.get("relationship") == "own_cell"]
+        leader12_cells = [e for e in all_events if e.get("relationship") == "leader12"]
+        leader144_cells = [e for e in all_events if e.get("relationship") == "leader144"]
+        other_supervised = [e for e in all_events if e.get("relationship") == "supervises"]
+
+        logging.info(f"Found {len(all_events)} cells due today ({today_day_name}) for {user_name_in_cells}")
 
         return {
             "user_email": email,
             "user_name_in_cells": user_name_in_cells,
+            "today": today.strftime("%Y-%m-%d"),
+            "today_day_name": today_day_name,
             "total_events": len(all_events),
-            "own_cells": [e for e in all_events if e.get("relationship") == "own_cell"],
-            "supervised_cells": [e for e in all_events if e.get("relationship") == "supervises"],
+            "own_cells": own_cells,
+            "own_cells_count": len(own_cells),
+            "leader12_cells": leader12_cells,
+            "leader12_count": len(leader12_cells),
+            "leader144_cells": leader144_cells,
+            "leader144_count": len(leader144_cells),
+            "supervised_cells": leader12_cells + leader144_cells + other_supervised,
+            "supervised_count": len(leader12_cells) + len(leader144_cells) + len(other_supervised),
             "events": all_events,
             "status": "success"
         }
@@ -658,123 +848,6 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         logging.error(f"Error in get_user_cell_events: {e}")
         return {"error": str(e), "status": "failed"}
-
-# Test endpoint to see what hierarchy looks like for a specific user
-@app.get("/test/user-hierarchy/{email}")
-async def test_user_hierarchy(email: str):
-    """Test endpoint to see hierarchy for a specific user"""
-    try:
-        # Find user in people collection
-        person = await people_collection.find_one({"Email": email})
-        
-        if not person:
-            return {
-                "email": email,
-                "found_in_people": False,
-                "message": "User not found in people collection"
-            }
-        
-        user_full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-        possible_names = [user_full_name]
-        sample_cell = await cells_collection.find_one({
-            "$or": [
-                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-            ]
-        })
-        
-        if sample_cell and sample_cell.get("Leader"):
-            leader_name_in_cells = sample_cell["Leader"]
-            if leader_name_in_cells not in possible_names:
-                possible_names.append(leader_name_in_cells)
-        cells_as_leader12 = []
-        cells_as_leader144 = []
-        
-        for name in possible_names:
-            leader12_cells = await cells_collection.find({
-                "Leader at 12": {"$regex": f"^{name}$", "$options": "i"}
-            }).to_list(None)
-            cells_as_leader12.extend(leader12_cells)
-            leader144_cells = await cells_collection.find({
-                "Leader at 144": {"$regex": f"^{name}$", "$options": "i"}
-            }).to_list(None)
-            cells_as_leader144.extend(leader144_cells)
-        
-        # Find their own cells
-        own_cells = await cells_collection.find({
-            "$or": [
-                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                {"Leader": {"$regex": f"^{user_full_name}$", "$options": "i"}}
-            ] + [{"Leader": {"$regex": f"^{name}$", "$options": "i"}} for name in possible_names]
-        }).to_list(None)
-        
-        def remove_duplicates(cell_list):
-            seen = set()
-            unique_cells = []
-            for cell in cell_list:
-                cell_id = str(cell["_id"])
-                if cell_id not in seen:
-                    seen.add(cell_id)
-                    unique_cells.append(cell)
-            return unique_cells
-        
-        cells_as_leader12 = remove_duplicates(cells_as_leader12)
-        cells_as_leader144 = remove_duplicates(cells_as_leader144)
-        own_cells = remove_duplicates(own_cells)
-        
-        return {
-            "email": email,
-            "full_name_in_people": user_full_name,
-            "possible_names_in_cells": possible_names,
-            "found_in_people": True,
-            "own_cells_count": len(own_cells),
-            "cells_as_leader12_count": len(cells_as_leader12),
-            "cells_as_leader144_count": len(cells_as_leader144),
-            "own_cells": [cell.get("Event Name") for cell in own_cells],
-            "cells_under_as_leader12": [
-                {
-                    "event_name": cell.get("Event Name"),
-                    "leader": cell.get("Leader"),
-                    "leader_email": cell.get("Email"),
-                    "day": cell.get("Day"),
-                    "time": cell.get("Time")
-                } for cell in cells_as_leader12
-            ],
-            "cells_under_as_leader144": [
-                {
-                    "event_name": cell.get("Event Name"), 
-                    "leader": cell.get("Leader"),
-                    "leader_email": cell.get("Email"),
-                    "day": cell.get("Day"),
-                    "time": cell.get("Time")
-                } for cell in cells_as_leader144
-            ]
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# Test endpoint to see all Leader at 12 values
-@app.get("/test/all-leader12-values")
-async def test_all_leader12_values():
-    """See all unique Leader at 12 values in the database"""
-    try:
-        # Get all unique Leader at 12 values
-        leader12_values = await cells_collection.distinct("Leader at 12")
-        
-        # Filter out empty values
-        leader12_values = [val for val in leader12_values if val and val.strip()]
-        
-        return {
-            "total_unique_leader12": len(leader12_values),
-            "leader12_values": sorted(leader12_values),
-            "kenny_variations": [val for val in leader12_values if "kenny" in val.lower() or "bebel" in val.lower()]
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
-
-
 # Test endpoint without authentication to test any email
 @app.get("/test/hierarchy-for/{email}")
 async def test_hierarchy_for_email(email: str):
@@ -848,8 +921,6 @@ async def test_hierarchy_for_email(email: str):
         
     except Exception as e:
         return {"error": str(e)}
-    
-# endpoint to allow leader at 1 to see leader at 12's cells
 
 
 @app.get("/cells/under-female-12s")
@@ -900,6 +971,102 @@ async def get_cells_under_female_12s(
 
     except Exception as e:
         raise HTTPException(500, str(e))
+# Admins can see all cells happening today
+
+@app.get("/admin/events/cells")
+async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
+    try:
+        # Check role
+        role = current_user.get("role", "")
+        if role.lower() != "admin":
+            raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
+
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_day_name = today.strftime("%A").lower()
+
+        cursor = cells_collection.find({
+            "Event Type": "Cells"
+        })
+
+        events = []
+        async for event in cursor:
+            recurring_day = event.get("Day", "").strip().lower()
+            event_date_str = event.get("Date Of Event")
+            time_value = event.get("Time", "19:00")
+
+            # Parse time
+            hour, minute = 19, 0
+            try:
+                if isinstance(time_value, str):
+                    parts = time_value.split(":")
+                    hour = int(parts[0])
+                    minute = int(parts[1]) if len(parts) > 1 else 0
+                elif isinstance(time_value, datetime):
+                    hour = time_value.hour
+                    minute = time_value.minute
+            except:
+                pass
+
+            event_datetime = None
+            is_today_event = False
+
+            # Check if event recurs today by day name
+            if recurring_day == today_day_name:
+                is_today_event = True
+                event_datetime = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+            # Else check if event date matches today
+            elif event_date_str:
+                try:
+                    if isinstance(event_date_str, datetime):
+                        event_date = event_date_str
+                    else:
+                        event_date = parser.isoparse(str(event_date_str))
+                    event_date = event_date.astimezone(timezone)
+                    if event_date.date() == today.date():
+                        is_today_event = True
+                        event_datetime = event_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                except:
+                    continue
+
+            if not is_today_event:
+                continue  # Skip events not happening today
+
+            events.append({
+                "_id": str(event["_id"]),
+                "eventName": event.get("Event Name", ""),
+                "eventType": "Cell",
+                "date": event_datetime.isoformat() if event_datetime else None,
+                "location": event.get("Address", ""),
+                "status": event.get("Status", "Incomplete").lower(),
+                "eventLeaderName": event.get("Leader", ""),
+                "eventLeaderEmail": event.get("Email", ""),
+                "leader1": event.get("Leader at 1", ""),
+                "leader12": event.get("Leader at 12", ""),
+                "leader144": event.get("Leader at 144", ""),
+                "time": f"{hour}:{minute:02d}",
+                "recurringDays": [event.get("Day")] if event.get("Day") else [],
+                "isVirtual": bool(event.get("Day")),
+                "price": 0,
+                "isTicketed": False,
+                "description": event.get("Event Name", "")
+            })
+
+        events.sort(key=lambda e: datetime.fromisoformat(e["date"]) if e["date"] else datetime.max)
+
+        return {
+            "total_events": len(events),
+            "events": events,
+            "today": today.strftime("%Y-%m-%d"),
+            "day": today.strftime("%A"),
+            "status": "success"
+        }
+
+    except Exception as e:
+        logging.error(f"Error in /admin/events/cells: {e}")
+        return {"error": str(e), "status": "failed"}
+
 
 
 @app.get("/events/{event_id}")
@@ -922,28 +1089,29 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
+
+
 @app.put("/events/{event_id}")
-async def update_event(event: EventCreate, event_id: str = Path(...)):
+async def update_event(event: EventUpdate, event_id: str = Path(...)):
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-        
+
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        # Get only fields that are set
+
         update_data = event.dict(exclude_unset=True)
 
-        # 🔥 Handle stringified ISO datetime
+        # 🔥 Handle ISO datetime string
         if "date" in update_data and isinstance(update_data["date"], str):
             try:
                 update_data["date"] = datetime.fromisoformat(update_data["date"].replace("Z", "+00:00"))
             except ValueError as ve:
                 raise HTTPException(status_code=422, detail=f"Invalid date format: {str(ve)}")
 
-        # 🔧 Optional: Clean up empty fields (like empty string price for ticketed=False)
-        if not update_data.get("isTicketed"):
+        # 🔧 Clean up if not ticketed
+        if update_data.get("isTicketed") is False:
             update_data["price"] = None
 
         result = await events_collection.update_one(
@@ -962,39 +1130,87 @@ async def update_event(event: EventCreate, event_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
 @app.put("/submit-attendance/{event_id}")
-async def close_event(
-    event_id: str = Path(...),
+async def submit_attendance(
+    event_id: str = Path(..., description="ID of the event"),
     submission: AttendanceSubmission = Body(...)
 ):
     try:
+        # Validate event_id format (must be a valid ObjectId)
         if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
 
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        if not event:
+        object_id = ObjectId(event_id)
+
+        # Try to find the event in events_collection first
+        event = await events_collection.find_one({"_id": object_id})
+        event_collection: AsyncIOMotorCollection = events_collection
+
+        # If not found in events_collection, check cells_collection by _id
+        if event is None:
+            event = await cells_collection.find_one({"_id": object_id})
+            if event is not None:
+                event_collection = cells_collection
+
+        # If still not found, try to find in cells_collection by custom "ID" field (integer)
+        if event is None:
+            try:
+                # Attempt converting event_id string to int for the "ID" field query
+                event_id_int = int(event_id)
+                event = await cells_collection.find_one({"ID": event_id_int})
+                if event is not None:
+                    event_collection = cells_collection
+            except ValueError:
+                # event_id is not an int string, skip this step
+                pass
+
+        # If still no event found, raise 404
+        if event is None or event_collection is None:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        # Prepare the update payload
         update_data = {
-            "status": "closed",
+            "status": "closed",  # Mark event as closed
             "updated_at": datetime.utcnow(),
             "attendees": [a.dict() for a in submission.attendees],
-            "total_attendance": len(submission.attendees)
+            "total_attendance": len(submission.attendees),
+            "captured_by": {
+                "leaderEmail": submission.leaderEmail,
+                "leaderName": submission.leaderName,
+            },
         }
 
-        if submission.did_not_meet:
-            update_data["total_attendance"] = 0
+        # Handle special case: if "did_not_meet" flag is True, clear attendees
+        if getattr(submission, "did_not_meet", False):
             update_data["attendees"] = []
+            update_data["total_attendance"] = 0
+            update_data["did_not_meet"] = True
 
-        await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
+        # Perform the update in the identified collection
+        result = await event_collection.update_one(
+            {"_id": event["_id"]},
             {"$set": update_data}
         )
 
-        return {"message": "Event attendance submitted and closed."}
+        # Check if update was successful
+        if result.modified_count != 1:
+            # Sometimes modified_count can be 0 if data is identical; you may want to handle that differently
+            raise HTTPException(status_code=500, detail="Failed to update event attendance")
 
+        return {
+            "message": "Attendance submitted successfully.",
+            "event_id": str(event["_id"]),
+            "status": "closed",
+            "total_attendance": update_data["total_attendance"]
+        }
+
+    except HTTPException:
+        raise  # Re-raise HTTP errors as is
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error submitting attendance: {str(e)}")
-    
+        # Catch-all for unexpected errors
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
+
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
@@ -1522,6 +1738,7 @@ def normalize_person_data(data: dict) -> dict:
         "UpdatedAt": datetime.utcnow().isoformat()
     }
 
+
 @app.patch("/people/{person_id}")
 async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
     try:
@@ -1659,744 +1876,4 @@ async def delete_person(person_id: str = Path(...)):
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
-
-# # -------------------------
-# # Tasks Management
-# # -------------------------
-
-# # Create a new task
-
-# # POST /tasks
-
-from fastapi.encoders import jsonable_encoder
-
-@app.post("/tasks")
-async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
-    try:
-        # Convert Pydantic model to dict
-        new_task_dict = task.dict()
-        # Attach the creator's email for backward compatibility
-        new_task_dict["assignedfor"] = current_user["email"]
-
-        # Insert into MongoDB
-        result = await db["tasks"].insert_one(new_task_dict)
-
-        # Add the MongoDB _id as a string for the response
-        new_task_dict["_id"] = str(result.inserted_id)
-
-        # Encode safely for JSON response
-        return {"status": "success", "task": jsonable_encoder(new_task_dict)}
-
-    except Exception as e:
-        return {"status": "failed", "error": str(e)}
-
-# Retrieve all tasks
-
-# GET /tasks
-
-@app.get("/tasks", response_model=List[TaskModel])
-
-async def get_tasks(
-    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
-):
-
-    query = {}
-    if start_date or end_date:
-        date_filter = {}
-        if start_date:
-            try:
-                start_dt = datetime.fromisoformat(start_date)
-                date_filter["$gte"] = start_dt
-
-            except ValueError:
-
-                raise HTTPException(status_code=400, detail="Invalid start_date format")
-
-        if end_date:
-
-            try:
-                # Add one day to include entire end date
-                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
-                date_filter["$lt"] = end_dt
-
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format")
-        query["followup_date"] = date_filter
-
-    tasks = []
-
-    cursor = db["Tasks"].find(query)
-    async for task in cursor:
-        task["_id"] = str(task["_id"])  # stringify ObjectId
-        try:
-            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
-        except Exception as e:
-            print(f"Skipping invalid task: {e}, task={task}")
-
-    return tasks 
-
-
-
-@app.put("/tasks/{task_id}")
-
-async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
-    if not ObjectId.is_valid(task_id):
-
-        raise HTTPException(status_code=400, detail="Invalid task ID")
-
-    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
-
-    result = await tasks_collection.find_one_and_update(
-        {"_id": ObjectId(task_id)},
-        {"$set": updated_task},
-        return_document=True  # from pymongo import ReturnDocument
-
-    )
-
-    if not result:
-
-        raise HTTPException(status_code=404, detail="Task not found")
-    # Convert ObjectId to str before returning
-
-    result["_id"] = str(result["_id"])
-
-#     return result
-from bson import ObjectId
-
-@app.get("/tasks")
-async def get_user_tasks(
-    email: str = Query(None),
-    userId: str = Query(None),
-    current_user: dict = Depends(get_current_user)
-):
-    try:
-        # Determine user email
-        user_email = email or (await users_collection.find_one({"_id": ObjectId(userId)})).get("email") if userId else current_user.get("email")
-        if not user_email:
-            return {"error": "User email not found", "status": "failed"}
-
-        timezone = pytz.timezone("Africa/Johannesburg")
-        
-        # Fetch all tasks for the user
-        cursor = tasks_collection.find({"assignedfor": user_email})
-
-        all_tasks = []
-
-        async for task in cursor:
-            task_date_str = task.get("followup_date")
-            task_datetime = None
-
-            # Parse followup_date
-            if task_date_str:
-                if isinstance(task_date_str, datetime):
-                    task_datetime = task_date_str
-                else:
-                    try:
-                        task_datetime = datetime.fromisoformat(task_date_str)
-                        task_datetime = task_datetime.astimezone(timezone)
-                    except ValueError:
-                        logging.warning(f"Invalid date format: {task_date_str}")
-                        continue
-
-            all_tasks.append({
-                "_id": str(task["_id"]),
-                "name": task.get("name", "Unnamed Task"),
-                "taskType": task.get("taskType", ""),
-                "followup_date": task_datetime.isoformat() if task_datetime else None,
-                "status": task.get("status", "Open"),
-                "assignedfor": user_email,
-                "type": task.get("type", "call"),
-                "contacted_person": task.get("contacted_person", {}),
-                "isRecurring": bool(task.get("recurring_day")),
-            })
-
-        # Sort by date (newest first)
-        all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
-
-        return {
-            "user_email": user_email,
-            "total_tasks": len(all_tasks),
-            "tasks": all_tasks,
-            "status": "success"
-        }
-
-    except Exception as e:
-        logging.error(f"Error in get_user_tasks: {e}")
-        return {"error": str(e), "status": "failed"}
-
     
-    
-# STATS ENDPOINTS
-# Add to your FastAPI backend
-# Add to your main.py or stats endpoints file
-
-from datetime import datetime, timedelta
-from collections import defaultdict
-
-@app.get("/stats/overview")
-async def get_stats_overview(period: str = "monthly"):
-    """Get overall statistics for the dashboard with time period filtering"""
-    try:
-        # Calculate date range based on period
-        now = datetime.utcnow()
-        if period == "daily":
-            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=1)
-        elif period == "weekly":
-            start_date = now - timedelta(days=now.weekday())
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=7)
-        else:  # monthly
-            start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            if now.month == 12:
-                end_date = now.replace(year=now.year + 1, month=1, day=1)
-            else:
-                end_date = now.replace(month=now.month + 1, day=1)
-
-        # Count outstanding cells (cells with status != "completed" or "closed")
-        # Assuming cells are events with eventType "Cell" and have a status field
-        outstanding_cells = await events_collection.count_documents({
-            "eventType": "Cell",
-            "status": {"$nin": ["completed", "closed", "done"]}
-        })
-        
-        # Count outstanding tasks from tasks collection
-        # Assuming tasks have a status field and are not completed/closed
-        outstanding_tasks = await tasks_collection.count_documents({
-            "status": {"$nin": ["completed", "closed", "done"]}
-        })
-        
-        # Get total people (assuming you have a people collection)
-        total_people = await people_collection.count_documents({})
-        
-        # Get events for the period to calculate attendance and growth
-        # Only include non-cell events for attendance calculation
-        period_events = await events_collection.find({
-            "date": {"$gte": start_date, "$lt": end_date},
-            "status": {"$in": ["completed", "closed"]},
-            "eventType": {"$ne": "Cell"}  # Exclude cells from attendance calculation
-        }).to_list(length=None)
-        
-        # Calculate total attendance for the period
-        total_attendance = sum(event.get("total_attendance", 0) for event in period_events)
-        
-        # Calculate previous period for growth comparison
-        if period == "daily":
-            prev_start = start_date - timedelta(days=1)
-            prev_end = start_date
-        elif period == "weekly":
-            prev_start = start_date - timedelta(days=7)
-            prev_end = start_date
-        else:  # monthly
-            if start_date.month == 1:
-                prev_start = start_date.replace(year=start_date.year - 1, month=12)
-            else:
-                prev_start = start_date.replace(month=start_date.month - 1)
-            prev_end = start_date
-        
-        # Get previous period attendance (exclude cells)
-        prev_events = await events_collection.find({
-            "date": {"$gte": prev_start, "$lt": prev_end},
-            "status": {"$in": ["completed", "closed"]},
-            "eventType": {"$ne": "Cell"}
-        }).to_list(length=None)
-        
-        prev_attendance = sum(event.get("total_attendance", 0) for event in prev_events)
-        
-        # Calculate growth rate
-        if prev_attendance > 0:
-            growth_rate = ((total_attendance - prev_attendance) / prev_attendance) * 100
-        else:
-            growth_rate = 100 if total_attendance > 0 else 0
-        
-        # Calculate weekly/daily attendance breakdown (exclude cells)
-        attendance_breakdown = {}
-        for event in period_events:
-            if event.get("date"):
-                event_date = event["date"]
-                if period == "daily":
-                    # Group by hour for daily view
-                    hour = event_date.hour
-                    key = f"{hour:02d}:00"
-                elif period == "weekly":
-                    # Group by day name for weekly view
-                    key = event_date.strftime("%A")
-                else:
-                    # Group by week number for monthly view
-                    week_num = event_date.isocalendar()[1]
-                    key = f"Week {week_num}"
-                
-                if key not in attendance_breakdown:
-                    attendance_breakdown[key] = 0
-                attendance_breakdown[key] += event.get("total_attendance", 0)
-        
-        return {
-            "outstanding_cells": outstanding_cells,
-            "outstanding_tasks": outstanding_tasks,  # Changed from outstanding_events to outstanding_tasks
-            "total_people": total_people,
-            "total_attendance": total_attendance,
-            "growth_rate": round(growth_rate, 1),
-            "attendance_breakdown": attendance_breakdown,
-            "period": period
-        }
-    except Exception as e:
-        print(f"Error in stats overview: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/stats/outstanding-items")
-async def get_outstanding_items():
-    """Get detailed outstanding cells and tasks for the dashboard"""
-    try:
-        # Get outstanding cells with details
-        outstanding_cells = await events_collection.find({
-            "eventType": "Cell",
-            "status": {"$nin": ["completed", "closed", "done"]}
-        }).to_list(length=None)
-        
-        # Get outstanding tasks with details
-        outstanding_tasks = await tasks_collection.find({
-            "status": {"$nin": ["completed", "closed", "done"]}
-        }).to_list(length=None)
-        
-        # Format cells data
-        cells_data = []
-        for cell in outstanding_cells:
-            cells_data.append({
-                "name": cell.get("eventLeader", "Unknown Leader"),
-                "location": cell.get("location", "Unknown Location"),
-                "title": cell.get("eventName", "Untitled Cell"),
-                "date": cell.get("date"),
-                "status": cell.get("status", "pending")
-            })
-        
-        # Format tasks data
-        tasks_data = []
-        for task in outstanding_tasks:
-            tasks_data.append({
-                "name": task.get("assignedTo", task.get("eventLeader", "Unassigned")),
-                "email": task.get("email", ""),
-                "title": task.get("taskName", task.get("title", "Untitled Task")),
-                "count": task.get("priority", 1),  # Using priority as count or you can count tasks per person
-                "dueDate": task.get("dueDate", task.get("date")),
-                "status": task.get("status", "pending")
-            })
-        
-        return {
-            "outstanding_cells": cells_data,
-            "outstanding_tasks": tasks_data
-        }
-        
-    except Exception as e:
-        print(f"Error in outstanding items: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/stats/people-with-tasks")
-async def get_people_capture_stats():
-    """
-    Get team members and how many people they have captured/recruited
-    """
-    try:
-        client = get_database_client()
-        db = client[DB_NAME]
-        
-        # Count how many people each team member has captured
-        pipeline = [
-            {
-                "$match": {
-                    "captured_by": {"$exists": True, "$ne": None}  # Only people who were captured by someone
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$captured_by",  # Group by the person who captured them
-                    "people_captured_count": {"$sum": 1},
-                    "captured_people": {
-                        "$push": {
-                            "name": "$fullName",
-                            "email": "$email", 
-                            "capture_date": "$created_date"  # or whatever field tracks when
-                        }
-                    }
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "people",
-                    "localField": "_id",
-                    "foreignField": "_id",  # or "email" depending on your schema
-                    "as": "capturer_details"
-                }
-            },
-            {
-                "$unwind": {
-                    "path": "$capturer_details",
-                    "preserveNullAndEmptyArrays": True
-                }
-            },
-            {
-                "$project": {
-                    "capturer_id": "$_id",
-                    "capturer_name": {
-                        "$ifNull": ["$capturer_details.fullName", "$capturer_details.name", "Unknown Capturer"]
-                    },
-                    "capturer_email": {
-                        "$ifNull": ["$capturer_details.email", "No email"]
-                    },
-                    "people_captured_count": 1,
-                    "captured_people": 1,
-                    "_id": 0
-                }
-            },
-            {
-                "$sort": {"people_captured_count": -1}  # Sort by most captures first
-            }
-        ]
-        
-        results = list(db.people.aggregate(pipeline))  # Query the PEOPLE collection
-        
-        if not results:
-            return {
-                "capture_stats": [],
-                "total_capturers": 0,
-                "total_people_captured": 0,
-                "message": "No capture data found"
-            }
-        
-        total_people_captured = sum(item['people_captured_count'] for item in results)
-        
-        return {
-            "capture_stats": results,
-            "total_capturers": len(results),
-            "total_people_captured": total_people_captured,
-            "message": f"Found {len(results)} team members who captured {total_people_captured} people total"
-        }
-        
-    except Exception as e:
-        print(f"Error fetching capture stats: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to fetch capture statistics: {str(e)}"
-        )
-        
-        
-# --- ROLE MANAGEMENT ENDPOINTS (Admin only) ---
-
-# Role permissions configuration
-ROLE_PERMISSIONS = {
-    "admin": {
-        "manage_users": True,
-        "manage_leaders": True,
-        "manage_events": True,
-        "view_reports": True,
-        "system_settings": True
-    },
-    "leader": {
-        "manage_users": False,
-        "manage_leaders": False,
-        "manage_events": True,
-        "view_reports": True,
-        "system_settings": False
-    },
-    "user": {
-        "manage_users": False,
-        "manage_leaders": False,
-        "manage_events": False,
-        "view_reports": False,
-        "system_settings": False
-    },
-    "registrant": {
-        "manage_users": False,
-        "manage_leaders": False,
-        "manage_events": True,
-        "view_reports": False,
-        "system_settings": False
-    }
-}
-
-# --- ADMIN ENDPOINTS ---
-@app.post("/admin/users", response_model=MessageResponse)
-async def create_user(
-    user_data: UserCreater,
-    current_user: dict = Depends(get_current_user)
-):
-    """Create a new user - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    try:
-        # Check if user already exists
-        existing_user = await users_collection.find_one({"email": user_data.email})
-        if existing_user:
-            raise HTTPException(status_code=400, detail="User with this email already exists")
-        
-        # Validate role
-        if user_data.role not in ["admin", "leader", "user", "registrant"]:
-            raise HTTPException(status_code=400, detail="Invalid role")
-        
-        # Hash password
-        from passlib.context import CryptContext
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        hashed_password = pwd_context.hash(user_data.password)
-        
-        # Create user document
-        user_doc = {
-            "name": user_data.name,
-            "surname": user_data.surname,
-            "email": user_data.email,
-            "password": hashed_password,
-            "phone_number": user_data.phone_number,
-            "date_of_birth": user_data.date_of_birth,
-            "address": user_data.address,
-            "gender": user_data.gender,
-            "invitedBy": user_data.invitedBy,
-            "leader12": user_data.leader12,
-            "leader144": user_data.leader144,
-            "leader1728": user_data.leader1728,
-            "stage": user_data.stage or "Win",
-            "role": user_data.role,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        }
-        
-        # Insert into database
-        result = await users_collection.insert_one(user_doc)
-        
-        # Log activity
-        await log_activity(
-            user_id=str(current_user.get("_id")),
-            action="USER_CREATED",
-            details=f"Created new user: {user_data.name} {user_data.surname} ({user_data.role})"
-        )
-        
-        return MessageResponse(message=f"User {user_data.name} {user_data.surname} created successfully")
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error creating user: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
-
-@app.get("/admin/users", response_model=UserList)
-async def get_all_users(current_user: dict = Depends(get_current_user)):
-    """Get all users - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    try:
-        users = []
-        cursor = users_collection.find({})
-        
-        async for user in cursor:
-            users.append(UserListResponse(
-                id=str(user["_id"]),
-                name=user.get("name", ""),
-                surname=user.get("surname", ""),
-                email=user.get("email", ""),
-                role=user.get("role", "user"),
-                date_of_birth=user.get("date_of_birth"),
-                phone_number=user.get("phone_number"),
-                address=user.get("address"),
-                gender=user.get("gender"),
-                invitedBy=user.get("invitedBy"),
-                leader12=user.get("leader12"),
-                leader144=user.get("leader144"),
-                leader1728=user.get("leader1728"),
-                stage=user.get("stage"),
-                created_at=user.get("created_at")
-            ))
-        
-        return UserList(users=users)
-        
-    except Exception as e:
-        import traceback
-        print(f"ERROR: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
-
-@app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
-async def update_user_role(
-    user_id: str,
-    role_update: RoleUpdate,
-    current_user: dict = Depends(get_current_user)
-):
-    """Update user role - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    try:
-        # Validate role
-        if role_update.role not in ["admin", "leader", "user", "registrant"]:
-            raise HTTPException(status_code=400, detail="Invalid role")
-        
-        # Check if user exists
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        old_role = user.get("role", "user")
-        
-        # Update role
-        result = await users_collection.update_one(
-            {"_id": ObjectId(user_id)},
-            {
-                "$set": {
-                    "role": role_update.role,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=400, detail="Failed to update user role")
-        
-        # Log activity
-        await log_activity(
-            user_id=str(current_user.get("_id")),
-            action="ROLE_UPDATED",
-            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {role_update.role}"
-        )
-        
-        return MessageResponse(message=f"User role updated to {role_update.role}")
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating role: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
-
-@app.delete("/admin/users/{user_id}", response_model=MessageResponse)
-async def delete_user(
-    user_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Delete a user - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    try:
-        # Check if user exists
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Prevent deleting self
-        if str(user["_id"]) == str(current_user.get("_id")):
-            raise HTTPException(status_code=400, detail="Cannot delete your own account")
-        
-        user_name = f"{user.get('name')} {user.get('surname')}"
-        
-        # Delete user
-        result = await users_collection.delete_one({"_id": ObjectId(user_id)})
-        
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=400, detail="Failed to delete user")
-        
-        # Log activity
-        await log_activity(
-            user_id=str(current_user.get("_id")),
-            action="USER_DELETED",
-            details=f"Deleted user: {user_name}"
-        )
-        
-        return MessageResponse(message=f"User {user_name} deleted successfully")
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error deleting user: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
-
-@app.put("/admin/roles/{role_name}/permissions", response_model=MessageResponse)
-async def update_role_permissions(
-    role_name: str,
-    permission_update: PermissionUpdate,
-    current_user: dict = Depends(get_current_user)
-):
-    """Update role permissions - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    try:
-        # Validate role
-        if role_name not in ROLE_PERMISSIONS:
-            raise HTTPException(status_code=400, detail="Invalid role")
-        
-        # Update in-memory permissions (in production, store in database)
-        ROLE_PERMISSIONS[role_name][permission_update.permission] = permission_update.enabled
-        
-        # Log activity
-        await log_activity(
-            user_id=str(current_user.get("_id")),
-            action="PERMISSION_UPDATED",
-            details=f"Updated {permission_update.permission} for {role_name} role to {permission_update.enabled}"
-        )
-        
-        return MessageResponse(
-            message=f"Permission {permission_update.permission} updated for role {role_name}"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating permissions: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error updating permissions: {str(e)}")
-
-@app.get("/admin/roles/{role_name}/permissions")
-async def get_role_permissions(
-    role_name: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Get role permissions - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    if role_name not in ROLE_PERMISSIONS:
-        raise HTTPException(status_code=400, detail="Invalid role")
-    
-    return {"role": role_name, "permissions": ROLE_PERMISSIONS[role_name]}
-
-# Helper function to log activities
-async def log_activity(user_id: str, action: str, details: str):
-    """Log admin activities to database"""
-    try:
-        activity_doc = {
-            "user_id": user_id,
-            "action": action,
-            "details": details,
-            "timestamp": datetime.utcnow()
-        }
-        
-        # Insert into activity_logs collection
-        await db.activity_logs.insert_one(activity_doc)
-    except Exception as e:
-        print(f"Error logging activity: {str(e)}")
-        # Don't raise exception, just log the error
-
-@app.get("/admin/activity-logs")
-async def get_activity_logs(
-    limit: int = 50,
-    current_user: dict = Depends(get_current_user)
-):
-    """Get activity logs - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    try:
-        logs = []
-        cursor = db.activity_logs.find({}).sort("timestamp", -1).limit(limit)
-        
-        async for log in cursor:
-            logs.append({
-                "id": str(log["_id"]),
-                "action": log.get("action"),
-                "details": log.get("details"),
-                "timestamp": log.get("timestamp"),
-                "user_id": log.get("user_id")
-            })
-        
-        return {"logs": logs}
-        
-    except Exception as e:
-        print(f"Error fetching activity logs: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
