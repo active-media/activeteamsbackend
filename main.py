@@ -1129,6 +1129,7 @@ async def update_event(event: EventUpdate, event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
+
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str = Path(..., description="ID of the event"),
@@ -1333,8 +1334,6 @@ async def get_leaders_by_position(level: int):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 # Check-in (no auth required)
@@ -1876,4 +1875,741 @@ async def delete_person(person_id: str = Path(...)):
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
+
+# -------------------------
+# Tasks Management
+# -------------------------
+
+# Create a new task
+
+# POST /tasks
+
+from fastapi.encoders import jsonable_encoder
+
+@app.post("/tasks")
+async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
+    try:
+        # Convert Pydantic model to dict
+        new_task_dict = task.dict()
+        # Attach the creator's email for backward compatibility
+        new_task_dict["assignedfor"] = current_user["email"]
+
+        # Insert into MongoDB
+        result = await db["tasks"].insert_one(new_task_dict)
+
+        # Add the MongoDB _id as a string for the response
+        new_task_dict["_id"] = str(result.inserted_id)
+
+        # Encode safely for JSON response
+        return {"status": "success", "task": jsonable_encoder(new_task_dict)}
+
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+# Retrieve all tasks
+
+# GET /tasks
+
+@app.get("/tasks", response_model=List[TaskModel])
+async def get_tasks(
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
+):
+
+    query = {}
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date)
+                date_filter["$gte"] = start_dt
+
+            except ValueError:
+
+                raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+        if end_date:
+
+            try:
+                # Add one day to include entire end date
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+                date_filter["$lt"] = end_dt
+
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format")
+        query["followup_date"] = date_filter
+
+    tasks = []
+
+    cursor = db["tasks"].find(query)
+    async for task in cursor:
+        task["_id"] = str(task["_id"])  # stringify ObjectId
+        try:
+            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
+        except Exception as e:
+            print(f"Skipping invalid task: {e}, task={task}")
+
+    return tasks 
+
+
+@app.put("/tasks/{task_id}")
+async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
+    if not ObjectId.is_valid(task_id):
+
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
+
+    result = await tasks_collection.find_one_and_update(
+        {"_id": ObjectId(task_id)},
+        {"$set": updated_task},
+        return_document=True  # from pymongo import ReturnDocument
+
+    )
+
+    if not result:
+
+        raise HTTPException(status_code=404, detail="Task not found")
+    # Convert ObjectId to str before returning
+
+    result["_id"] = str(result["_id"])
+
+    return result
+from bson import ObjectId
+
+@app.get("/tasks")
+async def get_user_tasks(
+    email: str = Query(None),
+    userId: str = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        # Determine user email
+        user_email = email or (await users_collection.find_one({"_id": ObjectId(userId)})).get("email") if userId else current_user.get("email")
+        if not user_email:
+            return {"error": "User email not found", "status": "failed"}
+
+        timezone = pytz.timezone("Africa/Johannesburg")
+        
+        # Fetch all tasks for the user
+        cursor = tasks_collection.find({"assignedfor": user_email})
+
+        all_tasks = []
+
+        async for task in cursor:
+            task_date_str = task.get("followup_date")
+            task_datetime = None
+
+            # Parse followup_date
+            if task_date_str:
+                if isinstance(task_date_str, datetime):
+                    task_datetime = task_date_str
+                else:
+                    try:
+                        task_datetime = datetime.fromisoformat(task_date_str)
+                        task_datetime = task_datetime.astimezone(timezone)
+                    except ValueError:
+                        logging.warning(f"Invalid date format: {task_date_str}")
+                        continue
+
+            all_tasks.append({
+                "_id": str(task["_id"]),
+                "name": task.get("name", "Unnamed Task"),
+                "taskType": task.get("taskType", ""),
+                "followup_date": task_datetime.isoformat() if task_datetime else None,
+                "status": task.get("status", "Open"),
+                "assignedfor": user_email,
+                "type": task.get("type", "call"),
+                "contacted_person": task.get("contacted_person", {}),
+                "isRecurring": bool(task.get("recurring_day")),
+            })
+
+        # Sort by date (newest first)
+        all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
+
+        return {
+            "user_email": user_email,
+            "total_tasks": len(all_tasks),
+            "tasks": all_tasks,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logging.error(f"Error in get_user_tasks: {e}")
+        return {"error": str(e), "status": "failed"}
+
     
+    
+# STATS ENDPOINTS
+# Add to your FastAPI backend
+# Add to your main.py or stats endpoints file
+
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+@app.get("/stats/overview")
+async def get_stats_overview(period: str = "monthly"):
+    """Get overall statistics for the dashboard with time period filtering"""
+    try:
+        # Calculate date range based on period
+        now = datetime.utcnow()
+        if period == "daily":
+            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=1)
+        elif period == "weekly":
+            start_date = now - timedelta(days=now.weekday())
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=7)
+        else:  # monthly
+            start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if now.month == 12:
+                end_date = now.replace(year=now.year + 1, month=1, day=1)
+            else:
+                end_date = now.replace(month=now.month + 1, day=1)
+
+        # Count outstanding cells (cells with status != "completed" or "closed")
+        # Assuming cells are events with eventType "Cell" and have a status field
+        outstanding_cells = await events_collection.count_documents({
+            "eventType": "Cell",
+            "status": {"$nin": ["completed", "closed", "done"]}
+        })
+        
+        # Count outstanding tasks from tasks collection
+        # Assuming tasks have a status field and are not completed/closed
+        outstanding_tasks = await tasks_collection.count_documents({
+            "status": {"$nin": ["completed", "closed", "done"]}
+        })
+        
+        # Get total people (assuming you have a people collection)
+        total_people = await people_collection.count_documents({})
+        
+        # Get events for the period to calculate attendance and growth
+        # Only include non-cell events for attendance calculation
+        period_events = await events_collection.find({
+            "date": {"$gte": start_date, "$lt": end_date},
+            "status": {"$in": ["completed", "closed"]},
+            "eventType": {"$ne": "Cell"}  # Exclude cells from attendance calculation
+        }).to_list(length=None)
+        
+        # Calculate total attendance for the period
+        total_attendance = sum(event.get("total_attendance", 0) for event in period_events)
+        
+        # Calculate previous period for growth comparison
+        if period == "daily":
+            prev_start = start_date - timedelta(days=1)
+            prev_end = start_date
+        elif period == "weekly":
+            prev_start = start_date - timedelta(days=7)
+            prev_end = start_date
+        else:  # monthly
+            if start_date.month == 1:
+                prev_start = start_date.replace(year=start_date.year - 1, month=12)
+            else:
+                prev_start = start_date.replace(month=start_date.month - 1)
+            prev_end = start_date
+        
+        # Get previous period attendance (exclude cells)
+        prev_events = await events_collection.find({
+            "date": {"$gte": prev_start, "$lt": prev_end},
+            "status": {"$in": ["completed", "closed"]},
+            "eventType": {"$ne": "Cell"}
+        }).to_list(length=None)
+        
+        prev_attendance = sum(event.get("total_attendance", 0) for event in prev_events)
+        
+        # Calculate growth rate
+        if prev_attendance > 0:
+            growth_rate = ((total_attendance - prev_attendance) / prev_attendance) * 100
+        else:
+            growth_rate = 100 if total_attendance > 0 else 0
+        
+        # Calculate weekly/daily attendance breakdown (exclude cells)
+        attendance_breakdown = {}
+        for event in period_events:
+            if event.get("date"):
+                event_date = event["date"]
+                if period == "daily":
+                    # Group by hour for daily view
+                    hour = event_date.hour
+                    key = f"{hour:02d}:00"
+                elif period == "weekly":
+                    # Group by day name for weekly view
+                    key = event_date.strftime("%A")
+                else:
+                    # Group by week number for monthly view
+                    week_num = event_date.isocalendar()[1]
+                    key = f"Week {week_num}"
+                
+                if key not in attendance_breakdown:
+                    attendance_breakdown[key] = 0
+                attendance_breakdown[key] += event.get("total_attendance", 0)
+        
+        return {
+            "outstanding_cells": outstanding_cells,
+            "outstanding_tasks": outstanding_tasks,  # Changed from outstanding_events to outstanding_tasks
+            "total_people": total_people,
+            "total_attendance": total_attendance,
+            "growth_rate": round(growth_rate, 1),
+            "attendance_breakdown": attendance_breakdown,
+            "period": period
+        }
+    except Exception as e:
+        print(f"Error in stats overview: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats/outstanding-items")
+async def get_outstanding_items():
+    """Get detailed outstanding cells and tasks for the dashboard"""
+    try:
+        # Get outstanding cells with details
+        outstanding_cells = await events_collection.find({
+            "eventType": "Cell",
+            "status": {"$nin": ["completed", "closed", "done"]}
+        }).to_list(length=None)
+        
+        # Get outstanding tasks with details
+        outstanding_tasks = await tasks_collection.find({
+            "status": {"$nin": ["completed", "closed", "done"]}
+        }).to_list(length=None)
+        
+        # Format cells data
+        cells_data = []
+        for cell in outstanding_cells:
+            cells_data.append({
+                "name": cell.get("eventLeader", "Unknown Leader"),
+                "location": cell.get("location", "Unknown Location"),
+                "title": cell.get("eventName", "Untitled Cell"),
+                "date": cell.get("date"),
+                "status": cell.get("status", "pending")
+            })
+        
+        # Format tasks data
+        tasks_data = []
+        for task in outstanding_tasks:
+            tasks_data.append({
+                "name": task.get("assignedTo", task.get("eventLeader", "Unassigned")),
+                "email": task.get("email", ""),
+                "title": task.get("taskName", task.get("title", "Untitled Task")),
+                "count": task.get("priority", 1),  # Using priority as count or you can count tasks per person
+                "dueDate": task.get("dueDate", task.get("date")),
+                "status": task.get("status", "pending")
+            })
+        
+        return {
+            "outstanding_cells": cells_data,
+            "outstanding_tasks": tasks_data
+        }
+        
+    except Exception as e:
+        print(f"Error in outstanding items: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats/people-with-tasks")
+async def get_people_capture_stats():
+    """
+    Get team members and how many people they have captured/recruited
+    """
+    try:
+        client = get_database_client()
+        db = client[DB_NAME]
+        
+        # Count how many people each team member has captured
+        pipeline = [
+            {
+                "$match": {
+                    "captured_by": {"$exists": True, "$ne": None}  # Only people who were captured by someone
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$captured_by",  # Group by the person who captured them
+                    "people_captured_count": {"$sum": 1},
+                    "captured_people": {
+                        "$push": {
+                            "name": "$fullName",
+                            "email": "$email", 
+                            "capture_date": "$created_date"  # or whatever field tracks when
+                        }
+                    }
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "people",
+                    "localField": "_id",
+                    "foreignField": "_id",  # or "email" depending on your schema
+                    "as": "capturer_details"
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$capturer_details",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+            {
+                "$project": {
+                    "capturer_id": "$_id",
+                    "capturer_name": {
+                        "$ifNull": ["$capturer_details.fullName", "$capturer_details.name", "Unknown Capturer"]
+                    },
+                    "capturer_email": {
+                        "$ifNull": ["$capturer_details.email", "No email"]
+                    },
+                    "people_captured_count": 1,
+                    "captured_people": 1,
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"people_captured_count": -1}  # Sort by most captures first
+            }
+        ]
+        
+        results = list(db.people.aggregate(pipeline))  # Query the PEOPLE collection
+        
+        if not results:
+            return {
+                "capture_stats": [],
+                "total_capturers": 0,
+                "total_people_captured": 0,
+                "message": "No capture data found"
+            }
+        
+        total_people_captured = sum(item['people_captured_count'] for item in results)
+        
+        return {
+            "capture_stats": results,
+            "total_capturers": len(results),
+            "total_people_captured": total_people_captured,
+            "message": f"Found {len(results)} team members who captured {total_people_captured} people total"
+        }
+        
+    except Exception as e:
+        print(f"Error fetching capture stats: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to fetch capture statistics: {str(e)}"
+        )
+        
+        
+# --- ROLE MANAGEMENT ENDPOINTS (Admin only) ---
+
+# Role permissions configuration
+ROLE_PERMISSIONS = {
+    "admin": {
+        "manage_users": True,
+        "manage_leaders": True,
+        "manage_events": True,
+        "view_reports": True,
+        "system_settings": True
+    },
+    "leader": {
+        "manage_users": False,
+        "manage_leaders": False,
+        "manage_events": True,
+        "view_reports": True,
+        "system_settings": False
+    },
+    "user": {
+        "manage_users": False,
+        "manage_leaders": False,
+        "manage_events": False,
+        "view_reports": False,
+        "system_settings": False
+    },
+    "registrant": {
+        "manage_users": False,
+        "manage_leaders": False,
+        "manage_events": True,
+        "view_reports": False,
+        "system_settings": False
+    }
+}
+
+# --- ADMIN ENDPOINTS ---
+@app.post("/admin/users", response_model=MessageResponse)
+async def create_user(
+    user_data: UserCreater,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a new user - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Check if user already exists
+        existing_user = await users_collection.find_one({"email": user_data.email})
+        if existing_user:
+            raise HTTPException(status_code=400, detail="User with this email already exists")
+        
+        # Validate role
+        if user_data.role not in ["admin", "leader", "user", "registrant"]:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        
+        # Hash password
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        hashed_password = pwd_context.hash(user_data.password)
+        
+        # Create user document
+        user_doc = {
+            "name": user_data.name,
+            "surname": user_data.surname,
+            "email": user_data.email,
+            "password": hashed_password,
+            "phone_number": user_data.phone_number,
+            "date_of_birth": user_data.date_of_birth,
+            "address": user_data.address,
+            "gender": user_data.gender,
+            "invitedBy": user_data.invitedBy,
+            "leader12": user_data.leader12,
+            "leader144": user_data.leader144,
+            "leader1728": user_data.leader1728,
+            "stage": user_data.stage or "Win",
+            "role": user_data.role,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Insert into database
+        result = await users_collection.insert_one(user_doc)
+        
+        # Log activity
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="USER_CREATED",
+            details=f"Created new user: {user_data.name} {user_data.surname} ({user_data.role})"
+        )
+        
+        return MessageResponse(message=f"User {user_data.name} {user_data.surname} created successfully")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
+
+@app.get("/admin/users", response_model=UserList)
+async def get_all_users(current_user: dict = Depends(get_current_user)):
+    """Get all users - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        users = []
+        cursor = users_collection.find({})
+        
+        async for user in cursor:
+            users.append(UserListResponse(
+                id=str(user["_id"]),
+                name=user.get("name", ""),
+                surname=user.get("surname", ""),
+                email=user.get("email", ""),
+                role=user.get("role", "user"),
+                date_of_birth=user.get("date_of_birth"),
+                phone_number=user.get("phone_number"),
+                address=user.get("address"),
+                gender=user.get("gender"),
+                invitedBy=user.get("invitedBy"),
+                leader12=user.get("leader12"),
+                leader144=user.get("leader144"),
+                leader1728=user.get("leader1728"),
+                stage=user.get("stage"),
+                created_at=user.get("created_at")
+            ))
+        
+        return UserList(users=users)
+        
+    except Exception as e:
+        import traceback
+        print(f"ERROR: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
+
+@app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
+async def update_user_role(
+    user_id: str,
+    role_update: RoleUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update user role - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Validate role
+        if role_update.role not in ["admin", "leader", "user", "registrant"]:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        
+        # Check if user exists
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        old_role = user.get("role", "user")
+        
+        # Update role
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "role": role_update.role,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to update user role")
+        
+        # Log activity
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ROLE_UPDATED",
+            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {role_update.role}"
+        )
+        
+        return MessageResponse(message=f"User role updated to {role_update.role}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating role: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
+
+@app.delete("/admin/users/{user_id}", response_model=MessageResponse)
+async def delete_user(
+    user_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a user - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Check if user exists
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Prevent deleting self
+        if str(user["_id"]) == str(current_user.get("_id")):
+            raise HTTPException(status_code=400, detail="Cannot delete your own account")
+        
+        user_name = f"{user.get('name')} {user.get('surname')}"
+        
+        # Delete user
+        result = await users_collection.delete_one({"_id": ObjectId(user_id)})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to delete user")
+        
+        # Log activity
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="USER_DELETED",
+            details=f"Deleted user: {user_name}"
+        )
+        
+        return MessageResponse(message=f"User {user_name} deleted successfully")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
+
+@app.put("/admin/roles/{role_name}/permissions", response_model=MessageResponse)
+async def update_role_permissions(
+    role_name: str,
+    permission_update: PermissionUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update role permissions - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Validate role
+        if role_name not in ROLE_PERMISSIONS:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        
+        # Update in-memory permissions (in production, store in database)
+        ROLE_PERMISSIONS[role_name][permission_update.permission] = permission_update.enabled
+        
+        # Log activity
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="PERMISSION_UPDATED",
+            details=f"Updated {permission_update.permission} for {role_name} role to {permission_update.enabled}"
+        )
+        
+        return MessageResponse(
+            message=f"Permission {permission_update.permission} updated for role {role_name}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating permissions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating permissions: {str(e)}")
+
+@app.get("/admin/roles/{role_name}/permissions")
+async def get_role_permissions(
+    role_name: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get role permissions - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    if role_name not in ROLE_PERMISSIONS:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
+    return {"role": role_name, "permissions": ROLE_PERMISSIONS[role_name]}
+
+# Helper function to log activities
+async def log_activity(user_id: str, action: str, details: str):
+    """Log admin activities to database"""
+    try:
+        activity_doc = {
+            "user_id": user_id,
+            "action": action,
+            "details": details,
+            "timestamp": datetime.utcnow()
+        }
+        
+        # Insert into activity_logs collection
+        await db.activity_logs.insert_one(activity_doc)
+    except Exception as e:
+        print(f"Error logging activity: {str(e)}")
+        # Don't raise exception, just log the error
+
+@app.get("/admin/activity-logs")
+async def get_activity_logs(
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get activity logs - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        logs = []
+        cursor = db.activity_logs.find({}).sort("timestamp", -1).limit(limit)
+        
+        async for log in cursor:
+            logs.append({
+                "id": str(log["_id"]),
+                "action": log.get("action"),
+                "details": log.get("details"),
+                "timestamp": log.get("timestamp"),
+                "user_id": log.get("user_id")
+            })
+        
+        return {"logs": logs}
+        
+    except Exception as e:
+        print(f"Error fetching activity logs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
