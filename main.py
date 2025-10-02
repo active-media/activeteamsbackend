@@ -1784,13 +1784,13 @@ async def delete_person(person_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=str(e))
     
 
-# # -------------------------
-# # Tasks Management
-# # -------------------------
+# -------------------------
+# Tasks Management
+# -------------------------
 
-# # Create a new task
+# Create a new task
 
-# # POST /tasks
+# POST /tasks
 
 from fastapi.encoders import jsonable_encoder
 
@@ -1849,7 +1849,7 @@ async def get_tasks(
 
     tasks = []
 
-    cursor = db["Tasks"].find(query)
+    cursor = db["tasks"].find(query)
     async for task in cursor:
         task["_id"] = str(task["_id"])  # stringify ObjectId
         try:
@@ -1882,6 +1882,8 @@ async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
 
     result["_id"] = str(result["_id"])
 
+    return result
+from bson import ObjectId
 
 @app.get("/tasks")
 async def get_user_tasks(
@@ -1943,8 +1945,6 @@ async def get_user_tasks(
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
         return {"error": str(e), "status": "failed"}
-
-    
     
 # STATS ENDPOINTS
 # Add to your FastAPI backend
