@@ -4,7 +4,7 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate
+from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -412,6 +412,7 @@ async def get_event_types():
         return event_types
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching event types: {str(e)}")
+    
 
 
 # CELLS ENDPOINTS SECTION 
@@ -1056,28 +1057,29 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
+
+
 @app.put("/events/{event_id}")
-async def update_event(event: EventCreate, event_id: str = Path(...)):
+async def update_event(event: EventUpdate, event_id: str = Path(...)):
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-        
+
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not existing_event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        # Get only fields that are set
+
         update_data = event.dict(exclude_unset=True)
 
-        # 🔥 Handle stringified ISO datetime
+        # 🔥 Handle ISO datetime string
         if "date" in update_data and isinstance(update_data["date"], str):
             try:
                 update_data["date"] = datetime.fromisoformat(update_data["date"].replace("Z", "+00:00"))
             except ValueError as ve:
                 raise HTTPException(status_code=422, detail=f"Invalid date format: {str(ve)}")
 
-        # 🔧 Optional: Clean up empty fields (like empty string price for ticketed=False)
-        if not update_data.get("isTicketed"):
+        # 🔧 Clean up if not ticketed
+        if update_data.get("isTicketed") is False:
             update_data["price"] = None
 
         result = await events_collection.update_one(
@@ -1197,65 +1199,6 @@ async def delete_event(event_id: str = Path(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
-
-
-@app.post("/events/{event_id}/checkin")
-async def checkin_single_member_to_cell(event_id: str, data: AddMemberNamesRequest):
-    event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
-    if not event:
-        raise HTTPException(status_code=404, detail="Cell event not found")
-
-    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-    members = event.get("members", [])
-    if any(m.get("id") == str(person["_id"]) for m in members):
-        raise HTTPException(status_code=400, detail="Person already checked in")
-
-    member_obj = {
-        "id": str(person["_id"]),
-        "name": person["Name"],
-        "email": person.get("Email", ""),
-        "leader": person.get("Leader", ""),
-        "checkin_time": datetime.utcnow().isoformat(),
-    }
-
-    await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {
-            "$push": {"members": member_obj},
-            "$inc": {"total_attendance": 1}
-        }
-    )
-
-    return {"message": f"{person['Name']} checked in successfully to the cell event."}
-
-
-@app.post("/events/{event_id}/uncheckin")
-async def uncheckin_single_member(event_id: str, data: RemoveMemberRequest):
-    event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
-    if not event:
-        raise HTTPException(status_code=404, detail="Cell event not found")
-
-    person = await people_collection.find_one({"Name": {"$regex": f"^{data.name}$", "$options": "i"}})
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-    update_result = await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {"$pull": {"members": {"id": str(person["_id"])}}},
-    )
-
-    if update_result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Person not found in this cell event")
-
-    await events_collection.update_one(
-        {"_id": ObjectId(event_id)},
-        {"$inc": {"total_attendance": -1}}
-    )
-
-    return {"message": f"{person['Name']} has been removed from the cell event."}
 
 
 @app.delete("/events/cell/{event_id}/members/{member_id}")
@@ -2027,7 +1970,10 @@ async def get_user_tasks(
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
         return {"error": str(e), "status": "failed"}
+<<<<<<< HEAD
     
+=======
+>>>>>>> f4ac585cb19a075c64067bf912d5047f789657cd
     
 # STATS ENDPOINTS
 # Add to your FastAPI backend

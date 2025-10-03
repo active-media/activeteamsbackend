@@ -91,6 +91,24 @@ class EventTypeCreate(BaseModel):
     createdAt: Optional[datetime] = None
 
 
+class EventUpdate(BaseModel):
+    eventType: Optional[str] = None
+    eventName: Optional[str] = None
+    date: Optional[datetime] = None
+    time: Optional[str] = None
+    recurring_day: Optional[List[str]] = None
+    location: Optional[str] = None
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    isTicketed: Optional[bool] = None
+    price: Optional[float] = None
+    userEmail: Optional[str] = None
+    
+    # ✅ Include update-only fields:
+    status: Optional[str] = None
+    attendees: Optional[List[str]] = None
+    did_not_meet: Optional[bool] = None
+
 
 class EventInDB(EventBase):
     _id: str  # MongoDB ObjectId as string
