@@ -1970,10 +1970,6 @@ async def get_user_tasks(
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
         return {"error": str(e), "status": "failed"}
-<<<<<<< HEAD
-    
-=======
->>>>>>> f4ac585cb19a075c64067bf912d5047f789657cd
     
 # STATS ENDPOINTS
 # Add to your FastAPI backend
