@@ -166,7 +166,7 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
-    reset_link = f"localhost:5173/reset-password?token={reset_token}"
+    reset_link = f"https://new-active-teams.netlify.app//reset-password?token={reset_token}"
     logger.info(f"Reset link generated for {payload.email}: {reset_link}")
 
     background_tasks.add_task(send_reset_email, payload.email, reset_link)
@@ -266,6 +266,7 @@ async def logout(user_id: str = Body(..., embed=True)):
     )
     logger.info(f"User logged out: {user_id}")
     return {"message": "Logged out successfully"}
+
 
 
 # EVENT ENDPOINTS
