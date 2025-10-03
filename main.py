@@ -1940,6 +1940,7 @@ async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
     result["_id"] = str(result["_id"])
 
     return result
+
 from bson import ObjectId
 
 @app.get("/tasks")
@@ -1949,22 +1950,45 @@ async def get_user_tasks(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Determine user email
-        user_email = email or (await users_collection.find_one({"_id": ObjectId(userId)})).get("email") if userId else current_user.get("email")
-        if not user_email:
+        # Check if current user is a leader
+        is_leader = current_user.get("role") in ["admin", "leader", "user"]  # Adjust roles as needed
+        
+        # Determine user email based on parameters or current user
+        user_email = None
+        
+        if email:
+            user_email = email
+        elif userId:
+            user = await users_collection.find_one({"_id": ObjectId(userId)})
+            if user:
+                user_email = user.get("email")
+        else:
+            # No parameters provided - use current user's email
+            user_email = current_user.get("email")
+        
+        if not user_email and not is_leader:
             return {"error": "User email not found", "status": "failed"}
-
+        
         timezone = pytz.timezone("Africa/Johannesburg")
         
-        # Fetch all tasks for the user
-        cursor = tasks_collection.find({"assignedfor": user_email})
-
+        # Build query based on permissions
+        if is_leader and not (email or userId):
+            # Leader viewing all tasks (no email/userId specified)
+            query = {}
+        elif user_email:
+            # Specific user's tasks
+            query = {"assignedfor": user_email}
+        else:
+            return {"error": "Cannot determine which tasks to fetch", "status": "failed"}
+        
+        # Fetch tasks
+        cursor = tasks_collection.find(query)
         all_tasks = []
-
+        
         async for task in cursor:
             task_date_str = task.get("followup_date")
             task_datetime = None
-
+            
             # Parse followup_date
             if task_date_str:
                 if isinstance(task_date_str, datetime):
@@ -1976,33 +2000,33 @@ async def get_user_tasks(
                     except ValueError:
                         logging.warning(f"Invalid date format: {task_date_str}")
                         continue
-
+            
             all_tasks.append({
                 "_id": str(task["_id"]),
                 "name": task.get("name", "Unnamed Task"),
                 "taskType": task.get("taskType", ""),
                 "followup_date": task_datetime.isoformat() if task_datetime else None,
                 "status": task.get("status", "Open"),
-                "assignedfor": user_email,
+                "assignedfor": task.get("assignedfor", ""),
                 "type": task.get("type", "call"),
                 "contacted_person": task.get("contacted_person", {}),
                 "isRecurring": bool(task.get("recurring_day")),
             })
-
+        
         # Sort by date (newest first)
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
-
+        
         return {
-            "user_email": user_email,
+            "user_email": user_email or "all_users",
             "total_tasks": len(all_tasks),
             "tasks": all_tasks,
-            "status": "success"
+            "status": "success",
+            "is_leader_view": is_leader and not (email or userId)
         }
-
+        
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
         return {"error": str(e), "status": "failed"}
-
     
     
 # STATS ENDPOINTS
