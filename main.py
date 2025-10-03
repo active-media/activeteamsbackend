@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timedelta, time
 from bson import ObjectId
-from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
+from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
 
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate
@@ -9,7 +9,7 @@ from auth.utils import hash_password, verify_password, get_next_occurrence_singl
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection
-from auth.email_utils import send_reset_password_email
+from auth.email_utils import send_reset_email
 from typing import Optional, Literal, List
 from collections import Counter
 from auth.utils import get_current_user  
@@ -21,6 +21,7 @@ import base64
 from fastapi import File, UploadFile
 from fastapi.security import HTTPBearer
 oauth2_scheme = HTTPBearer()
+from passlib.context import CryptContext
 
 app = FastAPI()
 app.add_middleware(
@@ -47,14 +48,49 @@ def sanitize_document(doc):
                     v[i] = None
     return doc
 
-# SIGNUP AND LOGIN ENDPOINTS (kept for user management)
-# http://localhost:8000/signup
+# --- Password hashing setup ---
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+# JWT expiration
+JWT_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_DAYS = 30
+
+
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("auth")
+
+# FastAPI & middleware
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+oauth2_scheme = HTTPBearer()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+
+# ---------------- Signup ----------------
 @app.post("/signup")
 async def signup(user: UserCreate):
+    logger.info(f"Signup attempt: {user.email}")
     existing = await db["Users"].find_one({"email": user.email})
     if existing:
+        logger.warning(f"Signup failed - email already registered: {user.email}")
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     hashed = hash_password(user.password)
     user_dict = {
         "name": user.name,
@@ -67,77 +103,118 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
-        "role": "user"  # default role; adjust as needed
+        "role": "user"
     }
     await db["Users"].insert_one(user_dict)
+    logger.info(f"User created successfully: {user.email}")
     return {"message": "User created successfully"}
 
-# JWT CONFIG
-JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
-
+# ---------------- Login ----------------
 @app.post("/login")
 async def login(user: UserLogin):
+    logger.info(f"Login attempt: {user.email}")
     existing = await users_collection.find_one({"email": user.email})
     if not existing or not verify_password(user.password, existing["password"]):
+        logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Create access token
-    token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={
-            "user_id": str(existing["_id"]),
-            "email": existing["email"],
-            "role": existing.get("role", "registrant")
-        },
-        expires_delta=token_expires,
+        {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
+        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
 
-    # Create refresh token
     refresh_token_id = secrets.token_urlsafe(16)
     refresh_plain = secrets.token_urlsafe(32)
     refresh_hash = hash_password(refresh_plain)
     refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-    # Store refresh token in DB
     await users_collection.update_one(
         {"_id": existing["_id"]},
-        {
-            "$set": {
-                "refresh_token_id": refresh_token_id,
-                "refresh_token_hash": refresh_hash,
-                "refresh_token_expires": refresh_expires,
-            }
-        }
+        {"$set": {
+            "refresh_token_id": refresh_token_id,
+            "refresh_token_hash": refresh_hash,
+            "refresh_token_expires": refresh_expires,
+        }}
     )
 
-    # Build user object for frontend
-    user_data = {
-        "id": str(existing["_id"]),
-        "email": existing["email"],
-        "name": existing.get("name", ""),
-        "surname": existing.get("surname", ""),
-        "role": existing.get("role", "registrant"),
-        "date_of_birth": existing.get("date_of_birth", ""),
-        "home_address": existing.get("home_address", ""),
-        "phone_number": existing.get("phone_number", ""),
-        "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", "")
-    }
-
-    # Return all data (ONE return statement only)
+    logger.info(f"Login successful: {user.email}")
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "role": existing.get("role", "registrant"),  # Add this line
         "refresh_token_id": refresh_token_id,
         "refresh_token": refresh_plain,
-        "user": user_data
+        "user": {
+            "id": str(existing["_id"]),
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "user"),
+        }
     }
-   
-# http://localhost:8000/refresh-token
+
+# ---------------- Forgot Password ----------------
+@app.post("/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+    logger.info(f"Forgot password requested: {payload.email}")
+    user = await users_collection.find_one({"email": payload.email})
+
+    if not user:
+        logger.info(f"Forgot password - email not found: {payload.email}")
+        return {"message": "If your email exists, a reset link has been sent."}
+
+    reset_token = create_access_token(
+        {"user_id": str(user["_id"])},
+        expires_delta=timedelta(hours=1)
+    )
+    reset_link = f"localhost:5173/reset-password?token={reset_token}"
+    logger.info(f"Reset link generated for {payload.email}: {reset_link}")
+
+    background_tasks.add_task(send_reset_email, payload.email, reset_link)
+    logger.info(f"Reset email task added for {payload.email}")
+
+    return {"message": "If your email exists, a reset link has been sent."}
+
+# ---------------- Reset Password ----------------
+@app.post("/reset-password")
+async def reset_password(data: ResetPasswordRequest):
+    try:
+        payload = decode_access_token(data.token)
+    except Exception:
+        logger.warning("Invalid or expired reset token")
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        logger.warning("Invalid token payload")
+        raise HTTPException(status_code=400, detail="Invalid token payload")
+
+    hashed_pw = hash_password(data.new_password)
+    result = await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+    )
+
+    if result.modified_count == 0:
+        logger.warning(f"Reset password failed - user not found or unchanged: {user_id}")
+        raise HTTPException(status_code=404, detail="User not found or password unchanged")
+
+    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    access_token = create_access_token(
+        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+    )
+
+    logger.info(f"Password reset successful for {user['email']}")
+    return {
+        "message": "Password has been reset successfully.",
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+# ---------------- Refresh Token ----------------
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
+    logger.info(f"Refresh token requested: {payload.refresh_token_id}")
     user = await users_collection.find_one({"refresh_token_id": payload.refresh_token_id})
     if (
         not user
@@ -146,15 +223,14 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         or not user.get("refresh_token_expires")
         or user["refresh_token_expires"] < datetime.utcnow()
     ):
+        logger.warning(f"Refresh token invalid/expired: {payload.refresh_token_id}")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    token_expires = timedelta(minutes=JWT_EXPIRE_MINUTES)
     token = create_access_token(
-        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "registrant")},
-        expires_delta=token_expires,
+        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
 
-    # Rotate refresh token on each refresh for extra security
     new_refresh_token_id = secrets.token_urlsafe(16)
     new_refresh_plain = secrets.token_urlsafe(32)
     new_refresh_hash = hash_password(new_refresh_plain)
@@ -169,6 +245,7 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         }},
     )
 
+    logger.info(f"Refresh token rotated for user: {user['email']}")
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -176,71 +253,20 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         "refresh_token": new_refresh_plain,
     }
 
-# http://localhost:8000/logout
+# ---------------- Logout ----------------
 @app.post("/logout")
 async def logout(user_id: str = Body(..., embed=True)):
     await users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {
-            "$set": {
-                "refresh_token_id": None,
-                "refresh_token_hash": None,
-                "refresh_token_expires": None,
-            }
-        },
+        {"$set": {
+            "refresh_token_id": None,
+            "refresh_token_hash": None,
+            "refresh_token_expires": None,
+        }},
     )
+    logger.info(f"User logged out: {user_id}")
     return {"message": "Logged out successfully"}
 
-# --- FORGOT PASSWORD ---
-# http://localhost:8000/forgot-password
-@app.post("/forgot-password")
-async def forgot_password(payload: ForgotPasswordRequest):
-    email = payload.email
-    user = await users_collection.find_one({"email": email})
-    if not user:
-        return {"message": "If your email exists, you will receive a password reset email shortly."}
-
-    reset_token = create_access_token(
-        {"user_id": str(user["_id"])},
-        expires_delta=timedelta(hours=1),
-    )
-    reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
-
-    status_code = send_reset_password_email(email, reset_link)
-    if not status_code or status_code >= 400:
-        raise HTTPException(status_code=500, detail="Failed to send reset email")
-
-    return {
-        "message": "If your email exists, you will receive a password reset email shortly.",
-        "reset_link": reset_link,
-        "token": reset_token
-    }
-
-# --- RESET PASSWORD ---
-# http://localhost:8000/reset-password
-@app.post("/reset-password")
-async def reset_password(data: ResetPasswordRequest):
-    try:
-        # Verify the JWT token and get payload data
-        payload = decode_access_token(data.token)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-
-    user_id = payload.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="Invalid token payload")
-
-    hashed_pw = hash_password(data.new_password)
-
-    result = await users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": {"password": hashed_pw}}
-    )
-
-    if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="User not found or password unchanged")
-
-    return {"message": "Password has been reset successfully."}
 
 # EVENT ENDPOINTS
 def convert_datetime_to_iso(doc):
