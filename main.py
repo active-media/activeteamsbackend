@@ -1816,85 +1816,18 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 # Retrieve all tasks
 
-# GET /tasks
-
-@app.get("/tasks", response_model=List[TaskModel])
-async def get_tasks(
-    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD"),
-):
-
-    query = {}
-    if start_date or end_date:
-        date_filter = {}
-        if start_date:
-            try:
-                start_dt = datetime.fromisoformat(start_date)
-                date_filter["$gte"] = start_dt
-
-            except ValueError:
-
-                raise HTTPException(status_code=400, detail="Invalid start_date format")
-
-        if end_date:
-
-            try:
-                # Add one day to include entire end date
-                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
-                date_filter["$lt"] = end_dt
-
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format")
-        query["followup_date"] = date_filter
-
-    tasks = []
-
-    cursor = db["tasks"].find(query)
-    async for task in cursor:
-        task["_id"] = str(task["_id"])  # stringify ObjectId
-        try:
-            tasks.append(TaskModel(**task))  # validate + convert with Pydantic
-        except Exception as e:
-            print(f"Skipping invalid task: {e}, task={task}")
-
-    return tasks 
-
-
-@app.put("/tasks/{task_id}")
-async def update_task(task_id: str = Path(...), task_data: TaskUpdate = None):
-    if not ObjectId.is_valid(task_id):
-
-        raise HTTPException(status_code=400, detail="Invalid task ID")
-
-    updated_task = {k: v for k, v in task_data.dict(exclude_unset=True).items()}
-
-    result = await tasks_collection.find_one_and_update(
-        {"_id": ObjectId(task_id)},
-        {"$set": updated_task},
-        return_document=True  # from pymongo import ReturnDocument
-
-    )
-
-    if not result:
-
-        raise HTTPException(status_code=404, detail="Task not found")
-    # Convert ObjectId to str before returning
-
-    result["_id"] = str(result["_id"])
-
-    return result
-
-from bson import ObjectId
+# GET /tasks 
 
 @app.get("/tasks")
 async def get_user_tasks(
     email: str = Query(None),
     userId: str = Query(None),
+    view_all: bool = Query(False),  # Add explicit parameter for viewing all tasks
     current_user: dict = Depends(get_current_user)
 ):
     try:
         # Check if current user is a leader
-        is_leader = current_user.get("role") in ["admin", "leader", "user"]  # Adjust roles as needed
+        is_leader = current_user.get("role") in ["admin", "leader", "manager"]
         
         # Determine user email based on parameters or current user
         user_email = None
@@ -1909,20 +1842,18 @@ async def get_user_tasks(
             # No parameters provided - use current user's email
             user_email = current_user.get("email")
         
-        if not user_email and not is_leader:
+        if not user_email:
             return {"error": "User email not found", "status": "failed"}
         
         timezone = pytz.timezone("Africa/Johannesburg")
         
         # Build query based on permissions
-        if is_leader and not (email or userId):
-            # Leader viewing all tasks (no email/userId specified)
+        # Only show all tasks if user is a leader AND explicitly requests it with view_all=true
+        if is_leader and view_all:
             query = {}
-        elif user_email:
-            # Specific user's tasks
-            query = {"assignedfor": user_email}
         else:
-            return {"error": "Cannot determine which tasks to fetch", "status": "failed"}
+            # Always filter by specific user email (current user or specified user)
+            query = {"assignedfor": user_email}
         
         # Fetch tasks
         cursor = tasks_collection.find(query)
@@ -1960,16 +1891,16 @@ async def get_user_tasks(
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
         
         return {
-            "user_email": user_email or "all_users",
+            "user_email": user_email if not view_all else "all_users",
             "total_tasks": len(all_tasks),
             "tasks": all_tasks,
             "status": "success",
-            "is_leader_view": is_leader and not (email or userId)
+            "is_leader_view": is_leader and view_all
         }
         
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
-        return {"error": str(e), "status": "failed"}
+        return {"error": str(e), "status": "failed"}  
     
 # STATS ENDPOINTS
 # Add to your FastAPI backend
