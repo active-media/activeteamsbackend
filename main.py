@@ -144,12 +144,17 @@ async def login(user: UserLogin):
         "refresh_token_id": refresh_token_id,
         "refresh_token": refresh_plain,
         "user": {
-            "id": str(existing["_id"]),
-            "email": existing["email"],
-            "name": existing.get("name", ""),
-            "surname": existing.get("surname", ""),
-            "role": existing.get("role", "user"),
-        }
+        "id": str(existing["_id"]),
+        "email": existing["email"],
+        "name": existing.get("name", ""),
+        "surname": existing.get("surname", ""),
+        "role": existing.get("role", "registrant"),
+        "date_of_birth": existing.get("date_of_birth", ""),
+        "home_address": existing.get("home_address", ""),
+        "phone_number": existing.get("phone_number", ""),
+        "gender": existing.get("gender", ""),
+        "invited_by": existing.get("invited_by", "")
+    }
     }
 
 # ---------------- Forgot Password ----------------
