@@ -166,7 +166,7 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
-    reset_link = f"https://new-active-teams.netlify.app//reset-password?token={reset_token}"
+    reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
     logger.info(f"Reset link generated for {payload.email}: {reset_link}")
 
     background_tasks.add_task(send_reset_email, payload.email, reset_link)
