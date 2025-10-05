@@ -8,7 +8,7 @@ from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, Un
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection
+from database import db, events_collection, people_collection, users_collection, tasks_collection
 from auth.email_utils import send_reset_email
 from typing import Optional, Literal, List
 from collections import Counter
@@ -288,6 +288,7 @@ def convert_datetime_to_iso(doc):
     else:
         return doc
 
+# EVENTS ENDPOINTS
 
 @app.post("/events")
 async def create_event(event: EventCreate):
@@ -456,7 +457,7 @@ async def debug_emails():
     try:
         # Fetch sample documents
         sample_docs = []
-        cursor = cells_collection.find({}).limit(5)
+        cursor = events_collection.find({}).limit(5)
         async for doc in cursor:
             doc_info = {key: value for key, value in doc.items() if key != "_id"}
             sample_docs.append(doc_info)
@@ -497,7 +498,7 @@ async def test_leader12_debug(email: str):
     """Debug endpoint to see what names are being matched"""
     try:
         # Find user's cell record
-        user_cell = await cells_collection.find_one({
+        user_cell = await events_collection.find_one({
             "Email": {"$regex": f"^{email}$", "$options": "i"}
         })
         
@@ -507,13 +508,13 @@ async def test_leader12_debug(email: str):
         user_name = user_cell.get("Leader", "").strip()
         
         # Find all cells where this user is Leader at 12 (NO STATUS FILTER)
-        cells_where_leader12 = await cells_collection.find({
+        cells_where_leader12 = await events_collection.find({
             "Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"},
             "Event Type": "Cells"
         }).to_list(length=100)
         
         # Also check without Event Type filter
-        cells_where_leader12_any_type = await cells_collection.find({
+        cells_where_leader12_any_type = await events_collection.find({
             "Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}
         }).to_list(length=100)
         
@@ -558,18 +559,18 @@ async def test_leader12_by_name(name: str):
         today_day_name = today.strftime("%A")
         
         # Find all cells where this name appears in Leader at 12 (NO FILTERS)
-        cells = await cells_collection.find({
+        cells = await events_collection.find({
             "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"}
         }).to_list(length=100)
         
         # Also check with Event Type = Cells
-        cells_with_type = await cells_collection.find({
+        cells_with_type = await events_collection.find({
             "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"},
             "Event Type": "Cells"
         }).to_list(length=100)
         
         # Check with Status filter
-        cells_not_complete = await cells_collection.find({
+        cells_not_complete = await events_collection.find({
             "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"},
             "Event Type": "Cells",
             "Status": {"$nin": ["Complete", "Closed"]}
@@ -657,7 +658,7 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         all_events = []
 
         # Find user's cell record to get their name
-        user_cell = await cells_collection.find_one({
+        user_cell = await events_collection.find_one({
             "Email": {"$regex": f"^{email}$", "$options": "i"}
         })
 
@@ -698,7 +699,7 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
             ]
         }
 
-        cursor = cells_collection.find(query)
+        cursor = events_collection.find(query)
         seen_event_keys = set()
 
         def parse_time(time_value):
@@ -854,7 +855,7 @@ async def test_hierarchy_for_email(email: str):
     """Test hierarchy logic for any email without authentication"""
     try:
         # STEP 1: Find what name this user appears as in the cells collection
-        user_cell = await cells_collection.find_one({
+        user_cell = await events_collection.find_one({
             "$or": [
                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
             ]
@@ -874,7 +875,7 @@ async def test_hierarchy_for_email(email: str):
                 "message": "Could not determine user name from cells",
                 "status": "error"
             }
-        all_related_cells = await cells_collection.find({
+        all_related_cells = await events_collection.find({
             "Event Type": "Cells",
             "Status": {"$ne": "closed"},
             "$or": [
@@ -922,57 +923,6 @@ async def test_hierarchy_for_email(email: str):
     except Exception as e:
         return {"error": str(e)}
 
-
-@app.get("/cells/under-female-12s")
-async def get_cells_under_female_12s(
-    current_user: dict = Depends(get_current_user),
-    day: str = Query(...)
-):
-    try:
-        email = current_user.get("email")
-        if not email:
-            raise HTTPException(401, "User email not found")
-
-        person = await people_collection.find_one({"Email": email})
-        if not person:
-            raise HTTPException(404, "User not found")
-
-        full_name = f"{person['Name']} {person['Surname']}"
-
-        now = datetime.utcnow()
-
-        # Query cells where "Leader at 12" == full_name, and Day & future date
-        cell_events = await cells_collection.find({
-            "Day": day,
-            "Leader at 12": full_name,
-            "Status": {"$ne": "closed"},
-            "Date Of Event": {"$gt": now}
-        }).to_list(None)
-
-        if not cell_events:
-            return {
-                "requested_by": full_name,
-                "day": day,
-                "total_events": 0,
-                "events": [],
-                "message": "No upcoming cells found under you as Leader at 12"
-            }
-
-        # Extract participant names or relevant info from events
-        participants = [cell.get("Participant Name") for cell in cell_events if "Participant Name" in cell]
-
-        return {
-            "requested_by": full_name,
-            "day": day,
-            "total_events": len(cell_events),
-            "participants": participants,
-            "events": cell_events
-        }
-
-    except Exception as e:
-        raise HTTPException(500, str(e))
-# Admins can see all cells happening today
-
 @app.get("/admin/events/cells")
 async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
     try:
@@ -985,7 +935,7 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
         today = datetime.now(timezone)
         today_day_name = today.strftime("%A").lower()
 
-        cursor = cells_collection.find({
+        cursor = events_collection.find({
             "Event Type": "Cells"
         })
 
@@ -1068,29 +1018,6 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
         return {"error": str(e), "status": "failed"}
 
 
-
-@app.get("/events/{event_id}")
-async def get_event_by_id(event_id: str = Path(...)):
-    try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID format")
-            
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-        
-        event["_id"] = str(event["_id"])
-        event = convert_datetime_to_iso(event)
-        event = sanitize_document(event)
-        
-        return event
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
-
-
-
 @app.put("/events/{event_id}")
 async def update_event(event: EventUpdate, event_id: str = Path(...)):
     try:
@@ -1148,18 +1075,18 @@ async def submit_attendance(
 
         # If not found in events_collection, check cells_collection by _id
         if event is None:
-            event = await cells_collection.find_one({"_id": object_id})
+            event = await events_collection.find_one({"_id": object_id})
             if event is not None:
-                event_collection = cells_collection
+                event_collection = events_collection
 
         # If still not found, try to find in cells_collection by custom "ID" field (integer)
         if event is None:
             try:
                 # Attempt converting event_id string to int for the "ID" field query
                 event_id_int = int(event_id)
-                event = await cells_collection.find_one({"ID": event_id_int})
+                event = await events_collection.find_one({"ID": event_id_int})
                 if event is not None:
-                    event_collection = cells_collection
+                    event_collection = events_collection
             except ValueError:
                 # event_id is not an int string, skip this step
                 pass
@@ -1275,6 +1202,82 @@ async def get_leaders_by_position(level: int):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/events/{event_id}")
+async def get_event_by_id(event_id: str = Path(...)):
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        event["_id"] = str(event["_id"])
+        event = convert_datetime_to_iso(event)
+        event = sanitize_document(event)
+        
+        return event
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
+
+
+# @app.get("/cells/under-female-12s")
+# async def get_cells_under_female_12s(
+#     current_user: dict = Depends(get_current_user),
+#     day: str = Query(...)
+# ):
+#     try:
+#         email = current_user.get("email")
+#         if not email:
+#             raise HTTPException(401, "User email not found")
+
+#         person = await people_collection.find_one({"Email": email})
+#         if not person:
+#             raise HTTPException(404, "User not found")
+
+#         full_name = f"{person['Name']} {person['Surname']}"
+
+#         now = datetime.utcnow()
+
+#         # Query cells where "Leader at 12" == full_name, and Day & future date
+#         cell_events = await events_collection.find({
+#             "Day": day,
+#             "Leader at 12": full_name,
+#             "Status": {"$ne": "closed"},
+#             "Date Of Event": {"$gt": now}
+#         }).to_list(None)
+
+#         if not cell_events:
+#             return {
+#                 "requested_by": full_name,
+#                 "day": day,
+#                 "total_events": 0,
+#                 "events": [],
+#                 "message": "No upcoming cells found under you as Leader at 12"
+#             }
+
+#         # Extract participant names or relevant info from events
+#         participants = [cell.get("Participant Name") for cell in cell_events if "Participant Name" in cell]
+
+#         return {
+#             "requested_by": full_name,
+#             "day": day,
+#             "total_events": len(cell_events),
+#             "participants": participants,
+#             "events": cell_events
+#         }
+
+#     except Exception as e:
+#         raise HTTPException(500, str(e))
+# # Admins can see all cells happening today
+
+
+
+
 
 
 # Check-in (no auth required)
