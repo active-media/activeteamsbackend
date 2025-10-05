@@ -32,6 +32,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")  # 👈 Add this route
+def root():
+    return {"message": "App is live on Render!"}
+
 def sanitize_document(doc):
     """Recursively sanitize document to replace NaN/Infinity float values with None."""
     for k, v in doc.items():
@@ -1053,6 +1057,8 @@ async def update_event(event: EventUpdate, event_id: str = Path(...)):
 
     except HTTPException:
         raise
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
 
@@ -1620,7 +1626,6 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")  # Add logging for debugging
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-
 
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
