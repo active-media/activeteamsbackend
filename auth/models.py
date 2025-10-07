@@ -69,9 +69,9 @@ class Attendee(BaseModel):
         return v or values.get("fullName")
 
 class AttendanceSubmission(BaseModel):
-    attendees: List[Attendee]
-    leaderEmail: str  # ✅ required
-    leaderName: str   # ✅ required
+    attendees: List[Attendee]  
+    leaderEmail: str  
+    leaderName: str   
     did_not_meet: Optional[bool] = False
 
 
