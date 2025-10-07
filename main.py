@@ -1020,19 +1020,18 @@ async def submit_attendance(
         # Validate event_id format (must be a valid ObjectId)
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-
         object_id = ObjectId(event_id)
-
+        
         # Try to find the event in events_collection first
         event = await events_collection.find_one({"_id": object_id})
         event_collection: AsyncIOMotorCollection = events_collection
-
+        
         # If not found in events_collection, check cells_collection by _id
         if event is None:
             event = await events_collection.find_one({"_id": object_id})
             if event is not None:
                 event_collection = events_collection
-
+        
         # If still not found, try to find in cells_collection by custom "ID" field (integer)
         if event is None:
             try:
@@ -1044,54 +1043,58 @@ async def submit_attendance(
             except ValueError:
                 # event_id is not an int string, skip this step
                 pass
-
+        
         # If still no event found, raise 404
         if event is None or event_collection is None:
             raise HTTPException(status_code=404, detail="Event not found")
-
+        
+        # Determine the status based on did_not_meet flag
+        if getattr(submission, "did_not_meet", False):
+            status = "Did Not Meet"  # Changed from "closed"
+            attendees_list = []
+            total_attendance = 0
+            did_not_meet_flag = True
+        else:
+            status = "Complete"  # Changed from "closed"
+            attendees_list = [a.dict() for a in submission.attendees]
+            total_attendance = len(submission.attendees)
+            did_not_meet_flag = False
+        
         # Prepare the update payload
         update_data = {
-            "status": "closed",  # Mark event as closed
+            "Status": status,  # Changed key to match your DB schema (capital S)
             "updated_at": datetime.utcnow(),
-            "attendees": [a.dict() for a in submission.attendees],
-            "total_attendance": len(submission.attendees),
+            "attendees": attendees_list,
+            "total_attendance": total_attendance,
+            "did_not_meet": did_not_meet_flag,
             "captured_by": {
                 "leaderEmail": submission.leaderEmail,
                 "leaderName": submission.leaderName,
             },
         }
-
-        # Handle special case: if "did_not_meet" flag is True, clear attendees
-        if getattr(submission, "did_not_meet", False):
-            update_data["attendees"] = []
-            update_data["total_attendance"] = 0
-            update_data["did_not_meet"] = True
-
+        
         # Perform the update in the identified collection
         result = await event_collection.update_one(
             {"_id": event["_id"]},
             {"$set": update_data}
         )
-
+        
         # Check if update was successful
-        if result.modified_count != 1:
-            # Sometimes modified_count can be 0 if data is identical; you may want to handle that differently
+        if result.modified_count != 1 and result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event attendance")
-
+        
         return {
             "message": "Attendance submitted successfully.",
             "event_id": str(event["_id"]),
-            "status": "closed",
-            "total_attendance": update_data["total_attendance"]
+            "status": status,
+            "total_attendance": total_attendance,
+            "did_not_meet": did_not_meet_flag
         }
-
     except HTTPException:
         raise  # Re-raise HTTP errors as is
     except Exception as e:
         # Catch-all for unexpected errors
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-
-
 
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
