@@ -30,6 +30,10 @@ class UserLogin(BaseModel):
     password: str
 
 # ===== Event Models =====
+
+
+
+# ===== Event Models =====
 class EventBase(BaseModel):
     eventType: str
     eventName: str
