@@ -55,35 +55,47 @@ class EventCreate(EventBase):
     pass
 
 
+# ===== FIXED Attendee Model =====
 class Attendee(BaseModel):
     id: Optional[str] = None
-    name: Optional[str] = None  # for basic events
-    fullName: Optional[str] = None  # for cell events
+    name: Optional[str] = None
+    fullName: Optional[str] = None
     leader12: Optional[str] = None
     leader144: Optional[str] = None
     time: Optional[datetime] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    decision: Optional[str] = None
 
-    @field_validator("name", mode="before")
-    def set_name_if_fullName_missing(cls, v, values):
-        # If "name" is missing but "fullName" exists, use that
-        return v or values.get("fullName")
+    @field_validator("fullName", mode="before")
+    def set_fullname(cls, v, info):
+        """If fullName is missing, use name"""
+        if not v and info.data.get("name"):
+            return info.data.get("name")
+        return v
+        
+
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Optional
 
 class AttendanceSubmission(BaseModel):
-    attendees: List[Attendee]  
-    leaderEmail: str  
-    leaderName: str   
+    attendees: List[Attendee] = Field(default_factory=list)
+    leaderEmail: str
+    leaderName: str
     did_not_meet: Optional[bool] = False
 
-
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    formatted = [
-        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
-        for err in exc.errors()
-    ]
-    return JSONResponse(
-        status_code=422,
-        content={"errors": formatted}
-    )
+    @model_validator(mode="after")
+    def validate_attendance(self):
+        """
+        Ensure:
+        - If `did_not_meet` is True: attendees must be empty
+        - If `did_not_meet` is False: attendees must not be empty
+        """
+        if self.did_not_meet and self.attendees:
+            raise ValueError("Attendees must be empty when 'did_not_meet' is True.")
+        if not self.did_not_meet and not self.attendees:
+            raise ValueError("At least one attendee is required when 'did_not_meet' is False.")
+        return self
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -107,11 +119,10 @@ class EventUpdate(BaseModel):
     isTicketed: Optional[bool] = None
     price: Optional[float] = None
     userEmail: Optional[str] = None
-    
-    # ✅ Include update-only fields:
-    status: Optional[str] = None
-    attendees: Optional[List[str]] = None
+    status: Optional[str] = None  # CRITICAL: Must support lowercase values
+    attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
+    total_attendance: Optional[int] = None
 
 
 class EventInDB(EventBase):
