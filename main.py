@@ -653,11 +653,7 @@ logging.basicConfig(level=logging.INFO)
 # ===== HELPER FUNCTION: Determine Real Event Status =====
 def get_actual_event_status(event: dict, today: date) -> str:
     """
-    Determine the REAL status of an event based on:
-    - Whether attendance was captured (has attendees or explicit status)
-    - Whether it was marked 'did not meet'
-    - Current stored status in database
-    
+    Determine the REAL status of an event.
     Returns: "complete", "did_not_meet", or "incomplete"
     """
     stored_status = (event.get("Status") or "").strip().lower()
@@ -676,16 +672,12 @@ def get_actual_event_status(event: dict, today: date) -> str:
     if did_not_meet or stored_status == "did_not_meet":
         return "did_not_meet"
     
-    # Otherwise it's incomplete (not yet captured)
+    # Otherwise it's incomplete
     return "incomplete"
-
 
 # ===== HELPER FUNCTION: Parse Time from Various Formats =====
 def parse_time(time_value) -> tuple:
-    """
-    Parse time from string or datetime object.
-    Returns: (hour, minute) tuple
-    """
+    """Parse time from string or datetime. Returns (hour, minute)"""
     if isinstance(time_value, datetime):
         return time_value.hour, time_value.minute
     elif isinstance(time_value, str):
@@ -699,6 +691,54 @@ def parse_time(time_value) -> tuple:
     else:
         return 19, 0
 
+
+# ===== HELPER FUNCTION: Parse Event Date =====
+def parse_event_date(event_date_field, default_date: date) -> date:
+    """Parse event date from various formats. Returns date object"""
+    if not event_date_field:
+        return default_date
+        
+    if isinstance(event_date_field, datetime):
+        return event_date_field.date()
+    elif isinstance(event_date_field, date):
+        return event_date_field
+    elif isinstance(event_date_field, str):
+        try:
+            return datetime.fromisoformat(event_date_field.replace("Z", "+00:00")).date()
+        except:
+            return default_date
+    else:
+        return default_date
+
+@app.get("/debug/test-leader-at-12-search/{name}")
+async def debug_test_leader_at_12_search(name: str):
+    """
+    Test how many cells have this name in Leader at 12 field.
+    """
+    try:
+        # Exact regex used in main query
+        cells = await events_collection.find({
+            "Event Type": "Cells",
+            "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"}
+        }).to_list(length=100)
+        
+        return {
+            "search_name": name,
+            "total_found": len(cells),
+            "cells": [
+                {
+                    "event_name": c.get("Event Name"),
+                    "leader": c.get("Leader"),
+                    "leader_at_12": c.get("Leader at 12"),
+                    "email": c.get("Email"),
+                    "day": c.get("Day")
+                }
+                for c in cells[:20]  # First 20
+            ]
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
 
 # ===== HELPER FUNCTION: Parse Event Date =====
 def parse_event_date(event_date_field, default_date: date) -> date:
@@ -723,220 +763,308 @@ def parse_event_date(event_date_field, default_date: date) -> date:
 
 
 # ===== HELPER FUNCTION: Should Include Event =====
-def should_include_event(event_date: date, status: str, today_date: date) -> bool:
+def should_include_event(event_date: date, status: str, today_date: date, is_admin: bool = False) -> bool:
     """
-    Determine if an event should be included in the response.
+    Determine if an event should be included.
     
-    Rules:
-    1. Future events: Always include (regardless of status)
-    2. Today's events: Always include (regardless of status)
-    3. Past incomplete events: EXCLUDE (these are overdue)
-    4. Past captured events (complete/did_not_meet): EXCLUDE (historical data)
-    
-    Returns: True if event should be included, False otherwise
+    Admin: Shows ALL incomplete cells (including overdue) + today/future captured
+    User: Shows only today/future cells (hides overdue incomplete)
     """
-    # Future or today's events: always include
-    if event_date >= today_date:
+    if is_admin:
+        # Admin sees ALL incomplete cells regardless of date
+        if status == 'incomplete':
+            return True
+        # For captured cells, only show today and future
+        if status in ['complete', 'did_not_meet']:
+            return event_date >= today_date
         return True
+    else:
+        # Regular users: only today and future
+        return event_date >= today_date
+
+
+def build_event_object(event: dict, timezone, today_date: date) -> dict:
+    """Build standardized event object"""
+    event_name = event.get("Event Name", "")
+    recurring_day = event.get("Day", "").strip().lower()
+    event_date = parse_event_date(event.get("Date Of Event"), today_date)
+    status = get_actual_event_status(event, today_date)
     
-    # Past events: exclude all of them (both incomplete and captured)
-    return False
+    # Parse time
+    time_value = event.get("Time", "19:00")
+    hour, minute = parse_time(time_value)
+    time_str = f"{hour}:{minute:02d}"
+    
+    # Create datetime
+    try:
+        event_datetime = datetime(
+            event_date.year, event_date.month, event_date.day,
+            hour, minute, 0
+        )
+        event_datetime = timezone.localize(event_datetime)
+    except Exception as e:
+        logging.warning(f"Date creation failed for {event_name}: {e}")
+        today = datetime.now(timezone)
+        event_datetime = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    return {
+        "_id": str(event["_id"]),
+        "eventName": event_name,
+        "eventType": "Cell",
+        "date": event_datetime.isoformat(),
+        "location": event.get("Address", ""),
+        "status": status,
+        "eventLeaderName": event.get("Leader", ""),
+        "eventLeaderEmail": event.get("Email", ""),
+        "leader1": event.get("Leader at 1", ""),
+        "leader12": event.get("Leader at 12", ""),
+        "leader144": event.get("Leader at 144", ""),
+        "time": time_str,
+        "recurringDays": [recurring_day],
+        "day": recurring_day,
+        "isVirtual": bool(recurring_day),
+        "isTicketed": False,
+        "price": 0,
+        "description": event_name,
+        "attendees": event.get("attendees", []),
+        "did_not_meet": event.get("did_not_meet", False),
+        "_event_date": event_date,  # For filtering
+    }
+
+@app.get("/debug/user-hierarchy/{email}")
+async def debug_user_hierarchy(email: str):
+    """
+    Debug endpoint to see Leader at 12 hierarchy for a user.
+    Shows what cells they should see and why.
+    """
+    try:
+        # Find user's name
+        user_cell = await events_collection.find_one({
+            "$or": [
+                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                {"email": {"$regex": f"^{email}$", "$options": "i"}},
+            ]
+        })
+        
+        user_name = ""
+        if user_cell:
+            user_name = user_cell.get("Leader", "").strip()
+        
+        # Find all cells (no filters)
+        all_cells = await events_collection.find(
+            {"Event Type": "Cells"}
+        ).to_list(length=None)
+        
+        # Categorize cells
+        own_cells = []
+        supervised_cells = []
+        not_related = []
+        
+        for cell in all_cells:
+            cell_email = cell.get("Email", "").lower().strip()
+            cell_name = cell.get("Event Name", "")
+            leader_at_12 = cell.get("Leader at 12", "").strip()
+            
+            cell_info = {
+                "event_name": cell_name,
+                "leader": cell.get("Leader"),
+                "email": cell_email,
+                "leader_at_12": leader_at_12,
+                "day": cell.get("Day"),
+                "status": cell.get("Status")
+            }
+            
+            # Check if it's their own cell
+            if cell_email == email.lower():
+                own_cells.append(cell_info)
+            # Check if they're listed as Leader at 12
+            elif user_name and user_name.lower() in leader_at_12.lower():
+                supervised_cells.append(cell_info)
+            else:
+                # Only include first 5 not related (for brevity)
+                if len(not_related) < 5:
+                    not_related.append(cell_info)
+        
+        return {
+            "user_email": email,
+            "user_name_found": user_name or "NOT FOUND",
+            "total_cells_in_db": len(all_cells),
+            "cells_breakdown": {
+                "own_cells": {
+                    "count": len(own_cells),
+                    "cells": own_cells
+                },
+                "supervised_cells_as_leader_at_12": {
+                    "count": len(supervised_cells),
+                    "cells": supervised_cells
+                },
+                "not_related": {
+                    "count": len(all_cells) - len(own_cells) - len(supervised_cells),
+                    "sample": not_related
+                }
+            },
+            "expected_total_visible": len(own_cells) + len(supervised_cells)
+        }
+        
+    except Exception as e:
+        logging.error(f"Debug error: {e}", exc_info=True)
+        return {"error": str(e)}
+
 
 # 📅 Fetch cells based on user hierarchy
 @app.get("/events/cells-user")
 async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     """
-    Get cell events for the current user based on their hierarchy.
+    Get cells for regular users and Leader at 12.
     
     Shows cells where user is:
-    1. The cell leader (own cells)
-    2. Listed as Leader at 12 (supervising 12 cells)
-    3. Listed as Leader at 144 (supervising 144 cells)
+    1. The cell leader (their email matches Email field)
+    2. Listed as "Leader at 12" (supervising 12 cells)
     
-    FIXES:
-    - Only shows today's and future events
-    - Removes duplicate cells
-    - Filters out past captured events
-    - Filters out past incomplete (overdue) events
+    FIXED: Properly finds cells by email AND by Leader at 12 hierarchy
     """
     try:
         email = current_user.get("email")
         if not email:
-            raise HTTPException(
-                status_code=400, 
-                detail="User email not found in token"
-            )
+            raise HTTPException(status_code=400, detail="User email not found in token")
 
-        # Setup timezone and today's date
+        # Setup timezone
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
-        today_day_name = today.strftime("%A").lower()
 
-        logging.info(f"User {email} fetching cells for {today_date} ({today_day_name})")
+        logging.info(f"========================================")
+        logging.info(f"User {email} fetching cells")
+        logging.info(f"========================================")
 
-        # Find user's cell record to get their name
+        # STEP 1: Find user's name from ANY cell where they are leader
         user_cell = await events_collection.find_one({
-            "Email": {"$regex": f"^{email}$", "$options": "i"}
-        })
-
-        if not user_cell:
-            logging.warning(f"No cells found for user: {email}")
-            return {
-                "user_email": email,
-                "message": "No cells found for this user",
-                "total_events": 0,
-                "own_cells": [],
-                "leader12_cells": [],
-                "leader144_cells": [],
-                "events": [],
-                "status": "success"
-            }
-
-        # Get the user's name from their cell record
-        user_name_in_cells = user_cell.get("Leader", "").strip()
-        if not user_name_in_cells:
-            logging.warning(f"Could not determine user name for: {email}")
-            return {
-                "user_email": email,
-                "message": "Could not determine user name from cells",
-                "total_events": 0,
-                "own_cells": [],
-                "leader12_cells": [],
-                "leader144_cells": [],
-                "events": [],
-                "status": "success"
-            }
-
-        logging.info(f"User name in cells: {user_name_in_cells}")
-
-        # Build query to find all related cells
-        query = {
-            "Event Type": "Cells",
             "$or": [
                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                {"Leader": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
-                {"Leader at 12": {"$regex": f"{user_name_in_cells}", "$options": "i"}},
-                {"Leader at 144": {"$regex": f"{user_name_in_cells}", "$options": "i"}}
+                {"email": {"$regex": f"^{email}$", "$options": "i"}},
             ]
+        })
+
+        user_name = ""
+        if user_cell:
+            user_name = user_cell.get("Leader", "").strip()
+            logging.info(f"✓ Found user name: '{user_name}'")
+        else:
+            logging.warning(f"✗ No cell found where user is leader")
+
+        # STEP 2: Build comprehensive query
+        # We want cells where:
+        # A) User's email matches (their own cells)
+        # B) User's name appears in "Leader at 12" field (supervised cells)
+        
+        query_conditions = []
+        
+        # Always search by email (multiple field variations)
+        query_conditions.extend([
+            {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+            {"email": {"$regex": f"^{email}$", "$options": "i"}},
+        ])
+        
+        # If we found their name, also search by Leader at 12
+        if user_name:
+            # Search for name in "Leader at 12" field
+            # This finds all cells they supervise
+            query_conditions.append({
+                "Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}
+            })
+            
+            # Also match exact leader name (backup)
+            query_conditions.append({
+                "Leader": {"$regex": f"^{user_name}$", "$options": "i"}
+            })
+        
+        query = {
+            "Event Type": "Cells",
+            "$or": query_conditions
         }
+        
+        logging.info(f"Query conditions: {len(query_conditions)} conditions")
+        if user_name:
+            logging.info(f"  - Email matches: {email}")
+            logging.info(f"  - Leader at 12 contains: '{user_name}'")
+        else:
+            logging.info(f"  - Email matches only: {email}")
 
+        # STEP 3: Execute query and get all matching cells
         cursor = events_collection.find(query)
-
+        
+        events = []
+        seen_keys = set()
         own_cells = []
-        leader12_cells = []
-        leader144_cells = []
-        seen_event_keys = set()
+        supervised_cells = []
 
         async for event in cursor:
+            event_email = event.get("Email", "").lower().strip()
             event_name = event.get("Event Name", "")
             recurring_day = event.get("Day", "").strip().lower()
+            leader_at_12 = event.get("Leader at 12", "").strip()
             
-            # Parse the event date
-            event_date = parse_event_date(
-                event.get("Date Of Event"), 
-                today_date
-            )
-
-            # Get status
-            status = get_actual_event_status(event, today_date)
-
-            # CRITICAL: Check if we should include this event
-            if not should_include_event(event_date, status, today_date):
-                continue  # Skip past events
-
-            # Deduplication
-            event_email = event.get("Email", "").strip()
+            # Deduplicate
             dedup_key = f"{event_name}-{event_email}-{recurring_day}"
-            if dedup_key in seen_event_keys:
+            if dedup_key in seen_keys:
                 logging.debug(f"Skipping duplicate: {dedup_key}")
                 continue
-            seen_event_keys.add(dedup_key)
+            seen_keys.add(dedup_key)
 
-            # Parse time
-            time_value = event.get("Time", "19:00")
-            hour, minute = parse_time(time_value)
-            time_str = f"{hour}:{minute:02d}"
+            # Build event object
+            event_obj = build_event_object(event, timezone, today_date)
+            event_date = event_obj["_event_date"]
+            status = event_obj["status"]
 
-            # Create proper datetime with the event's date
-            try:
-                event_datetime = datetime(
-                    event_date.year, 
-                    event_date.month, 
-                    event_date.day, 
-                    hour, 
-                    minute, 
-                    0
-                )
-                event_datetime = timezone.localize(event_datetime)
-            except Exception as e:
-                logging.warning(f"Date creation failed for {event_name}: {e}")
-                event_datetime = today.replace(
-                    hour=hour, 
-                    minute=minute, 
-                    second=0, 
-                    microsecond=0
-                )
+            # Apply date filtering (hide overdue for regular users)
+            if not should_include_event(event_date, status, today_date, is_admin=False):
+                logging.debug(f"Filtered out: {event_name} (date: {event_date}, status: {status})")
+                continue
 
-            # Build event data object
-            event_data = {
-                "_id": str(event["_id"]),
-                "eventName": event_name,
-                "eventType": "Cell",
-                "date": event_datetime.isoformat(),
-                "location": event.get("Address", ""),
-                "status": status,  # lowercase: complete, did_not_meet, incomplete
-                "eventLeaderName": event.get("Leader", ""),
-                "eventLeaderEmail": event.get("Email", ""),
-                "leader1": event.get("Leader at 1", ""),
-                "leader12": event.get("Leader at 12", ""),
-                "leader144": event.get("Leader at 144", ""),
-                "time": time_str,
-                "recurringDays": [recurring_day],
-                "day": recurring_day,
-                "isTicketed": False,
-                "price": 0,
-                "description": event_name,
-                "attendees": event.get("attendees", []),
-                "did_not_meet": event.get("did_not_meet", False)
-            }
+            # Categorize: Own cell or Supervised cell?
+            is_own_cell = (event_email == email.lower())
+            is_supervised = (user_name and user_name.lower() in leader_at_12.lower())
 
-            # Categorize the cell based on user's role
-            user_email_lower = email.lower()
-            user_name_lower = user_name_in_cells.lower()
-            event_email = event.get("Email", "").strip().lower()
-            event_leader = event.get("Leader", "").strip().lower()
-            leader_at_12 = event.get("Leader at 12", "").strip().lower()
-            leader_at_144 = event.get("Leader at 144", "").strip().lower()
+            if is_own_cell:
+                own_cells.append(event_obj)
+                logging.info(f"✓ Own cell: {event_name}")
+            elif is_supervised:
+                supervised_cells.append(event_obj)
+                logging.info(f"✓ Supervised cell: {event_name} (Leader at 12: {leader_at_12})")
+            else:
+                # Shouldn't happen, but include anyway
+                events.append(event_obj)
+                logging.info(f"? Other cell: {event_name}")
 
-            # Check if it's the user's own cell
-            if event_email == user_email_lower or event_leader == user_name_lower:
-                own_cells.append(event_data)
-            # Check if user is Leader at 12
-            elif user_name_lower in leader_at_12:
-                leader12_cells.append(event_data)
-            # Check if user is Leader at 144
-            elif user_name_lower in leader_at_144:
-                leader144_cells.append(event_data)
+            # Remove temporary field
+            del event_obj["_event_date"]
 
         # Combine all cells
-        all_events = own_cells + leader12_cells + leader144_cells
+        all_events = own_cells + supervised_cells + events
 
-        logging.info(
-            f"User {email}: {len(own_cells)} own, "
-            f"{len(leader12_cells)} @12, {len(leader144_cells)} @144. "
-            f"Total: {len(all_events)}"
-        )
+        # Sort alphabetically by leader name
+        all_events.sort(key=lambda x: x.get("eventLeaderName", "").lower())
+
+        logging.info(f"========================================")
+        logging.info(f"RESULTS for {email}:")
+        logging.info(f"  Own cells: {len(own_cells)}")
+        logging.info(f"  Supervised cells (Leader at 12): {len(supervised_cells)}")
+        logging.info(f"  Other cells: {len(events)}")
+        logging.info(f"  TOTAL: {len(all_events)}")
+        logging.info(f"========================================")
 
         return {
             "user_email": email,
-            "user_name_in_cells": user_name_in_cells,
+            "user_name_in_cells": user_name if user_name else "Unknown",
             "today": today.strftime("%Y-%m-%d"),
-            "today_day_name": today_day_name,
             "total_events": len(all_events),
-            "own_cells": own_cells,
-            "leader12_cells": leader12_cells,
-            "leader144_cells": leader144_cells,
+            "own_cells_count": len(own_cells),
+            "supervised_cells_count": len(supervised_cells),
+            "breakdown": {
+                "own_cells": len(own_cells),
+                "supervised_as_leader_at_12": len(supervised_cells),
+                "other": len(events)
+            },
             "events": all_events,
             "status": "success"
         }
@@ -944,11 +1072,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Error in get_user_cell_events: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Internal server error: {str(e)}"
-        )
+        logging.error(f"❌ Error in get_user_cell_events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     
 @app.get("/test/hierarchy-for/{email}")
 async def test_hierarchy_for_email(email: str):
@@ -1023,31 +1148,27 @@ async def test_hierarchy_for_email(email: str):
     except Exception as e:
         return {"error": str(e)}
 
+# ===== FIX 2: Updated Admin Endpoint =====
 @app.get("/admin/events/cells")
 async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
     """
-    Admin endpoint to get ALL cell events from today onwards.
-    Shows ALL cells for today regardless of status (including past incomplete ones).
+    Admin endpoint - Shows ALL cells including overdue incomplete ones.
+    Sorted alphabetically by leader name.
     """
     try:
         # Verify admin role
         role = current_user.get("role", "")
         if role.lower() != "admin":
-            raise HTTPException(
-                status_code=403, 
-                detail="Only admins can access this endpoint"
-            )
+            raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
 
-        # Setup timezone and today's date
+        # Setup timezone
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
-        today_day_name = today.strftime("%A").lower()
 
-        logging.info(f"Admin fetching cells for {today_date} ({today_day_name})")
+        logging.info(f"Admin fetching ALL cells (including overdue)")
 
-        # ✅ FIX: Fetch ALL cells with Event Type = "Cells"
-        # Don't filter by date here - we'll do it below
+        # Fetch ALL cells - no date filtering at query level
         cursor = events_collection.find({"Event Type": "Cells"})
 
         events = []
@@ -1055,95 +1176,36 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
 
         async for event in cursor:
             event_name = event.get("Event Name", "")
+            event_email = event.get("Email", "").lower().strip()
             recurring_day = event.get("Day", "").strip().lower()
             
-            # Parse the event date
-            event_date = parse_event_date(
-                event.get("Date Of Event"), 
-                today_date
-            )
-
-            # ✅ FIX: For admin, show ALL cells that match today's day OR are scheduled for today/future
-            # This ensures we show:
-            # 1. All cells scheduled for today (even if overdue from database perspective)
-            # 2. All cells with recurring day matching today
-            # 3. All future cells
-            
-            # Skip only if it's a past date AND not today
-            if event_date < today_date:
-                # Don't show old cells from the past
-                continue
-
-            # Deduplicate using event name + email + day
-            event_email = event.get("Email", "").lower().strip()
+            # Deduplicate
             dedup_key = f"{event_name}-{event_email}-{recurring_day}"
-            
             if dedup_key in seen_event_keys:
-                logging.debug(f"Skipping duplicate: {dedup_key}")
                 continue
             seen_event_keys.add(dedup_key)
 
-            # Get the actual status
-            status = get_actual_event_status(event, today_date)
+            # Build event object
+            event_obj = build_event_object(event, timezone, today_date)
+            event_date = event_obj["_event_date"]
+            status = event_obj["status"]
 
-            # Parse time
-            time_value = event.get("Time", "19:00")
-            hour, minute = parse_time(time_value)
+            # Admin filtering: Include overdue incomplete cells
+            if not should_include_event(event_date, status, today_date, is_admin=True):
+                continue
 
-            # Create proper datetime
-            try:
-                event_datetime = datetime(
-                    event_date.year, 
-                    event_date.month, 
-                    event_date.day, 
-                    hour, 
-                    minute, 
-                    0
-                )
-                event_datetime = timezone.localize(event_datetime)
-            except Exception as e:
-                logging.warning(f"Date creation failed for {event_name}: {e}")
-                event_datetime = today.replace(
-                    hour=hour, 
-                    minute=minute, 
-                    second=0, 
-                    microsecond=0
-                )
-
-            # Build the event response object
-            event_obj = {
-                "_id": str(event["_id"]),
-                "eventName": event_name,
-                "eventType": "Cell",
-                "date": event_datetime.isoformat(),
-                "location": event.get("Address", ""),
-                "status": status,
-                "eventLeaderName": event.get("Leader", ""),
-                "eventLeaderEmail": event.get("Email", ""),
-                "leader1": event.get("Leader at 1", ""),
-                "leader12": event.get("Leader at 12", ""),
-                "leader144": event.get("Leader at 144", ""),
-                "time": f"{hour}:{minute:02d}",
-                "recurringDays": [recurring_day],
-                "day": recurring_day,
-                "isVirtual": bool(recurring_day),
-                "price": 0,
-                "isTicketed": False,
-                "description": event_name,
-                "attendees": event.get("attendees", []),
-                "did_not_meet": event.get("did_not_meet", False)
-            }
+            # Remove temporary field
+            del event_obj["_event_date"]
             
             events.append(event_obj)
 
-        # ✅ Sort alphabetically by event leader name
+        # Sort alphabetically by leader name
         events.sort(key=lambda x: x.get("eventLeaderName", "").lower())
 
-        logging.info(f"Admin: Returning {len(events)} cells for display")
+        logging.info(f"Admin: Returning {len(events)} cells")
 
         return {
             "today": today.strftime("%Y-%m-%d"),
-            "today_day_name": today_day_name,
             "total_events": len(events),
             "events": events,
             "status": "success"
@@ -1152,12 +1214,9 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Error in /admin/events/cells: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Internal server error: {str(e)}"
-        )
-    
+        logging.error(f"Error in admin endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.put("/events/{event_id}")
 async def update_event(event: EventUpdate, event_id: str = Path(...)):
     try:
@@ -1201,91 +1260,53 @@ async def update_event(event: EventUpdate, event_id: str = Path(...)):
 
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
-    event_id: str = Path(..., description="ID of the event"),
+    event_id: str = Path(...),
     submission: AttendanceSubmission = Body(...)
 ):
     """
     Submit attendance for a cell event.
-    
-    Two modes:
-    1. Normal submission: attendees list with people who attended
-    2. Did not meet: empty attendees list with did_not_meet=True
-    
-    FIXES:
-    - Properly handles both modes
-    - Uses lowercase status values (complete, did_not_meet)
-    - Validates attendee data structure
-    - Better error messages
+    Properly handles did_not_meet status.
     """
     try:
-        # Validate ObjectId format
         if not ObjectId.is_valid(event_id):
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid event ID format"
-            )
+            raise HTTPException(status_code=400, detail="Invalid event ID")
         
-        object_id = ObjectId(event_id)
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
         
-        # Find the event in events collection
-        event = await events_collection.find_one({"_id": object_id})
+        logging.info(f"Submitting attendance for: {event.get('Event Name')}")
         
-        if event is None:
-            # Try finding by integer ID (legacy support)
-            try:
-                event_id_int = int(event_id)
-                event = await events_collection.find_one({"ID": event_id_int})
-            except ValueError:
-                pass
-        
-        if event is None:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Event not found with ID: {event_id}"
-            )
-        
-        logging.info(
-            f"Submitting attendance for event: {event.get('Event Name')} "
-            f"by {submission.leaderName}"
-        )
-        
-        # Determine the status and prepare data based on did_not_meet flag
+        # Determine status and data
         if submission.did_not_meet:
-            # DID NOT MEET case
-            status = "did_not_meet"
+            status = "did_not_meet"  # ✅ Lowercase
             attendees_list = []
             total_attendance = 0
             did_not_meet_flag = True
-            
-            logging.info(f"Event marked as 'did not meet'")
+            logging.info("Marked as DID NOT MEET")
         else:
-            # NORMAL ATTENDANCE case
-            status = "complete"
-            
-            # Convert attendees to dict format for storage
-            attendees_list = []
-            for attendee in submission.attendees:
-                attendee_dict = {
-                    "id": attendee.id,
-                    "name": attendee.name or attendee.fullName,
-                    "fullName": attendee.fullName or attendee.name,
-                    "leader12": attendee.leader12,
-                    "leader144": attendee.leader144,
-                    "time": attendee.time.isoformat() if attendee.time else None,
-                    "email": attendee.email,
-                    "phone": attendee.phone,
-                    "decision": attendee.decision
+            status = "complete"  # ✅ Lowercase
+            attendees_list = [
+                {
+                    "id": att.id,
+                    "name": att.name or att.fullName,
+                    "fullName": att.fullName or att.name,
+                    "leader12": att.leader12,
+                    "leader144": att.leader144,
+                    "time": att.time.isoformat() if att.time else None,
+                    "email": att.email,
+                    "phone": att.phone,
+                    "decision": att.decision
                 }
-                attendees_list.append(attendee_dict)
-            
+                for att in submission.attendees
+            ]
             total_attendance = len(attendees_list)
             did_not_meet_flag = False
-            
-            logging.info(f"Attendance captured: {total_attendance} attendees")
+            logging.info(f"Captured {total_attendance} attendees")
         
-        # Prepare the update payload
+        # Update database
         update_data = {
-            "Status": status,  # Use lowercase for consistency
+            "Status": status,  # ✅ Lowercase: "did_not_meet" or "complete"
             "updated_at": datetime.utcnow(),
             "attendees": attendees_list,
             "total_attendance": total_attendance,
@@ -1297,31 +1318,24 @@ async def submit_attendance(
             }
         }
         
-        # Update the event in database
         result = await events_collection.update_one(
             {"_id": event["_id"]},
             {"$set": update_data}
         )
         
         if result.matched_count != 1:
-            raise HTTPException(
-                status_code=500, 
-                detail="Failed to update event - event not found"
-            )
+            raise HTTPException(status_code=500, detail="Failed to update event")
         
-        if result.modified_count != 1:
-            logging.warning("Event was matched but not modified - may already have same data")
-        
-        success_message = (
-            f"Event marked as 'did not meet'" 
+        success_msg = (
+            "Event marked as 'did not meet'" 
             if did_not_meet_flag 
-            else f"Attendance submitted successfully ({total_attendance} attendees)"
+            else f"Attendance captured ({total_attendance} attendees)"
         )
         
-        logging.info(f"Attendance submission successful: {success_message}")
+        logging.info(f"✓ {success_msg}")
         
         return {
-            "message": success_message,
+            "message": success_msg,
             "event_id": str(event["_id"]),
             "event_name": event.get("Event Name"),
             "status": status,
@@ -1332,19 +1346,10 @@ async def submit_attendance(
         
     except HTTPException:
         raise
-    except ValueError as ve:
-        logging.error(f"Validation error: {ve}")
-        raise HTTPException(
-            status_code=422, 
-            detail=str(ve)
-        )
     except Exception as e:
         logging.error(f"Error submitting attendance: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Server error while submitting attendance: {str(e)}"
-        )
-    
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
@@ -1430,7 +1435,121 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
-
+@app.get("/test/user-cells/{email}")
+async def test_user_cells(email: str):
+    """
+    Debug endpoint to see what cells a regular user should see.
+    Tests the exact logic used in /events/cells-user
+    """
+    try:
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        # Step 1: Find user's cell by email
+        user_cell = await events_collection.find_one({
+            "Email": {"$regex": f"^{email}$", "$options": "i"}
+        })
+        
+        user_name = ""
+        if user_cell:
+            user_name = user_cell.get("Leader", "").strip()
+        
+        # Step 2: Build the same query as the endpoint
+        query_conditions = [
+            {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+        ]
+        
+        if user_name:
+            query_conditions.extend([
+                {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
+                {"Leader at 12": {"$regex": f"{user_name}", "$options": "i"}},
+            ])
+        
+        query = {
+            "Event Type": "Cells",
+            "$or": query_conditions
+        }
+        
+        # Step 3: Find all matching cells
+        all_cells = await events_collection.find(query).to_list(length=None)
+        
+        # Step 4: Process each cell
+        cells_by_category = {
+            "own_cells_by_email": [],
+            "own_cells_by_name": [],
+            "supervised_cells": [],
+            "filtered_out_overdue": [],
+            "filtered_out_complete": []
+        }
+        
+        for cell in all_cells:
+            cell_email = cell.get("Email", "").lower().strip()
+            cell_leader = cell.get("Leader", "").strip()
+            cell_name = cell.get("Event Name", "")
+            event_date = parse_event_date(cell.get("Date Of Event"), today_date)
+            status = get_actual_event_status(cell, today_date)
+            
+            cell_info = {
+                "event_name": cell_name,
+                "leader": cell_leader,
+                "email": cell_email,
+                "leader_at_12": cell.get("Leader at 12"),
+                "day": cell.get("Day"),
+                "date": str(event_date),
+                "status": status
+            }
+            
+            # Check if should be included
+            should_include = should_include_event(event_date, status, today_date, is_admin=False)
+            
+            if not should_include:
+                if status == 'incomplete':
+                    cells_by_category["filtered_out_overdue"].append(cell_info)
+                else:
+                    cells_by_category["filtered_out_complete"].append(cell_info)
+                continue
+            
+            # Categorize included cells
+            if cell_email == email.lower():
+                cells_by_category["own_cells_by_email"].append(cell_info)
+            elif user_name and cell_leader.lower() == user_name.lower():
+                cells_by_category["own_cells_by_name"].append(cell_info)
+            else:
+                cells_by_category["supervised_cells"].append(cell_info)
+        
+        total_visible = (
+            len(cells_by_category["own_cells_by_email"]) +
+            len(cells_by_category["own_cells_by_name"]) +
+            len(cells_by_category["supervised_cells"])
+        )
+        
+        return {
+            "user_email": email,
+            "user_name_found": user_name or "NOT FOUND",
+            "today": today.strftime("%Y-%m-%d"),
+            "query_used": {
+                "Event Type": "Cells",
+                "OR_conditions": [
+                    f"Email matches {email}",
+                    f"Leader matches {user_name}" if user_name else "SKIPPED - no name",
+                    f"Leader at 12 contains {user_name}" if user_name else "SKIPPED - no name"
+                ]
+            },
+            "total_cells_found": len(all_cells),
+            "total_visible_to_user": total_visible,
+            "cells_breakdown": cells_by_category,
+            "issue_diagnosis": {
+                "has_cell_record": bool(user_cell),
+                "has_name_in_database": bool(user_name),
+                "email_query_working": len(cells_by_category["own_cells_by_email"]) > 0,
+                "name_query_working": len(cells_by_category["own_cells_by_name"]) > 0,
+            }
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in test_user_cells: {e}", exc_info=True)
+        return {"error": str(e)}
 # @app.get("/cells/under-female-12s")
 # async def get_cells_under_female_12s(
 #     current_user: dict = Depends(get_current_user),
