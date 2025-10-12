@@ -119,11 +119,11 @@ class EventUpdate(BaseModel):
     isTicketed: Optional[bool] = None
     price: Optional[float] = None
     userEmail: Optional[str] = None
-    status: Optional[str] = None  # CRITICAL: Must support lowercase values
+    status: Optional[str] = None          
+    Status: Optional[str] = None          
     attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
     total_attendance: Optional[int] = None
-
 
 class EventInDB(EventBase):
     _id: str  # MongoDB ObjectId as string
