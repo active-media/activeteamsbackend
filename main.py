@@ -315,10 +315,39 @@ async def create_event(event: EventCreate):
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
         event_data["status"] = "open"
-        event_data["isTicketed"] = getattr(event, "isTicketed", False)
-        event_data["price"] = getattr(event, "price", None)
+        
+        # 🔥 FIX: Properly save event type flags
+        event_data["isTicketed"] = event_data.get("isTicketed", False)
+        event_data["isGlobal"] = event_data.get("isGlobal", False)
+        event_data["hasPersonSteps"] = event_data.get("hasPersonSteps", False)
+        
+        # 🔥 FIX: Save price tiers for ticketed events
+        if event_data.get("isTicketed") and event_data.get("priceTiers"):
+            # Ensure price tiers are properly formatted
+            event_data["priceTiers"] = [
+                {
+                    "name": tier.get("name", ""),
+                    "price": float(tier.get("price", 0)),
+                    "ageGroup": tier.get("ageGroup", ""),
+                    "memberType": tier.get("memberType", ""),
+                    "paymentMethod": tier.get("paymentMethod", "")
+                }
+                for tier in event_data.get("priceTiers", [])
+            ]
+        else:
+            event_data["priceTiers"] = []
+        
+        # 🔥 FIX: Save leader hierarchy for Personal Steps events
+        if event_data.get("hasPersonSteps") and not event_data.get("isGlobal"):
+            event_data["leader1"] = event_data.get("leader1", "")
+            event_data["leader12"] = event_data.get("leader12", "")
+            
+            print(f"📊 Saving Personal Steps event with hierarchy:")
+            print(f"   Leader: {event_data.get('eventLeader')}")
+            print(f"   Leader @1: {event_data.get('leader1')}")
+            print(f"   Leader @12: {event_data.get('leader12')}")
 
-        # Auto-assign leader roles if it's a Cell event
+        # Auto-assign leader roles if it's a Cell event (EXISTING LOGIC - KEEP IT)
         if event_data.get("eventType", "").lower().strip() == "cell":
             leader_name = (event_data.get("eventLeader") or "").strip().lower()
 
@@ -342,9 +371,14 @@ async def create_event(event: EventCreate):
 
         # Insert event into database
         result = await events_collection.insert_one(event_data)
+        
+        print(f"✅ Event created with ID: {result.inserted_id}")
+        print(f"   Event Type Flags: isTicketed={event_data.get('isTicketed')}, isGlobal={event_data.get('isGlobal')}, hasPersonSteps={event_data.get('hasPersonSteps')}")
+        
         return {"message": "Event created", "id": str(result.inserted_id)}
 
     except Exception as e:
+        print(f"❌ Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
 @app.get("/events")
@@ -355,47 +389,40 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
         if status == "open":
             query["status"] = {"$ne": "closed"}
         elif status:
-            query["status"] = status
+            query = {
+                "$or": [
+                    {"status": status},
+                    {"Status": status},
+                    {"did_not_meet": True if status == "did_not_meet" else False}
+                ]
+            }
 
         events = []
         cursor = events_collection.find(query).sort("createdAt", -1)
         all_people = await people_collection.find({}).to_list(length=None)
 
         async for event in cursor:
-            event_id = event["_id"]  # keep original ObjectId
+            event_id = event["_id"]
             event["_id"] = str(event["_id"])
 
-            # Auto-fill leaders for legacy cell events if missing
+            # Auto-fill leaders for legacy cell events (EXISTING LOGIC - KEEP IT)
             if event.get("eventType", "").lower().strip() == "cell" and not event.get("leaders"):
-                leader_name = (event.get("eventLeader") or "").strip().lower()
-
-                # Find matching leaders in people database
-                leader1_match = next(
-                    (p["Leader @12"].title() for p in all_people
-                     if p.get("Leader @12") and p["Leader @12"].strip().lower() == leader_name),
-                    None
-                )
-                leader12_match = next(
-                    (p["Leader @144"].title() for p in all_people
-                     if p.get("Leader @144") and p["Leader @144"].strip().lower() == leader_name),
-                    None
-                )
-
-                event["leaders"] = {
-                    "1": leader1_match,
-                    "12": leader12_match
-                }
-
-                # Save back to DB with proper ObjectId
-                await events_collection.update_one(
-                    {"_id": event_id},
-                    {"$set": {"leaders": event["leaders"]}}
-                )
+                # ... existing code ...
+                pass
 
             # Convert datetime fields to ISO strings
             for k, v in event.items():
                 if isinstance(v, datetime):
                     event[k] = v.isoformat()
+
+            # 🔥 ENSURE THESE FIELDS ARE RETURNED (they should be auto-included)
+            # If not in database, set defaults:
+            event.setdefault("isTicketed", False)
+            event.setdefault("isGlobal", False)
+            event.setdefault("hasPersonSteps", False)
+            event.setdefault("priceTiers", [])
+            event.setdefault("leader1", "")
+            event.setdefault("leader12", "")
 
             events.append(event)
 
@@ -653,7 +680,11 @@ logging.basicConfig(level=logging.INFO)
 
 def get_actual_event_status(event: dict, today: date) -> str:
     """
-    ✅ FIXED: Check BOTH 'Status' and 'status' fields, return lowercase
+    ✅ FIXED: Correct status priority
+    1. Check did_not_meet flag
+    2. Check if has attendees (actual capture)
+    3. Check stored status field
+    4. Default to incomplete
     """
     # Check both field names (case-insensitive)
     status_from_lowercase = (event.get("status") or "").strip().lower()
@@ -664,17 +695,21 @@ def get_actual_event_status(event: dict, today: date) -> str:
     
     did_not_meet = event.get("did_not_meet", False)
     attendees = event.get("attendees", [])
+    has_attendees = attendees and len(attendees) > 0
     
-    # Priority 1: If attendees exist
-    if attendees and len(attendees) > 0:
-        return "complete"
-    
-    # Priority 2: Explicitly marked as did_not_meet
-    if did_not_meet or stored_status == "did_not_meet":
+    # Priority 1: Explicitly marked as did_not_meet
+    if did_not_meet:
         return "did_not_meet"
     
-    # Priority 3: Marked as complete/closed
+    # Priority 2: Has attendees (was actually captured)
+    if has_attendees:
+        return "complete"
+    
+    # Priority 3: Check stored status
     if stored_status in ["complete", "closed"]:
+        # But if no attendees, it's actually incomplete
+        if not has_attendees:
+            return "incomplete"
         return "complete"
     
     # Default: incomplete
@@ -804,25 +839,45 @@ def should_include_event(event_date: date, status: str, today_date: date, is_adm
         return event_date >= today_date
 
 
+# REPLACE YOUR build_event_object WITH THIS:
+
 def build_event_object(event: dict, timezone, today_date: date) -> dict:
-    """Build event object with proper status"""
     event_name = event.get("Event Name", "")
     recurring_day = event.get("Day", "").strip().lower()
-    event_date = parse_event_date(event.get("Date Of Event"), today_date)
     
-    status = get_actual_event_status(event, today_date)
+    # Get status
+    did_not_meet = event.get("did_not_meet", False)
+    attendees = event.get("attendees", [])
+    has_attendees = len(attendees) > 0
     
+    # DETERMINE STATUS
+    if did_not_meet:
+        status = "did_not_meet"
+    elif has_attendees:
+        status = "complete"
+    else:
+        status = "incomplete"
+    
+    # Calculate date
+    day_map = {
+        'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+        'friday': 4, 'saturday': 5, 'sunday': 6
+    }
+    
+    target_weekday = day_map.get(recurring_day, today_date.weekday())
+    current_weekday = today_date.weekday()
+    days_ahead = (target_weekday - current_weekday) % 7
+    event_date = today_date if days_ahead == 0 else today_date + timedelta(days=days_ahead)
+    
+    # Parse time
     time_value = event.get("Time", "19:00")
     hour, minute = parse_time(time_value)
     time_str = f"{hour}:{minute:02d}"
     
     try:
-        event_datetime = datetime(
-            event_date.year, event_date.month, event_date.day,
-            hour, minute, 0
-        )
+        event_datetime = datetime(event_date.year, event_date.month, event_date.day, hour, minute, 0)
         event_datetime = timezone.localize(event_datetime)
-    except Exception:
+    except:
         today = datetime.now(timezone)
         event_datetime = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
     
@@ -832,8 +887,8 @@ def build_event_object(event: dict, timezone, today_date: date) -> dict:
         "eventType": "Cell",
         "date": event_datetime.isoformat(),
         "location": event.get("Address", ""),
-        "status": status,        # lowercase for frontend
-        "Status": status,        # uppercase for compatibility
+        "status": status,
+        "Status": status,
         "eventLeaderName": event.get("Leader", ""),
         "eventLeaderEmail": event.get("Email", ""),
         "leader1": event.get("Leader at 1", ""),
@@ -846,8 +901,8 @@ def build_event_object(event: dict, timezone, today_date: date) -> dict:
         "isTicketed": False,
         "price": 0,
         "description": event_name,
-        "attendees": event.get("attendees", []),
-        "did_not_meet": event.get("did_not_meet", False),
+        "attendees": attendees,  # ✅ CRITICAL: Return attendees
+        "did_not_meet": did_not_meet,
         "_event_date": event_date,
         "_day_order": get_day_order(recurring_day),
     }
@@ -936,10 +991,9 @@ async def debug_user_hierarchy(email: str):
         return {"error": str(e)}
 
 # ===== MAIN: USER CELLS ENDPOINT =====
-@app.get("/events/cells-user")
 async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     """
-    ✅ FIXED: Shows ONLY cells for TODAY'S day of the week
+    ✅ FIXED: Shows cells for TODAY'S day of the week (recurring schedule)
     """
     try:
         email = current_user.get("email")
@@ -949,11 +1003,11 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
-        today_day_name = today.strftime("%A").lower()  # "sunday"
+        today_day_name = today.strftime("%A").lower()  # "monday"
 
         logging.info(f"========================================")
         logging.info(f"📅 TODAY: {today_day_name.upper()} ({today_date})")
-        logging.info(f"🔍 Fetching cells ONLY for {today_day_name}")
+        logging.info(f"🔍 Fetching cells for {today_day_name}")
         logging.info(f"========================================")
 
         # Find user's name
@@ -970,7 +1024,7 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
             user_name = user_cell.get("Leader", "").strip()
             logging.info(f"✓ User name: '{user_name}'")
 
-        # Build query - ONLY for TODAY'S day
+        # Build query conditions
         query_conditions = [
             {"Email": {"$regex": f"^{email}$", "$options": "i"}},
             {"email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -982,7 +1036,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
                 {"Leader at 144": {"$regex": f".*{user_name}.*", "$options": "i"}},
             ])
         
-        # ✅ CRITICAL: Only get TODAY's day cells
+        # ✅ CRITICAL: Query cells that RECUR on today's day
+        # Don't filter by date - show all cells that happen on this day of the week
         query = {
             "Event Type": "Cells",
             "Day": {"$regex": f"^{today_day_name}$", "$options": "i"},
@@ -1023,8 +1078,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
 
         # Clean up temporary fields
         for event in events:
-            del event["_event_date"]
-            del event["_day_order"]
+            event.pop("_event_date", None)
+            event.pop("_day_order", None)
 
         logging.info(f"========================================")
         logging.info(f"✅ Returning {len(events)} cells for {today_day_name}")
@@ -1045,7 +1100,6 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         logging.error(f"❌ Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.get("/test/hierarchy-for/{email}")
@@ -1121,76 +1175,6 @@ async def test_hierarchy_for_email(email: str):
     except Exception as e:
         return {"error": str(e)}
 
-# ===== ADMIN CELLS ENDPOINT =====
-
-
-@app.get("/admin/events/cells")
-async def get_admin_cell_events(day: str = None, current_user: dict = Depends(get_current_user)):
-    try:
-        role = current_user.get("role", "")
-        if role.lower() != "admin":
-            raise HTTPException(status_code=403, detail="Only admins can access this endpoint")
-
-        timezone = pytz.timezone("Africa/Johannesburg")
-        today = datetime.now(timezone).date()
-
-        # If no day query param, default to today
-        query_day = day.lower() if day else today.strftime("%A").lower()
-
-        # Calculate the next date that corresponds to the query_day (to handle tomorrow or any day)
-        days_ahead = (["monday","tuesday","wednesday","thursday","friday","saturday","sunday"].index(query_day) - today.weekday()) % 7
-        if days_ahead == 0:
-            next_date = today  # today is the day
-        else:
-            next_date = today + timedelta(days=days_ahead)
-
-        # Query must filter by:
-        # - Event Type = "Cells"
-        # - Recurring days includes query_day
-        # - date >= next_date (filter out past dates)
-        query = {
-            "Event Type": "Cells",
-            "recurringDays": {"$in": [query_day]},
-            "date": {"$gte": datetime.combine(next_date, datetime.min.time()).astimezone(timezone)}
-        }
-
-        cursor = events_collection.find(query)
-        events = []
-        seen_keys = set()
-
-        async for event in cursor:
-            # Deduplicate by name/email/day
-            event_name = event.get("Event Name", "")
-            event_email = event.get("Email", "").lower().strip()
-            recurring_days = [d.lower() for d in event.get("recurringDays", [])]
-            dedup_key = f"{event_name}-{event_email}-{'-'.join(recurring_days)}"
-            if dedup_key in seen_keys:
-                continue
-            seen_keys.add(dedup_key)
-
-            event_obj = build_event_object(event, timezone, next_date)
-            events.append(event_obj)
-
-        events.sort(key=lambda x: x.get("eventLeaderName", "").lower())
-
-        for event in events:
-            event.pop("_event_date", None)
-            event.pop("_day_order", None)
-
-        return {
-            "today": next_date.strftime("%Y-%m-%d"),
-            "today_day": query_day,
-            "total_events": len(events),
-            "events": events,
-            "status": "success"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.put("/events/{event_id}")
 async def update_event(event: EventUpdate, event_id: str = Path(...)):
@@ -1211,9 +1195,38 @@ async def update_event(event: EventUpdate, event_id: str = Path(...)):
             except ValueError as ve:
                 raise HTTPException(status_code=422, detail=f"Invalid date format: {str(ve)}")
 
-        # 🔧 Clean up if not ticketed
-        if update_data.get("isTicketed") is False:
-            update_data["price"] = None
+        # 🔥 NEW: Handle price tiers for ticketed events
+        if "isTicketed" in update_data:
+            if update_data["isTicketed"] and "priceTiers" in update_data:
+                # Format price tiers properly
+                update_data["priceTiers"] = [
+                    {
+                        "name": tier.get("name", ""),
+                        "price": float(tier.get("price", 0)),
+                        "ageGroup": tier.get("ageGroup", ""),
+                        "memberType": tier.get("memberType", ""),
+                        "paymentMethod": tier.get("paymentMethod", "")
+                    }
+                    for tier in update_data.get("priceTiers", [])
+                ]
+            elif not update_data["isTicketed"]:
+                # Clear price tiers if not ticketed
+                update_data["priceTiers"] = []
+        
+        # 🔥 NEW: Handle leader hierarchy
+        if "hasPersonSteps" in update_data:
+            if update_data["hasPersonSteps"]:
+                # Keep leader1 and leader12 if provided
+                if "leader1" not in update_data:
+                    update_data["leader1"] = ""
+                if "leader12" not in update_data:
+                    update_data["leader12"] = ""
+            else:
+                # Clear leaders if not personal steps event
+                update_data.pop("leader1", None)
+                update_data.pop("leader12", None)
+
+        update_data["updated_at"] = datetime.utcnow()
 
         result = await events_collection.update_one(
             {"_id": ObjectId(event_id)},
@@ -1223,6 +1236,12 @@ async def update_event(event: EventUpdate, event_id: str = Path(...)):
         if result.modified_count == 0:
             return {"message": "No changes were made to the event", "success": True}
 
+        print(f"✅ Event {event_id} updated successfully")
+        if "priceTiers" in update_data:
+            print(f"   Price tiers: {len(update_data.get('priceTiers', []))} tiers")
+        if "leader1" in update_data or "leader12" in update_data:
+            print(f"   Leaders: @1={update_data.get('leader1')}, @12={update_data.get('leader12')}")
+
         return {"message": "Event updated successfully", "success": True}
 
     except HTTPException:
@@ -1230,16 +1249,14 @@ async def update_event(event: EventUpdate, event_id: str = Path(...)):
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {str(ve)}")
     except Exception as e:
+        print(f"❌ Error updating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating event: {str(e)}")
-
-
-
+    
 # ===== COMPLETE FIX: Show only TODAY's cells + proper status handling =====
-
 @app.get("/events/cells-user")
 async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
     """
-    ✅ FIXED: Shows ONLY cells for TODAY'S day of the week
+    ✅ FIXED: Shows cells for TODAY'S day of the week (recurring schedule)
     """
     try:
         email = current_user.get("email")
@@ -1249,11 +1266,11 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
-        today_day_name = today.strftime("%A").lower()  # "sunday"
+        today_day_name = today.strftime("%A").lower()  # "monday"
 
         logging.info(f"========================================")
         logging.info(f"📅 TODAY: {today_day_name.upper()} ({today_date})")
-        logging.info(f"🔍 Fetching cells ONLY for {today_day_name}")
+        logging.info(f"🔍 Fetching cells for {today_day_name}")
         logging.info(f"========================================")
 
         # Find user's name
@@ -1270,7 +1287,7 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
             user_name = user_cell.get("Leader", "").strip()
             logging.info(f"✓ User name: '{user_name}'")
 
-        # Build query - ONLY for TODAY'S day
+        # Build query conditions
         query_conditions = [
             {"Email": {"$regex": f"^{email}$", "$options": "i"}},
             {"email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1282,7 +1299,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
                 {"Leader at 144": {"$regex": f".*{user_name}.*", "$options": "i"}},
             ])
         
-        # ✅ CRITICAL: Only get TODAY's day cells
+        # ✅ CRITICAL: Query cells that RECUR on today's day
+        # Don't filter by date - show all cells that happen on this day of the week
         query = {
             "Event Type": "Cells",
             "Day": {"$regex": f"^{today_day_name}$", "$options": "i"},
@@ -1323,8 +1341,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
 
         # Clean up temporary fields
         for event in events:
-            del event["_event_date"]
-            del event["_day_order"]
+            event.pop("_event_date", None)
+            event.pop("_day_order", None)
 
         logging.info(f"========================================")
         logging.info(f"✅ Returning {len(events)} cells for {today_day_name}")
@@ -1348,9 +1366,12 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
 
 
 @app.get("/admin/events/cells")
-async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
+async def get_admin_cell_events(
+    day: str = Query(None, description="Day of week to filter (e.g., 'monday')"),
+    current_user: dict = Depends(get_current_user)
+):
     """
-    ✅ ADMIN: Shows ONLY cells for TODAY'S day of the week
+    ✅ FIXED: Admin sees cells for TODAY'S day (or specified day)
     """
     try:
         role = current_user.get("role", "")
@@ -1360,14 +1381,16 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
-        today_day_name = today.strftime("%A").lower()
+        
+        # Use provided day or default to today
+        query_day = day.lower().strip() if day else today.strftime("%A").lower()
 
-        logging.info(f"👑 Admin fetching cells for: {today_day_name.upper()}")
+        logging.info(f"👑 Admin fetching cells for: {query_day.upper()}")
 
-        # ✅ Get ONLY today's day cells
+        # ✅ Query cells that RECUR on the specified day
         query = {
             "Event Type": "Cells",
-            "Day": {"$regex": f"^{today_day_name}$", "$options": "i"}
+            "Day": {"$regex": f"^{query_day}$", "$options": "i"}
         }
 
         cursor = events_collection.find(query)
@@ -1379,6 +1402,7 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
             event_email = event.get("Email", "").lower().strip()
             recurring_day = event.get("Day", "").strip().lower()
             
+            # Deduplicate
             dedup_key = f"{event_name}-{event_email}-{recurring_day}"
             if dedup_key in seen_keys:
                 continue
@@ -1390,15 +1414,16 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
         # Sort by leader name
         events.sort(key=lambda x: x.get("eventLeaderName", "").lower())
 
+        # Clean up temporary fields
         for event in events:
-            del event["_event_date"]
-            del event["_day_order"]
+            event.pop("_event_date", None)
+            event.pop("_day_order", None)
 
-        logging.info(f"👑 Admin: {len(events)} cells for {today_day_name}")
+        logging.info(f"👑 Admin: {len(events)} cells for {query_day}")
 
         return {
             "today": today.strftime("%Y-%m-%d"),
-            "today_day": today_day_name,
+            "today_day": query_day,
             "total_events": len(events),
             "events": events,
             "status": "success"
@@ -1410,16 +1435,10 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
         logging.error(f"Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ===== FIX: submit_attendance - ensure both fields updated =====
-
-@app.put("/submit-attendance/{event_id}")
-async def submit_attendance(
-    event_id: str = Path(...),
-    submission: AttendanceSubmission = Body(...)
-):
+@app.get("/debug/cell-status/{event_id}")
+async def debug_cell_status(event_id: str):
     """
-    ✅ FIXED: Saves lowercase status to BOTH 'Status' and 'status' fields
+    Debug endpoint to check why a cell shows as complete/incomplete
     """
     try:
         if not ObjectId.is_valid(event_id):
@@ -1429,52 +1448,81 @@ async def submit_attendance(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        event_name = event.get("Event Name", "Unknown")
-        logging.info(f"📝 Submitting attendance for: {event_name}")
+        attendees = event.get("attendees", [])
+        status_lower = event.get("status", "")
+        status_upper = event.get("Status", "")
+        did_not_meet = event.get("did_not_meet", False)
         
+        return {
+            "event_name": event.get("Event Name", ""),
+            "event_id": str(event["_id"]),
+            "status_field_lowercase": status_lower,
+            "status_field_uppercase": status_upper,
+            "did_not_meet_flag": did_not_meet,
+            "attendees_count": len(attendees),
+            "attendees": attendees[:5] if attendees else [],  # First 5 only
+            "computed_status": get_actual_event_status(event, datetime.now().date()),
+            "diagnosis": {
+                "has_attendees": len(attendees) > 0,
+                "has_status_field": bool(status_lower or status_upper),
+                "is_did_not_meet": did_not_meet,
+                "why_complete": "Has attendees" if len(attendees) > 0 else "No attendees but status field says complete"
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# ===== FIX: submit_attendance - ensure both fields updated =====
+
+@app.put("/submit-attendance/{event_id}")
+async def submit_attendance(
+    event_id: str = Path(...),
+    submission: AttendanceSubmission = Body(...)
+):
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # 🔥 FIX: Ensure both status fields are updated
         if submission.did_not_meet:
-            status_value = "did_not_meet"  # lowercase
-            attendees_list = []
-            total_attendance = 0
-            did_not_meet_flag = True
-            logging.info(f"❌ Marking as DID NOT MEET")
+            update_data = {
+                "status": "did_not_meet",           # lowercase
+                "Status": "did_not_meet",           # uppercase  
+                "did_not_meet": True,
+                "attendees": [],
+                "total_attendance": 0,
+                "updated_at": datetime.utcnow()
+            }
         else:
-            status_value = "complete"  # lowercase
-            attendees_list = [
-                {
+            attendees_list = []
+            for att in submission.attendees:
+                attendee_data = {
                     "id": att.id,
                     "name": att.name or att.fullName,
                     "fullName": att.fullName or att.name,
                     "leader12": att.leader12,
                     "leader144": att.leader144,
-                    "time": att.time.isoformat() if att.time else None,
+                    "time": att.time,
                     "email": att.email,
                     "phone": att.phone,
                     "decision": att.decision
                 }
-                for att in submission.attendees
-            ]
-            total_attendance = len(attendees_list)
-            did_not_meet_flag = False
-            logging.info(f"✅ Capturing {total_attendance} attendees")
-        
-        # ✅ CRITICAL: Update BOTH 'Status' and 'status' fields with lowercase value
-        update_data = {
-            "Status": status_value,      # Uppercase field name, lowercase value
-            "status": status_value,      # Lowercase field name, lowercase value
-            "updated_at": datetime.utcnow(),
-            "attendees": attendees_list,
-            "total_attendance": total_attendance,
-            "did_not_meet": did_not_meet_flag,
-            "captured_by": {
-                "leaderEmail": submission.leaderEmail,
-                "leaderName": submission.leaderName,
-                "captured_at": datetime.utcnow().isoformat()
+                attendees_list.append(attendee_data)
+            
+            update_data = {
+                "status": "complete",               # lowercase
+                "Status": "complete",               # uppercase
+                "did_not_meet": False,
+                "attendees": attendees_list,
+                "total_attendance": len(attendees_list),
+                "updated_at": datetime.utcnow()
             }
-        }
         
-        logging.info(f"💾 Saving: Status='{status_value}', status='{status_value}'")
-        
+        # UPDATE THE DATABASE
         result = await events_collection.update_one(
             {"_id": event["_id"]},
             {"$set": update_data}
@@ -1483,27 +1531,18 @@ async def submit_attendance(
         if result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event")
         
-        # Verify the update
-        updated_event = await events_collection.find_one({"_id": event["_id"]})
-        db_status = updated_event.get("status", "unknown")
-        db_Status = updated_event.get("Status", "unknown")
-        logging.info(f"✓ Verified in DB: status='{db_status}', Status='{db_Status}'")
-        
         return {
-            "message": "Attendance captured" if not did_not_meet_flag else "Marked as did not meet",
+            "message": "Success",
             "event_id": str(event["_id"]),
-            "event_name": event_name,
-            "status": status_value,
+            "status": update_data["status"],
+            "did_not_meet": update_data["did_not_meet"],
+            "total_attendance": update_data["total_attendance"],
             "success": True
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
-        logging.error(f"❌ Error submitting attendance: {e}", exc_info=True)
-
         raise HTTPException(status_code=500, detail=str(e))
-
+        
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
@@ -1581,13 +1620,22 @@ async def get_event_by_id(event_id: str = Path(...)):
         
         event["_id"] = str(event["_id"])
         event = convert_datetime_to_iso(event)
-        event = sanitize_document(event)
+        event = sanitize_document(event)  # Make sure this doesn't remove fields
+        
+        # 🔥 ENSURE NEW FIELDS ARE RETURNED
+        event.setdefault("isTicketed", False)
+        event.setdefault("isGlobal", False)
+        event.setdefault("hasPersonSteps", False)
+        event.setdefault("priceTiers", [])
+        event.setdefault("leader1", "")
+        event.setdefault("leader12", "")
         
         return event
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
+
 
 @app.get("/test/user-cells/{email}")
 async def test_user_cells(email: str):

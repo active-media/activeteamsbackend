@@ -39,16 +39,21 @@ class EventBase(BaseModel):
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurring_day: Optional[List[str]] = Field(default_factory=list)
+    recurring_day: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: Optional[bool] = False
-    price: Optional[float] = 0.0
     userEmail: Optional[str] = None
+    email: Optional[str] = None
+    
+    # 🔥 CRITICAL: Add these fields
+    isTicketed: Optional[bool] = False
+    isGlobal: Optional[bool] = False
+    hasPersonSteps: Optional[bool] = False
+    priceTiers: Optional[List[dict]] = Field(default_factory=list)
     leader1: Optional[str] = None
     leader12: Optional[str] = None
-    email: Optional[str] = None
+    price: Optional[float] = None  # For backward compatibility
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
@@ -66,6 +71,15 @@ class Attendee(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     decision: Optional[str] = None
+    
+    # 🔥 NEW: Ticketed event payment fields
+    priceTier: Optional[str] = None
+    price: Optional[float] = None
+    ageGroup: Optional[str] = None
+    memberType: Optional[str] = None
+    paymentMethod: Optional[str] = None
+    paid: Optional[float] = None
+    owing: Optional[float] = None
 
     @field_validator("fullName", mode="before")
     def set_fullname(cls, v, info):
@@ -73,16 +87,20 @@ class Attendee(BaseModel):
         if not v and info.data.get("name"):
             return info.data.get("name")
         return v
-        
+
 
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional
 
 class AttendanceSubmission(BaseModel):
-    attendees: List[Attendee] = Field(default_factory=list)
+    attendees: List[Attendee]
     leaderEmail: str
     leaderName: str
-    did_not_meet: Optional[bool] = False
+    did_not_meet: bool = False
+    isTicketed: bool = False  # 🔥 NEW
+    
+    # 🔥 NEW: Add this field
+    isTicketed: Optional[bool] = False
 
     @model_validator(mode="after")
     def validate_attendance(self):
@@ -96,6 +114,20 @@ class AttendanceSubmission(BaseModel):
         if not self.did_not_meet and not self.attendees:
             raise ValueError("At least one attendee is required when 'did_not_meet' is False.")
         return self
+
+# Adding new Person in the Event screen
+class PersonCreate(BaseModel):
+    invitedBy: str
+    name: str
+    surname: str
+    gender: str
+    email: str
+    number: str
+    dob: str
+    address: str
+    leaders: list[str]
+    stage: Literal["Win"]
+
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -116,14 +148,21 @@ class EventUpdate(BaseModel):
     location: Optional[str] = None
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: Optional[bool] = None
-    price: Optional[float] = None
     userEmail: Optional[str] = None
-    status: Optional[str] = None          
-    Status: Optional[str] = None          
+    status: Optional[str] = None
+    Status: Optional[str] = None
     attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
     total_attendance: Optional[int] = None
+    
+    # 🔥 CRITICAL: Add these fields
+    isTicketed: Optional[bool] = None
+    isGlobal: Optional[bool] = None
+    hasPersonSteps: Optional[bool] = None
+    priceTiers: Optional[List[dict]] = None
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
+    price: Optional[float] = None
 
 class EventInDB(EventBase):
     _id: str  # MongoDB ObjectId as string
