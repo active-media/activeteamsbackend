@@ -136,6 +136,12 @@ class Contribution(BaseModel):
     account: str
     description: str | None = None
 
+class YocoPaymentRequest(BaseModel):
+    token: str
+    amount: int  # in Rands
+    email: str
+    name: str
+
 class Batch(BaseModel):
     batchId: str
     designation: str
@@ -171,8 +177,6 @@ class TaskModel(BaseModel):
         validate_by_name = True
         arbitrary_types_allowed = True
 
-<<<<<<< HEAD
-=======
 
 class PersonInfo(BaseModel):
     name: Optional[str]
@@ -199,4 +203,3 @@ class PersonCreate(BaseModel):
     address: str
     leaders: list[str]
     stage: Literal["Win"]
->>>>>>> main
