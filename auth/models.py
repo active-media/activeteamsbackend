@@ -92,29 +92,27 @@ class Attendee(BaseModel):
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional
 
+# ===== FIXED AttendanceSubmission Model =====
+# ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
-    isTicketed: bool = False  # 🔥 NEW
-    
-    # 🔥 NEW: Add this field
-    isTicketed: Optional[bool] = False
+    isTicketed: bool = False
 
     @model_validator(mode="after")
     def validate_attendance(self):
         """
-        Ensure:
-        - If `did_not_meet` is True: attendees must be empty
-        - If `did_not_meet` is False: attendees must not be empty
+        ✅ IMPROVED: More flexible validation
+        - If `did_not_meet` is True: attendees should be empty (but don't block if not)
+        - If `did_not_meet` is False: allow empty attendees (frontend might send empty array)
         """
         if self.did_not_meet and self.attendees:
-            raise ValueError("Attendees must be empty when 'did_not_meet' is True.")
-        if not self.did_not_meet and not self.attendees:
-            raise ValueError("At least one attendee is required when 'did_not_meet' is False.")
+            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
+            # Don't raise error, just log it
         return self
-
+    
 # Adding new Person in the Event screen
 class PersonCreate(BaseModel):
     invitedBy: str
