@@ -2456,8 +2456,6 @@ async def delete_person(person_id: str = Path(...)):
 # Tasks Management
 # -------------------------
 
-# Create a new task
-
 # POST /tasks
 
 from fastapi.encoders import jsonable_encoder
