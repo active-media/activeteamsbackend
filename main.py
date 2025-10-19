@@ -1217,6 +1217,245 @@ async def test_hierarchy_for_email(email: str):
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/admin/events/status-counts")
+async def get_admin_events_status_counts(
+    current_user: dict = Depends(get_current_user),
+    event_type: Optional[str] = Query(None, description="Filter by event type"),
+    search: Optional[str] = Query(None, description="Search by event name or leader")
+):
+    """Get status counts for events - Admin only"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Build query
+        query = {"Event Type": "Cells"}
+        
+        # Add event type filter
+        if event_type and event_type != 'all':
+            query["Event Type"] = event_type
+        
+        # Add search filter
+        if search and search.strip():
+            search_regex = {"$regex": search.strip(), "$options": "i"}
+            query["$or"] = [
+                {"Event Name": search_regex},
+                {"Leader": search_regex},
+                {"Leader at 12": search_regex}
+            ]
+        
+        # Get all matching events (no pagination for counts)
+        cursor = events_collection.find(query)
+        events = []
+        
+        async for event in cursor:
+            events.append(event)
+        
+        # Calculate counts using the same logic as build_event_object
+        incomplete_count = 0
+        complete_count = 0
+        did_not_meet_count = 0
+        
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        for event in events:
+            # Use the same status logic as in build_event_object
+            did_not_meet = event.get("did_not_meet", False)
+            attendees = event.get("attendees", [])
+            has_attendees = len(attendees) > 0
+            
+            if did_not_meet:
+                did_not_meet_count += 1
+            elif has_attendees:
+                complete_count += 1
+            else:
+                incomplete_count += 1
+        
+        return {
+            "incomplete": incomplete_count,
+            "complete": complete_count,
+            "did_not_meet": did_not_meet_count,
+            "total": len(events)
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in status counts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/registrant/events/status-counts")
+async def get_registrant_events_status_counts(
+    current_user: dict = Depends(get_current_user),
+    event_type: Optional[str] = Query(None, description="Filter by event type"),
+    search: Optional[str] = Query(None, description="Search by event name or leader")
+):
+    """Get status counts for events - Registrant"""
+    try:
+        email = current_user.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="User email not found")
+        
+        # Build base query
+        query = {"Event Type": "Cells"}
+        
+        # Add event type filter
+        if event_type and event_type != 'all':
+            query["Event Type"] = event_type
+        
+        # Add search filter
+        if search and search.strip():
+            search_regex = {"$regex": search.strip(), "$options": "i"}
+            query["$or"] = [
+                {"Event Name": search_regex},
+                {"Leader": search_regex},
+                {"Leader at 12": search_regex}
+            ]
+        
+        # For registrants, only show their events
+        query["$or"] = query.get("$or", [])
+        query["$or"].append({"Email": {"$regex": f"^{email}$", "$options": "i"}})
+        
+        # Get all matching events
+        cursor = events_collection.find(query)
+        events = []
+        
+        async for event in cursor:
+            events.append(event)
+        
+        # Calculate counts
+        incomplete_count = 0
+        complete_count = 0
+        did_not_meet_count = 0
+        
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        for event in events:
+            did_not_meet = event.get("did_not_meet", False)
+            attendees = event.get("attendees", [])
+            has_attendees = len(attendees) > 0
+            
+            if did_not_meet:
+                did_not_meet_count += 1
+            elif has_attendees:
+                complete_count += 1
+            else:
+                incomplete_count += 1
+        
+        return {
+            "incomplete": incomplete_count,
+            "complete": complete_count,
+            "did_not_meet": did_not_meet_count,
+            "total": len(events)
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in registrant status counts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/events/status-counts")
+async def get_user_events_status_counts(
+    current_user: dict = Depends(get_current_user),
+    event_type: Optional[str] = Query(None, description="Filter by event type"),
+    search: Optional[str] = Query(None, description="Search by event name or leader")
+):
+    """Get status counts for events - Regular user"""
+    try:
+        email = current_user.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="User email not found")
+
+        # Find user's cell to get their name
+        user_cell = await events_collection.find_one({
+            "Event Type": "Cells",
+            "$or": [
+                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                {"email": {"$regex": f"^{email}$", "$options": "i"}},
+            ]
+        })
+
+        user_name = user_cell.get("Leader", "").strip() if user_cell else ""
+
+        # Build query conditions
+        query_conditions = [
+            {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+            {"email": {"$regex": f"^{email}$", "$options": "i"}},
+        ]
+        
+        if user_name:
+            query_conditions.extend([
+                {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
+                {"Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}},
+            ])
+        
+        # Base query
+        query = {
+            "Event Type": "Cells",
+            "$or": query_conditions
+        }
+        
+        # Add event type filter
+        if event_type and event_type != 'all':
+            query["Event Type"] = event_type
+        
+        # Add search filter
+        if search and search.strip():
+            search_regex = {"$regex": search.strip(), "$options": "i"}
+            if "$or" in query:
+                # Add to existing OR conditions
+                query["$or"].extend([
+                    {"Event Name": search_regex},
+                    {"Leader": search_regex},
+                    {"Leader at 12": search_regex}
+                ])
+            else:
+                query["$or"] = [
+                    {"Event Name": search_regex},
+                    {"Leader": search_regex},
+                    {"Leader at 12": search_regex}
+                ]
+        
+        # Get all matching events
+        cursor = events_collection.find(query)
+        events = []
+        
+        async for event in cursor:
+            events.append(event)
+        
+        # Calculate counts
+        incomplete_count = 0
+        complete_count = 0
+        did_not_meet_count = 0
+        
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        for event in events:
+            did_not_meet = event.get("did_not_meet", False)
+            attendees = event.get("attendees", [])
+            has_attendees = len(attendees) > 0
+            
+            if did_not_meet:
+                did_not_meet_count += 1
+            elif has_attendees:
+                complete_count += 1
+            else:
+                incomplete_count += 1
+        
+        return {
+            "incomplete": incomplete_count,
+            "complete": complete_count,
+            "did_not_meet": did_not_meet_count,
+            "total": len(events)
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in user status counts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/events/{event_id}")
 async def update_event(event: EventUpdate, event_id: str = Path(...)):
