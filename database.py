@@ -23,4 +23,4 @@ tasks_collection = db["tasks"]
 # cells_collection = db["Cells"]
 
 # 👇 Only this one fetches from the testing database
-people_collection = people_db["People"]
+people_collection = people_db["people"]
