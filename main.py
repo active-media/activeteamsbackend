@@ -2183,17 +2183,15 @@ async def get_people(
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
-            query["DateOfBirth"] = dob
+            query["Birthday"] = dob
         if location:
-            query["$or"] = [
-                {"Location": {"$regex": location, "$options": "i"}},
-                {"HomeAddress": {"$regex": location, "$options": "i"}}
-            ]
+            query["Address"] = {"$regex": location, "$options": "i"}
         if leader:
             query["$or"] = [
+                {"Leader @1": {"$regex": leader, "$options": "i"}},
                 {"Leader @12": {"$regex": leader, "$options": "i"}},
                 {"Leader @144": {"$regex": leader, "$options": "i"}},
-                {"Leader @ 1728": {"$regex": leader, "$options": "i"}}
+                {"Leader @1728": {"$regex": leader, "$options": "i"}}
             ]
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
@@ -2216,28 +2214,19 @@ async def get_people(
                 "_id": person["_id"],
                 "Name": person.get("Name", ""),
                 "Surname": person.get("Surname", ""),
-                "Phone": person.get("Number", ""),  # Maps Number -> Phone
+                "Number": person.get("Number", ""),
                 "Email": person.get("Email", ""),
-                "Location": person.get("HomeAddress") or person.get("Location", ""),  # Handle both
+                "Address": person.get("Address", ""),
                 "Gender": person.get("Gender", ""),
-                "DateOfBirth": person.get("Birthday") or person.get("DateOfBirth", ""),  # Handle both
-                "HomeAddress": person.get("HomeAddress") or person.get("Address", ""),
+                "Birthday": person.get("Birthday", ""),
                 "InvitedBy": person.get("InvitedBy", ""),
-                # Include ALL leader fields separately
+                "Leader @1": person.get("Leader @1", ""),
                 "Leader @12": person.get("Leader @12", ""),
                 "Leader @144": person.get("Leader @144", ""),
-                "Leader @ 1728": person.get("Leader @ 1728", ""),
-                # Primary leader field (for backwards compatibility)
-                "Leader": (
-                    person.get("Leader @12") or 
-                    person.get("Leader @144") or 
-                    person.get("Leader @ 1728") or 
-                    ""
-                ),
+                "Leader @1728": person.get("Leader @1728", ""),
                 "Stage": person.get("Stage", "Win"),
+                "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "CreatedAt": person.get("CreatedAt") or datetime.utcnow().isoformat(),
-                "Present": person.get("Present", False)
             }
             people_list.append(mapped)
 
@@ -2252,7 +2241,7 @@ async def get_people(
         }
         
     except Exception as e:
-        print(f"Error fetching people: {e}")  # Add logging for debugging
+        print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @app.get("/people/{person_id}")
@@ -2267,27 +2256,19 @@ async def get_person_by_id(person_id: str = Path(...)):
             "_id": person["_id"],
             "Name": person.get("Name", ""),
             "Surname": person.get("Surname", ""),
-            "Phone": person.get("Number", ""),
+            "Number": person.get("Number", ""),
             "Email": person.get("Email", ""),
-            "Location": person.get("Address") or person.get("Location", ""),
+            "Address": person.get("Address", ""),
             "Gender": person.get("Gender", ""),
-            "DateOfBirth": person.get("Birthday") or person.get("DateOfBirth", ""),
-            "HomeAddress": person.get("Address") or person.get("HomeAddress", ""),
+            "Birthday": person.get("Birthday", ""),
             "InvitedBy": person.get("InvitedBy", ""),
-            # Include ALL leader fields
+            "Leader @1": person.get("Leader @1", ""),
             "Leader @12": person.get("Leader @12", ""),
             "Leader @144": person.get("Leader @144", ""),
-            "Leader @ 1728": person.get("Leader @ 1728", ""),
-            "Leader": (
-                person.get("Leader @12") or 
-                person.get("Leader @144") or 
-                person.get("Leader @ 1728") or 
-                ""
-            ),
+            "Leader @1728": person.get("Leader @1728", ""),
             "Stage": person.get("Stage", "Win"),
+            "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
             "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-            "CreatedAt": person.get("CreatedAt") or datetime.utcnow().isoformat(),
-            "Present": person.get("Present", False)
         }
         return mapped
     except Exception as e:
@@ -2300,17 +2281,17 @@ def normalize_person_data(data: dict) -> dict:
     return {
         "Name": data.get("Name") or data.get("name", ""),
         "Surname": data.get("Surname") or data.get("surname", ""),
-        "Number": data.get("Number") or data.get("number", ""),  # Store as Number
+        "Number": data.get("Number") or data.get("number", ""),
         "Email": data.get("Email") or data.get("email", ""),
-        "HomeAddress": data.get("HomeAddress") or data.get("address") or data.get("location", ""),
-        "Birthday": data.get("Birthday") or data.get("dob", ""),  # Store as Birthday
+        "Address": data.get("Address") or data.get("address", ""),
+        "Birthday": data.get("Birthday") or data.get("birthday") or data.get("dob", ""),
         "Gender": data.get("Gender") or data.get("gender", ""),
         "InvitedBy": data.get("InvitedBy") or data.get("invitedBy", ""),
+        "Leader @1": data.get("Leader @1") or data.get("leader1", ""),
         "Leader @12": data.get("Leader @12") or data.get("leader12", ""),
         "Leader @144": data.get("Leader @144") or data.get("leader144", ""),
-        "Leader @ 1728": data.get("Leader @ 1728") or data.get("leader1728", ""),
+        "Leader @1728": data.get("Leader @1728") or data.get("leader1728", ""),
         "Stage": data.get("Stage") or data.get("stage", "Win"),
-        "Present": data.get("Present", False),
         "UpdatedAt": datetime.utcnow().isoformat()
     }
 
@@ -2337,25 +2318,18 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
             "_id": updated_person["_id"],
             "Name": updated_person.get("Name", ""),
             "Surname": updated_person.get("Surname", ""),
-            "Phone": updated_person.get("Number", ""),
+            "Number": updated_person.get("Number", ""),
             "Email": updated_person.get("Email", ""),
-            "Location": updated_person.get("HomeAddress", ""),
+            "Address": updated_person.get("Address", ""),
             "Gender": updated_person.get("Gender", ""),
-            "DateOfBirth": updated_person.get("Birthday", ""),
-            "HomeAddress": updated_person.get("HomeAddress", ""),
+            "Birthday": updated_person.get("Birthday", ""),
             "InvitedBy": updated_person.get("InvitedBy", ""),
+            "Leader @1": updated_person.get("Leader @1", ""),
             "Leader @12": updated_person.get("Leader @12", ""),
             "Leader @144": updated_person.get("Leader @144", ""),
-            "Leader @ 1728": updated_person.get("Leader @ 1728", ""),
-            "Leader": (
-                updated_person.get("Leader @12") or 
-                updated_person.get("Leader @144") or 
-                updated_person.get("Leader @ 1728") or 
-                ""
-            ),
+            "Leader @1728": updated_person.get("Leader @1728", ""),
             "Stage": updated_person.get("Stage", "Win"),
             "UpdatedAt": updated_person.get("UpdatedAt"),
-            "Present": updated_person.get("Present", False)
         }
         return mapped
 
@@ -2380,9 +2354,10 @@ async def create_person(person_data: PersonCreate):
                 )
 
         # Extract leader fields from the list
-        leader12 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
-        leader144 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
-        leader1728 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
+        leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
+        leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
+        leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
+        leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
 
         # Prepare the document
         person_doc = {
@@ -2390,16 +2365,16 @@ async def create_person(person_data: PersonCreate):
             "Surname": person_data.surname.strip(),
             "Email": email,
             "Number": person_data.number.strip(),
-            "HomeAddress": person_data.address.strip(),
+            "Address": person_data.address.strip(),
             "Gender": person_data.gender.strip(),
             "Birthday": person_data.dob.strip(),
             "InvitedBy": person_data.invitedBy.strip(),
+            "Leader @1": leader1,
             "Leader @12": leader12,
             "Leader @144": leader144,
-            "Leader @ 1728": leader1728,
+            "Leader @1728": leader1728,
             "Stage": person_data.stage or "Win",
-            "Present": False,
-            "CreatedAt": datetime.utcnow().isoformat(),
+            "Date Created": datetime.utcnow().isoformat(),
             "UpdatedAt": datetime.utcnow().isoformat()
         }
 
@@ -2412,18 +2387,17 @@ async def create_person(person_data: PersonCreate):
             "Name": person_doc["Name"],
             "Surname": person_doc["Surname"],
             "Email": person_doc["Email"],
-            "Phone": person_doc["Number"],
+            "Number": person_doc["Number"],
             "Gender": person_doc["Gender"],
-            "DateOfBirth": person_doc["Birthday"],
-            "HomeAddress": person_doc["HomeAddress"],
+            "Birthday": person_doc["Birthday"],
+            "Address": person_doc["Address"],
             "InvitedBy": person_doc["InvitedBy"],
+            "Leader @1": person_doc["Leader @1"],
             "Leader @12": person_doc["Leader @12"],
             "Leader @144": person_doc["Leader @144"],
-            "Leader @ 1728": person_doc["Leader @ 1728"],
-            "Leader": leader12 or leader144 or leader1728,
+            "Leader @1728": person_doc["Leader @1728"],
             "Stage": person_doc["Stage"],
-            "Present": person_doc["Present"],
-            "CreatedAt": person_doc["CreatedAt"],
+            "Date Created": person_doc["Date Created"],
             "UpdatedAt": person_doc["UpdatedAt"]
         }
 
