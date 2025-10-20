@@ -30,56 +30,102 @@ class UserLogin(BaseModel):
     password: str
 
 # ===== Event Models =====
+
+
+
+# ===== Event Models =====
 class EventBase(BaseModel):
     eventType: str
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurring_day: Optional[List[str]] = Field(default_factory=list)
+    recurring_day: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: Optional[bool] = False
-    price: Optional[float] = 0.0
     userEmail: Optional[str] = None
+    email: Optional[str] = None
+    
+    # 🔥 CRITICAL: Add these fields
+    isTicketed: Optional[bool] = False
+    isGlobal: Optional[bool] = False
+    hasPersonSteps: Optional[bool] = False
+    priceTiers: Optional[List[dict]] = Field(default_factory=list)
     leader1: Optional[str] = None
     leader12: Optional[str] = None
-    email: Optional[str] = None
+    price: Optional[float] = None  # For backward compatibility
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
 
 
+# ===== FIXED Attendee Model =====
 class Attendee(BaseModel):
     id: Optional[str] = None
-    name: Optional[str] = None  # for basic events
-    fullName: Optional[str] = None  # for cell events
+    name: Optional[str] = None
+    fullName: Optional[str] = None
     leader12: Optional[str] = None
     leader144: Optional[str] = None
     time: Optional[datetime] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    decision: Optional[str] = None
+    
+    # 🔥 NEW: Ticketed event payment fields
+    priceTier: Optional[str] = None
+    price: Optional[float] = None
+    ageGroup: Optional[str] = None
+    memberType: Optional[str] = None
+    paymentMethod: Optional[str] = None
+    paid: Optional[float] = None
+    owing: Optional[float] = None
 
-    @field_validator("name", mode="before")
-    def set_name_if_fullName_missing(cls, v, values):
-        # If "name" is missing but "fullName" exists, use that
-        return v or values.get("fullName")
+    @field_validator("fullName", mode="before")
+    def set_fullname(cls, v, info):
+        """If fullName is missing, use name"""
+        if not v and info.data.get("name"):
+            return info.data.get("name")
+        return v
 
+
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Optional
+
+# ===== FIXED AttendanceSubmission Model =====
+# ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
-    leaderEmail: str  # ✅ required
-    leaderName: str   # ✅ required
-    did_not_meet: Optional[bool] = False
+    leaderEmail: str
+    leaderName: str
+    did_not_meet: bool = False
+    isTicketed: bool = False
 
+    @model_validator(mode="after")
+    def validate_attendance(self):
+        """
+        ✅ IMPROVED: More flexible validation
+        - If `did_not_meet` is True: attendees should be empty (but don't block if not)
+        - If `did_not_meet` is False: allow empty attendees (frontend might send empty array)
+        """
+        if self.did_not_meet and self.attendees:
+            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
+            # Don't raise error, just log it
+        return self
+    
+# Adding new Person in the Event screen
+class PersonCreate(BaseModel):
+    invitedBy: str
+    name: str
+    surname: str
+    gender: str
+    email: str
+    number: str
+    dob: str
+    address: str
+    leaders: list[str]
+    stage: Literal["Win"]
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    formatted = [
-        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
-        for err in exc.errors()
-    ]
-    return JSONResponse(
-        status_code=422,
-        content={"errors": formatted}
-    )
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -100,15 +146,21 @@ class EventUpdate(BaseModel):
     location: Optional[str] = None
     eventLeader: Optional[str] = None
     description: Optional[str] = None
-    isTicketed: Optional[bool] = None
-    price: Optional[float] = None
     userEmail: Optional[str] = None
-    
-    # ✅ Include update-only fields:
     status: Optional[str] = None
-    attendees: Optional[List[str]] = None
+    Status: Optional[str] = None
+    attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
-
+    total_attendance: Optional[int] = None
+    
+    # 🔥 CRITICAL: Add these fields
+    isTicketed: Optional[bool] = None
+    isGlobal: Optional[bool] = None
+    hasPersonSteps: Optional[bool] = None
+    priceTiers: Optional[List[dict]] = None
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
+    price: Optional[float] = None
 
 class EventInDB(EventBase):
     _id: str  # MongoDB ObjectId as string
