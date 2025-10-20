@@ -4,11 +4,11 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
+from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut 
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection
+from database import db, events_collection, people_collection, users_collection, cells_collection, tasks_collection ,tasktypes_collection
 from auth.email_utils import send_reset_password_email
 from typing import Optional, Literal, List
 from collections import Counter
@@ -1901,7 +1901,56 @@ async def get_user_tasks(
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
         return {"error": str(e), "status": "failed"}  
+     
+# --- GET all task types ---
+@app.get("/tasktypes", response_model=List[TaskTypeOut])
+async def get_task_types():
+    try:
+        cursor = tasktypes_collection.find().sort("name", 1)
+        types = []
+        async for t in cursor:
+            types.append(task_type_serializer(t))
+        return types
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- POST new task type ---
+@app.post("/tasktypes", response_model=TaskTypeOut)
+async def create_task_type(task: TaskTypeIn):
+    try:
+        # Check if already exists
+        existing = await tasktypes_collection.find_one({"name": task.name})
+        if existing:
+            raise HTTPException(status_code=400, detail="Task type already exists.")
+
+        new_task = {"name": task.name}
+        result = await tasktypes_collection.insert_one(new_task)
+        created = await tasktypes_collection.find_one({"_id": result.inserted_id})
+        return task_type_serializer(created)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
+# --- Update route ---
+@app.put("/tasks/{task_id}")
+async def update_task(task_id: str, updated_task: dict):
+    try:
+        obj_id = ObjectId(task_id)  # Convert string to ObjectId
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    task = await db["tasks"].find_one({"_id": obj_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Update the task
+    result = await db["tasks"].update_one({"_id": obj_id}, {"$set": updated_task})
+    if result.modified_count == 0:
+        raise HTTPException(status_code=400, detail="Task not updated")
+
+    updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
+    return {"updatedTask": updated_task_in_db}
+
 # STATS ENDPOINTS
 # Add to your FastAPI backend
 # Add to your main.py or stats endpoints file

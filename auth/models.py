@@ -267,7 +267,23 @@ class TaskModel(BaseModel):
         validate_by_name = True
         arbitrary_types_allowed = True
 
+# --- Pydantic Model ---
+class TaskTypeIn(BaseModel):
+    name: str
 
+class TaskTypeOut(BaseModel):
+    id: str
+    name: str
+
+# --- Pydantic model for task update ---
+class TaskUpdate(BaseModel):
+    name: str | None = None
+    taskType: str | None = None
+    contacted_person: dict | None = None
+    followup_date: str | None = None
+    status: str | None = None
+    type: str | None = None
+    assignedfor: str | None = None
 
 class PersonInfo(BaseModel):
     name: Optional[str]
