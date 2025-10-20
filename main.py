@@ -90,12 +90,26 @@ REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 @app.post("/signup")
 async def signup(user: UserCreate):
     logger.info(f"Signup attempt: {user.email}")
-    existing = await db["Users"].find_one({"email": user.email})
+    
+    # Normalize email
+    email = user.email.lower().strip()
+    
+    # Check if user already exists
+    existing = await db["Users"].find_one({"email": email})
     if existing:
-        logger.warning(f"Signup failed - email already registered: {user.email}")
+        logger.warning(f"Signup failed - email already registered: {email}")
         raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Check if person with this email already exists
+    existing_person = await people_collection.find_one({"Email": email})
+    if existing_person:
+        logger.warning(f"Signup failed - person with email already exists: {email}")
+        raise HTTPException(status_code=400, detail="A person with this email already exists")
 
+    # Hash password
     hashed = hash_password(user.password)
+    
+    # Create user document
     user_dict = {
         "name": user.name,
         "surname": user.surname,
@@ -103,14 +117,110 @@ async def signup(user: UserCreate):
         "home_address": user.home_address,
         "invited_by": user.invited_by,
         "phone_number": user.phone_number,
-        "email": user.email,
+        "email": email,
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
-        "role": "user"
+        "role": "user",
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat()
     }
-    await db["Users"].insert_one(user_dict)
-    logger.info(f"User created successfully: {user.email}")
+    
+    # Insert user into Users collection
+    user_result = await db["Users"].insert_one(user_dict)
+    logger.info(f"User created successfully: {email}")
+    
+    # Find the inviter in the people collection to get their leader hierarchy
+    inviter_full_name = user.invited_by.strip()
+    leader1 = ""
+    leader12 = ""
+    leader144 = ""
+    leader1728 = ""
+    
+    if inviter_full_name:
+        # Try to find the inviter by matching full name
+        inviter = await people_collection.find_one({
+            "$expr": {
+                "$eq": [
+                    {"$concat": ["$Name", " ", "$Surname"]},
+                    inviter_full_name
+                ]
+            }
+        })
+        
+        if inviter:
+            # Get the inviter's leader hierarchy
+            inviter_leader1 = inviter.get("Leader @1", "")
+            inviter_leader12 = inviter.get("Leader @12", "")
+            inviter_leader144 = inviter.get("Leader @144", "")
+            inviter_leader1728 = inviter.get("Leader @1728", "")
+            
+            # Determine what level the inviter is at and set leaders accordingly
+            # Check from highest to lowest level
+            if inviter_leader1728:
+                # Inviter is at @1728 level or below
+                leader1 = inviter_leader1
+                leader12 = inviter_leader12
+                leader144 = inviter_leader144
+                leader1728 = inviter_full_name
+            elif inviter_leader144:
+                # Inviter is at @144 level
+                leader1 = inviter_leader1
+                leader12 = inviter_leader12
+                leader144 = inviter_full_name
+                leader1728 = ""
+            elif inviter_leader12:
+                # Inviter is at @12 level
+                leader1 = inviter_leader1
+                leader12 = inviter_full_name
+                leader144 = ""
+                leader1728 = ""
+            elif inviter_leader1:
+                # Inviter is at @1 level
+                leader1 = inviter_full_name
+                leader12 = ""
+                leader144 = ""
+                leader1728 = ""
+            else:
+                # Inviter has no leaders (is a top-level leader @1)
+                leader1 = inviter_full_name
+                leader12 = ""
+                leader144 = ""
+                leader1728 = ""
+            
+            logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+        else:
+            logger.warning(f"Inviter '{inviter_full_name}' not found in people collection for {email}")
+            # If inviter not found, still set them as Leader @1 as fallback
+            leader1 = inviter_full_name
+    
+    # Create corresponding person record in People collection
+    person_doc = {
+        "Name": user.name.strip(),
+        "Surname": user.surname.strip(),
+        "Email": email,
+        "Number": user.phone_number.strip(),
+        "Address": user.home_address.strip(),
+        "Gender": user.gender.strip(),
+        "Birthday": user.date_of_birth,
+        "InvitedBy": inviter_full_name,
+        "Leader @1": leader1,
+        "Leader @12": leader12,
+        "Leader @144": leader144,
+        "Leader @1728": leader1728,
+        "Stage": "Win",  # New signups start at Win stage
+        "Date Created": datetime.utcnow().isoformat(),
+        "UpdatedAt": datetime.utcnow().isoformat(),
+        "user_id": str(user_result.inserted_id)  # Link to user account
+    }
+    
+    try:
+        person_result = await people_collection.insert_one(person_doc)
+        logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
+    except Exception as e:
+        logger.error(f"Failed to create person record for {email}: {e}")
+        # Note: User is already created at this point
+    
     return {"message": "User created successfully"}
 
 # ---------------- Login ----------------
