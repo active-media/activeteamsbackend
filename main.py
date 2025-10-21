@@ -299,7 +299,7 @@ async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
 
-        # Parse date
+        # 🕒 Parse date
         if event_data.get("date"):
             if isinstance(event_data["date"], str):
                 try:
@@ -309,21 +309,38 @@ async def create_event(event: EventCreate):
         else:
             event_data["date"] = datetime.utcnow()
 
-        # Defaults
-        event_data.setdefault("attendees", [])
-        event_data["total_attendance"] = len(event_data.get("attendees", []))
+        # ✅ Consistent timestamp fields
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
+
+        # ✅ Normalize eventType (always store as object)
+        if isinstance(event_data.get("eventType"), str):
+            # Try to match it with an existing Event Type
+            et = await events_collection.find_one(
+                {"isEventType": True, "name": event_data["eventType"].strip().title()}
+            )
+            if et:
+                event_data["eventType"] = {"id": str(et["_id"]), "name": et["name"]}
+            else:
+                event_data["eventType"] = {"name": event_data["eventType"].strip().title()}
+        elif isinstance(event_data.get("eventType"), dict):
+            event_data["eventType"] = {
+                "id": str(event_data["eventType"].get("id", "")),
+                "name": event_data["eventType"].get("name", "").strip().title()
+            }
+
+        # ✅ Booleans normalized
+        event_data["isTicketed"] = bool(event_data.get("isTicketed", False))
+        event_data["isGlobal"] = bool(event_data.get("isGlobal", False))
+        event_data["hasPersonSteps"] = bool(event_data.get("hasPersonSteps", False))
+
+        # ✅ Default values
+        event_data.setdefault("attendees", [])
+        event_data["total_attendance"] = len(event_data.get("attendees", []))
         event_data["status"] = "open"
-        
-        # 🔥 FIX: Properly save event type flags
-        event_data["isTicketed"] = event_data.get("isTicketed", False)
-        event_data["isGlobal"] = event_data.get("isGlobal", False)
-        event_data["hasPersonSteps"] = event_data.get("hasPersonSteps", False)
-        
-        # 🔥 FIX: Save price tiers for ticketed events
-        if event_data.get("isTicketed") and event_data.get("priceTiers"):
-            # Ensure price tiers are properly formatted
+
+        # ✅ Ticketed event price tiers normalization
+        if event_data["isTicketed"] and event_data.get("priceTiers"):
             event_data["priceTiers"] = [
                 {
                     "name": tier.get("name", ""),
@@ -336,25 +353,22 @@ async def create_event(event: EventCreate):
             ]
         else:
             event_data["priceTiers"] = []
-        
-        # 🔥 FIX: Save leader hierarchy for Personal Steps events
-        if event_data.get("hasPersonSteps") and not event_data.get("isGlobal"):
+
+        # ✅ Personal Steps hierarchy preservation
+        if event_data["hasPersonSteps"] and not event_data.get("isGlobal"):
             event_data["leader1"] = event_data.get("leader1", "")
             event_data["leader12"] = event_data.get("leader12", "")
-            
+
             print(f"📊 Saving Personal Steps event with hierarchy:")
             print(f"   Leader: {event_data.get('eventLeader')}")
             print(f"   Leader @1: {event_data.get('leader1')}")
             print(f"   Leader @12: {event_data.get('leader12')}")
 
-        # Auto-assign leader roles if it's a Cell event (EXISTING LOGIC - KEEP IT)
-        if event_data.get("eventType", "").lower().strip() == "cell":
+        # ✅ Cell event leader auto-assignment (keep existing logic)
+        if event_data.get("eventType", {}).get("name", "").lower().strip() == "cell":
             leader_name = (event_data.get("eventLeader") or "").strip().lower()
-
-            # Fetch all people from the database
             all_people = await people_collection.find({}).to_list(length=None)
 
-            # Map leader1 (position 12) and leader12 (position 144)
             leader1_match = next(
                 (p["Leader @12"].title() for p in all_people if p.get("Leader @12") and p["Leader @12"].strip().lower() == leader_name),
                 event_data.get("leader1")
@@ -369,23 +383,27 @@ async def create_event(event: EventCreate):
                 "12": leader12_match
             }
 
-        # Insert event into database
+        # ✅ Insert into database
         result = await events_collection.insert_one(event_data)
-        
+
         print(f"✅ Event created with ID: {result.inserted_id}")
-        print(f"   Event Type Flags: isTicketed={event_data.get('isTicketed')}, isGlobal={event_data.get('isGlobal')}, hasPersonSteps={event_data.get('hasPersonSteps')}")
-        
+        print(f"   Event Type: {event_data['eventType']}")
+        print(f"   Flags: isTicketed={event_data['isTicketed']}, isGlobal={event_data['isGlobal']}, hasPersonSteps={event_data['hasPersonSteps']}")
+
         return {"message": "Event created", "id": str(result.inserted_id)}
 
     except Exception as e:
         print(f"❌ Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
+
 @app.get("/events")
 async def get_events(status: Optional[str] = Query(None, description="Filter events by status")):
     try:
-        query = {"isEventType": {"$ne": True}}  # Exclude event types from events
+        # ✅ Exclude event-type templates
+        query = {"isEventType": {"$ne": True}}
 
+        # ✅ Handle filters correctly
         if status == "open":
             query["status"] = {"$ne": "closed"}
         elif status:
@@ -397,26 +415,24 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
                 ]
             }
 
+        # ✅ Sort by correct timestamp field
+        cursor = events_collection.find(query).sort("created_at", -1)
         events = []
-        cursor = events_collection.find(query).sort("createdAt", -1)
         all_people = await people_collection.find({}).to_list(length=None)
 
         async for event in cursor:
-            event_id = event["_id"]
             event["_id"] = str(event["_id"])
 
-            # Auto-fill leaders for legacy cell events (EXISTING LOGIC - KEEP IT)
-            if event.get("eventType", "").lower().strip() == "cell" and not event.get("leaders"):
-                # ... existing code ...
-                pass
-
-            # Convert datetime fields to ISO strings
+            # ✅ Convert datetimes to ISO strings
             for k, v in event.items():
                 if isinstance(v, datetime):
                     event[k] = v.isoformat()
 
-            # 🔥 ENSURE THESE FIELDS ARE RETURNED (they should be auto-included)
-            # If not in database, set defaults:
+            # ✅ Normalize eventType to always be an object
+            if isinstance(event.get("eventType"), str):
+                event["eventType"] = {"name": event["eventType"].title()}
+
+            # ✅ Ensure flags always exist
             event.setdefault("isTicketed", False)
             event.setdefault("isGlobal", False)
             event.setdefault("hasPersonSteps", False)
@@ -424,11 +440,18 @@ async def get_events(status: Optional[str] = Query(None, description="Filter eve
             event.setdefault("leader1", "")
             event.setdefault("leader12", "")
 
+            # ✅ Legacy cell event auto-leaders (preserve your placeholder)
+            if event.get("eventType", {}).get("name", "").lower().strip() == "cell" and not event.get("leaders"):
+                # You can expand this if needed
+                pass
+
             events.append(event)
 
+        print(f"📤 Returning {len(events)} events")
         return {"events": events}
 
     except Exception as e:
+        print(f"❌ Error retrieving events: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error retrieving events: {str(e)}")
 
 
