@@ -341,30 +341,22 @@ async def create_event(event: EventCreate):
         if event_data.get("eventType", "").lower().strip() == "cell":
             leader_name = (event_data.get("eventLeader") or "").strip()
             leader_at_12 = event_data.get("leader12", "").strip()
-            leader_at_144 = event_data.get("leader144", "").strip()
-            leader_at_1728 = event_data.get("leader1728", "").strip()
             
             print(f"🧠 SMART LEADER ASSIGNMENT for cell event:")
             print(f"   Leader: {leader_name}")
             print(f"   Leader @12: {leader_at_12}")
-            print(f"   Leader @144: {leader_at_144}")
-            print(f"   Leader @1728: {leader_at_1728}")
             
-            # Determine Leader at 1 based on the hierarchy
             leader_at_1 = ""
             
-            if leader_at_1728:
-                # If we have Leader at 1728, get Leader at 1 from their Leader at 144 -> Leader at 12
-                leader_at_1 = await get_leader_at_1_for_leader_at_1728(leader_at_1728)
-                print(f"   → Leader @1 from Leader @1728 '{leader_at_1728}': {leader_at_1}")
-            elif leader_at_144:
-                # If we have Leader at 144, get Leader at 1 from their Leader at 12
-                leader_at_1 = await get_leader_at_1_for_leader_at_144(leader_at_144)
-                print(f"   → Leader @1 from Leader @144 '{leader_at_144}': {leader_at_1}")
-            elif leader_at_12:
-                # If we have Leader at 12, determine Leader at 1 based on gender
+            # PRIORITY 1: Use Leader at 12 if available
+            if leader_at_12:
                 leader_at_1 = await get_leader_at_1_for_leader_at_12(leader_at_12)
                 print(f"   → Leader @1 from Leader @12 '{leader_at_12}': {leader_at_1}")
+            
+            # PRIORITY 2: If no Leader at 12, try event leader
+            if not leader_at_1 and leader_name:
+                leader_at_1 = await get_leader_at_1_for_event_leader(leader_name)
+                print(f"   → Leader @1 from Event Leader '{leader_name}': {leader_at_1}")
             
             # Set the determined Leader at 1
             if leader_at_1:
@@ -377,8 +369,8 @@ async def create_event(event: EventCreate):
             event_data["leaders"] = {
                 "1": event_data.get("leader1", ""),
                 "12": leader_at_12,
-                "144": leader_at_144,
-                "1728": leader_at_1728
+                "144": event_data.get("leader144", ""),
+                "1728": event_data.get("leader1728", "")
             }
 
         # Insert event into database
@@ -1604,9 +1596,27 @@ async def bulk_update_leader_at_1(current_user: dict = Depends(get_current_user)
 
 async def build_event_object(event: dict, timezone, today_date: date) -> dict:
     """Build event object with auto-calculated Leader at 1"""
-    # ... (previous code remains the same until leader logic)
     
-    # 🔥 CORRECTED LEADER HIERARCHY LOGIC
+    event_name = event.get("Event Name", "Unknown Event")
+    event_datetime = parse_event_datetime(event, timezone)
+    event_date = event_datetime.date()
+    time_str = event_datetime.strftime("%H:%M")
+    recurring_day = event.get("Day", "").strip().lower().capitalize()
+    
+    # Determine status
+    attendees = event.get("attendees", [])
+    did_not_meet = event.get("did_not_meet", False)
+    has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+    is_overdue = event_date < today_date
+    
+    if did_not_meet:
+        status = "did_not_meet"
+    elif has_attendees:
+        status = "complete"
+    else:
+        status = "incomplete"
+    
+    # 🔥 SIMPLIFIED LEADER LOGIC - Just lookup Leader @1 from People database
     event_leader_name = event.get("Leader", "").strip()
     leader_at_12_from_event = event.get("Leader at 12", "").strip()
     leader_at_1 = ""
@@ -1615,57 +1625,30 @@ async def build_event_object(event: dict, timezone, today_date: date) -> dict:
     print(f"   Event Leader: {event_leader_name}")
     print(f"   Leader at 12 (from event): {leader_at_12_from_event}")
     
-    # PRIORITY 1: Use Leader at 12 to determine Leader at 1
+    # PRIORITY 1: Use Leader at 12 from event to lookup Leader at 1
     if leader_at_12_from_event:
         print(f"   ✅ Event has Leader at 12 → Looking up in People database")
         leader_at_1 = await get_leader_at_1_for_leader_at_12(leader_at_12_from_event)
         print(f"   → Leader @1 from Leader @12 '{leader_at_12_from_event}': {leader_at_1}")
     
-    # If no Leader at 1 was assigned from Leader at 12, try event leader
+    # PRIORITY 2: If no Leader at 12 in event, use event leader to lookup Leader at 1
     if not leader_at_1 and event_leader_name:
-        print(f"   ⚠️ No Leader at 1 from Leader at 12 → Checking event leader")
-        
-        # Don't assign Leader at 1 if event leader is already Gavin/Vicky
+        # Skip if event leader is already Gavin/Vicky (they don't need a Leader at 1)
         if event_leader_name not in ["Gavin Enslin", "Vicky Enslin"]:
-            print(f"   → Event leader '{event_leader_name}' is not Gavin/Vicky, checking if they are Leader at 12")
+            print(f"   → Looking up event leader '{event_leader_name}' in People database")
             
             # Look up event leader in People database
             event_leader_person = await find_person_by_name(event_leader_name)
             
             if event_leader_person:
-                person_name = f"{event_leader_person.get('Name', '')} {event_leader_person.get('Surname', '')}".strip()
-                person_leader_12 = event_leader_person.get("Leader @12", "").strip()
-                person_leader_144 = event_leader_person.get("Leader @144", "").strip()
-                person_leader_1728 = event_leader_person.get("Leader @ 1728", "").strip()
+                # Simply get their Leader @1 from the database
+                person_leader_at_1 = event_leader_person.get("Leader @1", "").strip()
                 
-                print(f"   📋 Found event leader in database: '{person_name}'")
-                print(f"      - Their Leader @12: '{person_leader_12}'")
-                print(f"      - Their Leader @144: '{person_leader_144}'")
-                print(f"      - Their Leader @1728: '{person_leader_1728}'")
-                
-                # Check if this person IS a Leader at 12 (has NO leaders above them)
-                is_leader_at_12 = (
-                    not person_leader_12 and 
-                    not person_leader_144 and 
-                    not person_leader_1728
-                )
-                
-                if is_leader_at_12:
-                    print(f"   ✅ Event leader '{person_name}' IS a Leader at 12 (no leaders above them)")
-                    # Determine Leader at 1 based on their gender
-                    gender = event_leader_person.get("Gender", "").lower().strip()
-                    print(f"   → Person's gender: '{gender}'")
-                    
-                    if gender in ["female", "f", "woman", "lady", "girl"]:
-                        leader_at_1 = "Vicky Enslin"
-                        print(f"   ✅ Assigned Vicky Enslin (female Leader at 12)")
-                    elif gender in ["male", "m", "man", "gentleman", "boy"]:
-                        leader_at_1 = "Gavin Enslin"
-                        print(f"   ✅ Assigned Gavin Enslin (male Leader at 12)")
-                    else:
-                        print(f"   ⚠️ Gender '{gender}' not recognized, cannot assign Leader at 1")
+                if person_leader_at_1:
+                    leader_at_1 = person_leader_at_1
+                    print(f"   ✅ Found Leader @1 in database: {leader_at_1}")
                 else:
-                    print(f"   ❌ Event leader '{person_name}' is NOT a Leader at 12 (has leaders above them)")
+                    print(f"   ⚠️ No Leader @1 found in database for '{event_leader_name}'")
             else:
                 print(f"   ❌ Event leader '{event_leader_name}' NOT found in People database")
         else:
@@ -1699,7 +1682,6 @@ async def build_event_object(event: dict, timezone, today_date: date) -> dict:
         "_day_order": get_day_order(recurring_day),
         "_is_overdue": is_overdue,
     }
-
 
 @app.post("/admin/events/fix-missing-leader-at-1")
 async def fix_missing_leader_at_1(current_user: dict = Depends(get_current_user)):
@@ -1807,11 +1789,14 @@ async def debug_leader_check(leader_name: str):
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/admin/events/cells")
-async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
-    """
-    Admin sees ALL cells with their ACTUAL dates and AUTO-ASSIGNED Leader at 1
-    """
+@app.get("/admin/events/cells-debug")
+async def get_admin_cell_events_debug(
+    current_user: dict = Depends(get_current_user),
+    status: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100)
+):
+    """Optimized admin cells endpoint with pagination and deduplication"""
     try:
         role = current_user.get("role", "")
         if role.lower() != "admin":
@@ -1820,77 +1805,236 @@ async def get_admin_cell_events(current_user: dict = Depends(get_current_user)):
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
+        start_date = date(2025, 10, 15)
+        
+        print(f"📅 Admin - Cells from {start_date} to {today_date}, Page {page}")
 
-        query = {"Event Type": "Cells"}
+        # Build aggregation pipeline for deduplication
+        pipeline = [
+            {"$match": {"Event Type": "Cells"}},
+            # Group by unique cell identifier to remove duplicates
+            {
+                "$group": {
+                    "_id": {
+                        "name": {"$toLower": "$Event Name"},
+                        "email": {"$toLower": "$Email"},
+                        "day": {"$toLower": "$Day"}
+                    },
+                    "doc": {"$first": "$$ROOT"}
+                }
+            },
+            {"$replaceRoot": {"newRoot": "$doc"}}
+        ]
         
-        cursor = events_collection.find(query)
-        events = []
-        seen_cells = set()
+        # Execute aggregation to get deduplicated cells
+        cursor = events_collection.aggregate(pipeline)
+        all_cells = await cursor.to_list(length=None)
         
-        async for event in cursor:
-            cell_key = (
-                event.get("Event Name", "").strip().lower(),
-                event.get("Email", "").strip().lower(),
-                event.get("Day", "").strip().lower()
-            )
+        print(f"📊 Found {len(all_cells)} unique cells after deduplication")
+        
+        # Batch fetch all leader info at once
+        leader_names = []
+        for cell in all_cells:
+            # Collect Leader at 12 names
+            leader_12 = cell.get("Leader @12", cell.get("Leader at 12", "")).strip()
+            if leader_12:
+                leader_names.append(leader_12)
+                if " " in leader_12:
+                    leader_names.append(leader_12.split()[0])
             
-            if cell_key in seen_cells:
-                continue
+            # Collect Event Leader names
+            event_leader = cell.get("Leader", "").strip()
+            if event_leader:
+                leader_names.append(event_leader)
+                if " " in event_leader:
+                    leader_names.append(event_leader.split()[0])
+        
+        leader_names = list(set(leader_names))  # Remove duplicates
+        
+        # Single database query for all leaders - get their Leader @1
+        leader_at_1_map = {}
+        if leader_names:
+            people_cursor = people_collection.find({
+                "$or": [
+                    {"Name": {"$in": leader_names}},
+                    {"$expr": {
+                        "$or": [
+                            {"$in": ["$Name", leader_names]},
+                            {"$in": [{"$concat": ["$Name", " ", "$Surname"]}, leader_names]}
+                        ]
+                    }}
+                ]
+            }, {"Name": 1, "Surname": 1, "Leader @1": 1})
+            
+            async for person in people_cursor:
+                full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+                first_name = person.get('Name', '').strip()
+                leader_at_1 = person.get("Leader @1", "").strip()
                 
-            seen_cells.add(cell_key)
-
-            event_obj = await build_event_object(event, timezone, today_date)
+                # Map both full name and first name to their Leader @1
+                if leader_at_1:
+                    leader_at_1_map[full_name.lower()] = leader_at_1
+                    leader_at_1_map[first_name.lower()] = leader_at_1
+        
+        print(f"🔍 Found {len(leader_at_1_map)} leaders with Leader @1 in map")
+        
+        # Day mapping
+        day_mapping = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        # Process events - FILTER FIRST, then process
+        processed_events = []
+        
+        for event in all_cells:
+            event_name = str(event.get("Event Name", "")).strip()
+            day = str(event.get("Day", "")).strip().lower()
             
+            if day not in day_mapping:
+                continue
+            
+            # Calculate most recent occurrence
+            target_weekday = day_mapping[day]
+            current_weekday = today_date.weekday()
+            days_diff = (current_weekday - target_weekday) % 7
+            
+            most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+            
+            # Skip cells outside date range
+            if most_recent_occurrence < start_date:
+                continue
+            
+            # Skip future cells
+            if most_recent_occurrence > today_date:
+                continue
+            
+            # Get leader info
+            leader_name = event.get("Leader", "").strip()
+            leader_at_12 = event.get("Leader @12", event.get("Leader at 12", "")).strip()
+            leader_at_144 = event.get("Leader @144", event.get("Leader at 144", ""))
+            
+            # 🔥 SIMPLIFIED LEADER AT 1 LOGIC
+            leader_at_1 = ""
+            
+            # PRIORITY 1: Use Leader at 12 from event
+            if leader_at_12:
+                # Try full name
+                leader_at_1 = leader_at_1_map.get(leader_at_12.lower(), "")
+                
+                # Try first name only
+                if not leader_at_1 and " " in leader_at_12:
+                    first_name = leader_at_12.split()[0].lower()
+                    leader_at_1 = leader_at_1_map.get(first_name, "")
+            
+            # PRIORITY 2: Use event leader if no Leader at 1 yet
+            if not leader_at_1 and leader_name:
+                # Skip Gavin/Vicky - they don't need a Leader at 1
+                if leader_name not in ["Gavin Enslin", "Vicky Enslin"]:
+                    # Try full name
+                    leader_at_1 = leader_at_1_map.get(leader_name.lower(), "")
+                    
+                    # Try first name only
+                    if not leader_at_1 and " " in leader_name:
+                        first_name = leader_name.split()[0].lower()
+                        leader_at_1 = leader_at_1_map.get(first_name, "")
+            
+            # Debug missing leaders
+            if (leader_at_12 or leader_name) and not leader_at_1 and leader_name not in ["Gavin Enslin", "Vicky Enslin"]:
+                print(f"⚠️ No Leader at 1 found for: Leader='{leader_name}', Leader@12='{leader_at_12}'")
+            
+            # Determine status
+            did_not_meet = event.get("did_not_meet", False)
+            attendees = event.get("attendees", [])
+            has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+            
+            if did_not_meet:
+                cell_status = "did_not_meet"
+                status_display = "Did Not Meet"
+            elif has_attendees:
+                cell_status = "complete"
+                status_display = "Complete"
+            else:
+                cell_status = "incomplete"
+                status_display = "Incomplete"
+            
+            # Build event object
             final_event = {
-                "_id": event_obj["_id"],
-                "eventName": event_obj["eventName"],
-                "eventType": event_obj["eventType"],
-                "eventLeaderName": event_obj["eventLeaderName"],
-                "eventLeaderEmail": event_obj["eventLeaderEmail"],
-                "leader1": event_obj["leader1"],
-                "leader12": event_obj["leader12"],
-                "leader144": event_obj.get("leader144", ""),
-                "day": event_obj["day"].capitalize(),
-                "date": event_obj["date"],
-                "location": event_obj["location"],
-                "attendees": event_obj["attendees"],
-                "did_not_meet": event_obj["did_not_meet"],
-                "status": event_obj["status"],
-                "Status": event_obj["Status"],
-                "_is_overdue": event_obj["_is_overdue"]
+                "_id": str(event.get("_id", "")),
+                "eventName": event_name,
+                "eventType": "Cells",
+                "eventLeaderName": leader_name,
+                "eventLeaderEmail": str(event.get("Email", "")).strip(),
+                "leader1": leader_at_1,
+                "leader12": leader_at_12,
+                "leader144": leader_at_144,
+                "day": day.capitalize(),
+                "date": most_recent_occurrence.isoformat(),
+                "location": event.get("Location", ""),
+                "attendees": attendees if isinstance(attendees, list) else [],
+                "did_not_meet": did_not_meet,
+                "status": cell_status,
+                "Status": status_display,
+                "_is_overdue": most_recent_occurrence < today_date
             }
-
-            events.append(final_event)
-
-        day_order = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 
-                    'Friday': 4, 'Saturday': 5, 'Sunday': 6}
-        events.sort(key=lambda x: (day_order.get(x.get('day', ''), 999), x.get('eventLeaderName', '').lower()))
-
+            
+            processed_events.append(final_event)
+        
+        # Calculate status counts from ALL processed events (Oct 15 - today only)
         status_counts = {
-            "incomplete": len([e for e in events if e["status"] == "incomplete"]),
-            "complete": len([e for e in events if e["status"] == "complete"]),
-            "did_not_meet": len([e for e in events if e["status"] == "did_not_meet"])
+            "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
+            "complete": sum(1 for e in processed_events if e["status"] == "complete"),
+            "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet")
         }
-
+        
+        print(f"📊 Status counts (Oct 15 - {today_date}):")
+        print(f"   Incomplete: {status_counts['incomplete']}")
+        print(f"   Complete: {status_counts['complete']}")
+        print(f"   Did Not Meet: {status_counts['did_not_meet']}")
+        print(f"   Total in range: {len(processed_events)}")
+        
+        # Filter by status AFTER counting
+        if status and status != 'all':
+            processed_events = [e for e in processed_events if e["status"] == status]
+        
+        # Sort
+        processed_events.sort(key=lambda x: (x['date'], x['eventLeaderName'].lower()))
+        
+        # Pagination
+        total = len(processed_events)
+        total_pages = (total + limit - 1) // limit
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_events = processed_events[start_idx:end_idx]
+        
+        print(f"✅ Returning {len(paginated_events)} of {total} cells (page {page}/{total_pages})")
+        
         return {
-            "status": "success",
-            "events": events,
-            "total_events": len(events),
-            "status_counts": status_counts,
-            "today": today_date.isoformat(),
-            "message": f"Showing {len(events)} unique cells (all days)"
+            "events": paginated_events,
+            "total_events": total,
+            "total_pages": total_pages,
+            "current_page": page,
+            "page_size": limit,
+            "status_counts": status_counts
         }
-
+        
     except Exception as e:
-        logging.error(f"Error in admin events: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Error in get_admin_cell_events_debug: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
+
 
 
 
 @app.get("/events/cells-user")
-async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
+async def get_user_cell_events(
+    current_user: dict = Depends(get_current_user),
+    status: Optional[str] = Query(None, description="Filter by status: incomplete, complete, did_not_meet")
+):
     """
-    User sees ALL their cells with ACTUAL dates and AUTO-ASSIGNED Leader at 1
+    User sees their cells from Oct 15, 2025 up to TODAY only (no future dates)
+    WITH DEDUPLICATION and STATUS FILTERING
     """
     try:
         email = current_user.get("email")
@@ -1900,7 +2044,14 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
+        
+        # START DATE: October 15, 2025
+        start_date = date(2025, 10, 15)
+        
+        print(f"📅 User {email} - Showing cells from {start_date} to {today_date}")
+        print(f"🔍 Status filter: {status}")
 
+        # Find user's name
         user_cell = await events_collection.find_one({
             "Event Type": "Cells",
             "$or": [
@@ -1910,7 +2061,9 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         })
 
         user_name = user_cell.get("Leader", "").strip() if user_cell else ""
+        print(f"✅ User name: {user_name}")
 
+        # Build query conditions
         query_conditions = [
             {"Email": {"$regex": f"^{email}$", "$options": "i"}},
             {"email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1920,6 +2073,7 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
             query_conditions.extend([
                 {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
                 {"Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}},
+                {"Leader at 144": {"$regex": f".*{user_name}.*", "$options": "i"}},
             ])
         
         query = {
@@ -1928,61 +2082,154 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         }
 
         cursor = events_collection.find(query)
-        events = []
+        all_events = []  # Store ALL events first
         seen_cells = set()
-
+        
+        # Day mapping
+        day_mapping = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
         async for event in cursor:
-            cell_key = (
-                event.get("Event Name", "").strip().lower(),
-                event.get("Email", "").strip().lower(), 
-                event.get("Day", "").strip().lower()
-            )
+            event_name = str(event.get("Event Name", "")).strip()
+            event_email = str(event.get("Email", "")).strip()
+            day = str(event.get("Day", "")).strip()
+            
+            # Check for duplicates
+            cell_key = (event_name.lower(), event_email.lower(), day.lower())
             
             if cell_key in seen_cells:
                 continue
-                
-            seen_cells.add(cell_key)
-
-            event_obj = await build_event_object(event, timezone, today_date)
             
-            final_event = {
-                "_id": event_obj["_id"],
-                "eventName": event_obj["eventName"],
-                "eventType": event_obj["eventType"],
-                "eventLeaderName": event_obj["eventLeaderName"],
-                "eventLeaderEmail": event_obj["eventLeaderEmail"],
-                "leader1": event_obj["leader1"],
-                "leader12": event_obj["leader12"],
-                "leader144": event_obj.get("leader144", ""),
-                "day": event_obj["day"].capitalize(),
-                "date": event_obj["date"],
-                "location": event_obj["location"],
-                "attendees": event_obj["attendees"],
-                "did_not_meet": event_obj["did_not_meet"],
-                "status": event_obj["status"],
-                "Status": event_obj["Status"],
-                "_is_overdue": event_obj["_is_overdue"]
-            }
+            seen_cells.add(cell_key)
+            
+            try:
+                # Calculate the MOST RECENT occurrence of this day
+                if day.lower() not in day_mapping:
+                    continue
+                
+                target_weekday = day_mapping[day.lower()]
+                current_weekday = today_date.weekday()
+                
+                # Find the most recent occurrence
+                days_diff = (current_weekday - target_weekday) % 7
+                
+                if days_diff == 0:
+                    most_recent_occurrence = today_date
+                else:
+                    most_recent_occurrence = today_date - timedelta(days=days_diff)
+                
+                # FILTER: Only include if >= Oct 15
+                if most_recent_occurrence < start_date:
+                    continue
+                
+                # Get leader fields
+                leader_name = event.get("Leader", "")
+                leader_at_12 = event.get("Leader @12", event.get("Leader at 12", ""))
+                leader_at_144 = event.get("Leader @144", event.get("Leader at 144", ""))
+                
+                # Calculate Leader at 1
+                leader_at_1 = ""
+                if leader_at_12:
+                    person = await people_collection.find_one({
+                        "$or": [
+                            {"Name": {"$regex": f"^{leader_at_12}$", "$options": "i"}},
+                            {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, leader_at_12]}},
+                        ]
+                    })
+                    
+                    if person:
+                        gender = person.get("Gender", "").lower().strip()
+                        if gender in ["female", "f", "woman", "lady", "girl"]:
+                            leader_at_1 = "Vicky Enslin"
+                        elif gender in ["male", "m", "man", "gentleman", "boy"]:
+                            leader_at_1 = "Gavin Enslin"
+                
+                # Use the most recent occurrence as the date
+                event_date_str = most_recent_occurrence.isoformat()
+                
+                # Determine if overdue
+                is_overdue = most_recent_occurrence < today_date
+                
+                # Determine status
+                did_not_meet = event.get("did_not_meet", False)
+                attendees = event.get("attendees", [])
+                has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+                
+                if did_not_meet:
+                    cell_status = "did_not_meet"
+                    status_display = "Did Not Meet"
+                elif has_attendees:
+                    cell_status = "complete"
+                    status_display = "Complete"
+                else:
+                    cell_status = "incomplete"
+                    status_display = "Incomplete"
+                
+                # Build the event object
+                final_event = {
+                    "_id": str(event.get("_id", "")),
+                    "eventName": event_name,
+                    "eventType": "Cells",
+                    "eventLeaderName": leader_name,
+                    "eventLeaderEmail": event_email,
+                    "leader1": leader_at_1,
+                    "leader12": leader_at_12,
+                    "leader144": leader_at_144,
+                    "day": day.capitalize(),
+                    "date": event_date_str,
+                    "location": event.get("Location", ""),
+                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "did_not_meet": did_not_meet,
+                    "status": cell_status,
+                    "Status": status_display,
+                    "_is_overdue": is_overdue
+                }
 
-            events.append(final_event)
+                all_events.append(final_event)
+                
+            except Exception as e:
+                print(f"❌ Error processing {event_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
 
-        day_order = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 
-                    'Friday': 4, 'Saturday': 5, 'Sunday': 6}
-        events.sort(key=lambda x: (day_order.get(x.get('day', ''), 999), x.get('eventLeaderName', '').lower()))
+        # Calculate status counts from ALL events
+        status_counts = {
+            "incomplete": len([e for e in all_events if e["status"] == "incomplete"]),
+            "complete": len([e for e in all_events if e["status"] == "complete"]),
+            "did_not_meet": len([e for e in all_events if e["status"] == "did_not_meet"])
+        }
+
+        # NOW filter by status if requested
+        if status and status != 'all':
+            filtered_events = [e for e in all_events if e["status"] == status]
+            print(f"🔍 Filtered {len(all_events)} events → {len(filtered_events)} with status '{status}'")
+        else:
+            filtered_events = all_events
+
+        # Sort by date
+        filtered_events.sort(key=lambda x: (x.get('date', ''), x.get('eventLeaderName', '').lower()))
+
+        print(f"✅ Returning {len(filtered_events)} cells (out of {len(all_events)} total)")
+        print(f"📊 Status counts: {status_counts}")
 
         return {
-            "status": "success", 
-            "events": events,
-            "total_events": len(events),
+            "status": "success",
+            "events": filtered_events,
+            "total_events": len(filtered_events),
+            "status_counts": status_counts,
             "today": today_date.isoformat(),
             "user_email": email,
-            "message": f"Showing {len(events)} unique cells (all days)"
+            "message": f"Showing {len(filtered_events)} cells from Oct 15 to today"
         }
 
     except Exception as e:
         logging.error(f"Error in user events: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/debug/leader-check/{leader_name}")
 async def debug_leader_check(leader_name: str):
@@ -2055,89 +2302,6 @@ async def debug_leader_check(leader_name: str):
         return {"error": str(e)}
 
 # GIVE LEADER AT !" A LEADER AT "
-async def get_leader_at_1_for_leader_at_12(leader_at_12_name: str) -> str:
-    """
-    Determine Leader at 1 for a given Leader at 12.
-    FIXED VERSION - CORRECT query order
-    """
-    if not leader_at_12_name:
-        return ""
-    
-    print(f"🔍 Getting Leader at 1 for Leader @12: {leader_at_12_name}")
-    
-    cleaned_name = leader_at_12_name.strip().title()
-    
-    # FIXED: Correct query order - find the ACTUAL leader first
-    search_queries = [
-        # FIRST: Try full name match (Name + Surname)
-        {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, cleaned_name]}},
-        # SECOND: Try exact name match
-        {"Name": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
-        # LAST: Try Leader @12 field (this finds followers, not the leader)
-    ]
-    
-    person = None
-    for i, query in enumerate(search_queries):
-        found_person = await people_collection.find_one(query)
-        if found_person:
-            person = found_person
-            print(f"✅ Found using query {i+1}")
-            break
-    
-    if person:
-        gender = person.get("Gender", "").lower().strip()
-        person_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-        
-        print(f"✅ Found THE LEADER: {person_name}")
-        print(f"   Gender: {gender}")
-        
-        # Assign Leader at 1 based on gender
-        if gender in ["female", "f", "woman", "lady", "girl"]:
-            print(f"   → Assigning Vicky Enslin")
-            return "Vicky Enslin"
-        elif gender in ["male", "m", "man", "gentleman", "boy"]:
-            print(f"   → Assigning Gavin Enslin")
-            return "Gavin Enslin"
-        else:
-            print(f"   → Gender unknown, cannot assign")
-            return ""
-    
-    print(f"❌ Leader '{cleaned_name}' not found in People database")
-    return ""
-
-async def find_person_by_name(name: str):
-    """
-    Enhanced person finder that tries multiple search strategies
-    """
-    cleaned_name = name.strip().title()
-    
-    search_strategies = [
-        # Strategy 1: Exact name match
-        {"Name": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
-        
-        # Strategy 2: Leader @12 field match
-        {"Leader @12": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
-        
-        # Strategy 3: Full name match (Name + Surname)
-        {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, cleaned_name]}},
-        
-        # Strategy 4: First name only
-        {"Name": {"$regex": f"^{cleaned_name.split()[0]}$", "$options": "i"}},
-        
-        # Strategy 5: Partial match in any name field
-        {"$or": [
-            {"Name": {"$regex": cleaned_name.split()[0], "$options": "i"}},
-            {"Surname": {"$regex": cleaned_name.split()[0], "$options": "i"}},
-            {"Leader @12": {"$regex": cleaned_name.split()[0], "$options": "i"}}
-        ]}
-    ]
-    
-    for strategy in search_strategies:
-        person = await people_collection.find_one(strategy)
-        if person:
-            return person
-    
-    return None
 
 async def get_leader_at_1_for_leader_at_144(leader_at_144_name: str) -> str:
     """
@@ -2164,6 +2328,47 @@ async def get_leader_at_1_for_leader_at_144(leader_at_144_name: str) -> str:
         return await get_leader_at_1_for_leader_at_12(leader_at_12_name)
     
     print(f"⚠️ Could not find Leader @12 for Leader @144: {leader_at_144_name}")
+    return ""  # ✅ ADDED MISSING RETURN STATEMENT
+
+
+async def get_leader_at_1_for_event_leader(event_leader_name: str) -> str:
+    """
+    When Leader at 12 is empty, try to get Leader at 1 from the event leader
+    """
+    if not event_leader_name or not event_leader_name.strip():
+        return ""
+    
+    print(f"🔍 Getting Leader at 1 for Event Leader: {event_leader_name}")
+    
+    cleaned_name = event_leader_name.strip()
+    
+    # Find the event leader in people database
+    person = await people_collection.find_one({
+        "$or": [
+            {"Name": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
+            {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, cleaned_name]}},
+        ]
+    })
+    
+    if person:
+        # Check if this person IS a Leader at 12 (has no leaders above them)
+        leader_12 = person.get("Leader @12", "").strip()
+        leader_144 = person.get("Leader @144", "").strip()
+        leader_1728 = person.get("Leader @ 1728", "").strip()
+        
+        is_leader_at_12 = not leader_12 and not leader_144 and not leader_1728
+        
+        if is_leader_at_12:
+            print(f"✅ Event leader '{cleaned_name}' IS a Leader at 12")
+            gender = person.get("Gender", "").lower().strip()
+            
+            if gender in ["female", "f", "woman", "lady", "girl"]:
+                return "Vicky Enslin"
+            elif gender in ["male", "m", "man", "gentleman", "boy"]:
+                return "Gavin Enslin"
+        else:
+            print(f"❌ Event leader '{cleaned_name}' is NOT a Leader at 12 (has leaders above them)")
+    
     return ""
 
 async def get_leader_at_1_for_leader_at_1728(leader_at_1728_name: str) -> str:
@@ -2461,14 +2666,7 @@ async def debug_debug_search(leader_name: str):
     except Exception as e:
         return {"error": str(e)}
     
-@app.get("/debug/get-current-function")
-async def debug_get_current_function():
-    """Check what the current get_leader_at_1_for_leader_at_12 function looks like"""
-    # This will help us see if the function was updated correctly
-    return {
-        "function_exists": True,
-        "note": "Check your backend code to see the actual implementation of get_leader_at_1_for_leader_at_12"
-    }
+
 
 
 @app.get("/debug/find-user")
