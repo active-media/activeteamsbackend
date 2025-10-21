@@ -26,9 +26,7 @@ class UserCreate(BaseModel):
     role: Optional[str] = None
     # Add these for complete compatibility:
     title: Optional[str] = None
-    marital_status: Optional[str] = None
-    home_phone: Optional[str] = None
-    person_status: Optional[str] = None
+    
 
 # ===== User Login =====
 class UserLogin(BaseModel):
