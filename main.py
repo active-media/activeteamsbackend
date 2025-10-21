@@ -2598,26 +2598,84 @@ async def create_task_type(task: TaskTypeIn):
         return task_type_serializer(created)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
+# Helper to convert ObjectId to string
+def serialize_doc(doc):
+    if doc and "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+    return doc
+
 # --- Update route ---
 @app.put("/tasks/{task_id}")
 async def update_task(task_id: str, updated_task: dict):
     try:
-        obj_id = ObjectId(task_id)  # Convert string to ObjectId
+        obj_id = ObjectId(task_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid task ID")
-
+    
+    # Check if task exists
     task = await db["tasks"].find_one({"_id": obj_id})
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-
+    
+    # Prepare update data - only include fields that should be updated
+    update_data = {}
+    
+    # Map frontend fields to backend fields
+    if "name" in updated_task:
+        update_data["name"] = updated_task["name"]
+    
+    if "taskType" in updated_task:
+        update_data["taskType"] = updated_task["taskType"]
+    
+    if "contacted_person" in updated_task:
+        update_data["contacted_person"] = updated_task["contacted_person"]
+    
+    if "followup_date" in updated_task:
+        # Ensure it's a proper datetime string or convert it
+        try:
+            if isinstance(updated_task["followup_date"], str):
+                update_data["followup_date"] = updated_task["followup_date"]
+            else:
+                update_data["followup_date"] = updated_task["followup_date"]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+    
+    if "status" in updated_task:
+        update_data["status"] = updated_task["status"]
+    
+    if "type" in updated_task:
+        update_data["type"] = updated_task["type"]
+    
+    if "assignedfor" in updated_task:
+        update_data["assignedfor"] = updated_task["assignedfor"]
+    
+    # Add updated timestamp
+    update_data["updated_at"] = datetime.utcnow().isoformat()
+    
     # Update the task
-    result = await db["tasks"].update_one({"_id": obj_id}, {"$set": updated_task})
-    if result.modified_count == 0:
-        raise HTTPException(status_code=400, detail="Task not updated")
-
-    updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
-    return {"updatedTask": updated_task_in_db}
+    try:
+        result = await db["tasks"].update_one(
+            {"_id": obj_id}, 
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            # Check if task actually exists but nothing changed
+            if result.matched_count > 0:
+                # Task exists but no changes were made
+                updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
+                return {"updatedTask": serialize_doc(updated_task_in_db)}
+            else:
+                raise HTTPException(status_code=404, detail="Task not found")
+        
+        # Fetch and return the updated task
+        updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
+        return {"updatedTask": serialize_doc(updated_task_in_db)}
+        
+    except Exception as e:
+        print(f"Error updating task: {str(e)}")  # Log the error
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # STATS ENDPOINTS
 # Add to your FastAPI backend
