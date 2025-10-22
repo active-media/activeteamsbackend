@@ -418,3 +418,26 @@ class UserCreater(BaseModel):
     leader1728: Optional[str] = ""
     stage: Optional[str] = "Win"
     role: str
+    
+from enum import Enum
+
+class DecisionType(str, Enum):
+    FIRST_TIME = "first_time"
+    RECOMMITMENT = "recommitment"
+
+class ConsolidationCreate(BaseModel):
+    person_name: str
+    person_surname: str
+    person_email: Optional[str] = None
+    person_phone: Optional[str] = None
+    decision_type: DecisionType
+    decision_date: str
+    assigned_to: str
+    notes: Optional[str] = None
+    event_id: Optional[str] = None
+    leaders: List[str] = []
+class ConsolidationTask(TaskModel):
+    consolidation_id: str
+    person_name: str
+    person_surname: str
+    decision_type: str

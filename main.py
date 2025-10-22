@@ -4,7 +4,7 @@ from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate
+from auth.models import EventCreate, DecisionType, ConsolidationCreate, UserProfile, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token
 import math
 import secrets
@@ -1856,8 +1856,8 @@ async def get_leaders_by_position(level: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/events/{event_id}")
-async def get_event_by_id(event_id: str = Path(...)):
+# @app.get("/events/{event_id}")
+# async def get_event_by_id(event_id: str = Path(...)):
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
@@ -1883,6 +1883,74 @@ async def get_event_by_id(event_id: str = Path(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
+@app.get("/events/{event_id}")
+async def get_event_by_id(event_id: str = Path(...)):
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+            
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        event["_id"] = str(event["_id"])
+        event = convert_datetime_to_iso(event)
+        event = sanitize_document(event)
+        
+        # ENHANCED: Add consolidation and new people information
+        consolidations_collection = db["consolidations"]
+        enhanced_attendees = []
+        
+        for attendee in event.get("attendees", []):
+            enhanced_attendee = attendee.copy()
+            
+            # Check if this attendee has a consolidation record
+            if attendee.get("is_consolidation") and attendee.get("consolidation_id"):
+                consolidation = await consolidations_collection.find_one({
+                    "_id": ObjectId(attendee["consolidation_id"])
+                })
+                if consolidation:
+                    enhanced_attendee["consolidation_status"] = consolidation.get("status", "active")
+                    enhanced_attendee["assigned_to"] = consolidation.get("assigned_to")
+                    enhanced_attendee["decision_type"] = consolidation.get("decision_type")
+                    enhanced_attendee["decision_display_name"] = consolidation.get("decision_display_name")
+                    enhanced_attendee["consolidation_notes"] = consolidation.get("notes")
+            
+            # Check if this is a new person (not in people collection yet)
+            person_email = attendee.get("email") or attendee.get("person_email")
+            if person_email:
+                existing_person = await people_collection.find_one({
+                    "Email": {"$regex": f"^{person_email}$", "$options": "i"}
+                })
+                enhanced_attendee["is_new_person"] = not existing_person
+                
+                # If person exists, get their stage and decision history
+                if existing_person:
+                    enhanced_attendee["person_stage"] = existing_person.get("Stage", "Unknown")
+                    enhanced_attendee["decision_history"] = existing_person.get("DecisionHistory", [])
+                    enhanced_attendee["total_recommitments"] = existing_person.get("TotalRecommitments", 0)
+            
+            enhanced_attendees.append(enhanced_attendee)
+        
+        event["attendees"] = enhanced_attendees
+        
+        # Calculate summary statistics for the event
+        event["summary"] = await get_event_summary_stats(str(event["_id"]))
+        
+        # Ensure all fields are present
+        event.setdefault("isTicketed", False)
+        event.setdefault("isGlobal", False)
+        event.setdefault("hasPersonSteps", False)
+        event.setdefault("priceTiers", [])
+        event.setdefault("leader1", "")
+        event.setdefault("leader12", "")
+        
+        return event
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
+
 
 def calculate_next_occurrence(recurring_day: str, from_date: date) -> date:
     """
@@ -3227,3 +3295,512 @@ async def get_activity_logs(
     except Exception as e:
         print(f"Error fetching activity logs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
+
+
+#consolidation
+
+async def get_event_summary_stats(event_id: str):
+    """Get consolidation and new people statistics for an event"""
+    try:
+        consolidations_collection = db["consolidations"]
+        
+        # Get all consolidations for this event
+        event_consolidations = await consolidations_collection.find({
+            "event_id": event_id
+        }).to_list(length=None)
+        
+        # Count by decision type
+        first_time_count = sum(1 for c in event_consolidations if c.get("decision_type") == "first_time")
+        recommitment_count = sum(1 for c in event_consolidations if c.get("decision_type") == "recommitment")
+        
+        # Get event to count total attendees
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        total_attendees = len(event.get("attendees", [])) if event else 0
+        
+        # Count new people (attendees not in people collection)
+        new_people_count = 0
+        if event:
+            for attendee in event.get("attendees", []):
+                email = attendee.get("email") or attendee.get("person_email")
+                if email:
+                    existing_person = await people_collection.find_one({
+                        "Email": {"$regex": f"^{email}$", "$options": "i"}
+                    })
+                    if not existing_person:
+                        new_people_count += 1
+        
+        return {
+            "total_attendees": total_attendees,
+            "first_time_decisions": first_time_count,
+            "recommitments": recommitment_count,
+            "total_decisions": first_time_count + recommitment_count,
+            "new_people": new_people_count,
+            "decision_rate": round(((first_time_count + recommitment_count) / total_attendees) * 100, 1) if total_attendees > 0 else 0
+        }
+    except Exception as e:
+        print(f"Error calculating event stats: {e}")
+        return {}
+    
+@app.post("/consolidations")
+async def create_consolidation(
+    consolidation: ConsolidationCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a new consolidation record and associated task
+    """
+    try:
+        consolidation_id = str(ObjectId())
+        
+        # 1. Create or find the person
+        person_email = consolidation.person_email
+        if not person_email:
+            person_email = f"{consolidation.person_name.lower()}.{consolidation.person_surname.lower()}@consolidation.temp"
+        
+        existing_person = await people_collection.find_one({
+            "$or": [
+                {"Email": person_email},
+                {"Name": consolidation.person_name, "Surname": consolidation.person_surname}
+            ]
+        })
+        
+        person_id = None
+        if existing_person:
+            person_id = str(existing_person["_id"])
+            # Update existing person
+            update_data = {
+                "Stage": "Consolidate",
+                "UpdatedAt": datetime.utcnow().isoformat(),
+                "DecisionType": consolidation.decision_type.value,
+                "DecisionDate": consolidation.decision_date,
+            }
+            
+            # Safely handle decision history
+            existing_history = existing_person.get("DecisionHistory", [])
+            if consolidation.decision_type == DecisionType.RECOMMITMENT:
+                existing_history.append({
+                    "type": "recommitment",
+                    "date": consolidation.decision_date,
+                    "consolidation_id": consolidation_id
+                })
+                update_data["DecisionHistory"] = existing_history
+                update_data["TotalRecommitments"] = existing_person.get("TotalRecommitments", 0) + 1
+                update_data["LastDecisionDate"] = consolidation.decision_date
+            else:
+                existing_history.append({
+                    "type": "first_time", 
+                    "date": consolidation.decision_date,
+                    "consolidation_id": consolidation_id
+                })
+                update_data["DecisionHistory"] = existing_history
+                update_data["FirstDecisionDate"] = consolidation.decision_date
+                update_data["TotalRecommitments"] = existing_person.get("TotalRecommitments", 0)
+            
+            await people_collection.update_one(
+                {"_id": ObjectId(person_id)},
+                {"$set": update_data}
+            )
+        else:
+            # Create new person
+            person_doc = {
+                "Name": consolidation.person_name.strip(),
+                "Surname": consolidation.person_surname.strip(),
+                "Email": person_email,
+                "Number": consolidation.person_phone or "",
+                "Stage": "Consolidate",
+                "DecisionType": consolidation.decision_type.value,
+                "DecisionDate": consolidation.decision_date,
+                "Date Created": datetime.utcnow().isoformat(),
+                "UpdatedAt": datetime.utcnow().isoformat(),
+                "InvitedBy": current_user.get("email", ""),
+                "Leader @1": consolidation.leaders[0] if len(consolidation.leaders) > 0 else "",
+                "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
+                "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
+                "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
+            }
+            
+            # Add consolidation-specific fields
+            decision_history = [{
+                "type": consolidation.decision_type.value,
+                "date": consolidation.decision_date,
+                "consolidation_id": consolidation_id
+            }]
+            
+            person_doc["DecisionHistory"] = decision_history
+            person_doc["TotalRecommitments"] = 1 if consolidation.decision_type == DecisionType.RECOMMITMENT else 0
+            
+            if consolidation.decision_type == DecisionType.FIRST_TIME:
+                person_doc["FirstDecisionDate"] = consolidation.decision_date
+            else:
+                person_doc["LastDecisionDate"] = consolidation.decision_date
+            
+            result = await people_collection.insert_one(person_doc)
+            person_id = str(result.inserted_id)
+
+        # 2. Create task
+        decision_display_name = "First Time Decision" if consolidation.decision_type == DecisionType.FIRST_TIME else "Recommitment"
+        
+        task_doc = {
+            "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
+            "taskType": "consolidation",
+            "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date}",
+            "followup_date": datetime.utcnow().isoformat(),
+            "status": "Open",
+            "assignedfor": consolidation.assigned_to,
+            "type": "followup",
+            "priority": "high",
+            "consolidation_id": consolidation_id,
+            "person_id": person_id,
+            "person_name": consolidation.person_name,
+            "person_surname": consolidation.person_surname,
+            "decision_type": consolidation.decision_type.value,
+            "decision_display_name": decision_display_name,
+            "contacted_person": {
+                "name": f"{consolidation.person_name} {consolidation.person_surname}",
+                "email": person_email,
+                "phone": consolidation.person_phone or ""
+            },
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": current_user.get("email", "")
+        }
+
+        task_result = await tasks_collection.insert_one(task_doc)
+        task_id = str(task_result.inserted_id)
+
+        # 3. Add to event attendees
+        if consolidation.event_id and ObjectId.is_valid(consolidation.event_id):
+            attendee_record = {
+                "id": person_id,
+                "name": consolidation.person_name,
+                "fullName": f"{consolidation.person_name} {consolidation.person_surname}",
+                "email": person_email,
+                "phone": consolidation.person_phone or "",
+                "decision": consolidation.decision_type.value,
+                "decision_display": decision_display_name,
+                "time": datetime.utcnow().isoformat(),
+                "is_consolidation": True,
+                "consolidation_id": consolidation_id
+            }
+
+            await events_collection.update_one(
+                {"_id": ObjectId(consolidation.event_id)},
+                {
+                    "$push": {"attendees": attendee_record},
+                    "$inc": {"total_attendance": 1}
+                }
+            )
+
+        # 4. Create consolidation record
+        consolidation_doc = {
+            "_id": ObjectId(consolidation_id),
+            "person_id": person_id,
+            "person_name": consolidation.person_name,
+            "person_surname": consolidation.person_surname,
+            "person_email": person_email,
+            "person_phone": consolidation.person_phone,
+            "decision_type": consolidation.decision_type.value,
+            "decision_display_name": decision_display_name,
+            "decision_date": consolidation.decision_date,
+            "assigned_to": consolidation.assigned_to,
+            "event_id": consolidation.event_id,
+            "notes": consolidation.notes,
+            "created_by": current_user.get("email", ""),
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "active",
+            "task_id": task_id
+        }
+
+        consolidations_collection = db["consolidations"]
+        await consolidations_collection.insert_one(consolidation_doc)
+
+        return {
+            "message": f"{decision_display_name} recorded successfully",
+            "consolidation_id": consolidation_id,
+            "person_id": person_id,
+            "task_id": task_id,
+            "decision_type": consolidation.decision_type.value,
+            "success": True
+        }
+
+    except Exception as e:
+        print(f"Error creating consolidation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
+@app.get("/consolidations")
+async def get_consolidations(
+    assigned_to: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    perPage: int = Query(50, ge=1),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get consolidation records with filtering
+    """
+    try:
+        query = {}
+        
+        if assigned_to:
+            query["assigned_to"] = assigned_to
+        if status:
+            query["status"] = status
+        
+        consolidations_collection = db["consolidations"]
+        skip = (page - 1) * perPage
+        
+        cursor = consolidations_collection.find(query).skip(skip).limit(perPage)
+        consolidations = []
+        
+        async for consolidation in cursor:
+            consolidation["_id"] = str(consolidation["_id"])
+            # Get person details
+            person = await people_collection.find_one({"_id": ObjectId(consolidation["person_id"])})
+            if person:
+                consolidation["person_details"] = {
+                    "name": person.get("Name", ""),
+                    "surname": person.get("Surname", ""),
+                    "email": person.get("Email", ""),
+                    "phone": person.get("Number", ""),
+                    "stage": person.get("Stage", "")
+                }
+            consolidations.append(consolidation)
+        
+        total = await consolidations_collection.count_documents(query)
+        
+        return {
+            "consolidations": consolidations,
+            "total": total,
+            "page": page,
+            "perPage": perPage
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/consolidations/{consolidation_id}")
+async def update_consolidation(
+    consolidation_id: str,
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update consolidation status or details
+    """
+    try:
+        if not ObjectId.is_valid(consolidation_id):
+            raise HTTPException(status_code=400, detail="Invalid consolidation ID")
+        
+        consolidations_collection = db["consolidations"]
+        consolidation = await consolidations_collection.find_one({"_id": ObjectId(consolidation_id)})
+        
+        if not consolidation:
+            raise HTTPException(status_code=404, detail="Consolidation not found")
+        
+        # Update consolidation
+        update_data["updated_at"] = datetime.utcnow().isoformat()
+        await consolidations_collection.update_one(
+            {"_id": ObjectId(consolidation_id)},
+            {"$set": update_data}
+        )
+        
+        # If status is completed, update person's stage
+        if update_data.get("status") == "completed":
+            await people_collection.update_one(
+                {"_id": ObjectId(consolidation["person_id"])},
+                {"$set": {"Stage": "Disciple", "UpdatedAt": datetime.utcnow().isoformat()}}
+            )
+            
+            # Also update the associated task
+            if consolidation.get("task_id"):
+                await tasks_collection.update_one(
+                    {"_id": ObjectId(consolidation["task_id"])},
+                    {"$set": {"status": "completed"}}
+                )
+        
+        return {"message": "Consolidation updated successfully", "success": True}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/consolidations/stats")
+async def get_consolidation_stats(
+    period: str = Query("monthly", regex="^(daily|weekly|monthly|yearly)$"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get consolidation statistics"""
+    try:
+        stats_collection = db["consolidation_stats"]
+        
+        if period == "daily":
+            date_key = datetime.utcnow().date().isoformat()
+            query = {"date": date_key, "type": "daily"}
+        elif period == "weekly":
+            week_key = datetime.utcnow().strftime("%Y-W%U")
+            query = {"week": week_key, "type": "weekly"}
+        elif period == "monthly":
+            month_key = datetime.utcnow().strftime("%Y-%m")
+            query = {"month": month_key, "type": "monthly"}
+        else:  # yearly
+            year_key = datetime.utcnow().strftime("%Y")
+            query = {"year": year_key, "type": "yearly"}
+        
+        stats = await stats_collection.find_one(query)
+        
+        if not stats:
+            return {
+                "period": period,
+                "total_consolidations": 0,
+                "first_time_count": 0,
+                "recommitment_count": 0,
+                "first_time_percentage": 0,
+                "recommitment_percentage": 0
+            }
+        
+        total = stats.get("total_consolidations", 0)
+        first_time = stats.get("first_time_count", 0)
+        recommitment = stats.get("recommitment_count", 0)
+        
+        return {
+            "period": period,
+            "total_consolidations": total,
+            "first_time_count": first_time,
+            "recommitment_count": recommitment,
+            "first_time_percentage": round((first_time / total) * 100, 1) if total > 0 else 0,
+            "recommitment_percentage": round((recommitment / total) * 100, 1) if total > 0 else 0
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/consolidations/person/{person_id}")
+async def get_person_consolidation_history(
+    person_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get consolidation history for a specific person"""
+    try:
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+        
+        # Get person details
+        person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        
+        # Get all consolidations for this person
+        consolidations_collection = db["consolidations"]
+        consolidations = await consolidations_collection.find({
+            "person_id": person_id
+        }).sort("decision_date", -1).to_list(length=None)
+        
+        for consolidation in consolidations:
+            consolidation["_id"] = str(consolidation["_id"])
+        
+        return {
+            "person_details": {
+                "name": person.get("Name", ""),
+                "surname": person.get("Surname", ""),
+                "email": person.get("Email", ""),
+                "phone": person.get("Number", ""),
+                "first_decision_date": person.get("FirstDecisionDate"),
+                "last_decision_date": person.get("LastDecisionDate"),
+                "total_recommitments": person.get("TotalRecommitments", 0),
+                "current_stage": person.get("Stage", "")
+            },
+            "consolidation_history": consolidations,
+            "total_consolidations": len(consolidations)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/events/{event_id}/consolidations")
+async def get_event_consolidations(event_id: str = Path(...)):
+    """Get all consolidations for a specific event"""
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        consolidations_collection = db["consolidations"]
+        consolidations = await consolidations_collection.find({
+            "event_id": event_id
+        }).sort("created_at", -1).to_list(length=None)
+        
+        # Enhance with person details
+        enhanced_consolidations = []
+        for consolidation in consolidations:
+            consolidation["_id"] = str(consolidation["_id"])
+            
+            # Get person details
+            person = await people_collection.find_one({
+                "_id": ObjectId(consolidation["person_id"])
+            })
+            if person:
+                consolidation["person_details"] = {
+                    "name": person.get("Name", ""),
+                    "surname": person.get("Surname", ""),
+                    "email": person.get("Email", ""),
+                    "phone": person.get("Number", ""),
+                    "stage": person.get("Stage", ""),
+                    "first_decision_date": person.get("FirstDecisionDate"),
+                    "total_recommitments": person.get("TotalRecommitments", 0)
+                }
+            
+            # Get task status
+            task = await tasks_collection.find_one({
+                "_id": ObjectId(consolidation["task_id"])
+            })
+            if task:
+                consolidation["task_status"] = task.get("status", "Unknown")
+                consolidation["task_priority"] = task.get("priority", "medium")
+            
+            enhanced_consolidations.append(consolidation)
+        
+        return {
+            "event_id": event_id,
+            "consolidations": enhanced_consolidations,
+            "total": len(enhanced_consolidations)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/events/{event_id}/new-people")
+async def get_event_new_people(event_id: str = Path(...)):
+    """Get attendees who are not yet in the people collection"""
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        new_people = []
+        for attendee in event.get("attendees", []):
+            email = attendee.get("email") or attendee.get("person_email")
+            if email:
+                # Check if person exists in people collection
+                existing_person = await people_collection.find_one({
+                    "Email": {"$regex": f"^{email}$", "$options": "i"}
+                })
+                
+                if not existing_person:
+                    new_people.append({
+                        "name": attendee.get("name"),
+                        "fullName": attendee.get("fullName"),
+                        "email": email,
+                        "phone": attendee.get("phone"),
+                        "decision": attendee.get("decision"),
+                        "attendance_time": attendee.get("time")
+                    })
+        
+        return {
+            "event_id": event_id,
+            "event_name": event.get("Event Name", "Unknown Event"),
+            "new_people": new_people,
+            "total_new_people": len(new_people)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
