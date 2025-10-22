@@ -207,3 +207,10 @@ def parse_time_string(t: Optional[str]) -> Optional[time_type]:
         return time_type(int(hh), int(mm))
     except Exception:
         return None
+
+# --- Helper for ObjectId to string ---
+def task_type_serializer(task_type) -> dict:
+    return {
+        "id": str(task_type["_id"]),
+        "name": task_type["name"]
+    }

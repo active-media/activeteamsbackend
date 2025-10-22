@@ -12,4 +12,7 @@ events_collection = db["Events"]
 people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]
-# cells_collection = db["Cells"]
+cells_collection = db["Cells"]  
+tasktypes_collection = db["TaskTypes"]
+# cells_collection = db["Cells"]  
+
