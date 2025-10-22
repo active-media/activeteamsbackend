@@ -708,56 +708,71 @@ async def get_all_leaders():
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
+
 def get_actual_event_status(event: dict, today: date) -> str:
     """
-    ✅ FIXED: Correct status detection
+    ✅ FIXED: Correct status detection based on CURRENT WEEK ONLY
+    
     Priority:
-    1. Check did_not_meet flag
-    2. Check if has attendees AND status indicates it was captured
-    3. Default to incomplete
+    1. Check current week's attendance in the attendance structure
+    2. Fall back to legacy fields ONLY if no attendance structure exists
+    3. Default to incomplete if nothing found
     """
-    # Check both field names (case-insensitive)
+    current_week = get_current_week_identifier()
+    
+    print(f"🔍 STATUS CHECK for {event.get('Event Name', 'Unknown')}:")
+    print(f"   Current week: {current_week}")
+    
+    # ✅ PRIORITY 1: Check if we have attendance data for CURRENT week
+    if "attendance" in event and current_week in event["attendance"]:
+        week_data = event["attendance"][current_week]
+        week_status = week_data.get("status", "incomplete")
+        
+        print(f"   ✅ Found current week data: {week_status}")
+        
+        if week_status == "did_not_meet":
+            print(f"   🔴 Status: DID NOT MEET (current week)")
+            return "did_not_meet"
+        elif week_status == "complete" and len(week_data.get("attendees", [])) > 0:
+            print(f"   ✅ Status: COMPLETE (current week has {len(week_data.get('attendees', []))} attendees)")
+            return "complete"
+        else:
+            print(f"   ⏳ Status: INCOMPLETE (current week exists but not complete)")
+            return "incomplete"
+    
+    # ✅ PRIORITY 2: No current week data - check if it's a brand new cell
+    print(f"   ⚠️ No data for current week - checking legacy fields")
+    
+    # Check if this cell has ANY historical attendance data
+    has_any_historical_data = "attendance" in event and len(event.get("attendance", {})) > 0
+    
+    if has_any_historical_data:
+        print(f"   📚 Cell has historical data from previous weeks")
+        print(f"   ⏳ Status: INCOMPLETE (new week, no capture yet)")
+        return "incomplete"
+    
+    # ✅ PRIORITY 3: Brand new cell - check legacy fields for backward compatibility
     status_from_lowercase = (event.get("status") or "").strip().lower()
     status_from_uppercase = (event.get("Status") or "").strip().lower()
-    
-    # Use whichever is set (prefer 'status' field)
     stored_status = status_from_lowercase or status_from_uppercase
     
-    # Check did_not_meet flag (highest priority)
     did_not_meet = event.get("did_not_meet", False)
-    
-    # Check attendees
     attendees = event.get("attendees", [])
     has_attendees = len(attendees) > 0
     
-    print(f"🔍 STATUS DEBUG for {event.get('Event Name', 'Unknown')}:")
-    print(f"   - did_not_meet: {did_not_meet}")
-    print(f"   - stored_status: '{stored_status}'")
-    print(f"   - attendees count: {len(attendees)}")
+    print(f"   Legacy fields - did_not_meet: {did_not_meet}, attendees: {len(attendees)}, stored_status: '{stored_status}'")
     
-    # Priority 1: Explicitly marked as did_not_meet
+    # Only use legacy fields if this is truly a legacy cell (no attendance structure)
     if did_not_meet:
-        print(f"🔴 Status: DID NOT MEET (flag is True)")
+        print(f"   🔴 Status: DID NOT MEET (legacy flag)")
         return "did_not_meet"
     
-    # Priority 2: Only mark as complete if BOTH conditions are true:
-    # - Has attendees (was actually captured)
-    # - AND status field indicates it's complete/did_not_meet
-    if has_attendees and stored_status in ["complete", "closed", "did_not_meet"]:
-        print(f"✅ Status: COMPLETE (has attendees and status indicates complete)")
+    if has_attendees and stored_status in ["complete", "closed"]:
+        print(f"   ✅ Status: COMPLETE (legacy data)")
         return "complete"
     
-    # Priority 3: If status says complete but no attendees, it's actually incomplete
-    if stored_status in ["complete", "closed"] and not has_attendees:
-        print(f"⚠️ Status: INCOMPLETE (status says complete but no attendees)")
-        return "incomplete"
-    
-    if stored_status == "did_not_meet":
-        print(f"🔴 Status: DID NOT MEET (from status field)")
-        return "did_not_meet"
-    
     # Default: incomplete
-    print(f"⏳ Status: INCOMPLETE (default - no capture data)")
+    print(f"   ⏳ Status: INCOMPLETE (default)")
     return "incomplete"
 
 # ===== HELPER FUNCTION: Parse Event Date =====
@@ -1595,7 +1610,9 @@ async def bulk_update_leader_at_1(current_user: dict = Depends(get_current_user)
 
 
 async def build_event_object(event: dict, timezone, today_date: date) -> dict:
-    """Build event object with auto-calculated Leader at 1"""
+    """
+    ✅ FIXED: Build event object with week-specific status checking
+    """
     
     event_name = event.get("Event Name", "Unknown Event")
     event_datetime = parse_event_datetime(event, timezone)
@@ -1603,18 +1620,13 @@ async def build_event_object(event: dict, timezone, today_date: date) -> dict:
     time_str = event_datetime.strftime("%H:%M")
     recurring_day = event.get("Day", "").strip().lower().capitalize()
     
-    # Determine status
+    # ✅ CRITICAL FIX: Use week-specific status checking
+    status = get_actual_event_status(event, today_date)
+    
+    # For backward compatibility, still get these fields
     attendees = event.get("attendees", [])
     did_not_meet = event.get("did_not_meet", False)
-    has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
     is_overdue = event_date < today_date
-    
-    if did_not_meet:
-        status = "did_not_meet"
-    elif has_attendees:
-        status = "complete"
-    else:
-        status = "incomplete"
     
     # 🔥 SIMPLIFIED LEADER LOGIC - Just lookup Leader @1 from People database
     event_leader_name = event.get("Leader", "").strip()
@@ -1624,6 +1636,7 @@ async def build_event_object(event: dict, timezone, today_date: date) -> dict:
     print(f"\n🔍 Processing event: {event_name}")
     print(f"   Event Leader: {event_leader_name}")
     print(f"   Leader at 12 (from event): {leader_at_12_from_event}")
+    print(f"   📅 Status for current week: {status}")
     
     # PRIORITY 1: Use Leader at 12 from event to lookup Leader at 1
     if leader_at_12_from_event:
@@ -1662,11 +1675,11 @@ async def build_event_object(event: dict, timezone, today_date: date) -> dict:
         "eventType": "Cell",
         "date": event_datetime.isoformat(),
         "location": event.get("Address", ""),
-        "status": status,
-        "Status": status,
+        "status": status,  # ✅ Week-specific status
+        "Status": status,  # ✅ Week-specific status (for backward compatibility)
         "eventLeaderName": event_leader_name,
         "eventLeaderEmail": event.get("Email", ""),
-        "leader1": leader_at_1,  # ✅ Auto-calculated based on database lookup
+        "leader1": leader_at_1,
         "leader12": leader_at_12_from_event,
         "leader144": event.get("Leader at 144", ""),
         "time": time_str,
@@ -2898,14 +2911,26 @@ async def submit_attendance(
             raise HTTPException(status_code=404, detail="Event not found")
         
         event_name = event.get("Event Name", "Unknown")
+        current_week = get_current_week_identifier()
         
-        print(f"🎯 SUBMIT ATTENDANCE for: {event_name}")
+        print(f"🎯 SUBMIT ATTENDANCE for: {event_name} (Week: {current_week})")
         print(f"📦 Submission data:")
         print(f"   - did_not_meet: {submission.did_not_meet}")
         print(f"   - attendees count: {len(submission.attendees)}")
-        print(f"   - isTicketed: {submission.isTicketed}")
+        
+        # Initialize attendance tracking structure if not exists
+        if "attendance" not in event:
+            event["attendance"] = {}
         
         if submission.did_not_meet:
+            # Store current week as "did not meet"
+            event["attendance"][current_week] = {
+                "status": "did_not_meet",
+                "attendees": [],
+                "submitted_at": datetime.utcnow(),
+                "submitted_by": submission.leaderEmail if hasattr(submission, 'leaderEmail') else ""
+            }
+            
             update_data = {
                 "Status": "Did Not Meet",           
                 "status": "did_not_meet",           
@@ -2913,12 +2938,14 @@ async def submit_attendance(
                 "attendees": [],                 
                 "total_attendance": 0,             
                 "Date Captured": datetime.now().strftime("%d %B %Y"),  
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.utcnow(),
+                "attendance": event["attendance"]  # Save the attendance structure
             }
             
-            print(f" MARKING AS DID NOT MEET: {event_name}")
+            print(f"🔴 MARKING AS DID NOT MEET for week {current_week}: {event_name}")
             
         else:
+            # Process attendees for current week
             attendees_list = []
             for att in submission.attendees:
                 attendee_data = {
@@ -2945,19 +2972,28 @@ async def submit_attendance(
                     })
                 attendees_list.append(attendee_data)
             
+            # Store current week's attendance
+            event["attendance"][current_week] = {
+                "status": "complete",
+                "attendees": attendees_list,
+                "submitted_at": datetime.utcnow(),
+                "submitted_by": submission.leaderEmail if hasattr(submission, 'leaderEmail') else ""
+            }
+            
             update_data = {
                 "Status": "Complete",               # ✅ Capital S (like your existing data)
                 "status": "complete",               # ✅ Also set lowercase
                 "did_not_meet": False,              # ✅ Set the flag
-                "attendees": attendees_list,
+                "attendees": attendees_list,        # Current week's attendees for backward compatibility
                 "total_attendance": len(attendees_list),
                 "Date Captured": datetime.now().strftime("%d %B %Y"),  # ✅ Set capture date
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.utcnow(),
+                "attendance": event["attendance"]   # Save the complete attendance history
             }
             
-            print(f"✅ MARKING AS COMPLETE: {event_name} with {len(attendees_list)} attendees")
+            print(f"✅ MARKING AS COMPLETE for week {current_week}: {event_name} with {len(attendees_list)} attendees")
         
-        print(f"📤 Update data to save: {update_data}")
+        print(f"📤 Update data to save for week {current_week}")
         
         # UPDATE THE DATABASE
         result = await events_collection.update_one(
@@ -2976,7 +3012,8 @@ async def submit_attendance(
         print(f"   - Status: '{updated_event.get('Status')}'")
         print(f"   - status: '{updated_event.get('status')}'")
         print(f"   - did_not_meet: {updated_event.get('did_not_meet')}")
-        print(f"   - attendees count: {len(updated_event.get('attendees', []))}")
+        print(f"   - current week attendees: {len(updated_event.get('attendees', []))}")
+        print(f"   - total attendance weeks: {len(updated_event.get('attendance', {}))}")
         
         return {
             "message": "Success",
@@ -2984,13 +3021,22 @@ async def submit_attendance(
             "status": "did_not_meet" if submission.did_not_meet else "complete",
             "did_not_meet": submission.did_not_meet,
             "total_attendance": 0 if submission.did_not_meet else len(attendees_list),
+            "week": current_week,
             "success": True
         }
         
     except Exception as e:
         print(f"❌ Error in submit_attendance: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+# Add this helper function
+def get_current_week_identifier():
+    """Get current week identifier in format YYYY-WW"""
+    now = datetime.utcnow()
+    year = now.isocalendar()[0]
+    week = now.isocalendar()[1]
+    return f"{year}-W{week:02d}"
+
 @app.get("/debug/event/{event_id}")
 async def debug_event_status(event_id: str):
     """Debug endpoint to check event status"""
