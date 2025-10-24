@@ -1921,7 +1921,8 @@ async def get_admin_cell_events_debug(
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
     search: Optional[str] = Query(None),
-    personal: Optional[bool] = Query(False)  # ADD THIS PARAMETER
+    event_type: Optional[str] = Query(None),
+    personal: Optional[bool] = Query(False)
 ):
     """Optimized admin cells endpoint with pagination and deduplication"""
     try:
@@ -1932,15 +1933,22 @@ async def get_admin_cell_events_debug(
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
         today_date = today.date()
-        start_date = date(2025, 10, 15)
+        
+        # 🔥 START DATE: October 20, 2025
+        start_date = date(2025, 10, 20)
         
         print(f"📅 Admin - Cells from {start_date} to {today_date}, Page {page}")
-        print(f"🔍 Search: '{search}', Status: '{status}', Personal: {personal}")
+        print(f"🔍 Search: '{search}', Status: '{status}', Personal: {personal}, Event Type: '{event_type}'")
 
         # Build match filter
         match_filter = {"Event Type": "Cells"}
         
-        # ADD PERSONAL FILTERING LOGIC HERE
+        # Add event type filter if provided
+        if event_type and event_type != 'all':
+            match_filter["eventType"] = event_type
+            print(f"🎯 Filtering by event type: {event_type}")
+        
+        # Add personal filtering logic
         if personal:
             user_email = current_user.get("email", "")
             print(f"🎯 PERSONAL FILTER ACTIVATED for user: {user_email}")
@@ -1986,29 +1994,37 @@ async def get_admin_cell_events_debug(
                 {"Leader @12": {"$regex": search_term, "$options": "i"}},
             ]
         
-        # Rest of your existing code continues...
-        # Build aggregation pipeline for deduplication
-        pipeline = [
-            {"$match": match_filter},
-            {
-                "$group": {
-                    "_id": {
-                        "name": {"$toLower": "$Event Name"},
-                        "email": {"$toLower": "$Email"},
-                        "day": {"$toLower": "$Day"}
-                    },
-                    "doc": {"$first": "$$ROOT"}
-                }
-            },
-            {"$replaceRoot": {"newRoot": "$doc"}}
-        ]
+        # 🔥 FETCH ALL CELLS AND DEDUPLICATE IN PYTHON
+        cursor = events_collection.find(match_filter)
+        all_cells_raw = await cursor.to_list(length=None)
         
-        # Execute aggregation to get deduplicated cells
-        cursor = events_collection.aggregate(pipeline)
-        all_cells = await cursor.to_list(length=None)
+        print(f"📊 Found {len(all_cells_raw)} cells before deduplication")
         
-        print(f"📊 Found {len(all_cells)} unique cells after deduplication")
+        # Deduplicate using Python (more reliable than MongoDB aggregation)
+        seen_cells = set()
+        all_cells = []
         
+        for cell in all_cells_raw:
+            # Create a unique key from event name, email, and day
+            event_name = (cell.get("Event Name") or "").strip().lower()
+            email = (cell.get("Email") or "").strip().lower()
+            day = (cell.get("Day") or "").strip().lower()
+            
+            # Skip if no event name (invalid cell)
+            if not event_name:
+                continue
+            
+            # Create unique identifier
+            cell_key = f"{event_name}|{email}|{day}"
+            
+            # Only add if we haven't seen this combination before
+            if cell_key not in seen_cells:
+                seen_cells.add(cell_key)
+                all_cells.append(cell)
+            else:
+                print(f"⚠️ Skipping duplicate: {event_name} ({email}) on {day}")
+        
+        print(f"📊 After deduplication: {len(all_cells)} unique cells")
         
         # Batch fetch all leader info at once
         leader_names = []
@@ -2080,8 +2096,9 @@ async def get_admin_cell_events_debug(
                 
                 most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
                 
-                # Skip cells outside date range
+                # 🔥 SKIP CELLS OUTSIDE DATE RANGE (Oct 20, 2025 to today)
                 if most_recent_occurrence < start_date or most_recent_occurrence > today_date:
+                    print(f"⏭️ Skipping {event_name} - date {most_recent_occurrence} outside range")
                     continue
                 
                 # Get leader info
@@ -2126,7 +2143,7 @@ async def get_admin_cell_events_debug(
                 final_event = {
                     "_id": str(event.get("_id", "")),
                     "eventName": event_name,
-                    "eventType": "Cells",
+                    "eventType": event.get("eventType", "Cells"),
                     "eventLeaderName": leader_name,
                     "eventLeaderEmail": str(event.get("Email", "")).strip(),
                     "leader1": leader_at_1,
@@ -2164,7 +2181,7 @@ async def get_admin_cell_events_debug(
             processed_events = [e for e in processed_events if e["status"] == status]
             print(f"✅ Filtered to {len(processed_events)} events with status '{status}'")
         
-        # Sort
+        
         processed_events.sort(key=lambda x: (x['date'], x['eventLeaderName'].lower()))
         
         # Pagination
