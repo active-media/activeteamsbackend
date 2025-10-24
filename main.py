@@ -3999,7 +3999,162 @@ async def delete_person(person_id: str = Path(...)):
     except Exception as e:
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
+@app.get("/people/search-fast")
+async def search_people_fast(
+    query: str = Query(..., min_length=2),
+    limit: int = Query(25, le=50)
+):
+    """
+    FAST search endpoint for autocomplete - optimized for signup form
+    Uses simple regex matching and returns minimal fields
+    """
+    try:
+        if not query or len(query) < 2:
+            return {"results": []}
+        
+        # Simple regex search on name fields - much faster than complex queries
+        search_regex = {"$regex": query.strip(), "$options": "i"}
+        
+        # Only fetch essential fields for autocomplete
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1, 
+            "Email": 1,
+            "Phone": 1,
+            "Leader @1": 1,
+            "Leader @12": 1,
+            "Leader @144": 1,
+            "Leader @1728": 1
+        }
+        
+        cursor = people_collection.find({
+            "$or": [
+                {"Name": search_regex},
+                {"Surname": search_regex},
+                {"Email": search_regex},
+                {"$expr": {
+                    "$regexMatch": {
+                        "input": {"$concat": ["$Name", " ", "$Surname"]},
+                        "regex": query.strip(),
+                        "options": "i"
+                    }
+                }}
+            ]
+        }, projection).limit(limit)
+        
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+        
+        return {"results": results}
+        
+    except Exception as e:
+        print(f"Error in fast search: {e}")
+        return {"results": []}
+
+@app.get("/people/all-minimal")
+async def get_all_people_minimal():
+    """
+    Get all people with minimal fields for client-side caching
+    Much faster than full document fetch
+    """
+    try:
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Phone": 1
+        }
+        
+        cursor = people_collection.find({}, projection).limit(1000)  # Reasonable limit
+        
+        people = []
+        async for person in cursor:
+            people.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", "")
+            })
+        
+        return {"people": people}
+        
+    except Exception as e:
+        print(f"Error fetching minimal people: {e}")
+        return {"people": []}
+
+@app.get("/people/leaders-only")
+async def get_leaders_only():
+    """
+    Get only people who are leaders (have people under them)
+    Optimized for signup form where we mostly need leaders
+    """
+    try:
+        # Find people who appear as leaders in other people's records
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"Leader @1": {"$exists": True, "$ne": ""}},
+                        {"Leader @12": {"$exists": True, "$ne": ""}},
+                        {"Leader @144": {"$exists": True, "$ne": ""}},
+                        {"Leader @1728": {"$exists": True, "$ne": ""}}
+                    ]
+                }
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "Name": 1,
+                    "Surname": 1,
+                    "Email": 1,
+                    "Phone": 1,
+                    "Leader @1": 1,
+                    "Leader @12": 1,
+                    "Leader @144": 1,
+                    "Leader @1728": 1
+                }
+            },
+            {"$limit": 500}  # Leaders only, so smaller set
+        ]
+        
+        cursor = people_collection.aggregate(pipeline)
+        leaders = []
+        
+        async for person in cursor:
+            leaders.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+        
+        return {"leaders": leaders}
+        
+    except Exception as e:
+        print(f"Error fetching leaders: {e}")
+        return {"leaders": []}
+
 
 # -------------------------
 # Tasks Management
