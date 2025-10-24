@@ -33,6 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")  # 👈 Add this route
 def root():
     return {"message": "App is live on Render!"}
