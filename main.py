@@ -41,7 +41,7 @@ app.add_middleware(
         "http://localhost:5173",  # Vite dev server
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
-        "https://activeteamsbackend-3.onrender.com"  # Your render backend itself
+        "https://activeteamsbackend2.0.onrender.com"  # Your render backend itself
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
