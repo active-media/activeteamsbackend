@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta, time, date
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
+from fastapi.responses import JSONResponse
 
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut 
@@ -673,7 +674,7 @@ async def get_events(
             },
             
             # ✅ LIMIT results early
-            {"$limit": limit * 10}  # Fetch a bit more for date filtering
+            {"$limit": limit * 3}  # Fetch a bit more for date filtering
         ]
         
         print(f"📋 Running aggregation pipeline...")
@@ -4252,6 +4253,20 @@ async def test_user_cells(email: str):
     except Exception as e:
         logging.error(f"Error in test_user_cells: {e}", exc_info=True)
         return {"error": str(e)}
+    
+@app.on_event("startup")
+async def create_indexes_on_startup():
+    print("📌 Creating MongoDB indexes for events...")
+    await events_collection.create_index(
+        [("Event Type", 1), ("Email", 1), ("Leader", 1), ("Day", 1)],
+
+        name="event_type_email_leader_day_idx"
+    )
+
+
+@app.get("/ping")
+async def ping():
+    return JSONResponse(content={"message": "Server is alive 🚀"}, status_code=200)
 #  END OF EVENTS
 
 
