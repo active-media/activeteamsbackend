@@ -3,9 +3,8 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
-
 from pydantic import BaseModel, Field, EmailStr, field_validator
-
+from enum import Enum
 from typing import Optional, List, Literal
 from datetime import datetime
 from bson import ObjectId
@@ -28,10 +27,6 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
-
-# ===== Event Models =====
-
-
 
 # ===== Event Models =====
 class EventBase(BaseModel):
@@ -58,7 +53,6 @@ class EventBase(BaseModel):
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
-
 
 # ===== FIXED Attendee Model =====
 class Attendee(BaseModel):
@@ -434,3 +428,23 @@ class UserCreater(BaseModel):
     leader1728: Optional[str] = ""
     stage: Optional[str] = "Win"
     role: str
+class DecisionType(str, Enum):
+    FIRST_TIME = "first_time"
+    RECOMMITMENT = "recommitment"
+
+class ConsolidationCreate(BaseModel):
+    person_name: str
+    person_surname: str
+    person_email: Optional[str] = None
+    person_phone: Optional[str] = None
+    decision_type: DecisionType
+    decision_date: str
+    assigned_to: str
+    notes: Optional[str] = None
+    event_id: Optional[str] = None
+    leaders: List[str] = []
+class ConsolidationTask(TaskModel):
+    consolidation_id: str
+    person_name: str
+    person_surname: str
+    decision_type: str
