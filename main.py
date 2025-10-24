@@ -25,14 +25,37 @@ oauth2_scheme = HTTPBearer()
 from passlib.context import CryptContext
 
 app = FastAPI()
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# More specific CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8000",
+        "http://localhost:5173",  # Vite dev server
+        "https://new-active-teams.netlify.app",
+        "https://activeteams.netlify.app",
+        "https://activeteamsbackend-3.onrender.com"  # Your render backend itself
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=[
+        "Authorization", 
+        "Content-Type", 
+        "Accept",
+        "Origin", 
+        "X-Requested-With",
+        "Access-Control-Allow-Origin"
+    ],
+    expose_headers=["*"],
+    max_age=3600,
 )
-
 
 @app.get("/")  # 👈 Add this route
 def root():
