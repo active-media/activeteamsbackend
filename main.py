@@ -3207,7 +3207,31 @@ async def delete_event(event_id: str = Path(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
+@app.delete("/event-types/{event_type_name}")
+async def delete_event_type(event_type_name: str = Path(..., description="Name of the event type to delete")):
+    try:
+        # Check if event type exists in the collection
+        existing_type = await event_types_collection.find_one({"name": event_type_name})
+        if not existing_type:
+            raise HTTPException(status_code=404, detail=f"Event type '{event_type_name}' not found")
 
+        # Optionally: check if any events are using it (soft delete could ignore this)
+        associated_events = await events_collection.find({"eventType": event_type_name}).to_list(length=1)
+        if associated_events:
+            # Instead of deleting events, we just remove the type from the type list
+            await event_types_collection.delete_one({"_id": existing_type["_id"]})
+            return {
+                "message": f"Event type '{event_type_name}' deleted from dropdowns. Existing events still have this type."
+            }
+
+        # Delete type if no associated events
+        await event_types_collection.delete_one({"_id": existing_type["_id"]})
+        return {"message": f"Event type '{event_type_name}' deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting event type: {str(e)}")
 
 @app.delete("/events/cell/{event_id}/members/{member_id}")
 async def remove_member_from_cell(event_id: str, member_id: str):
