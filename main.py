@@ -1924,7 +1924,7 @@ async def get_admin_cell_events_debug(
     event_type: Optional[str] = Query(None),
     personal: Optional[bool] = Query(False)
 ):
-    """Optimized admin cells endpoint with pagination and deduplication"""
+    """✅ SIMPLIFIED: Fast query without complex filters"""
     try:
         role = current_user.get("role", "")
         if role.lower() != "admin":
@@ -2131,10 +2131,8 @@ async def get_admin_cell_events_debug(
                 
                 if did_not_meet:
                     cell_status = "did_not_meet"
-                    status_display = "Did Not Meet"
                 elif has_attendees:
                     cell_status = "complete"
-                    status_display = "Complete"
                 else:
                     cell_status = "incomplete"
                     status_display = "Incomplete"
@@ -2165,28 +2163,27 @@ async def get_admin_cell_events_debug(
                 print(f"⚠️ Error processing event {event.get('_id')}: {str(e)}")
                 continue
         
-        print(f"✅ Processed {len(processed_events)} events")
+        print(f"✅ Processed: {len(processed_events)} events")
         
-        # Calculate status counts from ALL processed events
+        # Calculate counts
         status_counts = {
             "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
             "complete": sum(1 for e in processed_events if e["status"] == "complete"),
             "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet")
         }
         
-        print(f"📊 Status counts - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}")
+        print(f"📊 Counts: {status_counts}")
         
-        # Filter by status AFTER counting
+        # Filter by status
         if status and status != 'all':
             processed_events = [e for e in processed_events if e["status"] == status]
-            print(f"✅ Filtered to {len(processed_events)} events with status '{status}'")
+            print(f"🔍 After status filter: {len(processed_events)} events")
         
         
         processed_events.sort(key=lambda x: (x['date'], x['eventLeaderName'].lower()))
         
-        # Pagination
         total = len(processed_events)
-        total_pages = (total + limit - 1) // limit if total > 0 else 1
+        total_pages = max(1, (total + limit - 1) // limit)
         start_idx = (page - 1) * limit
         end_idx = start_idx + limit
         paginated_events = processed_events[start_idx:end_idx]
@@ -2203,11 +2200,11 @@ async def get_admin_cell_events_debug(
         }
         
     except Exception as e:
-        print(f"❌ ERROR in get_admin_cell_events_debug: {str(e)}")
+        print(f"❌ ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
 @app.get("/events/cells-user")
 async def get_user_cell_events(
     current_user: dict = Depends(get_current_user),
