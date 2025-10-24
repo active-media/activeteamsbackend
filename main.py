@@ -3207,7 +3207,30 @@ async def delete_event(event_id: str = Path(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
+    
+from fastapi import APIRouter, HTTPException, Path
+from bson import ObjectId
 
+router = APIRouter()
+
+@router.delete("/event-types/{event_type_name}")
+async def delete_event_type(event_type_name: str = Path(..., description="Name of the event type to delete")):
+    try:
+        # Find all events with this event type
+        events_with_type = await events_collection.find({"eventType": event_type_name}).to_list(length=None)
+        if not events_with_type:
+            raise HTTPException(status_code=404, detail=f"No events found with event type '{event_type_name}'")
+
+        # Delete all events that have this type
+        result = await events_collection.delete_many({"eventType": event_type_name})
+        return {
+            "message": f"Deleted {result.deleted_count} event(s) with event type '{event_type_name}'"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting event type: {str(e)}")
 
 @app.delete("/events/cell/{event_id}/members/{member_id}")
 async def remove_member_from_cell(event_id: str, member_id: str):
