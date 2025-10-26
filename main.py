@@ -5185,9 +5185,6 @@ async def update_task(task_id: str, updated_task: dict):
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # STATS ENDPOINTS
-# Add to your FastAPI backend
-# Add to your main.py or stats endpoints file
-
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -5435,7 +5432,168 @@ async def get_people_capture_stats():
             status_code=500, 
             detail=f"Failed to fetch capture statistics: {str(e)}"
         )
+
+@app.get("/stats/overdue-items")
+async def get_overdue_items(current_user: dict = Depends(get_current_user)):
+    """Get overdue cells and tasks"""
+    try:
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
         
+        # Get overdue cells (incomplete cells from previous dates)
+        overdue_cells = []
+        cell_cursor = events_collection.find({
+            "Event Type": "Cells",
+            "status": "incomplete"
+        })
+        
+        async for cell in cell_cursor:
+            # Calculate cell date based on recurring day
+            day = cell.get("Day", "").lower()
+            day_mapping = {
+                'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+                'friday': 4, 'saturday': 5, 'sunday': 6
+            }
+            
+            if day in day_mapping:
+                target_weekday = day_mapping[day]
+                current_weekday = today_date.weekday()
+                days_diff = (current_weekday - target_weekday) % 7
+                cell_date = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                
+                # Check if cell is overdue (before today and incomplete)
+                if cell_date < today_date:
+                    overdue_cells.append({
+                        "event_id": str(cell["_id"]),
+                        "event_name": cell.get("Event Name", "Unknown"),
+                        "leader": cell.get("Leader", "Unknown"),
+                        "day": day.capitalize(),
+                        "scheduled_date": cell_date.isoformat(),
+                        "days_overdue": (today_date - cell_date).days
+                    })
+        
+        # Get overdue tasks (tasks with followup_date in the past and status not completed)
+        overdue_tasks = []
+        task_cursor = tasks_collection.find({
+            "status": {"$nin": ["completed", "closed", "done"]}
+        })
+        
+        async for task in task_cursor:
+            task_date = task.get("followup_date")
+            if task_date:
+                if isinstance(task_date, str):
+                    try:
+                        task_date = datetime.fromisoformat(task_date.replace("Z", "+00:00")).date()
+                    except:
+                        continue
+                elif isinstance(task_date, datetime):
+                    task_date = task_date.date()
+                
+                if task_date < today_date:
+                    overdue_tasks.append({
+                        "task_id": str(task["_id"]),
+                        "name": task.get("name", "Unknown Task"),
+                        "assigned_to": task.get("assignedfor", "Unassigned"),
+                        "due_date": task_date.isoformat(),
+                        "days_overdue": (today_date - task_date).days,
+                        "type": task.get("type", "task")
+                    })
+        
+        return {
+            "overdue_cells": {
+                "count": len(overdue_cells),
+                "items": overdue_cells[:10]  # Limit to 10 for performance
+            },
+            "overdue_tasks": {
+                "count": len(overdue_tasks),
+                "items": overdue_tasks[:10]
+            },
+            "total_overdue": len(overdue_cells) + len(overdue_tasks),
+            "as_of_date": today_date.isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching overdue items: {str(e)}")
+
+@app.get("/stats/quick-overview")
+async def get_quick_overview(current_user: dict = Depends(get_current_user)):
+    """Get quick stats for dashboard cards"""
+    try:
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        # Total cells count
+        total_cells = await events_collection.count_documents({
+            "Event Type": "Cells"
+        })
+        
+        # Cells by status
+        incomplete_cells = await events_collection.count_documents({
+            "Event Type": "Cells",
+            "status": "incomplete"
+        })
+        
+        complete_cells = await events_collection.count_documents({
+            "Event Type": "Cells", 
+            "status": "complete"
+        })
+        
+        did_not_meet_cells = await events_collection.count_documents({
+            "Event Type": "Cells",
+            "status": "did_not_meet"
+        })
+        
+        # Tasks by status
+        open_tasks = await tasks_collection.count_documents({
+            "status": {"$nin": ["completed", "closed", "done"]}
+        })
+        
+        completed_tasks = await tasks_collection.count_documents({
+            "status": {"$in": ["completed", "closed", "done"]}
+        })
+        
+        # Total people
+        total_people = await people_collection.count_documents({})
+        
+        # This week's attendance (simplified)
+        week_start = today_date - timedelta(days=today_date.weekday())
+        week_events_cursor = events_collection.find({
+            "date": {"$gte": week_start.isoformat()},
+            "status": "complete"
+        })
+        
+        weekly_attendance = 0
+        async for event in week_events_cursor:
+            weekly_attendance += event.get("total_attendance", 0)
+        
+        return {
+            "cells": {
+                "total": total_cells,
+                "incomplete": incomplete_cells,
+                "complete": complete_cells,
+                "did_not_meet": did_not_meet_cells
+            },
+            "tasks": {
+                "open": open_tasks,
+                "completed": completed_tasks,
+                "total": open_tasks + completed_tasks
+            },
+            "people": {
+                "total": total_people
+            },
+            "attendance": {
+                "weekly": weekly_attendance
+            },
+            "period": {
+                "week_start": week_start.isoformat(),
+                "week_end": (week_start + timedelta(days=6)).isoformat()
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching quick overview: {str(e)}")
         
 # --- ROLE MANAGEMENT ENDPOINTS (Admin only) ---
 
