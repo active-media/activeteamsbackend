@@ -861,7 +861,36 @@ async def test_leader12_debug(email: str):
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/check-leader-at-12/{user_email}")
+async def check_leader_at_12(user_email: str, current_user: dict = Depends(get_current_user)):
+    """Check if a user is a Leader at 12 based on events data"""
+    try:
+        # Find events where this user appears as Leader at 12
+        leader_events = await events_collection.find({
+            "$or": [
+                {"Leader at 12": {"$regex": f".*{current_user.get('name', '')}.*", "$options": "i"}},
+                {"Leader @12": {"$regex": f".*{current_user.get('name', '')}.*", "$options": "i"}},
+                {"leader12": {"$regex": f".*{current_user.get('name', '')}.*", "$options": "i"}}
+            ]
+        }).to_list(length=5)
 
+        is_leader_at_12 = len(leader_events) > 0
+        
+        return {
+            "is_leader_at_12": is_leader_at_12,
+            "leader_name": current_user.get('name', ''),
+            "found_events_count": len(leader_events),
+            "sample_events": [
+                {
+                    "event_name": event.get("Event Name"),
+                    "leader_at_12": event.get("Leader at 12") or event.get("Leader @12") or event.get("leader12")
+                }
+                for event in leader_events[:3]
+            ]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/test/show-leader-chain/{email}")
 async def show_leader_chain(email: str):
@@ -941,11 +970,6 @@ logging.basicConfig(level=logging.INFO)
 def get_actual_event_status(event: dict, today: date) -> str:
     """
     ✅ FIXED: Correct status detection based on CURRENT WEEK ONLY
-    
-    A cell should be:
-    - "incomplete" = Default state OR people in list but NOT checked and saved this week
-    - "complete" = User clicked checkboxes AND clicked SAVE button THIS WEEK
-    - "did_not_meet" = User clicked DID NOT MEET button THIS WEEK
     """
     current_week = get_current_week_identifier()
     
@@ -966,22 +990,17 @@ def get_actual_event_status(event: dict, today: date) -> str:
             print(f"   → Status: did_not_meet")
             return "did_not_meet"
         
-        # ✅ CRITICAL FIX: Only mark as complete if:
-        # 1. Status is explicitly "complete" 
-        # 2. AND has attendees who were CHECKED and SAVED
+        # Only mark as complete if status is "complete" AND has attendees
         if week_status == "complete" and len(week_data.get("attendees", [])) > 0:
             print(f"   → Status: complete (has {len(week_data.get('attendees', []))} checked attendees)")
             return "complete"
         else:
-            # If no attendees were checked and saved, it's incomplete
-            print(f"   → Status: incomplete (no checked attendees)")
+            print(f"   → Status: incomplete (no checked attendees or not saved)")
             return "incomplete"
     
-    # ✅ PRIORITY 2: No current week data = INCOMPLETE
     print(f"   ✗ No current week data found")
     print(f"   → Status: incomplete (new week, needs capture)")
     
-    # Default to incomplete if no weekly data exists
     return "incomplete"
 
 def parse_event_date(event_date_field, default_date: date) -> date:
@@ -1437,6 +1456,56 @@ async def test_hierarchy_for_email(email: str):
         
     except Exception as e:
         return {"error": str(e)}
+    
+
+@app.get("/check-leader-at-12/{user_email}")
+async def check_leader_at_12(user_email: str, current_user: dict = Depends(get_current_user)):
+    """Check if a user is a Leader at 12 based on events data"""
+    try:
+        # Use the current user's name from token, not the email parameter
+        current_user_name = current_user.get("name", "").strip()
+        current_user_email = current_user.get("email", "").strip()
+        
+        print(f"🔍 Checking if {current_user_name} ({current_user_email}) is a Leader at 12")
+        
+        if not current_user_name:
+            return {
+                "is_leader_at_12": False,
+                "leader_name": "",
+                "found_events_count": 0,
+                "reason": "No user name found in token"
+            }
+
+        # Find events where this user appears as Leader at 12
+        leader_events = await events_collection.find({
+            "$or": [
+                {"Leader at 12": {"$regex": f".*{current_user_name}.*", "$options": "i"}},
+                {"Leader @12": {"$regex": f".*{current_user_name}.*", "$options": "i"}},
+                {"leader12": {"$regex": f".*{current_user_name}.*", "$options": "i"}}
+            ],
+            "Event Type": "Cells"
+        }).to_list(length=10)
+
+        is_leader_at_12 = len(leader_events) > 0
+        
+        print(f"✅ Leader at 12 check: {is_leader_at_12} (found {len(leader_events)} events)")
+        
+        return {
+            "is_leader_at_12": is_leader_at_12,
+            "leader_name": current_user_name,
+            "found_events_count": len(leader_events),
+            "sample_events": [
+                {
+                    "event_name": event.get("Event Name", "Unknown"),
+                    "leader_at_12": event.get("Leader at 12") or event.get("Leader @12") or event.get("leader12", "")
+                }
+                for event in leader_events[:3]
+            ]
+        }
+        
+    except Exception as e:
+        print(f"❌ Error checking Leader at 12: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/events/status-counts")
 async def get_admin_events_status_counts(
@@ -1876,7 +1945,6 @@ async def get_registrant_cell_events_debug(
                 
                 most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
                 
-                # ✅ FILTER BY DATE RANGE (Oct 20, 2025 to today)
                 if most_recent_occurrence < start_date_obj or most_recent_occurrence > today_date:
                     continue
                 
@@ -1926,9 +1994,8 @@ async def get_registrant_cell_events_debug(
                 print(f"⚠️ Error processing event {event.get('_id')}: {str(e)}")
                 continue
         
-        print(f"✅ Processed {len(processed_events)} events after date filtering")
+        print(f"Processed {len(processed_events)} events after date filtering")
         
-        # Calculate status counts from ALL processed events
         status_counts = {
             "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
             "complete": sum(1 for e in processed_events if e["status"] == "complete"),
@@ -1937,10 +2004,9 @@ async def get_registrant_cell_events_debug(
         
         print(f"📊 Status counts - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}")
         
-        # Filter by status AFTER counting
         if status and status != 'all':
             processed_events = [e for e in processed_events if e["status"] == status]
-            print(f"✅ Filtered to {len(processed_events)} events with status '{status}'")
+            print(f" Filtered to {len(processed_events)} events with status '{status}'")
         
         # Sort by date
         processed_events.sort(key=lambda x: (x['date'], x['eventLeaderName'].lower()))
@@ -1986,9 +2052,10 @@ async def get_events_status_counts(
     current_user: dict = Depends(get_current_user),
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    start_date: Optional[str] = Query(None)
+    start_date: Optional[str] = Query(None),
+    personal: Optional[bool] = Query(None)  
 ):
-    """✅ Safe + Debugged: Get event status counts"""
+    """✅ Safe + Debugged: Get event status counts with personal filter support - REGISTRANTS CANNOT VIEW ALL"""
     start_time = time.time()
     try:
         user_role = current_user.get("role", "user").lower()
@@ -1998,7 +2065,11 @@ async def get_events_status_counts(
         today = datetime.now(timezone).date()
         week_start = today - timedelta(days=today.weekday())
 
-        # ✅ Defensive date handling
+        if user_role in ["registrant", "user", "leader at 1"]:
+            personal = True
+            print(f"🔒 STATUS COUNTS: Enforcing personal=true for restricted role: {user_role}")
+
+        # Defensive date handling
         if not start_date or start_date in ["undefined", "null", ""]:
             start_date_filter = today.strftime("%Y-%m-%d")
         else:
@@ -2010,11 +2081,8 @@ async def get_events_status_counts(
             print(f"⚠️ Invalid start_date format: {start_date_filter}")
             start_date_obj = today
 
-        print(f"🚀 /events/status-counts called with event_type={event_type}, start_date={start_date_obj}")
+        print(f"🚀 /events/status-counts - Personal: {personal}, Event Type: {event_type}")
 
-        # -----------------------------
-        # 🔍 Build match_stage
-        # -----------------------------
         match_stage = {}
 
         if event_type and event_type not in ["all", "undefined"]:
@@ -2023,20 +2091,8 @@ async def get_events_status_counts(
                 {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}}
             ]
 
-        # Role-based filtering
-        if user_role == "registrant":
-            registrant_filter = {"Email": {"$regex": f"^{email}$", "$options": "i"}}
-            if "$or" in match_stage:
-                match_stage = {
-                    "$and": [
-                        {"$or": match_stage.pop("$or")},
-                        registrant_filter
-                    ]
-                }
-            else:
-                match_stage.update(registrant_filter)
-
-        elif user_role == "user":
+        if personal:
+            print(f"🎯 Personal filter active for: {email}")
             user_cell = await events_collection.find_one({
                 "$or": [
                     {"Event Type": "Cells"},
@@ -2049,8 +2105,7 @@ async def get_events_status_counts(
             if user_name:
                 user_or = [
                     {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
-                    {"Leader at 12": {"$regex": user_name, "$options": "i"}}
+                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}}
                 ]
                 if "$or" in match_stage:
                     match_stage = {
@@ -2081,55 +2136,19 @@ async def get_events_status_counts(
             else:
                 match_stage.update(search_filter)
 
-        print(f"📋 MongoDB match_stage: {match_stage}")
+        print(f"📋 Status counts query: {match_stage}")
 
-        # -----------------------------
-        # 🔎 Fetch events (limited)
-        # -----------------------------
         cursor = events_collection.find(match_stage).limit(1000)
         all_events = await cursor.to_list(length=1000)
-        print(f"✅ Query returned {len(all_events)} events in {time.time() - start_time:.2f}s")
+        print(f"✅ Query returned {len(all_events)} events")
 
-        # -----------------------------
-        # 📊 Count statuses
-        # -----------------------------
+        # Count statuses
         incomplete_count = 0
         complete_count = 0
         did_not_meet_count = 0
 
-        day_mapping = {
-            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-            'friday': 4, 'saturday': 5, 'sunday': 6
-        }
-
         for event in all_events:
             try:
-                event_type_value = event.get("eventType") or event.get("Event Type", "")
-                if event_type_value.lower() in ["cells", "cell"]:
-                    day = str(event.get("Day", "")).strip().lower()
-                    if day not in day_mapping:
-                        continue
-
-                    cell_date_this_week = week_start + timedelta(days=day_mapping[day])
-                    if cell_date_this_week < start_date_obj or cell_date_this_week > today:
-                        continue
-                else:
-                    event_date_field = event.get("date")
-                    if isinstance(event_date_field, datetime):
-                        event_date = event_date_field.date()
-                    elif isinstance(event_date_field, str):
-                        try:
-                            event_date = datetime.fromisoformat(
-                                event_date_field.replace("Z", "+00:00")
-                            ).date()
-                        except Exception:
-                            continue
-                    else:
-                        continue
-
-                    if event_date < start_date_obj or event_date > today:
-                        continue
-
                 did_not_meet = event.get("did_not_meet", False)
                 attendees = event.get("attendees", [])
 
@@ -2148,11 +2167,13 @@ async def get_events_status_counts(
             "incomplete": incomplete_count,
             "complete": complete_count,
             "did_not_meet": did_not_meet_count,
-            "total": incomplete_count + complete_count + did_not_meet_count
+            "total": incomplete_count + complete_count + did_not_meet_count,
+            "is_personal_filter": personal, 
+            "user_role": user_role  
         }
 
-        print(f"📊 Final counts: {result}")
-        print(f"✅ Finished /events/status-counts in {time.time() - start_time:.2f}s")
+        print(f"Final counts: {result}")
+        print(f"Finished /events/status-counts in {time.time() - start_time:.2f}s")
 
         return result
 
@@ -2160,7 +2181,6 @@ async def get_events_status_counts(
         print(f"❌ ERROR in /events/status-counts: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/events")
 async def get_events(
@@ -2173,7 +2193,7 @@ async def get_events(
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query(None)
 ):
-    """🚀 FIXED: Show ALL events regardless of date, proper event type filtering"""
+    """🚀 FIXED: Proper role-based event filtering with weekly status tracking - REGISTRANTS CANNOT VIEW ALL"""
     try:
         user_role = current_user.get("role", "user").lower()
         email = current_user.get("email", "").strip()
@@ -2181,63 +2201,154 @@ async def get_events(
         today = datetime.now(timezone)
         today_date = today.date()
 
-        print(f"📅 Fetching events - Event Type: {event_type}")
+        print(f"📅 Fetching events - Role: {user_role}, Email: {email}, Personal Filter: {personal}, Status Filter: {status}")
+
+        # ✅ CRITICAL FIX: ENFORCE personal=true for restricted roles
+        if user_role in ["registrant", "user", "leader at 1"]:
+            personal = True
+            print(f"🔒 ENFORCING personal view for restricted role: {user_role}")
 
         # Build MongoDB match
         match_stage = {}
 
-        # ✅ CRITICAL FIX: Proper event type filtering
+        # ✅ EVENT TYPE FILTERING
         if event_type and event_type.lower() not in ["all", "undefined", "null", ""]:
-            # Match EITHER eventType OR Event Type field (case-insensitive)
             match_stage["$or"] = [
                 {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
                 {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}}
             ]
             print(f"✅ Filtering by event type: {event_type}")
 
-        # Role-based filters
-        if user_role == "registrant":
-            email_filter = {"Email": {"$regex": f"^{email}$", "$options": "i"}}
-            if "$or" in match_stage:
-                match_stage = {"$and": [{"$or": match_stage.pop("$or")}, email_filter]}
-            else:
-                match_stage.update(email_filter)
-        elif user_role == "user":
+        # ✅ CRITICAL FIX: ROLE-BASED FILTERING
+        if user_role == "user" or user_role == "leader at 1":
+            # USERS and LEADER AT 1: ALWAYS see only their own cells (no view toggle)
+            print(f"👤 USER/LEADER AT 1: Showing only own cells")
+            
             user_cell = await events_collection.find_one({
-                "$or": [{"Event Type": "Cells"}, {"eventType": "Cells"}],
+                "$or": [
+                    {"Event Type": "Cells"},
+                    {"eventType": "Cells"}
+                ],
                 "Email": {"$regex": f"^{email}$", "$options": "i"}
             }, {"Leader": 1})
+            
             user_name = user_cell.get("Leader", "").strip() if user_cell else ""
-            if user_name:
-                user_or = [
-                    {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
-                    {"Leader at 12": {"$regex": user_name, "$options": "i"}}
-                ]
-                if "$or" in match_stage:
-                    match_stage = {"$and": [{"$or": match_stage.pop("$or")}, {"$or": user_or}]}
-                else:
-                    match_stage["$or"] = user_or
-
-        # Personal filter
-        if personal:
-            personal_or = [
+            
+            personal_conditions = [
                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                {"Leader": {"$regex": f"^{current_user.get('name', '')}$", "$options": "i"}}
             ]
+            
+            if user_name:
+                personal_conditions.append(
+                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}}
+                )
+            
             if "$or" in match_stage:
-                match_stage = {"$and": [{"$or": match_stage.pop("$or")}, {"$or": personal_or}]}
+                match_stage = {
+                    "$and": [
+                        {"$or": match_stage.pop("$or")},
+                        {"$or": personal_conditions}
+                    ]
+                }
             else:
-                match_stage["$or"] = personal_or
+                match_stage["$or"] = personal_conditions
+                
+        elif user_role == "registrant":
+            # ✅ FIXED: Registrants ALWAYS see only personal events, no toggle
+            print(f"👤 REGISTRANT: ALWAYS showing only personal cells (no view all)")
+            
+            user_cell = await events_collection.find_one({
+                "$or": [
+                    {"Event Type": "Cells"},
+                    {"eventType": "Cells"}
+                ],
+                "Email": {"$regex": f"^{email}$", "$options": "i"}
+            }, {"Leader": 1})
+            
+            user_name = user_cell.get("Leader", "").strip() if user_cell else ""
+            
+            personal_conditions = [
+                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+            ]
+            
+            if user_name:
+                personal_conditions.append(
+                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}}
+                )
+            
+            if "$or" in match_stage:
+                match_stage = {
+                    "$and": [
+                        {"$or": match_stage.pop("$or")},
+                        {"$or": personal_conditions}
+                    ]
+                }
+            else:
+                match_stage["$or"] = personal_conditions
+            
+            # ✅ Force personal=true for consistent behavior
+            personal = True
+            
+        elif user_role == "admin" or user_role == "leader at 12":
+            # ADMIN & LEADER AT 12: Can toggle between all and personal
+            if personal:
+                print(f"👤 {user_role.upper()} (PERSONAL): Showing personal cells")
+                
+                user_cell = await events_collection.find_one({
+                    "$or": [
+                        {"Event Type": "Cells"},
+                        {"eventType": "Cells"}
+                    ],
+                    "Email": {"$regex": f"^{email}$", "$options": "i"}
+                }, {"Leader": 1})
+                
+                user_name = user_cell.get("Leader", "").strip() if user_cell else ""
+                
+                personal_conditions = [
+                    {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                ]
+                
+                if user_name:
+                    if user_role == "leader at 12":
+                        # Leader at 12: See own cells + cells they supervise as Leader at 12
+                        personal_conditions.extend([
+                            {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
+                            {"Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}},
+                            {"Leader @12": {"$regex": f".*{user_name}.*", "$options": "i"}},
+                            {"leader12": {"$regex": f".*{user_name}.*", "$options": "i"}}
+                        ])
+                        print(f"   🎯 Leader at 12 personal filter: {len(personal_conditions)} conditions")
+                        print(f"   👤 User name used for filtering: '{user_name}'")
+                    else:
+                        # Admin: See own cells
+                        personal_conditions.append(
+                            {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}}
+                        )
+                        print(f"   🎯 Admin personal filter: {len(personal_conditions)} conditions")
+                
+                if "$or" in match_stage:
+                    match_stage = {
+                        "$and": [
+                            {"$or": match_stage.pop("$or")},
+                            {"$or": personal_conditions}
+                        ]
+                    }
+                else:
+                    match_stage["$or"] = personal_conditions
+            else:
+                # VIEW ALL: See everything (no additional filter)
+                print(f"👤 {user_role.upper()} (VIEW ALL): Showing all events")
 
-        # Search filter
+        # ✅ SEARCH FILTER
         if search and search.strip():
             search_regex = {"$regex": search.strip(), "$options": "i"}
             search_or = [
                 {"Event Name": search_regex},
                 {"eventName": search_regex},
                 {"Leader": search_regex},
-                {"Email": search_regex}
+                {"Email": search_regex},
+                {"Leader at 12": search_regex},
+                {"Leader @12": search_regex},
             ]
             if "$or" in match_stage and "$and" not in match_stage:
                 match_stage = {"$and": [{"$or": match_stage.pop("$or")}, {"$or": search_or}]}
@@ -2246,9 +2357,8 @@ async def get_events(
             else:
                 match_stage["$or"] = search_or
 
-        print(f"📋 MongoDB query: {match_stage}")
+        print(f"📋 Final MongoDB query: {match_stage}")
 
-        # Aggregation pipeline for deduplication
         pipeline = [
             {"$match": match_stage},
             {
@@ -2265,15 +2375,13 @@ async def get_events(
             {"$sort": {"date": -1, "Date Of Event": -1}}
         ]
 
-        # Fetch events
         cursor = events_collection.aggregate(pipeline, allowDiskUse=True)
         events = await cursor.to_list(length=None)
 
-        print(f"✅ Found {len(events)} total events before processing")
+        print(f"Found {len(events)} total events before processing")
 
-        # Process events
         processed = []
-        day_mapping = {'monday':0,'tuesday':1,'wednesday':2,'thursday':3,'friday':4,'saturday':5,'sunday':6}
+        current_week = get_current_week_identifier()
 
         for e in events:
             try:
@@ -2292,16 +2400,21 @@ async def get_events(
                 else:
                     event_date = today_date
 
-                # Status filtering
-                did_not_meet = e.get("did_not_meet", False)
-                attendees = e.get("attendees", [])
-                status_val = "did_not_meet" if did_not_meet else "complete" if attendees else "incomplete"
+                status_val = get_actual_event_status(e, today_date)
+                
+                print(f"📊 Event: {event_name}")
+                print(f"   Status from weekly tracking: {status_val}")
+                print(f"   Attendance data: {e.get('attendance', {}).keys() if 'attendance' in e else 'None'}")
                 
                 if status and status not in ['all','undefined',''] and status != status_val:
+                    print(f"   ⏭️ Skipping - doesn't match filter '{status}'")
                     continue
 
-                # Get leaders
-                leader_at_12 = e.get("Leader @12") or e.get("Leader at 12", "")
+                leader_at_12 = e.get("Leader at 12") or e.get("Leader @12", "") or e.get("leader12", "")
+                
+                week_attendees = []
+                if "attendance" in e and current_week in e["attendance"]:
+                    week_attendees = e["attendance"][current_week].get("attendees", [])
                 
                 processed.append({
                     "_id": str(e["_id"]),
@@ -2309,46 +2422,58 @@ async def get_events(
                     "eventType": event_type_val,
                     "eventLeaderName": e.get("Leader",""),
                     "eventLeaderEmail": e.get("Email",""),
-                    "leader1": e.get("leader1", ""),
+                    "leader1": e.get("leader1", "") or e.get("Leader @1", ""),
                     "leader12": leader_at_12,
                     "leader144": e.get("Leader @144") or e.get("Leader at 144",""),
                     "day": (e.get("Day") or "").capitalize(),
                     "date": event_date.isoformat(),
                     "location": e.get("Location",""),
-                    "attendees": attendees,
-                    "did_not_meet": did_not_meet,
-                    "status": status_val,
+                    "attendees": week_attendees,
+                    "did_not_meet": status_val == "did_not_meet",  
+                    "status": status_val,  
                     "Status": status_val.replace("_"," ").title(),
                     "_is_overdue": False
                 })
+                
+                print(f"Added to results")
                 
             except Exception as inner_e:
                 print(f"⚠️ Error processing event {e.get('_id')}: {inner_e}")
                 continue
 
-        # Sort by date (most recent first)
         processed.sort(key=lambda x: x['date'], reverse=True)
 
-        # Pagination
         total = len(processed)
         start_idx = (page-1)*limit
         paginated = processed[start_idx:start_idx+limit]
 
-        print(f"✅ Returning {len(paginated)} events (total: {total})")
+        print(f" Returning {len(paginated)} events (total: {total})")
+        print(f" User role: {user_role}, Personal filter: {personal}, Status filter: {status}")
+        print(f" Status breakdown:")
+        status_count = {}
+        for p in processed:
+            s = p['status']
+            status_count[s] = status_count.get(s, 0) + 1
+        print(f"   {status_count}")
 
+        view_restricted = user_role in ["registrant", "user", "leader at 1"]
+        
         return {
             "events": paginated,
             "total_events": total,
             "total_pages": (total + limit - 1)//limit if total>0 else 1,
             "current_page": page,
-            "page_size": limit
+            "page_size": limit,
+            "is_personal_filter": personal,
+            "user_role": user_role,
+            "view_restricted": view_restricted 
         }
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.get("/admin/events/missing-leaders")
 async def get_missing_leaders(current_user: dict = Depends(get_current_user)):
     """Find all Leaders at 12 that don't exist in People database"""
@@ -2356,7 +2481,6 @@ async def get_missing_leaders(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        # Get all unique Leader at 12 names from events
         pipeline = [
             {"$match": {"Event Type": "Cells"}},
             {"$group": {
@@ -2416,8 +2540,8 @@ async def get_missing_leaders(current_user: dict = Depends(get_current_user)):
             "total_leaders_in_events": len(event_leaders),
             "found_in_people": len(found_leaders),
             "missing_from_people": len(missing_leaders),
-            "found_leaders": found_leaders[:20],  # First 20
-            "missing_leaders": missing_leaders,  # All missing
+            "found_leaders": found_leaders[:20],  
+            "missing_leaders": missing_leaders,  
             "message": f"Found {len(found_leaders)} leaders, {len(missing_leaders)} need to be added to People database"
         }
         
@@ -2865,9 +2989,9 @@ async def get_admin_cell_events_debug(
     search: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
     personal: Optional[bool] = Query(False),
-    start_date: Optional[str] = Query(None)  # ✅ ADD START DATE PARAMETER
+    start_date: Optional[str] = Query(None)
 ):
-    """Optimized admin cells endpoint with pagination and deduplication"""
+    """Optimized admin cells endpoint with proper Leader at 12 field handling"""
     try:
         role = current_user.get("role", "")
         if role.lower() != "admin":
@@ -2909,7 +3033,7 @@ async def get_admin_cell_events_debug(
             user_name = user_cell.get("Leader", "").strip() if user_cell else ""
             print(f"✅ User name found: '{user_name}'")
             
-            # Build personal query conditions
+            # Build personal query conditions - USING BOTH LEADER AT 12 FIELD NAMES
             personal_conditions = [
                 {"Email": {"$regex": f"^{user_email}$", "$options": "i"}},
                 {"email": {"$regex": f"^{user_email}$", "$options": "i"}},
@@ -2918,14 +3042,13 @@ async def get_admin_cell_events_debug(
             if user_name:
                 personal_conditions.extend([
                     {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
-                    {"Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}},
-                    {"Leader at 144": {"$regex": f".*{user_name}.*", "$options": "i"}},
+                    {"Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}},  # With space
+                    {"Leader @12": {"$regex": f".*{user_name}.*", "$options": "i"}},    # With @ symbol
                 ])
             
             match_filter["$or"] = personal_conditions
             print(f"🔍 Personal query conditions: {len(personal_conditions)} conditions")
         
-        # Add search filter if provided (only if not in personal mode)
         elif search and search.strip():
             search_term = search.strip()
             print(f"✅ Applying search filter for: '{search_term}'")
@@ -2934,11 +3057,11 @@ async def get_admin_cell_events_debug(
                 {"Event Name": {"$regex": search_term, "$options": "i"}},
                 {"Leader": {"$regex": search_term, "$options": "i"}},
                 {"Email": {"$regex": search_term, "$options": "i"}},
-                {"Leader at 12": {"$regex": search_term, "$options": "i"}},
-                {"Leader @12": {"$regex": search_term, "$options": "i"}},
+                {"Leader at 12": {"$regex": search_term, "$options": "i"}},  
+                {"Leader @12": {"$regex": search_term, "$options": "i"}},    
             ]
         
-        # 🔥 FETCH ALL CELLS AND DEDUPLICATE IN PYTHON
+        
         cursor = events_collection.find(match_filter)
         all_cells_raw = await cursor.to_list(length=None)
         
@@ -4313,14 +4436,12 @@ async def submit_attendance(
         raise HTTPException(status_code=500, detail=str(e))
 
 def get_current_week_identifier():
-    """
-    Get current week identifier in format YYYY-WW
-    Used to track attendance per week
-    """
+    """Get current week identifier in format YYYY-WW"""
     now = datetime.utcnow()
     year = now.isocalendar()[0]
     week = now.isocalendar()[1]
     return f"{year}-W{week:02d}"
+
 
 async def submit_attendance_handler(event_id: str, submission: AttendanceSubmission):
     """
