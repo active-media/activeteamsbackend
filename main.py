@@ -5398,90 +5398,148 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 # GET /tasks 
 
-@app.get("/tasks")
-async def get_user_tasks(
-    email: str = Query(None),
-    userId: str = Query(None),
-    view_all: bool = Query(False),  # Add explicit parameter for viewing all tasks
-    current_user: dict = Depends(get_current_user)
-):
+async def get_all_disciples_for_leader(leader_email: str, users_collection):
+    """Get all disciples for a leader by querying the users collection"""
     try:
-        # Check if current user is a leader
-        is_leader = current_user.get("role") in ["admin", "leader", "manager"]
+        # Get leader details
+        leader = await users_collection.find_one({"email": leader_email})
+        if not leader:
+            return []
         
-        # Determine user email based on parameters or current user
-        user_email = None
+        leader_name = leader.get("name", "").strip()
+        leader_surname = leader.get("surname", "").strip()
         
-        if email:
-            user_email = email
-        elif userId:
-            user = await users_collection.find_one({"_id": ObjectId(userId)})
-            if user:
-                user_email = user.get("email")
-        else:
-            # No parameters provided - use current user's email
-            user_email = current_user.get("email")
+        if not leader_name or not leader_surname:
+            return []
         
-        if not user_email:
-            return {"error": "User email not found", "status": "failed"}
+        leader_full_name = f"{leader_name} {leader_surname}"
         
-        timezone = pytz.timezone("Africa/Johannesburg")
-        
-        # Build query based on permissions
-        # Only show all tasks if user is a leader AND explicitly requests it with view_all=true
-        if is_leader and view_all:
-            query = {}
-        else:
-            # Always filter by specific user email (current user or specified user)
-            query = {"assignedfor": user_email}
-        
-        # Fetch tasks
-        cursor = tasks_collection.find(query)
-        all_tasks = []
-        
-        async for task in cursor:
-            task_date_str = task.get("followup_date")
-            task_datetime = None
-            
-            # Parse followup_date
-            if task_date_str:
-                if isinstance(task_date_str, datetime):
-                    task_datetime = task_date_str
-                else:
-                    try:
-                        task_datetime = datetime.fromisoformat(task_date_str)
-                        task_datetime = task_datetime.astimezone(timezone)
-                    except ValueError:
-                        logging.warning(f"Invalid date format: {task_date_str}")
-                        continue
-            
-            all_tasks.append({
-                "_id": str(task["_id"]),
-                "name": task.get("name", "Unnamed Task"),
-                "taskType": task.get("taskType", ""),
-                "followup_date": task_datetime.isoformat() if task_datetime else None,
-                "status": task.get("status", "Open"),
-                "assignedfor": task.get("assignedfor", ""),
-                "type": task.get("type", "call"),
-                "contacted_person": task.get("contacted_person", {}),
-                "isRecurring": bool(task.get("recurring_day")),
-            })
-        
-        # Sort by date (newest first)
-        all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
-        
-        return {
-            "user_email": user_email if not view_all else "all_users",
-            "total_tasks": len(all_tasks),
-            "tasks": all_tasks,
-            "status": "success",
-            "is_leader_view": is_leader and view_all
+        # Build MongoDB query to find all disciples
+        match_stage = {
+            "$or": [
+                {"leader @1": {"$regex": f"^{leader_full_name}$", "$options": "i"}},
+                {"leader @12": {"$regex": f"^{leader_full_name}$", "$options": "i"}},
+                {"leader @144": {"$regex": f"^{leader_full_name}$", "$options": "i"}},
+                {"leader @1278": {"$regex": f"^{leader_full_name}$", "$options": "i"}}
+            ]
         }
         
+        # Aggregation pipeline for deduplication
+        pipeline = [
+            {"$match": match_stage},
+            {
+                "$group": {
+                    "_id": {"$toLower": "$email"},
+                    "doc": {"$first": "$$ROOT"}
+                }
+            },
+            {"$replaceRoot": {"newRoot": "$doc"}}
+        ]
+        
+        cursor = users_collection.aggregate(pipeline, allowDiskUse=True)
+        disciples = await cursor.to_list(length=None)
+        
+        return [{"email": d.get("email")} for d in disciples if d.get("email")]
+        
     except Exception as e:
-        logging.error(f"Error in get_user_tasks: {e}")
-        return {"error": str(e), "status": "failed"}  
-     
+        print(f"Error fetching disciples: {e}")
+        return []
+
+
+# @app.get("/tasks")
+# async def get_user_tasks(
+#     email: str = Query(None),
+#     userId: str = Query(None),
+#     view_all: bool = Query(False),
+#     view_disciples: bool = Query(False),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         # Check if current user is a leader
+#         is_leader = current_user.get("role") in ["admin", "leader", "user"]
+        
+#         # Determine user email based on parameters or current user
+#         user_email = None
+#         if email:
+#             user_email = email
+#         elif userId:
+#             user = await users_collection.find_one({"_id": ObjectId(userId)})
+#             if user:
+#                 user_email = user.get("email")
+#         else:
+#             # No parameters provided - use current user's email
+#             user_email = current_user.get("email")
+        
+#         if not user_email:
+#             return {"error": "User email not found", "status": "failed"}
+        
+#         timezone = pytz.timezone("Africa/Johannesburg")
+        
+#         # Build query based on permissions
+#         query = {}
+#         if is_leader and view_all:
+#             # Admin/Leader viewing all tasks
+#             query = {}
+#         elif is_leader and view_disciples:
+#             # Leader viewing tasks of all their disciples
+#             disciples = await get_all_disciples_for_leader(user_email, users_collection)
+#             disciple_emails = [d["email"] for d in disciples]
+#             disciple_emails.append(user_email)  # Include leader's own tasks
+#             query = {"assignedfor": {"$in": disciple_emails}}
+#         else:
+#             # View specific user's tasks or own tasks
+#             query = {"assignedfor": user_email}
+        
+#         # Fetch tasks
+#         cursor = tasks_collection.find(query)
+#         all_tasks = []
+        
+#         async for task in cursor:
+#             task_date_str = task.get("followup_date")
+#             task_datetime = None
+            
+#             # Parse followup_date
+#             if task_date_str:
+#                 if isinstance(task_date_str, datetime):
+#                     task_datetime = task_date_str
+#                 else:
+#                     try:
+#                         task_datetime = datetime.fromisoformat(task_date_str)
+#                         task_datetime = task_datetime.astimezone(timezone)
+#                     except ValueError:
+#                         logging.warning(f"Invalid date format: {task_date_str}")
+#                         continue
+            
+#             all_tasks.append({
+#                 "_id": str(task["_id"]),
+#                 "name": task.get("name", "Unnamed Task"),
+#                 "taskType": task.get("taskType", ""),
+#                 "followup_date": task_datetime.isoformat() if task_datetime else None,
+#                 "status": task.get("status", "Open"),
+#                 "assignedfor": task.get("assignedfor", ""),
+#                 "type": task.get("type", "call"),
+#                 "contacted_person": task.get("contacted_person", {}),
+#                 "isRecurring": bool(task.get("recurring_day")),
+#             })
+        
+#         # Sort by date (newest first)
+#         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
+        
+#         view_type = "all_users" if view_all else ("disciples" if view_disciples else user_email)
+        
+#         return {
+#             "user_email": view_type,
+#             "total_tasks": len(all_tasks),
+#             "tasks": all_tasks,
+#             "status": "success",
+#             "is_leader_view": is_leader and (view_all or view_disciples)
+#         }
+        
+#     except Exception as e:
+#         logging.error(f"Error in get_user_tasks: {e}")
+#         return {"error": str(e), "status": "failed"}
+    
+         
 # --- GET all task types ---
 @app.get("/tasktypes", response_model=List[TaskTypeOut])
 async def get_task_types():
@@ -5588,10 +5646,156 @@ async def update_task(task_id: str, updated_task: dict):
     except Exception as e:
         print(f"Error updating task: {str(e)}")  # Log the error
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
+async def get_all_disciples_for_leader(leader_email: str, users_collection):
+    """Get all disciples for a leader by querying the users collection"""
+    try:
+        # Get leader details
+        leader = await users_collection.find_one({"email": leader_email})
+        if not leader:
+            return []
+        
+        leader_name = leader.get("name", "").strip()
+        leader_surname = leader.get("surname", "").strip()
+        
+        if not leader_name or not leader_surname:
+            return []
+        
+        leader_full_name = f"{leader_name} {leader_surname}"
+        
+        # Build MongoDB query to find all disciples
+        match_stage = {
+            "$or": [
+                {"leader @1": {"$regex": f"^{leader_full_name}$", "$options": "i"}},
+                {"leader @12": {"$regex": f"^{leader_full_name}$", "$options": "i"}},
+                {"leader @144": {"$regex": f"^{leader_full_name}$", "$options": "i"}},
+                {"leader @1278": {"$regex": f"^{leader_full_name}$", "$options": "i"}}
+            ]
+        }
+        
+        # Aggregation pipeline for deduplication
+        pipeline = [
+            {"$match": match_stage},
+            {
+                "$group": {
+                    "_id": {"$toLower": "$email"},
+                    "doc": {"$first": "$$ROOT"}
+                }
+            },
+            {"$replaceRoot": {"newRoot": "$doc"}}
+        ]
+        
+        cursor = users_collection.aggregate(pipeline, allowDiskUse=True)
+        disciples = await cursor.to_list(length=None)
+        
+        return [{"email": d.get("email")} for d in disciples if d.get("email")]
+        
+    except Exception as e:
+        print(f"Error fetching disciples: {e}")
+        return []
 
+
+@app.get("/tasks")
+async def get_user_tasks(
+    email: str = Query(None),
+    user_email: str = Query(None),  # Support both email and user_email
+    userId: str = Query(None),
+    view_all: bool = Query(False),
+    view_disciples: bool = Query(False),
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        # Check if current user is a leader
+        is_leader = current_user.get("role") in ["admin", "leader", "user"]
+        
+        # Determine user email based on parameters or current user
+        target_email = None
+        if email:
+            target_email = email
+        elif user_email:  # Support user_email parameter
+            target_email = user_email
+        elif userId:
+            user = await users_collection.find_one({"_id": ObjectId(userId)})
+            if user:
+                target_email = user.get("email")
+        else:
+            # No parameters provided - use current user's email
+            target_email = current_user.get("email")
+        
+        if not target_email:
+            return {"error": "User email not found", "status": "failed"}
+        
+        timezone = pytz.timezone("Africa/Johannesburg")
+        
+        # Build query based on permissions
+        query = {}
+        if is_leader and view_all:
+            # Admin/Leader viewing all tasks
+            query = {}
+        elif is_leader and view_disciples:
+            # Leader viewing tasks of all their disciples
+            disciples = await get_all_disciples_for_leader(target_email, users_collection)
+            disciple_emails = [d["email"] for d in disciples]
+            disciple_emails.append(target_email)  # Include leader's own tasks
+            query = {"assignedfor": {"$in": disciple_emails}}
+        else:
+            # View specific user's tasks or own tasks
+            query = {"assignedfor": target_email}
+        
+        # Fetch tasks
+        cursor = tasks_collection.find(query)
+        all_tasks = []
+        
+        async for task in cursor:
+            task_date_str = task.get("followup_date")
+            task_datetime = None
+            
+            # Parse followup_date
+            if task_date_str:
+                if isinstance(task_date_str, datetime):
+                    task_datetime = task_date_str
+                else:
+                    try:
+                        task_datetime = datetime.fromisoformat(task_date_str)
+                        task_datetime = task_datetime.astimezone(timezone)
+                    except ValueError:
+                        logging.warning(f"Invalid date format: {task_date_str}")
+                        continue
+            
+            all_tasks.append({
+                "_id": str(task["_id"]),
+                "name": task.get("name", "Unnamed Task"),
+                "taskType": task.get("taskType", ""),
+                "followup_date": task_datetime.isoformat() if task_datetime else None,
+                "status": task.get("status", "Open"),
+                "assignedfor": task.get("assignedfor", ""),
+                "type": task.get("type", "call"),
+                "contacted_person": task.get("contacted_person", {}),
+                "isRecurring": bool(task.get("recurring_day")),
+            })
+        
+        # Sort by date (newest first)
+        all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
+        
+        view_type = "all_users" if view_all else ("disciples" if view_disciples else target_email)
+        
+        return {
+            "user_email": view_type,
+            "total_tasks": len(all_tasks),
+            "tasks": all_tasks,
+            "status": "success",
+            "is_leader_view": is_leader and (view_all or view_disciples)
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in get_user_tasks: {e}")
+        return {"error": str(e), "status": "failed"}     
+       
+# ------------------------------------------------------------
 # STATS ENDPOINTS
 # Add to your FastAPI backend
 # Add to your main.py or stats endpoints file
+# ------------------------------------------------------------
 
 from datetime import datetime, timedelta
 from collections import defaultdict
