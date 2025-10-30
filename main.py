@@ -119,17 +119,11 @@ async def signup(user: UserCreate):
     # Normalize email
     email = user.email.lower().strip()
     
-    # Check if user already exists
+    # Check if user already exists in Users collection ONLY
     existing = await db["Users"].find_one({"email": email})
     if existing:
         logger.warning(f"Signup failed - email already registered: {email}")
         raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Check if person with this email already exists
-    existing_person = await people_collection.find_one({"Email": email})
-    if existing_person:
-        logger.warning(f"Signup failed - person with email already exists: {email}")
-        raise HTTPException(status_code=400, detail="A person with this email already exists")
 
     # Hash password
     hashed = hash_password(user.password)
