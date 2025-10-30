@@ -24,6 +24,8 @@ from fastapi import File, UploadFile
 from fastapi.security import HTTPBearer
 oauth2_scheme = HTTPBearer()
 from passlib.context import CryptContext
+import json
+from fastapi import Request
 
 app = FastAPI()
 # app.add_middleware(
@@ -87,11 +89,6 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
-# JWT expiration
-JWT_EXPIRE_MINUTES = 60
-REFRESH_TOKEN_EXPIRE_DAYS = 30
-
-
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth")
@@ -109,7 +106,7 @@ app.add_middleware(
 oauth2_scheme = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
 # ---------------- Signup ----------------
@@ -5157,47 +5154,191 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "profile_picture": user.get("profile_picture", ""),
     }
 
-@app.put("/profile/{user_id}", response_model=UserProfile)
+@app.put("/profile/{user_id}")
 async def update_profile(
     user_id: str, 
-    profile_update: UserProfileUpdate = Body(...),
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
-    """Update user profile - uses consistent authentication"""
-    # Verify user owns this account
-    token_user_id = current_user.get("user_id")
+    """Complete working profile update endpoint"""
+    try:
+        print(f"🎯 PROFILE UPDATE ENDPOINT CALLED")
+        print(f"🔐 User ID from URL: {user_id}")
+        print(f"🔐 Current User ID from Token: {current_user.get('user_id')}")
+        
+        # Check authorization
+        token_user_id = current_user.get("user_id")
+        if not token_user_id or token_user_id != user_id:
+            print(f"❌ AUTHORIZATION FAILED: {token_user_id} != {user_id}")
+            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        # Get and parse request body
+        body = await request.body()
+        body_str = body.decode('utf-8')
+        print(f"📦 RAW REQUEST BODY: {body_str}")
+        
+        try:
+            update_data = json.loads(body_str)
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON PARSE ERROR: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+
+        print(f"📋 PARSED UPDATE DATA: {update_data}")
+
+        # Check if user exists
+        existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not existing_user:
+            print(f"❌ USER NOT FOUND: {user_id}")
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Build update payload - handle all possible field names
+        update_payload = {}
+        
+        # Field mapping from frontend to database
+        field_mapping = {
+            # Direct mappings
+            "name": "name",
+            "surname": "surname", 
+            "email": "email",
+            "date_of_birth": "date_of_birth",
+            "home_address": "home_address",
+            "phone_number": "phone_number",
+            "invited_by": "invited_by",
+            "gender": "gender",
+            "profile_picture": "profile_picture",
+            
+            # Alternative field names from frontend
+            "dob": "date_of_birth",
+            "address": "home_address",
+            "invitedBy": "invited_by", 
+            "phone": "phone_number"
+        }
+        
+        # Map all fields
+        for frontend_field, db_field in field_mapping.items():
+            if frontend_field in update_data:
+                value = update_data[frontend_field]
+                if value is not None and value != "":
+                    # Normalize gender values
+                    if db_field == "gender":
+                        value = normalize_gender_value(value)
+                    
+                    update_payload[db_field] = value
+                    print(f"✅ Mapping {frontend_field} -> {db_field}: {value}")
+
+        # Add update timestamp
+        update_payload["updated_at"] = datetime.utcnow().isoformat()
+        
+        print(f"🚀 FINAL UPDATE PAYLOAD: {update_payload}")
+
+        if not update_payload:
+            print("⚠️ No fields to update")
+            return {
+                "message": "No changes to update",
+                "user": format_user_response(existing_user)
+            }
+
+        # Perform the update
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)}, 
+            {"$set": update_payload}
+        )
+
+        print(f"📊 UPDATE RESULT - matched: {result.matched_count}, modified: {result.modified_count}")
+
+        # Fetch and return updated user
+        updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not updated_user:
+            raise HTTPException(status_code=404, detail="User not found after update")
+
+        response_data = format_user_response(updated_user)
+        print(f"✅ UPDATE SUCCESSFUL: {response_data}")
+
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ UNEXPECTED ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+def normalize_gender_value(gender):
+    """Normalize gender values to consistent format"""
+    if not gender:
+        return gender
     
-    if not token_user_id or token_user_id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to update this profile")
-
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-
-    existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
-    if not existing_user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    update_data = profile_update.dict(exclude_unset=True)
-
-    # Update the user document in DB
-    await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
-
-    # Fetch updated user to return
-    updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
-
-    return {
-        "id": str(updated_user["_id"]),
-        "name": updated_user.get("name", ""),
-        "surname": updated_user.get("surname", ""),
-        "date_of_birth": updated_user.get("date_of_birth", ""),
-        "home_address": updated_user.get("home_address", ""),
-        "invited_by": updated_user.get("invited_by", ""),
-        "phone_number": updated_user.get("phone_number", ""),
-        "email": updated_user.get("email", ""),
-        "gender": updated_user.get("gender", ""),
-        "role": updated_user.get("role", "user"),
-        "profile_picture": updated_user.get("profile_picture", ""),
+    gender = str(gender).strip()
+    gender_map = {
+        'male': 'Male',
+        'female': 'Female',
+        'm': 'Male',
+        'f': 'Female',
+        'Male': 'Male',
+        'Female': 'Female',
+        'Other': 'Other',
+        'Prefer not to say': 'Prefer not to say'
     }
+    
+    return gender_map.get(gender, gender)
+
+def format_user_response(user):
+    """Format user document for response"""
+    return {
+        "id": str(user["_id"]),
+        "name": user.get("name", ""),
+        "surname": user.get("surname", ""),
+        "date_of_birth": user.get("date_of_birth", ""),
+        "home_address": user.get("home_address", ""),
+        "invited_by": user.get("invited_by", ""),
+        "phone_number": user.get("phone_number", ""),
+        "email": user.get("email", ""),
+        "gender": normalize_gender_value(user.get("gender", "")),
+        "role": user.get("role", "user"),
+        "profile_picture": user.get("profile_picture", ""),
+    }
+
+# Debug endpoint
+@app.put("/profile/{user_id}/debug")
+async def debug_profile_update(
+    user_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Debug endpoint to see what's happening"""
+    try:
+        body = await request.body()
+        body_str = body.decode('utf-8')
+        
+        return {
+            "message": "Debug info",
+            "user_id_from_url": user_id,
+            "user_id_from_token": current_user.get("user_id"),
+            "authorized": current_user.get("user_id") == user_id,
+            "raw_body": body_str,
+            "current_user_email": current_user.get("email")
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# Test endpoint
+@app.get("/profile/{user_id}/test")
+async def test_profile_access(
+    user_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Test if profile access works"""
+    return {
+        "message": "Profile test",
+        "user_id": user_id,
+        "current_user": current_user.get("user_id"),
+        "authorized": current_user.get("user_id") == user_id
+    }
+    
 
 @app.post("/users/{user_id}/avatar")
 async def upload_avatar(

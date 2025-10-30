@@ -204,20 +204,7 @@ class UserProfile(BaseModel):
     gender: str
     role: Optional[str] = "user"
 
-
-class UserProfileUpdate(BaseModel):
-    name: Optional[str]
-    surname: Optional[str]
-    date_of_birth: Optional[str]  # or date/datetime if you're parsing it
-    home_address: Optional[str]
-    invited_by: Optional[str]
-    phone_number: Optional[str]
-    email: Optional[EmailStr]
-    gender: Optional[str]
-
-
 # ===== Cell Events =====
-
 class CellEventCreate(BaseModel):
     service_name: str
     leader_id: str
