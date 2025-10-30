@@ -109,16 +109,16 @@ class AttendanceSubmission(BaseModel):
     
 # Adding new Person in the Event screen
 class PersonCreate(BaseModel):
-    invitedBy: str
     name: str
     surname: str
-    gender: str
     email: str
     number: str
-    dob: str
     address: str
-    leaders: list[str]
-    stage: Literal["Win"]
+    gender: str
+    dob: str
+    invitedBy: str
+    leaders: List[str]  
+    stage: str = "Win"
 
 
 # ===== EventTypes =====
@@ -328,18 +328,6 @@ class TaskUpdate(BaseModel):
     status: Optional[str]
     type: Optional[str]
 
-    # Adding new Person in the Event screen
-class PersonCreate(BaseModel):
-    invitedBy: str
-    name: str
-    surname: str
-    gender: str
-    email: str
-    number: str
-    dob: str
-    address: str
-    leaders: list[str]
-    stage: Literal["Win"]
 
 # Models for profile- dont modify
 class UserProfile(BaseModel):
