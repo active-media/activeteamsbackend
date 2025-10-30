@@ -30,6 +30,7 @@ class UserLogin(BaseModel):
 
 # ===== Event Models =====
 class EventBase(BaseModel):
+    UUID: Optional[str] = None 
     eventType: str
     eventName: str
     date: Optional[datetime] = None
@@ -86,14 +87,13 @@ class Attendee(BaseModel):
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional
 
-# ===== FIXED AttendanceSubmission Model =====
-# ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
     isTicketed: bool = False
+    status: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_attendance(self):
@@ -132,6 +132,7 @@ class EventTypeCreate(BaseModel):
 
 
 class EventUpdate(BaseModel):
+    UUID: Optional[str] = None
     eventType: Optional[str] = None
     eventName: Optional[str] = None
     date: Optional[datetime] = None
@@ -157,7 +158,8 @@ class EventUpdate(BaseModel):
     price: Optional[float] = None
 
 class EventInDB(EventBase):
-    _id: str  # MongoDB ObjectId as string
+    _id: str 
+    UUID: str 
     attendees: List[dict] = []
     total_attendance: int = 0
 
@@ -178,24 +180,6 @@ class TokenResponse(BaseModel):
 class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
-
-# ===== Event Models =====
-class EventBase(BaseModel):
-    eventType: str
-    eventName: str
-    date: Optional[datetime] = None
-    time: Optional[str] = None
-    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
-    location: str
-    eventLeader: Optional[str] = None
-    description: Optional[str] = None
-    isTicketed: bool = False
-    price: Optional[float] = None  # Allow null values
-    userEmail: Optional[str] = None  # Add this field your frontend sends
-    # Add any other fields your frontend might send
-class EventCreate(EventBase):
-    """Schema for creating events (inherits from EventBase)."""
-    pass
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     formatted = [
