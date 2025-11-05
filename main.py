@@ -5,7 +5,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depend
 from fastapi.responses import JSONResponse
 
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut 
+from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut 
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer
 import math
 import secrets
@@ -8014,10 +8014,13 @@ async def create_consolidation(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Create a new consolidation record and associated task
+    Create a new consolidation record and associated task assigned to the leader
     """
     try:
         consolidation_id = str(ObjectId())
+        
+        print(f"🎯 Creating consolidation for: {consolidation.person_name} {consolidation.person_surname}")
+        print(f"👥 Assigned to leader: {consolidation.assigned_to} (email: {consolidation.assigned_to_email})")
         
         # 1. Create or find the person
         person_email = consolidation.person_email
@@ -8034,6 +8037,7 @@ async def create_consolidation(
         person_id = None
         if existing_person:
             person_id = str(existing_person["_id"])
+            print(f"✅ Found existing person: {person_id}")
             # Update existing person
             update_data = {
                 "Stage": "Consolidate",
@@ -8103,9 +8107,40 @@ async def create_consolidation(
             
             result = await people_collection.insert_one(person_doc)
             person_id = str(result.inserted_id)
+            print(f"✅ Created new person: {person_id}")
 
-        # 2. Create task
+        # 2. FIND OR CREATE LEADER'S USER ACCOUNT
+        leader_email = consolidation.assigned_to_email
+        leader_user_id = None
+        
+        if not leader_email:
+            # Try to find leader's email from people collection
+            leader_person = await people_collection.find_one({
+                "$or": [
+                    {"Name": consolidation.assigned_to},
+                    {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, consolidation.assigned_to]}}
+                ]
+            })
+            if leader_person:
+                leader_email = leader_person.get("Email")
+                print(f"✅ Found leader email from people collection: {leader_email}")
+        
+        if leader_email:
+            # Find leader's user account
+            leader_user = await users_collection.find_one({"email": leader_email})
+            if leader_user:
+                leader_user_id = str(leader_user["_id"])
+                print(f"✅ Found leader user account: {leader_email} (ID: {leader_user_id})")
+            else:
+                print(f"⚠️ Leader {consolidation.assigned_to} has no user account with email: {leader_email}")
+        else:
+            print(f"⚠️ Could not find email for leader: {consolidation.assigned_to}")
+
+        # 3. Create task assigned to the leader
         decision_display_name = "First Time Decision" if consolidation.decision_type == DecisionType.FIRST_TIME else "Recommitment"
+        
+        # Use leader's email for assignment, fallback to leader's name
+        assigned_for = leader_email if leader_email else consolidation.assigned_to
         
         task_doc = {
             "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
@@ -8113,7 +8148,9 @@ async def create_consolidation(
             "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date}",
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
-            "assignedfor": consolidation.assigned_to,
+            "assignedfor": assigned_for,  # Assign to leader's email or name
+            "assigned_to_email": leader_email,
+            "assigned_to_user_id": leader_user_id,
             "type": "followup",
             "priority": "high",
             "consolidation_id": consolidation_id,
@@ -8128,13 +8165,16 @@ async def create_consolidation(
                 "phone": consolidation.person_phone or ""
             },
             "created_at": datetime.utcnow().isoformat(),
-            "created_by": current_user.get("email", "")
+            "created_by": current_user.get("email", ""),
+            "is_consolidation_task": True,
+            "leader_assigned": consolidation.assigned_to
         }
 
         task_result = await tasks_collection.insert_one(task_doc)
         task_id = str(task_result.inserted_id)
+        print(f"✅ Created consolidation task: {task_id} assigned to {assigned_for}")
 
-        # 3. Add to event attendees
+        # 4. Add to event attendees
         if consolidation.event_id and ObjectId.is_valid(consolidation.event_id):
             attendee_record = {
                 "id": person_id,
@@ -8146,7 +8186,9 @@ async def create_consolidation(
                 "decision_display": decision_display_name,
                 "time": datetime.utcnow().isoformat(),
                 "is_consolidation": True,
-                "consolidation_id": consolidation_id
+                "consolidation_id": consolidation_id,
+                "assigned_leader": consolidation.assigned_to,
+                "assigned_leader_email": leader_email
             }
 
             await events_collection.update_one(
@@ -8156,8 +8198,9 @@ async def create_consolidation(
                     "$inc": {"total_attendance": 1}
                 }
             )
+            print(f"✅ Added to event attendees: {consolidation.event_id}")
 
-        # 4. Create consolidation record
+        # 5. Create consolidation record
         consolidation_doc = {
             "_id": ObjectId(consolidation_id),
             "person_id": person_id,
@@ -8169,6 +8212,8 @@ async def create_consolidation(
             "decision_display_name": decision_display_name,
             "decision_date": consolidation.decision_date,
             "assigned_to": consolidation.assigned_to,
+            "assigned_to_email": leader_email,
+            "assigned_to_user_id": leader_user_id,
             "event_id": consolidation.event_id,
             "notes": consolidation.notes,
             "created_by": current_user.get("email", ""),
@@ -8179,19 +8224,58 @@ async def create_consolidation(
 
         consolidations_collection = db["consolidations"]
         await consolidations_collection.insert_one(consolidation_doc)
+        print(f"✅ Created consolidation record: {consolidation_id}")
 
         return {
-            "message": f"{decision_display_name} recorded successfully",
+            "message": f"{decision_display_name} recorded successfully and assigned to {consolidation.assigned_to}",
             "consolidation_id": consolidation_id,
             "person_id": person_id,
             "task_id": task_id,
             "decision_type": consolidation.decision_type.value,
+            "assigned_to": consolidation.assigned_to,
+            "assigned_to_email": leader_email,
+            "leader_user_id": leader_user_id,
             "success": True
         }
 
     except Exception as e:
-        print(f"Error creating consolidation: {str(e)}")
+        print(f"❌ Error creating consolidation: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
+@app.get("/tasks/leader/{leader_email}")
+async def get_leader_tasks(
+    leader_email: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all consolidation tasks assigned to a specific leader"""
+    try:
+        # Find consolidation tasks assigned to this leader
+        tasks = await tasks_collection.find({
+            "is_consolidation_task": True,
+            "$or": [
+                {"assigned_to_email": leader_email},
+                {"assignedfor": leader_email},
+                {"assignedfor": {"$regex": f"^{leader_email}$", "$options": "i"}},
+                {"leader_assigned": {"$regex": f"^{leader_email}$", "$options": "i"}}
+            ]
+        }).to_list(length=None)
+        
+        # Format response
+        formatted_tasks = []
+        for task in tasks:
+            task["_id"] = str(task["_id"])
+            formatted_tasks.append(task)
+        
+        return {
+            "leader_email": leader_email,
+            "total_tasks": len(formatted_tasks),
+            "tasks": formatted_tasks
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/consolidations")
 async def get_consolidations(
@@ -8434,6 +8518,8 @@ async def get_event_consolidations(event_id: str = Path(...)):
 
 @app.get("/events/{event_id}/new-people")
 async def get_event_new_people(event_id: str = Path(...)):
+    
+    
     """Get attendees who are not yet in the people collection"""
     try:
         if not ObjectId.is_valid(event_id):
