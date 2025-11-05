@@ -411,6 +411,13 @@ def convert_datetime_to_iso(doc):
         return doc.isoformat()
     else:
         return doc
+    
+def get_current_week_identifier():
+    """Get current week identifier in format YYYY-WW"""
+    now = datetime.utcnow()
+    year = now.isocalendar()[0]
+    week = now.isocalendar()[1]
+    return f"{year}-W{week:02d}"
 
 # EVENTS ENDPOINTS
 @app.post("/events")
@@ -944,9 +951,7 @@ def get_actual_event_status(event: dict, today: date) -> str:
     """
     ✅ FIXED: Correct status detection based on CURRENT WEEK ONLY
     - Checks if attendance was captured for THIS WEEK
-    - If no attendance for this week = incomplete
-    - If attendance captured this week = complete
-    - If marked did_not_meet this week = did_not_meet
+    - Persistent attendee list does NOT mean the event is complete
     """
     current_week = get_current_week_identifier()
     
@@ -964,16 +969,17 @@ def get_actual_event_status(event: dict, today: date) -> str:
         if week_status == "did_not_meet":
             return "did_not_meet"
         
-        # Only mark as complete if status is "complete" AND has attendees
-        if week_status == "complete" and len(week_data.get("attendees", [])) > 0:
-            return "complete"
-        else:
-            return "incomplete"
+        # Only mark as complete if status is "complete" AND has checked-in attendees
+        if week_status == "complete":
+            checked_in_count = len([a for a in week_data.get("attendees", []) if a.get("checked_in", False)])
+            if checked_in_count > 0:
+                return "complete"
+            else:
+                print(f"   ⚠️ Week marked complete but no checked-in attendees")
+                return "incomplete"
+        
+        return "incomplete"
     
-    # No data for current week = incomplete
-    print(f"   ✗ No current week data - Status: incomplete")
-    return "incomplete"
-
 def parse_event_date(event_date_field, default_date: date) -> date:
     """
     ✅ FIXED: Parse event date from various formats including "DD - MM - YYYY"
@@ -2362,9 +2368,6 @@ async def get_events_status_counts(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# Replace your /events endpoint with this fixed version
-
 @app.get("/events")
 async def get_events(
     current_user: dict = Depends(get_current_user),
@@ -2377,10 +2380,10 @@ async def get_events(
     start_date: Optional[str] = Query('2025-10-27')
 ):
     """
-    ✅ Updated: Shows Leaders @12 and dynamically assigns Leader @1 if missing
+    ✅ FIXED: No duplicate cells - proper recurring event handling with attendee persistence
     """
     try:
-        print(f"\n🔍 GET /events - User: {current_user.get('email')}, Event Type: {event_type}, Status: {status}, Start: {start_date}")
+        print(f"\n🔍 GET /events - User: {current_user.get('email')}, Event Type: {event_type}, Status: {status}")
 
         user_role = current_user.get("role", "user").lower()
         email = current_user.get("email", "")
@@ -2392,8 +2395,9 @@ async def get_events(
             start_date_obj = datetime.strptime("2025-10-27", "%Y-%m-%d").date()
 
         today = date.today()
+        current_week = get_current_week_identifier()
 
-        # Base query
+        # ✅ FIXED: Get ALL events (not just templates) to prevent duplicates
         query = {"isEventType": {"$ne": True}}
 
         # Event type filtering
@@ -2404,6 +2408,7 @@ async def get_events(
             ]
             print(f"🎯 Filtering by specific event type: {event_type}")
         else:
+            # Default to Cells only for now
             query["$or"] = [
                 {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
                 {"eventType": {"$regex": "^Cells$", "$options": "i"}}
@@ -2462,27 +2467,11 @@ async def get_events(
 
         print(f"📋 Final query: {query}")
 
-        # Aggregation to eliminate duplicates
-        pipeline = [
-            {"$match": query},
-            {
-                "$group": {
-                    "_id": {
-                        "event_name": "$Event Name",
-                        "email": "$Email",
-                        "day": "$Day",
-                        "event_type": "$Event Type"
-                    },
-                    "doc": {"$first": "$$ROOT"}
-                }
-            },
-            {"$replaceRoot": {"newRoot": "$doc"}},
-            {"$sort": {"Event Type": 1, "Day": 1}}
-        ]
-        cursor = events_collection.aggregate(pipeline)
+        # ✅ FIXED: Get ALL events without aggregation (aggregation was causing duplicates)
+        cursor = events_collection.find(query).sort("Event Name", 1)
         all_events = await cursor.to_list(length=None)
 
-        print(f"📊 Found {len(all_events)} unique events after deduplication")
+        print(f"📊 Found {len(all_events)} events in database")
 
         # Day mapping
         day_map = {
@@ -2493,25 +2482,36 @@ async def get_events(
         instances = []
         today_weekday = today.weekday()
         week_start = today - timedelta(days=today_weekday)
-        week_end = week_start + timedelta(days=6)
 
-        print(f"📅 Current week: {week_start} to {week_end}")
+        print(f"📅 Current week: {week_start} to {week_start + timedelta(days=6)}")
+
+        # ✅ FIXED: Track processed event identifiers to prevent duplicates
+        processed_events = set()
 
         for event in all_events:
             try:
-                event_type_value = event.get("Event Type") or event.get("eventType", "Event")
+                event_id = str(event.get("_id"))
                 event_name = event.get("Event Name", "")
+                event_leader_email = event.get("Email", "")
+                
+                # ✅ CRITICAL: Create unique identifier for this event
+                # Use combination of name, email, and day to identify unique recurring events
+                event_identifier = f"{event_name}_{event_leader_email}_{event.get('Day', '')}"
+                
+                # Skip if we've already processed this event (prevents duplicates)
+                if event_identifier in processed_events:
+                    print(f"⚠️ Skipping duplicate event: {event_name} - {event_identifier}")
+                    continue
+                    
+                processed_events.add(event_identifier)
+
+                event_type_value = event.get("Event Type") or event.get("eventType", "Event")
                 is_cell_event = event_type_value.lower() in ["cells", "cell"]
 
                 day_name = str(event.get("Day", "")).lower().strip() if is_cell_event else "One-time"
-                if is_cell_event:
-                    if day_name not in day_map:
-                        continue
-                    target_weekday = day_map[day_name]
-                    event_date = week_start + timedelta(days=target_weekday)
-                    if event_date > today:
-                        continue
-                else:
+                
+                if not is_cell_event:
+                    # Handle one-time events
                     event_date_field = event.get("date") or event.get("Date Of Event")
                     if isinstance(event_date_field, datetime):
                         event_date = event_date_field.date()
@@ -2529,22 +2529,52 @@ async def get_events(
                                 continue
                     else:
                         continue
-                if event_date < start_date_obj:
-                    continue
+                    
+                    if event_date < start_date_obj:
+                        continue
+                else:
+                    # Handle recurring cell events - show ONLY current week's instance
+                    if day_name not in day_map:
+                        continue
+                    target_weekday = day_map[day_name]
+                    event_date = week_start + timedelta(days=target_weekday)
+                    
+                    # Only show events for today or past days in current week
+                    if event_date > today:
+                        continue
 
-                # Determine status
-                did_not_meet = event.get("did_not_meet", False)
-                attendees = event.get("attendees", [])
-                has_attendees = len(attendees) > 0
+                # ✅ Get attendance status for THIS WEEK
+                attendance_data = event.get("attendance", {})
+                current_week_attendance = attendance_data.get(current_week, {})
+                
+                # Determine status based on CURRENT WEEK'S attendance
+                did_not_meet = current_week_attendance.get("status") == "did_not_meet"
+                weekly_attendees = current_week_attendance.get("attendees", [])
+                has_weekly_attendees = len(weekly_attendees) > 0
+                
                 if did_not_meet:
                     event_status = "did_not_meet"
-                elif has_attendees:
+                elif has_weekly_attendees:
                     event_status = "complete"
                 else:
                     event_status = "incomplete"
 
+                # Apply status filter
                 if status and status != 'all' and status != event_status:
                     continue
+
+                # ✅ Get persistent attendees (Common Attendee Pool)
+                persistent_attendees = event.get("persistent_attendees", [])
+                
+                # ✅ If no persistent attendees but we have previous attendance, use that
+                if not persistent_attendees and attendance_data:
+                    # Get most recent week's attendees to populate persistent list
+                    recent_weeks = sorted(attendance_data.keys(), reverse=True)
+                    for week in recent_weeks:
+                        week_data = attendance_data[week]
+                        if week_data.get("attendees"):
+                            persistent_attendees = week_data["attendees"]
+                            break
 
                 # 🔹 Dynamically assign Leader @1 if missing
                 leader1_value = event.get("leader1", "")
@@ -2567,21 +2597,26 @@ async def get_events(
                             leader1_value = ""
 
                 instance = {
-                    "_id": str(event.get("_id")),
+                    "_id": event_id,
                     "eventName": event_name,
                     "eventType": event_type_value,
                     "eventLeaderName": event.get("Leader", ""),
-                    "eventLeaderEmail": event.get("Email", ""),
+                    "eventLeaderEmail": event_leader_email,
                     "leader1": leader1_value,
                     "leader12": event.get("Leader @12", ""),
                     "day": day_name.capitalize() if is_cell_event else "One-time",
                     "date": event_date.isoformat(),
                     "location": event.get("Location", ""),
-                    "attendees": attendees if isinstance(attendees, list) else [],
+                    # ✅ CURRENT WEEK'S checked-in attendees
+                    "attendees": weekly_attendees,
+                    # ✅ PERSISTENT attendee pool (for display in modal)
+                    "persistent_attendees": persistent_attendees,
                     "did_not_meet": did_not_meet,
                     "status": event_status,
                     "Status": event_status.replace("_", " ").title(),
-                    "_is_overdue": event_date < today and event_status == "incomplete"
+                    "_is_overdue": event_date < today and event_status == "incomplete",
+                    "is_recurring": is_cell_event,
+                    "week_identifier": current_week
                 }
 
                 instances.append(instance)
@@ -2597,6 +2632,9 @@ async def get_events(
         start_idx = (page - 1) * limit
         paginated = instances[start_idx:start_idx + limit]
 
+        print(f"✅ Final result: {len(instances)} unique events after processing")
+        print(f"✅ Duplicates prevented: {len(all_events) - len(instances)}")
+
         return {
             "events": paginated,
             "total_events": total,
@@ -2605,11 +2643,13 @@ async def get_events(
             "page_size": limit,
             "debug_info": {
                 "week_start": week_start.isoformat(),
-                "week_end": week_end.isoformat(),
+                "current_week": current_week,
                 "today": today.isoformat(),
                 "today_day": today.strftime("%A"),
                 "event_type_requested": event_type,
-                "event_types_found": list(set([e.get("eventType","") for e in instances]))
+                "database_events_count": len(all_events),
+                "processed_events_count": len(instances),
+                "duplicates_prevented": len(all_events) - len(instances)
             }
         }
 
@@ -2618,7 +2658,6 @@ async def get_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
     
 @app.post("/admin/cleanup-duplicate-cells")
 async def cleanup_duplicate_cells(current_user: dict = Depends(get_current_user)):
@@ -4592,221 +4631,224 @@ async def debug_cell_status(event_id: str):
     except Exception as e:
         return {"error": str(e)}
 
-
-
-
 @app.put("/submit-attendance/{event_id}")
-
 async def submit_attendance(
-
     event_id: str = Path(...),
-
-    submission: AttendanceSubmission = Body(...)
-
+    submission: dict = Body(...)  # ✅ Accept raw dict temporarily
 ):
-
     """
-
-    Submits attendance for an event, atomically tracking weekly history.
-
+    ✅ FIXED: Proper attendee persistence across recurring events
     """
-
     try:
+        print(f"🔍 DEBUG: Raw submission data received:")
+        print(f"   Event ID: {event_id}")
+        print(f"   Keys in submission: {list(submission.keys())}")
+        print(f"   Did not meet: {submission.get('did_not_meet')}")
+        print(f"   Leader email: {submission.get('leaderEmail')}")
+        print(f"   Leader name: {submission.get('leaderName')}")
+        print(f"   Is ticketed: {submission.get('isTicketed')}")
+        print(f"   Attendees count: {len(submission.get('attendees', []))}")
+        print(f"   All attendees count: {len(submission.get('all_attendees', []))}")
+        
+        if submission.get('attendees'):
+            print(f"🔍 First attendee structure: {submission['attendees'][0]}")
+        
+        # Convert to Pydantic model for validation
+        try:
+            submission_model = AttendanceSubmission(**submission)
+            print("✅ Pydantic validation passed")
+        except Exception as validation_error:
+            print(f"❌ Pydantic validation failed: {validation_error}")
+            # Return the validation error details
+            raise HTTPException(status_code=422, detail=str(validation_error))
 
+        # ✅ Now process with the validated model
         if not ObjectId.is_valid(event_id):
-
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
         
-
-        # 1. FETCH EVENT
-
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
-
         if not event:
-
             raise HTTPException(status_code=404, detail="Event not found")
-
         
-
         event_name = event.get("Event Name", "Unknown")
-
         current_week = get_current_week_identifier()
-
         
-
         print(f"🎯 SUBMIT ATTENDANCE for: {event_name} (Week: {current_week})")
-
+        print(f"📋 Received {len(submission_model.attendees)} checked-in attendees")
+        print(f"📋 Received {len(submission_model.all_attendees)} persistent attendees")
         
-
-        attendees_list = []
-
+        # ✅ Initialize attendance tracking if not exists
+        if "attendance" not in event:
+            event["attendance"] = {}
         
-
-        # 2. DETERMINE WEEKLY ATTENDANCE DATA
-
-        if submission.did_not_meet:
-
+        # ✅ Get Common Attendee Pool (persistent list)
+        common_attendee_pool = submission_model.all_attendees
+        
+        # If no common pool provided but we have existing persistent data, preserve it
+        if not common_attendee_pool:
+            common_attendee_pool = event.get("persistent_attendees", [])
+        
+        # ✅ CRITICAL FIX: Convert Pydantic models to dictionaries for MongoDB
+        common_attendee_pool_dict = [attendee.model_dump() for attendee in common_attendee_pool]
+        
+        # ✅ Get checked-in attendees for this week
+        checked_in_attendees = []
+        
+        if submission_model.did_not_meet:
             # Case 1: Did Not Meet
-
             weekly_attendance_entry = {
-
                 "status": "did_not_meet",
-
                 "attendees": [],
-
                 "submitted_at": datetime.utcnow(),
-
-                "submitted_by": submission.leaderEmail,
-
+                "submitted_by": submission_model.leaderEmail,
+                "common_attendee_pool_count": len(common_attendee_pool_dict)  # ← Use dict version
             }
-
-            print(f"🔴 MARKING AS DID NOT MEET for week {current_week}: {event_name}")
-
-
-            # Data to update main event fields
-
-            main_update_fields = {
-
-                "Status": "Did Not Meet",        
-
-                "status": "did_not_meet",
-
-                "did_not_meet": True,           
-
-                "attendees": [],               
-
-                "total_attendance": 0,           
-
-            }
-
+            print(f"🔴 MARKING AS DID NOT MEET for week {current_week}")
             
-
-        else:
-
-            # Case 2: Attendance Captured
-
-            for att in submission.attendees:
-
-                attendee_data = {
-
-                    "id": att.id,
-
-                    "name": att.name or att.fullName,
-
-                    "fullName": att.fullName or att.name,
-
-                    "leader12": att.leader12,
-
-                    "leader144": att.leader144,
-
-                    "time": att.time,
-
-                    "email": att.email,
-
-                    "phone": att.phone,
-
-                    "decision": att.decision
-
-                }
-
-                if submission.isTicketed:
-
-                    attendee_data.update({
-
-                        "priceTier": att.priceTier,
-
-                        "price": att.price,
-
-                        "ageGroup": att.ageGroup,
-
-                        "memberType": att.memberType,
-
-                        "paymentMethod": att.paymentMethod,
-
-                        "paid": att.paid,
-
-                        "owing": att.owing
-
-                    })
-                attendees_list.append(attendee_data)
-            weekly_attendance_entry = {
-                "status": "complete",
-                "attendees": attendees_list,
-                "submitted_at": datetime.utcnow(),
-                "submitted_by": submission.leaderEmail,
-
-            }
-            print(f"✅ MARKING AS COMPLETE for week {current_week}: {event_name} with {len(attendees_list)} attendees")
-            # Data to update main event fields
             main_update_fields = {
-
-                "Status": "Complete", 
-
-                "status": "complete", 
-
-                "did_not_meet": False, 
-
-                "attendees": attendees_list, # Current week's attendees for quick display/compatibility
-
-                "total_attendance": len(attendees_list),
-
+                "Status": "Did Not Meet",
+                "status": "did_not_meet",
+                "did_not_meet": True,
             }
+        
+        else:
+            # Case 2: Attendance Captured
+            for att in submission_model.attendees:
+                # Convert Pydantic model to dict and add additional fields
+                attendee_data = att.model_dump()
+                attendee_data.update({
+                    "checked_in": True,
+                    "check_in_date": datetime.utcnow().isoformat()
+                })
+                
+                if submission_model.isTicketed:
+                    attendee_data.update({
+                        "priceTier": att.priceTier,
+                        "price": att.price,
+                        "ageGroup": att.ageGroup,
+                        "memberType": att.memberType,
+                        "paymentMethod": att.paymentMethod,
+                        "paid": att.paid,
+                        "owing": att.owing
+                    })
+                
+                checked_in_attendees.append(attendee_data)
+            
+            # ✅ VALIDATION: Only mark as complete if we have checked-in attendees
+            if len(checked_in_attendees) == 0:
+                print(f"⚠️ No attendees checked in - keeping as incomplete")
+                weekly_attendance_entry = {
+                    "status": "incomplete",
+                    "attendees": [],
+                    "submitted_at": datetime.utcnow(),
+                    "submitted_by": submission_model.leaderEmail,
+                    "common_attendee_pool_count": len(common_attendee_pool_dict)  # ← Use dict version
+                }
+                
+                main_update_fields = {
+                    "Status": "Incomplete",
+                    "status": "incomplete",
+                    "did_not_meet": False,
+                }
+            else:
+                weekly_attendance_entry = {
+                    "status": "complete",
+                    "attendees": checked_in_attendees,
+                    "submitted_at": datetime.utcnow(),
+                    "submitted_by": submission_model.leaderEmail,
+                    "common_attendee_pool_count": len(common_attendee_pool_dict)  # ← Use dict version
+                }
+                print(f"✅ MARKING AS COMPLETE with {len(checked_in_attendees)} attendees")
+                
+                main_update_fields = {
+                    "Status": "Complete",
+                    "status": "complete",
+                    "did_not_meet": False,
+                }
+        
+        # ✅ Build update data with proper attendee persistence
         update_data = {
-
-            "Date Captured": datetime.now().strftime("%d %B %Y"), 
-
+            "Date Captured": datetime.now().strftime("%d %B %Y"),
             "updated_at": datetime.utcnow(),
-
-            **main_update_fields
-
+            **main_update_fields,
+            # ✅ CRITICAL FIX: Store Common Attendee Pool as dictionaries
+            "persistent_attendees": common_attendee_pool_dict,  # ← Now it's a list of dicts!
+            # ✅ Store this week's attendance data
+            f"attendance.{current_week}": weekly_attendance_entry
         }
-        update_data[f"attendance.{current_week}"] = weekly_attendance_entry
-
-        print(f"📤 Final Update payload keys: {list(update_data.keys())}")
+        
+        print(f"📤 Saving: {len(common_attendee_pool_dict)} persistent attendees, {len(checked_in_attendees)} checked-in attendees")
+        
         result = await events_collection.update_one(
-
             {"_id": ObjectId(event_id)},
-
             {"$set": update_data}
-
         )
-        print(f"📝 Database update result: matched={result.matched_count}, modified={result.modified_count}")
+        
+        print(f"📝 Database result: matched={result.matched_count}, modified={result.modified_count}")
+        
         if result.matched_count != 1:
-
-            # This should ideally not happen after the find_one check
-            raise HTTPException(status_code=500, detail="Failed to update event (match error)")
-
+            raise HTTPException(status_code=500, detail="Failed to update event")
+        
         return {
-            "message": "Success",
+            "message": "Attendance submitted successfully",
             "event_id": event_id,
             "status": weekly_attendance_entry["status"],
-            "did_not_meet": submission.did_not_meet,
-
-            "total_attendance": main_update_fields["total_attendance"],
-
+            "did_not_meet": submission_model.did_not_meet,
+            "checked_in_count": len(checked_in_attendees),
+            "persistent_attendees_count": len(common_attendee_pool_dict),  # ← Use dict version
             "week": current_week,
-
             "success": True
-
         }
+        
     except HTTPException:
-        # Re-raise HTTPExceptions (400, 404)
         raise
-
     except Exception as e:
         print(f"❌ Error in submit_attendance: {str(e)}")
-        # Log the full traceback for better debugging
         import traceback
-        traceback.print_exc() 
-        raise HTTPException(status_code=500, detail="Internal server error during attendance submission.")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
     
-def get_current_week_identifier():
-    """Get current week identifier in format YYYY-WW"""
-    now = datetime.utcnow()
-    year = now.isocalendar()[0]
-    week = now.isocalendar()[1]
-    return f"{year}-W{week:02d}"
+@app.get("/events/{event_id}/last-attendance")
+async def get_last_attendance(
+    event_id: str = Path(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get last week's attendance for pre-filling names"""
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Get persistent attendees first
+        persistent = event.get("persistent_attendees", [])
+        if persistent:
+            return {
+                "has_previous_attendance": True,
+                "attendees": persistent
+            }
+        
+        # If no persistent, try to find last week's data
+        attendance = event.get("attendance", {})
+        if not attendance:
+            return {"has_previous_attendance": False, "attendees": []}
+        
+        # Get most recent week
+        weeks = sorted(attendance.keys(), reverse=True)
+        if weeks:
+            last_week_data = attendance[weeks[0]]
+            return {
+                "has_previous_attendance": True,
+                "attendees": last_week_data.get("attendees", [])
+            }
+        
+        return {"has_previous_attendance": False, "attendees": []}
+        
+    except Exception as e:
+        print(f"Error getting last attendance: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def submit_attendance_handler(event_id: str, submission: AttendanceSubmission):

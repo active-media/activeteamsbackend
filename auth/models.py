@@ -89,6 +89,7 @@ from typing import List, Optional
 
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
+    all_attendees: List[Attendee] = Field(default_factory=list)
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
