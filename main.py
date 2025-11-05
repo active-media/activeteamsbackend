@@ -963,7 +963,7 @@ def get_actual_event_status(event: dict, today: date) -> str:
         week_data = event["attendance"][current_week]
         week_status = week_data.get("status", "incomplete")
         
-        print(f"   ✓ Found current week data - Status: {week_status}")
+        print(f"✓ Found current week data - Status: {week_status}")
         
         # Check if explicitly marked as did not meet
         if week_status == "did_not_meet":
