@@ -3,9 +3,8 @@ from datetime import datetime, timedelta, time, date
 from bson import ObjectId
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
-
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse
+from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer
 import math
 import secrets
@@ -102,7 +101,1093 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-# ---------------- Signup ----------------
+# # ---------------- Signup ----------------
+# # @app.post("/signup")
+# # async def signup(user: UserCreate):
+# #     logger.info(f"Signup attempt: {user.email}")
+    
+# #     # Normalize email
+# #     email = user.email.lower().strip()
+    
+# #     # Check if user already exists in Users collection ONLY
+# #     existing = await db["Users"].find_one({"email": email})
+# #     if existing:
+# #         logger.warning(f"Signup failed - email already registered: {email}")
+# #         raise HTTPException(status_code=400, detail="Email already registered")
+
+# #     # Hash password
+# #     hashed = hash_password(user.password)
+    
+# #     # Create user document
+# #     user_dict = {
+# #         "name": user.name,
+# #         "surname": user.surname,
+# #         "date_of_birth": user.date_of_birth,
+# #         "home_address": user.home_address,
+# #         "invited_by": user.invited_by,
+# #         "phone_number": user.phone_number,
+# #         "email": email,
+# #         "gender": user.gender,
+# #         "password": hashed,
+# #         "confirm_password": hashed,
+# #         "role": "user",
+# #         "created_at": datetime.utcnow().isoformat(),
+# #         "updated_at": datetime.utcnow().isoformat()
+# #     }
+    
+# #     # Insert user into Users collection
+# #     user_result = await db["Users"].insert_one(user_dict)
+# #     logger.info(f"User created successfully: {email}")
+    
+# #     # Find the inviter in the people collection to get their leader hierarchy
+# #     inviter_full_name = user.invited_by.strip()
+# #     leader1 = ""
+# #     leader12 = ""
+# #     leader144 = ""
+# #     leader1728 = ""
+    
+# #     if inviter_full_name:
+# #         # Try to find the inviter by matching full name
+# #         inviter = await people_collection.find_one({
+# #             "$expr": {
+# #                 "$eq": [
+# #                     {"$concat": ["$Name", " ", "$Surname"]},
+# #                     inviter_full_name
+# #                 ]
+# #             }
+# #         })
+        
+# #         if inviter:
+# #             # Get the inviter's leader hierarchy
+# #             inviter_leader1 = inviter.get("Leader @1", "")
+# #             inviter_leader12 = inviter.get("Leader @12", "")
+# #             inviter_leader144 = inviter.get("Leader @144", "")
+# #             inviter_leader1728 = inviter.get("Leader @1728", "")
+            
+# #             # Determine what level the inviter is at and set leaders accordingly
+# #             # Check from highest to lowest level
+# #             if inviter_leader1728:
+# #                 # Inviter is at @1728 level or below
+# #                 leader1 = inviter_leader1
+# #                 leader12 = inviter_leader12
+# #                 leader144 = inviter_leader144
+# #                 leader1728 = inviter_full_name
+# #             elif inviter_leader144:
+# #                 # Inviter is at @144 level
+# #                 leader1 = inviter_leader1
+# #                 leader12 = inviter_leader12
+# #                 leader144 = inviter_full_name
+# #                 leader1728 = ""
+# #             elif inviter_leader12:
+# #                 # Inviter is at @12 level
+# #                 leader1 = inviter_leader1
+# #                 leader12 = inviter_full_name
+# #                 leader144 = ""
+# #                 leader1728 = ""
+# #             elif inviter_leader1:
+# #                 # Inviter is at @1 level
+# #                 leader1 = inviter_full_name
+# #                 leader12 = ""
+# #                 leader144 = ""
+# #                 leader1728 = ""
+# #             else:
+# #                 # Inviter has no leaders (is a top-level leader @1)
+# #                 leader1 = inviter_full_name
+# #                 leader12 = ""
+# #                 leader144 = ""
+# #                 leader1728 = ""
+            
+# #             logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+# #         else:
+# #             logger.warning(f"Inviter '{inviter_full_name}' not found in people collection for {email}")
+# #             # If inviter not found, still set them as Leader @1 as fallback
+# #             leader1 = inviter_full_name
+    
+# #     # Create corresponding person record in People collection
+# #     person_doc = {
+# #         "Name": user.name.strip(),
+# #         "Surname": user.surname.strip(),
+# #         "Email": email,
+# #         "Number": user.phone_number.strip(),
+# #         "Address": user.home_address.strip(),
+# #         "Gender": user.gender.strip(),
+# #         "Birthday": user.date_of_birth,
+# #         "InvitedBy": inviter_full_name,
+# #         "Leader @1": leader1,
+# #         "Leader @12": leader12,
+# #         "Leader @144": leader144,
+# #         "Leader @1728": leader1728,
+# #         "Stage": "Win",  # New signups start at Win stage
+# #         "Date Created": datetime.utcnow().isoformat(),
+# #         "UpdatedAt": datetime.utcnow().isoformat(),
+# #         "user_id": str(user_result.inserted_id)  # Link to user account
+# #     }
+    
+# #     try:
+# #         person_result = await people_collection.insert_one(person_doc)
+# #         logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
+# #     except Exception as e:
+# #         logger.error(f"Failed to create person record for {email}: {e}")
+# #         # Note: User is already created at this point
+    
+# #     return {"message": "User created successfully"}
+# from typing import Dict, List, Optional
+# import asyncio
+# from datetime import datetime, timedelta
+
+# # Cache storage
+# people_cache = {
+#     "data": [],
+#     "last_updated": None,
+#     "expires_at": None,
+#     "is_loading": False
+# }
+
+# CACHE_DURATION_MINUTES = 30  # Cache for 30 minutes
+
+# @app.get("/cache/people")
+# async def get_cached_people():
+#     """
+#     Get cached people data for fast signup form
+#     """
+#     try:
+#         # Check if cache is still valid
+#         current_time = datetime.utcnow()
+#         if (people_cache["last_updated"] and 
+#             people_cache["expires_at"] and 
+#             current_time < people_cache["expires_at"] and 
+#             not people_cache["is_loading"]):
+            
+#             print(f"✅ Returning cached people data ({len(people_cache['data'])} people)")
+#             return {
+#                 "cached_data": people_cache["data"],
+#                 "cached_at": people_cache["last_updated"],
+#                 "expires_at": people_cache["expires_at"],
+#                 "source": "cache"
+#             }
+        
+#         # If cache is expired or empty, refresh it
+#         if not people_cache["is_loading"]:
+#             people_cache["is_loading"] = True
+#             try:
+#                 print("🔄 Cache miss - refreshing people data...")
+                
+#                 # Fetch minimal people data for signup form
+#                 projection = {
+#                     "_id": 1,
+#                     "Name": 1,
+#                     "Surname": 1,
+#                     "Email": 1,
+#                     "Number": 1,
+#                     "Leader @1": 1,
+#                     "Leader @12": 1,
+#                     "Leader @144": 1,
+#                     "Leader @1728": 1
+#                 }
+                
+#                 cursor = people_collection.find({}, projection).limit(2000)  # Increased limit
+#                 people_list = []
+                
+#                 async for person in cursor:
+#                     people_list.append({
+#                         "_id": str(person["_id"]),
+#                         "Name": person.get("Name", ""),
+#                         "Surname": person.get("Surname", ""),
+#                         "Email": person.get("Email", ""),
+#                         "Number": person.get("Number", ""),
+#                         "Leader @1": person.get("Leader @1", ""),
+#                         "Leader @12": person.get("Leader @12", ""),
+#                         "Leader @144": person.get("Leader @144", ""),
+#                         "Leader @1728": person.get("Leader @1728", ""),
+#                         "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+#                     })
+                
+#                 # Update cache
+#                 people_cache["data"] = people_list
+#                 people_cache["last_updated"] = current_time.isoformat()
+#                 people_cache["expires_at"] = (current_time + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+#                 people_cache["is_loading"] = False
+                
+#                 print(f"✅ Cache refreshed with {len(people_list)} people")
+                
+#                 return {
+#                     "cached_data": people_list,
+#                     "cached_at": people_cache["last_updated"],
+#                     "expires_at": people_cache["expires_at"],
+#                     "source": "database"
+#                 }
+                
+#             except Exception as e:
+#                 people_cache["is_loading"] = False
+#                 print(f"❌ Error refreshing cache: {str(e)}")
+#                 raise HTTPException(status_code=500, detail=f"Cache refresh failed: {str(e)}")
+        
+#         else:
+#             # Cache is currently being refreshed, wait a bit
+#             await asyncio.sleep(0.1)
+#             return await get_cached_people()
+            
+#     except Exception as e:
+#         print(f"❌ Error in cache endpoint: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+# @app.post("/cache/people/refresh")
+# async def refresh_people_cache():
+#     """
+#     Manually refresh the people cache
+#     """
+#     try:
+#         # Reset cache to force refresh
+#         people_cache["last_updated"] = None
+#         people_cache["expires_at"] = None
+#         people_cache["is_loading"] = False
+        
+#         print("🔄 Manual cache refresh triggered")
+        
+#         # Call the cache endpoint to refresh
+#         return await get_cached_people()
+        
+#     except Exception as e:
+#         print(f"❌ Error refreshing cache: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+# @app.get("/cache/people/stats")
+# async def get_cache_stats():
+#     """
+#     Get cache statistics
+#     """
+#     return {
+#         "cache_size": len(people_cache["data"]),
+#         "last_updated": people_cache["last_updated"],
+#         "expires_at": people_cache["expires_at"],
+#         "is_loading": people_cache["is_loading"],
+#         "cache_duration_minutes": CACHE_DURATION_MINUTES
+#     }
+    
+    
+# # Update the cache to handle unlimited people with pagination
+# CACHE_DURATION_MINUTES = 30  # Cache for 30 minutes
+# MAX_CACHE_SIZE = 50000  # Increased cache size limit
+
+# @app.get("/people/ultra-fast")
+# async def get_people_ultra_fast():
+#     """
+#     Ultra-fast people endpoint with minimal data for signup form
+#     Optimized for unlimited records with pagination
+#     """
+#     try:
+#         start_time = datetime.utcnow()
+#         print("🚀 ULTRA-FAST endpoint called - fetching ALL people...")
+        
+#         # Only fetch essential fields for signup - minimal data transfer
+#         projection = {
+#             "_id": 1,
+#             "Name": 1,
+#             "Surname": 1,
+#             "Email": 1,
+#             "Number": 1
+#         }
+        
+#         # Use aggregation pipeline for maximum performance
+#         pipeline = [
+#             {"$project": projection},
+#             {"$addFields": {
+#                 "FullName": {"$concat": ["$Name", " ", "$Surname"]},
+#                 "key": {"$toString": "$_id"}
+#             }}
+#             # REMOVED the limit to get ALL people
+#         ]
+        
+#         cursor = people_collection.aggregate(pipeline)
+#         people_list = await cursor.to_list(length=None)  # No limit - get all
+        
+#         end_time = datetime.utcnow()
+#         duration = (end_time - start_time).total_seconds()
+        
+#         print(f"⚡ ULTRA-FAST: Returned {len(people_list)} people in {duration:.2f} seconds")
+        
+#         return {
+#             "success": True,
+#             "results": people_list,
+#             "count": len(people_list),
+#             "duration_seconds": duration
+#         }
+        
+#     except Exception as e:
+#         print(f"❌ Error in ultra-fast endpoint: {str(e)}")
+#         return {
+#             "success": False,
+#             "error": str(e),
+#             "results": []
+#         }
+
+# @app.get("/people/batch")
+# async def get_people_batch(
+#     page: int = Query(1, ge=1),
+#     per_page: int = Query(2000, ge=500, le=5000)  # Increased batch size
+# ):
+#     """
+#     Batch endpoint for loading people in chunks
+#     Frontend can call this repeatedly until all data is loaded
+#     """
+#     try:
+#         skip = (page - 1) * per_page
+        
+#         projection = {
+#             "_id": 1,
+#             "Name": 1,
+#             "Surname": 1,
+#             "Email": 1,
+#             "Number": 1,
+#             "Leader @1": 1,
+#             "Leader @12": 1,
+#             "Leader @144": 1,
+#             "Leader @1728": 1
+#         }
+        
+#         # Get total count for progress tracking
+#         total_count = await people_collection.count_documents({})
+        
+#         cursor = people_collection.find({}, projection).skip(skip).limit(per_page)
+#         people_list = []
+        
+#         async for person in cursor:
+#             people_list.append({
+#                 "_id": str(person["_id"]),
+#                 "Name": person.get("Name", ""),
+#                 "Surname": person.get("Surname", ""),
+#                 "Email": person.get("Email", ""),
+#                 "Number": person.get("Number", ""),
+#                 "Leader @1": person.get("Leader @1", ""),
+#                 "Leader @12": person.get("Leader @12", ""),
+#                 "Leader @144": person.get("Leader @144", ""),
+#                 "Leader @1728": person.get("Leader @1728", ""),
+#                 "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+#             })
+        
+#         has_more = (skip + len(people_list)) < total_count
+#         loaded_so_far = skip + len(people_list)
+        
+#         print(f"📦 Batch {page}: {len(people_list)} people (Total: {loaded_so_far}/{total_count})")
+        
+#         return {
+#             "success": True,
+#             "results": people_list,
+#             "pagination": {
+#                 "page": page,
+#                 "per_page": per_page,
+#                 "total_count": total_count,
+#                 "loaded_so_far": loaded_so_far,
+#                 "has_more": has_more,
+#                 "progress_percentage": round((loaded_so_far / total_count) * 100, 1) if total_count > 0 else 0
+#             }
+#         }
+        
+#     except Exception as e:
+#         print(f"❌ Error in batch endpoint: {str(e)}")
+#         return {
+#             "success": False,
+#             "error": str(e),
+#             "results": []
+#         }
+
+# # @app.get("/cache/people")
+# # async def get_cached_people():
+# #     """
+# #     Get cached people data for fast signup form - UNLIMITED VERSION
+# #     """
+# #     try:
+# #         # Check if cache is still valid
+# #         current_time = datetime.utcnow()
+# #         if (people_cache["last_updated"] and 
+# #             people_cache["expires_at"] and 
+# #             current_time < people_cache["expires_at"] and 
+# #             not people_cache["is_loading"] and
+# #             len(people_cache["data"]) > 0):
+            
+# #             print(f"✅ Returning cached people data ({len(people_cache['data'])} people)")
+# #             return {
+# #                 "cached_data": people_cache["data"],
+# #                 "cached_at": people_cache["last_updated"],
+# #                 "expires_at": people_cache["expires_at"],
+# #                 "source": "cache",
+# #                 "total_count": len(people_cache["data"])
+# #             }
+        
+# #         # If cache is expired or empty, refresh it
+# #         if not people_cache["is_loading"]:
+# #             people_cache["is_loading"] = True
+# #             try:
+# #                 print("🔄 Cache miss - refreshing ALL people data...")
+# #                 start_time = datetime.utcnow()
+                
+# #                 all_people_data = []
+                
+# #                 # Try ultra-fast endpoint first (no limits)
+# #                 try:
+# #                     print("⚡ Attempting ultra-fast load of ALL people...")
+# #                     ultra_fast_response = await get_people_ultra_fast()
+# #                     if ultra_fast_response["success"]:
+# #                         all_people_data = ultra_fast_response["results"]
+# #                         print(f"⚡ Ultra-fast loaded {len(all_people_data)} people")
+# #                     else:
+# #                         raise Exception("Ultra-fast endpoint failed")
+                        
+# #                 except Exception as ultra_error:
+# #                     print("⚠️ Ultra-fast failed, using batch loading for ALL people...")
+# #                     # Fallback to batch loading - load EVERYTHING
+# #                     page = 1
+# #                     has_more = True
+# #                     total_loaded = 0
+                    
+# #                     while has_more:
+# #                         batch_response = await get_people_batch(page=page, per_page=2000)
+# #                         if batch_response["success"]:
+# #                             batch_data = batch_response["results"]
+# #                             all_people_data.extend(batch_data)
+# #                             total_loaded += len(batch_data)
+                            
+# #                             pagination = batch_response["pagination"]
+# #                             has_more = pagination["has_more"]
+# #                             page += 1
+                            
+# #                             print(f"📦 Batch {page-1}: {len(batch_data)} people (Total: {total_loaded}, Progress: {pagination['progress_percentage']}%)")
+                            
+# #                             # Safety: break if we're loading too much (unlikely but safe)
+# #                             if total_loaded > 100000:  # 100k safety limit
+# #                                 print("⚠️ Reached safety limit of 100,000 people")
+# #                                 break
+# #                         else:
+# #                             has_more = False
+# #                             print("❌ Batch loading failed")
+                
+# #                 # Update cache with ALL people
+# #                 people_cache["data"] = all_people_data
+# #                 people_cache["last_updated"] = current_time.isoformat()
+# #                 people_cache["expires_at"] = (current_time + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+# #                 people_cache["is_loading"] = False
+                
+# #                 end_time = datetime.utcnow()
+# #                 duration = (end_time - start_time).total_seconds()
+                
+# #                 print(f"✅ Cache refreshed with ALL {len(all_people_data)} people in {duration:.2f}s")
+                
+# #                 return {
+# #                     "cached_data": all_people_data,
+# #                     "cached_at": people_cache["last_updated"],
+# #                     "expires_at": people_cache["expires_at"],
+# #                     "source": "database",
+# #                     "total_count": len(all_people_data),
+# #                     "load_time_seconds": duration
+# #                 }
+                
+# #             except Exception as e:
+# #                 people_cache["is_loading"] = False
+# #                 print(f"❌ Error refreshing cache: {str(e)}")
+# #                 # Return empty but don't crash
+# #                 return {
+# #                     "cached_data": [],
+# #                     "cached_at": None,
+# #                     "expires_at": None,
+# #                     "source": "error",
+# #                     "total_count": 0,
+# #                     "error": str(e)
+# #                 }
+        
+# #         else:
+# #             # Cache is currently being refreshed, return what we have
+# #             if people_cache["data"]:
+# #                 print("🕒 Cache is refreshing, returning existing data...")
+# #                 return {
+# #                     "cached_data": people_cache["data"],
+# #                     "cached_at": people_cache["last_updated"],
+# #                     "expires_at": people_cache["expires_at"],
+# #                     "source": "stale_cache",
+# #                     "total_count": len(people_cache["data"])
+# #                 }
+# #             else:
+# #                 # Wait a bit and retry
+# #                 await asyncio.sleep(0.5)
+# #                 return await get_cached_people()
+            
+# #     except Exception as e:
+# #         print(f"❌ Error in cache endpoint: {str(e)}")
+# #         return {
+# #             "cached_data": [],
+# #             "cached_at": None,
+# #             "expires_at": None,
+# #             "source": "error",
+# #             "total_count": 0,
+# #             "error": str(e)
+# #         }
+
+# @app.get("/people/count")
+# async def get_total_people_count():
+#     """
+#     Get total count of people in database
+#     """
+#     try:
+#         total_count = await people_collection.count_documents({})
+#         return {
+#             "success": True,
+#             "total_count": total_count,
+#             "cache_count": len(people_cache["data"]),
+#             "cache_updated": people_cache["last_updated"]
+#         }
+#     except Exception as e:
+#         return {
+#             "success": False,
+#             "error": str(e)
+#         }
+
+# @app.get("/performance/stats")
+# async def get_performance_stats():
+#     """
+#     Get performance statistics for monitoring
+#     """
+#     cache_hit = (people_cache["last_updated"] and 
+#                  people_cache["expires_at"] and 
+#                  datetime.utcnow() < people_cache["expires_at"])
+    
+#     total_db_count = await people_collection.count_documents({})
+    
+#     return {
+#         "cache": {
+#             "size": len(people_cache["data"]),
+#             "last_updated": people_cache["last_updated"],
+#             "expires_at": people_cache["expires_at"],
+#             "is_loading": people_cache["is_loading"],
+#             "cache_hit": cache_hit,
+#             "coverage_percentage": round((len(people_cache["data"]) / total_db_count) * 100, 1) if total_db_count > 0 else 0
+#         },
+#         "database": {
+#             "total_people": total_db_count,
+#             "collection_size": "N/A"
+#         },
+#         "system": {
+#             "max_cache_size": "UNLIMITED",
+#             "cache_duration_minutes": CACHE_DURATION_MINUTES,
+#             "status": "READY"
+#         }
+#     }
+    
+# # ---------------- Signup (Using Cache) ----------------
+# @app.post("/signup")
+# async def signup(user: UserCreate):
+#     logger.info(f"Signup attempt: {user.email}")
+    
+#     # Normalize email
+#     email = user.email.lower().strip()
+    
+#     # Check if user already exists in Users collection ONLY
+#     existing = await db["Users"].find_one({"email": email})
+#     if existing:
+#         logger.warning(f"Signup failed - email already registered: {email}")
+#         raise HTTPException(status_code=400, detail="Email already registered")
+
+#     # Hash password
+#     hashed = hash_password(user.password)
+    
+#     # Create user document
+#     user_dict = {
+#         "name": user.name,
+#         "surname": user.surname,
+#         "date_of_birth": user.date_of_birth,
+#         "home_address": user.home_address,
+#         "invited_by": user.invited_by,
+#         "phone_number": user.phone_number,
+#         "email": email,
+#         "gender": user.gender,
+#         "password": hashed,
+#         "confirm_password": hashed,
+#         "role": "user",
+#         "created_at": datetime.utcnow().isoformat(),
+#         "updated_at": datetime.utcnow().isoformat()
+#     }
+    
+#     # Insert user into Users collection
+#     user_result = await db["Users"].insert_one(user_dict)
+#     logger.info(f"User created successfully: {email}")
+    
+#     # ✅ USE CACHED DATA FOR LEADER ASSIGNMENT
+#     inviter_full_name = user.invited_by.strip()
+#     leader1 = ""
+#     leader12 = ""
+#     leader144 = ""
+#     leader1728 = ""
+    
+#     if inviter_full_name:
+#         print(f"🔍 Looking for inviter in cache: '{inviter_full_name}'")
+        
+#         # Search in cached data first (much faster)
+#         cached_inviter = None
+#         for person in people_cache["data"]:
+#             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+#             if (full_name.lower() == inviter_full_name.lower() or 
+#                 person.get('Name', '').lower() == inviter_full_name.lower()):
+#                 cached_inviter = person
+#                 break
+        
+#         if cached_inviter:
+#             print(f"✅ Found inviter in cache: {cached_inviter.get('FullName')}")
+            
+#             # Get the inviter's leader hierarchy from cache
+#             inviter_leader1 = cached_inviter.get("Leader @1", "")
+#             inviter_leader12 = cached_inviter.get("Leader @12", "")
+#             inviter_leader144 = cached_inviter.get("Leader @144", "")
+#             inviter_leader1728 = cached_inviter.get("Leader @1728", "")
+            
+#             # Determine what level the inviter is at and set leaders accordingly
+#             if inviter_leader1728:
+#                 # Inviter is at @1728 level or below
+#                 leader1 = inviter_leader1
+#                 leader12 = inviter_leader12
+#                 leader144 = inviter_leader144
+#                 leader1728 = inviter_full_name
+#             elif inviter_leader144:
+#                 # Inviter is at @144 level
+#                 leader1 = inviter_leader1
+#                 leader12 = inviter_leader12
+#                 leader144 = inviter_full_name
+#                 leader1728 = ""
+#             elif inviter_leader12:
+#                 # Inviter is at @12 level
+#                 leader1 = inviter_leader1
+#                 leader12 = inviter_full_name
+#                 leader144 = ""
+#                 leader1728 = ""
+#             elif inviter_leader1:
+#                 # Inviter is at @1 level
+#                 leader1 = inviter_full_name
+#                 leader12 = ""
+#                 leader144 = ""
+#                 leader1728 = ""
+#             else:
+#                 # Inviter has no leaders (is a top-level leader @1)
+#                 leader1 = inviter_full_name
+#                 leader12 = ""
+#                 leader144 = ""
+#                 leader1728 = ""
+            
+#             logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+#         else:
+#             print(f"⚠️ Inviter '{inviter_full_name}' not found in cache, trying database...")
+            
+#             # Fallback to database query if not found in cache
+#             inviter = await people_collection.find_one({
+#                 "$expr": {
+#                     "$eq": [
+#                         {"$concat": ["$Name", " ", "$Surname"]},
+#                         inviter_full_name
+#                     ]
+#                 }
+#             })
+            
+#             if inviter:
+#                 # Get the inviter's leader hierarchy from database
+#                 inviter_leader1 = inviter.get("Leader @1", "")
+#                 inviter_leader12 = inviter.get("Leader @12", "")
+#                 inviter_leader144 = inviter.get("Leader @144", "")
+#                 inviter_leader1728 = inviter.get("Leader @1728", "")
+                
+#                 # Same logic as above...
+#                 if inviter_leader1728:
+#                     leader1 = inviter_leader1
+#                     leader12 = inviter_leader12
+#                     leader144 = inviter_leader144
+#                     leader1728 = inviter_full_name
+#                 elif inviter_leader144:
+#                     leader1 = inviter_leader1
+#                     leader12 = inviter_leader12
+#                     leader144 = inviter_full_name
+#                     leader1728 = ""
+#                 elif inviter_leader12:
+#                     leader1 = inviter_leader1
+#                     leader12 = inviter_full_name
+#                     leader144 = ""
+#                     leader1728 = ""
+#                 elif inviter_leader1:
+#                     leader1 = inviter_full_name
+#                     leader12 = ""
+#                     leader144 = ""
+#                     leader1728 = ""
+#                 else:
+#                     leader1 = inviter_full_name
+#                     leader12 = ""
+#                     leader144 = ""
+#                     leader1728 = ""
+                
+#                 logger.info(f"Leader hierarchy set for {email} (from DB): L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+#             else:
+#                 logger.warning(f"Inviter '{inviter_full_name}' not found in people collection for {email}")
+#                 # If inviter not found, still set them as Leader @1 as fallback
+#                 leader1 = inviter_full_name
+    
+#     # Create corresponding person record in People collection
+#     person_doc = {
+#         "Name": user.name.strip(),
+#         "Surname": user.surname.strip(),
+#         "Email": email,
+#         "Number": user.phone_number.strip(),
+#         "Address": user.home_address.strip(),
+#         "Gender": user.gender.strip(),
+#         "Birthday": user.date_of_birth,
+#         "InvitedBy": inviter_full_name,
+#         "Leader @1": leader1,
+#         "Leader @12": leader12,
+#         "Leader @144": leader144,
+#         "Leader @1728": leader1728,
+#         "Stage": "Win",  # New signups start at Win stage
+#         "Date Created": datetime.utcnow().isoformat(),
+#         "UpdatedAt": datetime.utcnow().isoformat(),
+#         "user_id": str(user_result.inserted_id)  # Link to user account
+#     }
+    
+#     try:
+#         person_result = await people_collection.insert_one(person_doc)
+#         logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
+        
+#         # ✅ ADD THE NEW PERSON TO CACHE
+#         new_person_cache_entry = {
+#             "_id": str(person_result.inserted_id),
+#             "Name": user.name.strip(),
+#             "Surname": user.surname.strip(),
+#             "Email": email,
+#             "Number": user.phone_number.strip(),
+#             "Leader @1": leader1,
+#             "Leader @12": leader12,
+#             "Leader @144": leader144,
+#             "Leader @1728": leader1728,
+#             "FullName": f"{user.name.strip()} {user.surname.strip()}".strip()
+#         }
+#         people_cache["data"].append(new_person_cache_entry)
+#         print(f"✅ Added new person to cache: {new_person_cache_entry['FullName']}")
+        
+#     except Exception as e:
+#         logger.error(f"Failed to create person record for {email}: {e}")
+#         # Note: User is already created at this point
+    
+#     return {"message": "User created successfully"}
+
+from typing import Dict, List, Optional
+import asyncio
+from datetime import datetime, timedelta
+import time
+
+# Enhanced cache storage with background loading
+people_cache = {
+    "data": [],
+    "last_updated": None,
+    "expires_at": None,
+    "is_loading": False,
+    "background_task": None,
+    "load_progress": 0,
+    "total_loaded": 0,
+    "last_error": None,
+    "total_in_database": 0
+}
+
+CACHE_DURATION_MINUTES = 1440  # 24 hours - since we're loading everything
+BACKGROUND_LOAD_DELAY = 2  # seconds before starting background load
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background loading of all people on startup"""
+    print("🚀 Starting background load of ALL people...")
+    asyncio.create_task(background_load_all_people())
+
+async def background_load_all_people():
+    """Background task to load ALL people from the database"""
+    try:
+        # Small delay to ensure app is fully started
+        await asyncio.sleep(BACKGROUND_LOAD_DELAY)
+        
+        if people_cache["is_loading"]:
+            return
+            
+        people_cache["is_loading"] = True
+        people_cache["last_error"] = None
+        start_time = time.time()
+        
+        print("🔄 BACKGROUND: Starting to load ALL people...")
+        
+        all_people_data = []
+        total_count = await people_collection.count_documents({})
+        people_cache["total_in_database"] = total_count
+        print(f"📊 BACKGROUND: Total people in database: {total_count}")
+        
+        # Load in large batches for efficiency
+        batch_size = 5000
+        page = 1
+        total_loaded = 0
+        
+        while True:
+            try:
+                skip = (page - 1) * batch_size
+                
+                # Minimal projection for signup form
+                projection = {
+                    "_id": 1,
+                    "Name": 1,
+                    "Surname": 1,
+                    "Email": 1,
+                    "Number": 1,
+                    "Leader @1": 1,
+                    "Leader @12": 1,
+                    "Leader @144": 1,
+                    "Leader @1728": 1
+                }
+                
+                cursor = people_collection.find({}, projection).skip(skip).limit(batch_size)
+                batch_data = await cursor.to_list(length=batch_size)
+                
+                if not batch_data:
+                    break
+                
+                # Transform batch data
+                transformed_batch = []
+                for person in batch_data:
+                    transformed_batch.append({
+                        "_id": str(person["_id"]),
+                        "Name": person.get("Name", ""),
+                        "Surname": person.get("Surname", ""),
+                        "Email": person.get("Email", ""),
+                        "Number": person.get("Number", ""),
+                        "Leader @1": person.get("Leader @1", ""),
+                        "Leader @12": person.get("Leader @12", ""),
+                        "Leader @144": person.get("Leader @144", ""),
+                        "Leader @1728": person.get("Leader @1728", ""),
+                        "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+                    })
+                
+                all_people_data.extend(transformed_batch)
+                total_loaded += len(transformed_batch)
+                
+                # Update progress
+                progress = (total_loaded / total_count) * 100 if total_count > 0 else 100
+                people_cache["load_progress"] = round(progress, 1)
+                people_cache["total_loaded"] = total_loaded
+                
+                print(f"📦 BACKGROUND: Batch {page} - {len(transformed_batch)} people (Total: {total_loaded}/{total_count}, Progress: {progress:.1f}%)")
+                
+                page += 1
+                
+                # Small delay to prevent overwhelming the database
+                await asyncio.sleep(0.1)
+                
+            except Exception as batch_error:
+                print(f"❌ BACKGROUND: Error in batch {page}: {str(batch_error)}")
+                break
+        
+        # Update cache with complete dataset
+        people_cache["data"] = all_people_data
+        people_cache["last_updated"] = datetime.utcnow().isoformat()
+        people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        people_cache["is_loading"] = False
+        people_cache["load_progress"] = 100
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        print(f"✅ BACKGROUND: Successfully loaded ALL {len(all_people_data)} people in {duration:.2f} seconds")
+        print(f"💾 BACKGROUND: Cache ready with {len(all_people_data)} people")
+        
+    except Exception as e:
+        people_cache["is_loading"] = False
+        people_cache["last_error"] = str(e)
+        print(f"💥 BACKGROUND: Failed to load people: {str(e)}")
+
+@app.get("/cache/people")
+async def get_cached_people():
+    """
+    Get cached people data - returns whatever is available immediately
+    """
+    try:
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (people_cache["data"] and 
+            people_cache["expires_at"] and 
+            current_time < datetime.fromisoformat(people_cache["expires_at"])):
+            
+            print(f"✅ CACHE HIT: Returning {len(people_cache['data'])} people")
+            return {
+                "success": True,
+                "cached_data": people_cache["data"],
+                "cached_at": people_cache["last_updated"],
+                "expires_at": people_cache["expires_at"],
+                "source": "cache",
+                "total_count": len(people_cache["data"]),
+                "is_complete": True,
+                "load_progress": 100
+            }
+        
+        # If we're still loading in background, return progress
+        if people_cache["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": people_cache["data"],  # Return whatever we have so far
+                "cached_at": people_cache["last_updated"],
+                "source": "loading",
+                "total_count": len(people_cache["data"]),
+                "is_complete": False,
+                "load_progress": people_cache["load_progress"],
+                "loaded_so_far": people_cache["total_loaded"],
+                "total_in_database": people_cache["total_in_database"],
+                "message": f"Loading in background... {people_cache['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not people_cache["data"] and not people_cache["is_loading"]:
+            print("🔄 Cache empty, triggering background load...")
+            asyncio.create_task(background_load_all_people())
+            
+            # Return empty but indicate loading will start
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "is_complete": False,
+                "message": "Background loading started...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if people_cache["data"]:
+            print("🔄 Cache expired, returning stale data while refreshing...")
+            # Trigger refresh in background
+            if not people_cache["is_loading"]:
+                asyncio.create_task(background_load_all_people())
+            
+            return {
+                "success": True,
+                "cached_data": people_cache["data"],
+                "cached_at": people_cache["last_updated"],
+                "expires_at": people_cache["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(people_cache["data"]),
+                "is_complete": True,
+                "message": "Using stale data (refresh in progress)"
+            }
+        
+        # Fallback - return empty
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "is_complete": False
+        }
+        
+    except Exception as e:
+        print(f"❌ Error in cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0
+        }
+
+@app.post("/cache/people/refresh")
+async def refresh_people_cache():
+    """
+    Manually refresh the people cache
+    """
+    try:
+        # Don't reset existing data - just trigger background refresh
+        if not people_cache["is_loading"]:
+            print("🔄 Manual cache refresh triggered")
+            asyncio.create_task(background_load_all_people())
+            
+        return {
+            "success": True,
+            "message": "Cache refresh triggered",
+            "is_loading": people_cache["is_loading"],
+            "current_progress": people_cache["load_progress"]
+        }
+        
+    except Exception as e:
+        print(f"❌ Error refreshing cache: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/cache/people/status")
+async def get_cache_status():
+    """
+    Get detailed cache status and loading progress
+    """
+    total_in_db = await people_collection.count_documents({})
+    cache_size = len(people_cache["data"])
+    
+    status_info = {
+        "cache": {
+            "size": cache_size,
+            "last_updated": people_cache["last_updated"],
+            "expires_at": people_cache["expires_at"],
+            "is_loading": people_cache["is_loading"],
+            "load_progress": people_cache["load_progress"],
+            "total_loaded": people_cache["total_loaded"],
+            "last_error": people_cache["last_error"]
+        },
+        "database": {
+            "total_people": total_in_db,
+            "coverage_percentage": round((cache_size / total_in_db) * 100, 1) if total_in_db > 0 else 0
+        },
+        "is_complete": cache_size >= total_in_db if total_in_db > 0 else True
+    }
+    
+    return status_info
+
+@app.get("/people/search")
+async def search_people(
+    query: str = Query("", min_length=2),
+    limit: int = Query(50, ge=1, le=200)
+):
+    """
+    Fast search through cached people data
+    """
+    try:
+        if not people_cache["data"]:
+            return {
+                "success": False,
+                "error": "Cache not ready",
+                "results": []
+            }
+        
+        search_term = query.lower().strip()
+        results = []
+        
+        # Search through cached data (very fast)
+        for person in people_cache["data"]:
+            if (search_term in person.get("FullName", "").lower() or
+                search_term in person.get("Email", "").lower() or
+                search_term in person.get("Number", "")):
+                results.append(person)
+                
+            if len(results) >= limit:
+                break
+        
+        return {
+            "success": True,
+            "results": results,
+            "total_found": len(results),
+            "search_term": query,
+            "source": "cache"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "results": []
+        }
+
+# Update the signup endpoint to use the background-loaded cache
 @app.post("/signup")
 async def signup(user: UserCreate):
     logger.info(f"Signup attempt: {user.email}")
@@ -140,7 +1225,7 @@ async def signup(user: UserCreate):
     user_result = await db["Users"].insert_one(user_dict)
     logger.info(f"User created successfully: {email}")
     
-    # Find the inviter in the people collection to get their leader hierarchy
+    # ✅ USE BACKGROUND-LOADED CACHE FOR LEADER ASSIGNMENT
     inviter_full_name = user.invited_by.strip()
     leader1 = ""
     leader12 = ""
@@ -148,51 +1233,48 @@ async def signup(user: UserCreate):
     leader1728 = ""
     
     if inviter_full_name:
-        # Try to find the inviter by matching full name
-        inviter = await people_collection.find_one({
-            "$expr": {
-                "$eq": [
-                    {"$concat": ["$Name", " ", "$Surname"]},
-                    inviter_full_name
-                ]
-            }
-        })
+        print(f"🔍 Looking for inviter in background cache: '{inviter_full_name}'")
         
-        if inviter:
-            # Get the inviter's leader hierarchy
-            inviter_leader1 = inviter.get("Leader @1", "")
-            inviter_leader12 = inviter.get("Leader @12", "")
-            inviter_leader144 = inviter.get("Leader @144", "")
-            inviter_leader1728 = inviter.get("Leader @1728", "")
+        # Search in background-loaded cache (contains ALL people)
+        cached_inviter = None
+        for person in people_cache["data"]:
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            if (full_name.lower() == inviter_full_name.lower() or 
+                person.get('Name', '').lower() == inviter_full_name.lower()):
+                cached_inviter = person
+                break
+        
+        if cached_inviter:
+            print(f"✅ Found inviter in background cache: {cached_inviter.get('FullName')}")
+            
+            # Get the inviter's leader hierarchy from cache
+            inviter_leader1 = cached_inviter.get("Leader @1", "")
+            inviter_leader12 = cached_inviter.get("Leader @12", "")
+            inviter_leader144 = cached_inviter.get("Leader @144", "")
+            inviter_leader1728 = cached_inviter.get("Leader @1728", "")
             
             # Determine what level the inviter is at and set leaders accordingly
-            # Check from highest to lowest level
             if inviter_leader1728:
-                # Inviter is at @1728 level or below
                 leader1 = inviter_leader1
                 leader12 = inviter_leader12
                 leader144 = inviter_leader144
                 leader1728 = inviter_full_name
             elif inviter_leader144:
-                # Inviter is at @144 level
                 leader1 = inviter_leader1
                 leader12 = inviter_leader12
                 leader144 = inviter_full_name
                 leader1728 = ""
             elif inviter_leader12:
-                # Inviter is at @12 level
                 leader1 = inviter_leader1
                 leader12 = inviter_full_name
                 leader144 = ""
                 leader1728 = ""
             elif inviter_leader1:
-                # Inviter is at @1 level
                 leader1 = inviter_full_name
                 leader12 = ""
                 leader144 = ""
                 leader1728 = ""
             else:
-                # Inviter has no leaders (is a top-level leader @1)
                 leader1 = inviter_full_name
                 leader12 = ""
                 leader144 = ""
@@ -200,8 +1282,8 @@ async def signup(user: UserCreate):
             
             logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
         else:
-            logger.warning(f"Inviter '{inviter_full_name}' not found in people collection for {email}")
-            # If inviter not found, still set them as Leader @1 as fallback
+            print(f"⚠️ Inviter '{inviter_full_name}' not found in background cache")
+            # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
     
     # Create corresponding person record in People collection
@@ -218,18 +1300,34 @@ async def signup(user: UserCreate):
         "Leader @12": leader12,
         "Leader @144": leader144,
         "Leader @1728": leader1728,
-        "Stage": "Win",  # New signups start at Win stage
+        "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
-        "user_id": str(user_result.inserted_id)  # Link to user account
+        "user_id": str(user_result.inserted_id)
     }
     
     try:
         person_result = await people_collection.insert_one(person_doc)
         logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
+        
+        # ✅ ADD THE NEW PERSON TO BACKGROUND CACHE
+        new_person_cache_entry = {
+            "_id": str(person_result.inserted_id),
+            "Name": user.name.strip(),
+            "Surname": user.surname.strip(),
+            "Email": email,
+            "Number": user.phone_number.strip(),
+            "Leader @1": leader1,
+            "Leader @12": leader12,
+            "Leader @144": leader144,
+            "Leader @1728": leader1728,
+            "FullName": f"{user.name.strip()} {user.surname.strip()}".strip()
+        }
+        people_cache["data"].append(new_person_cache_entry)
+        print(f"✅ Added new person to background cache: {new_person_cache_entry['FullName']}")
+        
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
-        # Note: User is already created at this point
     
     return {"message": "User created successfully"}
 
@@ -2905,6 +4003,267 @@ async def get_events(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/events/global")
+async def get_global_events(
+    current_user: dict = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None)
+):
+    """
+    ✅ Get Global Events (like Sunday Service)
+    Shows events where isGlobal = True
+    """
+    try:
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        # Parse start_date filter
+        start_date_filter = start_date if start_date else '2025-10-20'
+        start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
+        
+        print(f"🔍 Fetching Global Events from {start_date_obj}")
+        
+        # Build query for Global Events
+        query = {
+            "isGlobal": True,
+            "eventType": "Global Events"
+        }
+        
+        # Add search filter
+        if search and search.strip():
+            search_regex = {"$regex": search.strip(), "$options": "i"}
+            query["$or"] = [
+                {"Event Name": search_regex},
+                {"eventName": search_regex},
+                {"Leader": search_regex},
+                {"Location": search_regex}
+            ]
+        
+        print(f"📋 Query for Global Events: {query}")
+        
+        # Fetch events
+        cursor = events_collection.find(query).sort("date", -1)
+        all_events = await cursor.to_list(length=None)
+        
+        print(f"📊 Found {len(all_events)} raw global events")
+        
+        # Process events
+        processed_events = []
+        
+        for event in all_events:
+            try:
+                # Parse event date
+                event_date_field = event.get("date")
+                if isinstance(event_date_field, datetime):
+                    event_date = event_date_field.date()
+                elif isinstance(event_date_field, str):
+                    try:
+                        event_date = datetime.fromisoformat(
+                            event_date_field.replace("Z", "+00:00")
+                        ).date()
+                    except Exception:
+                        event_date = today_date
+                else:
+                    event_date = today_date
+                
+                # Filter by date range
+                if event_date < start_date_obj:
+                    continue
+                
+                # Get event details
+                event_name = event.get("Event Name") or event.get("eventName", "")
+                leader_name = event.get("Leader") or event.get("eventLeader", "")
+                location = event.get("Location") or event.get("location", "")
+                
+                # Determine status
+                did_not_meet = event.get("did_not_meet", False)
+                attendees = event.get("attendees", [])
+                has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+                
+                if did_not_meet:
+                    event_status = "did_not_meet"
+                    status_display = "Did Not Meet"
+                elif has_attendees:
+                    event_status = "complete"
+                    status_display = "Complete"
+                else:
+                    event_status = "incomplete"
+                    status_display = "Incomplete"
+                
+                # Apply status filter
+                if status and status != 'all' and status != event_status:
+                    continue
+                
+                # Build event object
+                final_event = {
+                    "_id": str(event.get("_id", "")),
+                    "eventName": event_name,
+                    "eventType": "Global Events",
+                    "eventLeaderName": leader_name,
+                    "eventLeaderEmail": event.get("Email") or event.get("userEmail", ""),
+                    "day": event.get("Day", ""),
+                    "date": event_date.isoformat(),
+                    "time": event.get("time", ""),
+                    "location": location,
+                    "description": event.get("description", ""),
+                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "did_not_meet": did_not_meet,
+                    "status": event_status,
+                    "Status": status_display,
+                    "_is_overdue": event_date < today_date and event_status == "incomplete",
+                    "isGlobal": True,
+                    "isTicketed": event.get("isTicketed", False),
+                    "priceTiers": event.get("priceTiers", []),
+                    "total_attendance": event.get("total_attendance", 0),
+                    "UUID": event.get("UUID", ""),
+                    "created_at": event.get("created_at"),
+                    "updated_at": event.get("updated_at")
+                }
+                
+                processed_events.append(final_event)
+                
+            except Exception as e:
+                print(f"⚠️ Error processing global event {event.get('_id')}: {str(e)}")
+                continue
+        
+        print(f"✅ Processed {len(processed_events)} global events after filtering")
+        
+        # Sort by date (most recent first)
+        processed_events.sort(key=lambda x: x['date'], reverse=True)
+        
+        # Calculate status counts
+        status_counts = {
+            "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
+            "complete": sum(1 for e in processed_events if e["status"] == "complete"),
+            "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet")
+        }
+        
+        print(f"📊 Global Events Status - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}")
+        
+        # Pagination
+        total = len(processed_events)
+        total_pages = (total + limit - 1) // limit if total > 0 else 1
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_events = processed_events[start_idx:end_idx]
+        
+        print(f"✅ Returning page {page}/{total_pages}: {len(paginated_events)} global events")
+        
+        return {
+            "events": paginated_events,
+            "total_events": total,
+            "total_pages": total_pages,
+            "current_page": page,
+            "page_size": limit,
+            "status_counts": status_counts,
+            "date_range": {
+                "start_date": start_date_filter,
+                "end_date": today_date.isoformat()
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ ERROR in get_global_events: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching global events: {str(e)}")
+    
+    
+@app.get("/events/global/status-counts")
+async def get_global_events_status_counts(
+    current_user: dict = Depends(get_current_user),
+    search: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None)
+):
+    """Get status counts for Global Events"""
+    try:
+        timezone = pytz.timezone("Africa/Johannesburg")
+        today = datetime.now(timezone)
+        today_date = today.date()
+        
+        # Parse start_date filter
+        start_date_filter = start_date if start_date else '2025-10-20'
+        start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
+        
+        # Build query
+        query = {
+            "isGlobal": True,
+            "eventType": "Global Events"
+        }
+        
+        # Add search filter
+        if search and search.strip():
+            search_regex = {"$regex": search.strip(), "$options": "i"}
+            query["$or"] = [
+                {"Event Name": search_regex},
+                {"eventName": search_regex},
+                {"Leader": search_regex},
+                {"Location": search_regex}
+            ]
+        
+        # Fetch events
+        cursor = events_collection.find(query)
+        all_events = await cursor.to_list(length=None)
+        
+        # Calculate counts
+        incomplete_count = 0
+        complete_count = 0
+        did_not_meet_count = 0
+        
+        for event in all_events:
+            try:
+                # Parse event date
+                event_date_field = event.get("date")
+                if isinstance(event_date_field, datetime):
+                    event_date = event_date_field.date()
+                elif isinstance(event_date_field, str):
+                    try:
+                        event_date = datetime.fromisoformat(
+                            event_date_field.replace("Z", "+00:00")
+                        ).date()
+                    except Exception:
+                        event_date = today_date
+                else:
+                    event_date = today_date
+                
+                # Filter by date range
+                if event_date < start_date_obj:
+                    continue
+                
+                # Determine status
+                did_not_meet = event.get("did_not_meet", False)
+                attendees = event.get("attendees", [])
+                has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+                
+                if did_not_meet:
+                    did_not_meet_count += 1
+                elif has_attendees:
+                    complete_count += 1
+                else:
+                    incomplete_count += 1
+                    
+            except Exception:
+                continue
+        
+        return {
+            "incomplete": incomplete_count,
+            "complete": complete_count,
+            "did_not_meet": did_not_meet_count,
+            "total": incomplete_count + complete_count + did_not_meet_count,
+            "date_range": {
+                "start_date": start_date_filter,
+                "end_date": today_date.isoformat()
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ ERROR in global events status counts: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 @app.post("/admin/migrate-persistent-attendees")
 async def migrate_persistent_attendees(current_user: dict = Depends(get_current_user)):
     """Migrate old attendee data to persistent_attendees format"""
@@ -7389,10 +8748,13 @@ async def create_consolidation(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Create a new consolidation record and associated task
+    Create a new consolidation record and associated task assigned to the leader
     """
     try:
         consolidation_id = str(ObjectId())
+        
+        print(f"🎯 Creating consolidation for: {consolidation.person_name} {consolidation.person_surname}")
+        print(f"👥 Assigned to leader: {consolidation.assigned_to} (email: {consolidation.assigned_to_email})")
         
         # 1. Create or find the person
         person_email = consolidation.person_email
@@ -7409,6 +8771,7 @@ async def create_consolidation(
         person_id = None
         if existing_person:
             person_id = str(existing_person["_id"])
+            print(f"✅ Found existing person: {person_id}")
             # Update existing person
             update_data = {
                 "Stage": "Consolidate",
@@ -7478,9 +8841,40 @@ async def create_consolidation(
             
             result = await people_collection.insert_one(person_doc)
             person_id = str(result.inserted_id)
+            print(f"✅ Created new person: {person_id}")
 
-        # 2. Create task
+        # 2. FIND OR CREATE LEADER'S USER ACCOUNT
+        leader_email = consolidation.assigned_to_email
+        leader_user_id = None
+        
+        if not leader_email:
+            # Try to find leader's email from people collection
+            leader_person = await people_collection.find_one({
+                "$or": [
+                    {"Name": consolidation.assigned_to},
+                    {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, consolidation.assigned_to]}}
+                ]
+            })
+            if leader_person:
+                leader_email = leader_person.get("Email")
+                print(f"✅ Found leader email from people collection: {leader_email}")
+        
+        if leader_email:
+            # Find leader's user account
+            leader_user = await users_collection.find_one({"email": leader_email})
+            if leader_user:
+                leader_user_id = str(leader_user["_id"])
+                print(f"✅ Found leader user account: {leader_email} (ID: {leader_user_id})")
+            else:
+                print(f"⚠️ Leader {consolidation.assigned_to} has no user account with email: {leader_email}")
+        else:
+            print(f"⚠️ Could not find email for leader: {consolidation.assigned_to}")
+
+        # 3. Create task assigned to the leader
         decision_display_name = "First Time Decision" if consolidation.decision_type == DecisionType.FIRST_TIME else "Recommitment"
+        
+        # Use leader's email for assignment, fallback to leader's name
+        assigned_for = leader_email if leader_email else consolidation.assigned_to
         
         task_doc = {
             "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
@@ -7488,7 +8882,9 @@ async def create_consolidation(
             "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date}",
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
-            "assignedfor": consolidation.assigned_to,
+            "assignedfor": assigned_for,  # Assign to leader's email or name
+            "assigned_to_email": leader_email,
+            "assigned_to_user_id": leader_user_id,
             "type": "followup",
             "priority": "high",
             "consolidation_id": consolidation_id,
@@ -7503,13 +8899,16 @@ async def create_consolidation(
                 "phone": consolidation.person_phone or ""
             },
             "created_at": datetime.utcnow().isoformat(),
-            "created_by": current_user.get("email", "")
+            "created_by": current_user.get("email", ""),
+            "is_consolidation_task": True,
+            "leader_assigned": consolidation.assigned_to
         }
 
         task_result = await tasks_collection.insert_one(task_doc)
         task_id = str(task_result.inserted_id)
+        print(f"✅ Created consolidation task: {task_id} assigned to {assigned_for}")
 
-        # 3. Add to event attendees
+        # 4. Add to event attendees
         if consolidation.event_id and ObjectId.is_valid(consolidation.event_id):
             attendee_record = {
                 "id": person_id,
@@ -7521,7 +8920,9 @@ async def create_consolidation(
                 "decision_display": decision_display_name,
                 "time": datetime.utcnow().isoformat(),
                 "is_consolidation": True,
-                "consolidation_id": consolidation_id
+                "consolidation_id": consolidation_id,
+                "assigned_leader": consolidation.assigned_to,
+                "assigned_leader_email": leader_email
             }
 
             await events_collection.update_one(
@@ -7531,8 +8932,9 @@ async def create_consolidation(
                     "$inc": {"total_attendance": 1}
                 }
             )
+            print(f"✅ Added to event attendees: {consolidation.event_id}")
 
-        # 4. Create consolidation record
+        # 5. Create consolidation record
         consolidation_doc = {
             "_id": ObjectId(consolidation_id),
             "person_id": person_id,
@@ -7544,6 +8946,8 @@ async def create_consolidation(
             "decision_display_name": decision_display_name,
             "decision_date": consolidation.decision_date,
             "assigned_to": consolidation.assigned_to,
+            "assigned_to_email": leader_email,
+            "assigned_to_user_id": leader_user_id,
             "event_id": consolidation.event_id,
             "notes": consolidation.notes,
             "created_by": current_user.get("email", ""),
@@ -7554,19 +8958,58 @@ async def create_consolidation(
 
         consolidations_collection = db["consolidations"]
         await consolidations_collection.insert_one(consolidation_doc)
+        print(f"✅ Created consolidation record: {consolidation_id}")
 
         return {
-            "message": f"{decision_display_name} recorded successfully",
+            "message": f"{decision_display_name} recorded successfully and assigned to {consolidation.assigned_to}",
             "consolidation_id": consolidation_id,
             "person_id": person_id,
             "task_id": task_id,
             "decision_type": consolidation.decision_type.value,
+            "assigned_to": consolidation.assigned_to,
+            "assigned_to_email": leader_email,
+            "leader_user_id": leader_user_id,
             "success": True
         }
 
     except Exception as e:
-        print(f"Error creating consolidation: {str(e)}")
+        print(f"❌ Error creating consolidation: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
+@app.get("/tasks/leader/{leader_email}")
+async def get_leader_tasks(
+    leader_email: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all consolidation tasks assigned to a specific leader"""
+    try:
+        # Find consolidation tasks assigned to this leader
+        tasks = await tasks_collection.find({
+            "is_consolidation_task": True,
+            "$or": [
+                {"assigned_to_email": leader_email},
+                {"assignedfor": leader_email},
+                {"assignedfor": {"$regex": f"^{leader_email}$", "$options": "i"}},
+                {"leader_assigned": {"$regex": f"^{leader_email}$", "$options": "i"}}
+            ]
+        }).to_list(length=None)
+        
+        # Format response
+        formatted_tasks = []
+        for task in tasks:
+            task["_id"] = str(task["_id"])
+            formatted_tasks.append(task)
+        
+        return {
+            "leader_email": leader_email,
+            "total_tasks": len(formatted_tasks),
+            "tasks": formatted_tasks
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/consolidations")
 async def get_consolidations(
@@ -7809,6 +9252,8 @@ async def get_event_consolidations(event_id: str = Path(...)):
 
 @app.get("/events/{event_id}/new-people")
 async def get_event_new_people(event_id: str = Path(...)):
+    
+    
     """Get attendees who are not yet in the people collection"""
     try:
         if not ObjectId.is_valid(event_id):
