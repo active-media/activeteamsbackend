@@ -403,12 +403,17 @@ class ConsolidationCreate(BaseModel):
     person_phone: Optional[str] = None
     decision_type: DecisionType
     decision_date: str
-    assigned_to: str
-    notes: Optional[str] = None
+    assigned_to: str  # Leader's name
+    assigned_to_email: Optional[str] = None  # Leader's email
     event_id: Optional[str] = None
     leaders: List[str] = []
+    notes: Optional[str] = None
+
 class ConsolidationTask(TaskModel):
     consolidation_id: str
     person_name: str
     person_surname: str
     decision_type: str
+    assigned_to_email: Optional[str] = None
+    leader_assigned: Optional[str] = None
+    is_consolidation_task: bool = True
