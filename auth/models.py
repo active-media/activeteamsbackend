@@ -260,13 +260,15 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-
+# ============= Tasks Models =============
 # Nested contacted_person model
 class ContactedPerson(BaseModel):
     name: str
-    phone: str
+    Number: str
     email: EmailStr
-
+    
+    class Config:
+        populate_by_name = True
 
 # Main task model
 class TaskModel(BaseModel):
