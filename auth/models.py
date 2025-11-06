@@ -121,6 +121,8 @@ class PersonCreate(BaseModel):
     leaders: List[str]  
     stage: str = "Win"
 
+class LeaderStatusResponse(BaseModel):
+    isLeader: bool
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
