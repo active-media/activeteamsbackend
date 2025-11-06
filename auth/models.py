@@ -120,9 +120,11 @@ class PersonCreate(BaseModel):
     invitedBy: str
     leaders: List[str]  
     stage: str = "Win"
-
+    
 class LeaderStatusResponse(BaseModel):
     isLeader: bool
+    hasCell: Optional[bool] = None
+    canAccessEvents: Optional[bool] = True
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -135,7 +137,8 @@ class EventTypeCreate(BaseModel):
 
 
 class EventUpdate(BaseModel):
-    UUID: Optional[str] = None
+    UUID: str 
+    _id: Optional[str] = None  
     eventType: Optional[str] = None
     eventName: Optional[str] = None
     date: Optional[datetime] = None
@@ -150,8 +153,6 @@ class EventUpdate(BaseModel):
     attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
     total_attendance: Optional[int] = None
-    
-    # 🔥 CRITICAL: Add these fields
     isTicketed: Optional[bool] = None
     isGlobal: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
