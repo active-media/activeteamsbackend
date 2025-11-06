@@ -2388,13 +2388,21 @@ async def get_events(
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
-    start_date: Optional[str] = Query('2025-10-27')
+    start_date: Optional[str] = Query('2025-10-27'),
+    leader_at_12_filter: Optional[bool] = Query(None),
+    show_personal_cells: Optional[bool] = Query(None),
+    show_all_authorized: Optional[bool] = Query(None)
 ):
     """
-    ✅ FIXED: Event retrieval with deduplication and persistent attendees
+    ✅ FIXED: Event retrieval with proper event type handling for all roles
+    ✅ ADMIN: Can see all event types and all users' cells
+    ✅ REGISTRANT: Can see all event types but only their own Cells events
+    ✅ LEADER AT 12: Can see Cells events (own + disciples) + Global Events
+    ✅ REGULAR USER: Can only see their own Cells events
     """
     try:
         print(f"\n🔍 GET /events - User: {current_user.get('email')}, Role: {current_user.get('role')}, Personal: {personal}")
+        print(f"🎯 Leader at 12 params - filter: {leader_at_12_filter}, personal_cells: {show_personal_cells}, all_authorized: {show_all_authorized}")
 
         user_role = current_user.get("role", "user").lower()
         email = current_user.get("email", "")
@@ -2431,10 +2439,11 @@ async def get_events(
             print(f"🎯 Leader at 12 detected via user role")
         
         is_admin = user_role == "admin"
+        is_registrant = user_role == "registrant"
         
         # ✅ CHECK: Is user a leader (144, 1728)?
         is_leader_144_or_1728 = False
-        if not is_admin and not is_leader_at_12:
+        if not is_admin and not is_leader_at_12 and not is_registrant:
             leader_check = await events_collection.find_one({
                 "$or": [
                     {"Leader at 144": {"$regex": f".*{leader_name}.*", "$options": "i"}},
@@ -2446,9 +2455,11 @@ async def get_events(
         print(f"🎯 FINAL ROLE DETECTION for {email}:")
         print(f"   - Database Role: {user_role}")
         print(f"   - Is Admin: {is_admin}")
+        print(f"   - Is Registrant: {is_registrant}")
         print(f"   - Is Leader at 12: {is_leader_at_12}")
         print(f"   - Is Leader (144/1728): {is_leader_144_or_1728}")
         print(f"   - Personal Filter: {personal}")
+        print(f"   - Event Type Filter: {event_type}")
 
         # Parse start_date
         try:
@@ -2462,76 +2473,151 @@ async def get_events(
         # ✅ Build query
         query = {}
 
-        # ✅ CRITICAL: EVENT TYPE FILTERING BASED ON ROLE
+        # ✅ CRITICAL FIX: EVENT TYPE FILTERING BASED ON ROLE
         if event_type and event_type.lower() != 'all':
+            # User requested specific event type
             query["$or"] = [
                 {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
                 {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}}
             ]
             print(f"🎯 User requested specific event type: {event_type}")
         else:
+            # No specific event type requested - show appropriate events based on role
             if is_admin:
-                print("👑 ADMIN - Can see all event types")
+                print("👑 ADMIN - Can see ALL event types (no restrictions)")
+                # No event type restrictions for admin
+                pass
+            elif is_registrant:
+                print("📝 REGISTRANT - Can see ALL event types (no restrictions)")
+                # No event type restrictions for registrant
                 pass
             elif is_leader_at_12:
-                print("👥 LEADER AT 12 - Restricted to Cells, Global, Ticketed events")
+                # ✅ FIXED: Leader at 12 should see Cells events + Global Events
+                print("👥 LEADER AT 12 - Can see Cells events (own + disciples) + Global Events")
                 query["$or"] = [
                     {"Event Type": {"$regex": "Cells", "$options": "i"}},
                     {"eventType": {"$regex": "Cells", "$options": "i"}},
                     {"Event Type": {"$regex": "Global", "$options": "i"}},
                     {"eventType": {"$regex": "Global", "$options": "i"}},
-                    {"Event Type": {"$regex": "Ticketed", "$options": "i"}},
-                    {"eventType": {"$regex": "Ticketed", "$options": "i"}},
-                    {"isGlobal": True},
-                    {"isTicketed": True}
+                    {"isGlobal": True}
                 ]
-            elif user_role == "registrant":
-                print("📝 REGISTRANT - Can see own Cells, Global, Ticketed (NO Personal Steps)")
-                query["$or"] = [
-                    {"Event Type": {"$regex": "Cells", "$options": "i"}},
-                    {"eventType": {"$regex": "Cells", "$options": "i"}},
-                    {"Event Type": {"$regex": "Global", "$options": "i"}},
-                    {"eventType": {"$regex": "Global", "$options": "i"}},
-                    {"Event Type": {"$regex": "Ticketed", "$options": "i"}},
-                    {"eventType": {"$regex": "Ticketed", "$options": "i"}},
-                    {"isGlobal": True},
-                    {"isTicketed": True}
-                ]
-                query["hasPersonSteps"] = {"$ne": True}
-            elif is_leader_144_or_1728 or user_role == "user":
-                print("👤 USER/LEADER (144/1728) - Restricted to own Cells only")
+            else:
+                # Regular users and other leaders
+                print("👤 USER/OTHER LEADER - Restricted to Cells only")
                 query["$or"] = [
                     {"Event Type": {"$regex": "Cells", "$options": "i"}},
                     {"eventType": {"$regex": "Cells", "$options": "i"}}
                 ]
-            else:
-                print("🚫 NOT A LEADER - No access to events")
-                return {
-                    "events": [],
-                    "total_events": 0,
-                    "total_pages": 0,
-                    "current_page": page,
-                    "page_size": limit,
-                    "message": "You must be a leader to access events"
+
+        # ✅ CRITICAL FIX: CELLS EVENT FILTERING FOR REGISTRANT
+        if is_registrant:
+            # Registrant can see all event types, but for Cells events, only show their own
+            if (event_type and event_type.lower() == "cells") or (not event_type and not query):
+                print(f"📝 REGISTRANT - Showing only own Cells events for {email}")
+                registrant_cells_filter = {
+                    "$or": [
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
+                    ]
                 }
-
-        # ✅ ROLE-BASED OWNERSHIP FILTERING
-        if user_role in ["user", "registrant"] and not is_leader_at_12:
-            role_filter = {
-                "$or": [
-                    {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                    {"email": {"$regex": f"^{email}$", "$options": "i"}},
-                    {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
-                ]
-            }
-            if "$or" in query:
-                query = {"$and": [{"$or": query.pop("$or")}, role_filter]}
+                
+                # Combine with existing query
+                if "$or" in query:
+                    query = {"$and": [{"$or": query.pop("$or")}, registrant_cells_filter]}
+                else:
+                    query.update(registrant_cells_filter)
             else:
-                query.update(role_filter)
-            print(f"👤 Regular User/Registrant - Showing only own events")
+                print(f"📝 REGISTRANT - Showing all {event_type if event_type else 'non-Cells'} events")
+                # No additional filtering for non-Cells events
 
-        elif is_leader_144_or_1728:
-            role_filter = {
+        # ✅ ENHANCED: LEADER AT 12 FILTERING LOGIC - FIXED
+        if is_leader_at_12:
+            print(f"🎯 PROCESSING LEADER AT 12 FILTERING for {leader_name}")
+            
+            # Get people under this leader at 12
+            people_under_leader = await people_collection.find({
+                "$or": [
+                    {"Leader @12": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                    {"Leader at 12": {"$regex": f"^{leader_name}$", "$options": "i"}}
+                ]
+            }).to_list(length=None)
+            
+            emails_under_leader = [person.get("Email", "").strip() for person in people_under_leader if person.get("Email")]
+            names_under_leader = [f"{person.get('Name','')} {person.get('Surname','')}".strip() for person in people_under_leader if person.get('Name')]
+            
+            print(f"📊 Found {len(emails_under_leader)} people under {leader_name}")
+            
+            # ✅ FIXED: Leader at 12 should see Cells events (with toggle) + Global Events
+            if show_personal_cells or personal:
+                print(f"🎯 MY CELLS ONLY - Showing {leader_name}'s personal cells + Global Events")
+                # Only show events where the leader is directly involved + Global Events
+                leader_filter = {
+                    "$or": [
+                        # Leader's own events
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                        {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                        # Global Events (always show regardless of personal filter)
+                        {"Event Type": {"$regex": "Global", "$options": "i"}},
+                        {"eventType": {"$regex": "Global", "$options": "i"}},
+                        {"isGlobal": True}
+                    ]
+                }
+            elif show_all_authorized or (not personal and not show_personal_cells):
+                print(f"🎯 ALL CELLS - Showing {leader_name}'s cells + {len(emails_under_leader)} disciples' cells + Global Events")
+                # Show leader's events + disciples' events + Global Events
+                leader_filter = {
+                    "$or": [
+                        # Leader's own events
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                        {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                        
+                        # Disciples' events
+                        *[{"Email": {"$regex": f"^{email}$", "$options": "i"}} for email in emails_under_leader if email],
+                        *[{"email": {"$regex": f"^{email}$", "$options": "i"}} for email in emails_under_leader if email],
+                        *[{"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}} for email in emails_under_leader if email],
+                        *[{"Leader": {"$regex": f"^{name}$", "$options": "i"}} for name in names_under_leader if name],
+                        *[{"eventLeaderName": {"$regex": f"^{name}$", "$options": "i"}} for name in names_under_leader if name],
+                        
+                        # Global Events (always show regardless of personal filter)
+                        {"Event Type": {"$regex": "Global", "$options": "i"}},
+                        {"eventType": {"$regex": "Global", "$options": "i"}},
+                        {"isGlobal": True}
+                    ]
+                }
+            else:
+                # Default fallback - same as personal cells
+                print(f"🎯 DEFAULT - Showing {leader_name}'s personal cells + Global Events")
+                leader_filter = {
+                    "$or": [
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                        {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                        # Global Events (always show regardless of personal filter)
+                        {"Event Type": {"$regex": "Global", "$options": "i"}},
+                        {"eventType": {"$regex": "Global", "$options": "i"}},
+                        {"isGlobal": True}
+                    ]
+                }
+            
+            # Apply the leader filter
+            if "$or" in query:
+                query = {"$and": [{"$or": query.pop("$or")}, leader_filter]}
+            else:
+                query.update(leader_filter)
+
+        # ✅ ADMIN PERSONAL FILTERING
+        elif is_admin and personal:
+            print(f"👑 ADMIN PERSONAL - Showing only {leader_name}'s personal events")
+            admin_personal_filter = {
                 "$or": [
                     {"Email": {"$regex": f"^{email}$", "$options": "i"}},
                     {"email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -2541,65 +2627,40 @@ async def get_events(
                 ]
             }
             if "$or" in query:
-                query = {"$and": [{"$or": query.pop("$or")}, role_filter]}
+                query = {"$and": [{"$or": query.pop("$or")}, admin_personal_filter]}
             else:
-                query.update(role_filter)
-            print(f"👥 Leader 144/1728 - Showing only own cells")
+                query.update(admin_personal_filter)
 
-        elif is_admin or is_leader_at_12:
-            if personal:
-                print(f"🎯 MY CELLS ONLY VIEW - Showing only {leader_name}'s personal cells")
-                personal_filter = {
-                    "$or": [
-                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                        {"email": {"$regex": f"^{email}$", "$options": "i"}},
-                        {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
-                        {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                        {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                    ]
-                }
-                if "$or" in query:
-                    query = {"$and": [{"$or": query.pop("$or")}, personal_filter]}
-                else:
-                    query.update(personal_filter)
+        # ✅ REGULAR USER FILTERING
+        elif user_role == "user" and not is_leader_at_12 and not is_registrant:
+            print(f"👤 Regular User - Showing only own events")
+            user_filter = {
+                "$or": [
+                    {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                    {"email": {"$regex": f"^{email}$", "$options": "i"}},
+                    {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
+                ]
+            }
+            if "$or" in query:
+                query = {"$and": [{"$or": query.pop("$or")}, user_filter]}
             else:
-                if is_admin:
-                    print(f"👑 ADMIN VIEW ALL - Showing all events")
-                else:
-                    print(f"👥 LEADER AT 12 - CELLS UNDER ME")
-                    
-                    people_under_leader = await people_collection.find({
-                        "$or": [
-                            {"Leader @12": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                            {"Leader at 12": {"$regex": f"^{leader_name}$", "$options": "i"}}
-                        ]
-                    }).to_list(length=None)
-                    
-                    emails_under_leader = [person.get("Email", "").strip() for person in people_under_leader if person.get("Email")]
-                    names_under_leader = [f"{person.get('Name','')} {person.get('Surname','')}".strip() for person in people_under_leader if person.get('Name')]
-                    
-                    print(f"📊 Found {len(emails_under_leader)} people under {leader_name}")
-                    
-                    if emails_under_leader or names_under_leader:
-                        leader_supervision_filter = {
-                            "$or": [
-                                {"Email": {"$in": emails_under_leader}},
-                                {"email": {"$in": emails_under_leader}},
-                                {"eventLeaderEmail": {"$in": emails_under_leader}},
-                                *[{"Leader": {"$regex": f"^{name}$", "$options": "i"}} for name in names_under_leader if name],
-                                *[{"eventLeaderName": {"$regex": f"^{name}$", "$options": "i"}} for name in names_under_leader if name],
-                                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                                {"email": {"$regex": f"^{email}$", "$options": "i"}},
-                                {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
-                                {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                                {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                            ]
-                        }
-                        
-                        if "$or" in query:
-                            query = {"$and": [{"$or": query.pop("$or")}, leader_supervision_filter]}
-                        else:
-                            query.update(leader_supervision_filter)
+                query.update(user_filter)
+
+        elif is_leader_144_or_1728:
+            print(f"👥 Leader 144/1728 - Showing only own cells")
+            leader_filter = {
+                "$or": [
+                    {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                    {"email": {"$regex": f"^{email}$", "$options": "i"}},
+                    {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
+                    {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                    {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
+                ]
+            }
+            if "$or" in query:
+                query = {"$and": [{"$or": query.pop("$or")}, leader_filter]}
+            else:
+                query.update(leader_filter)
 
         # Add search filter
         if search and search.strip():
@@ -2772,12 +2833,6 @@ async def get_events(
                     "week_identifier": current_week
                 }
 
-                # ✅ Debug logging
-                if persistent_attendees:
-                    print(f"✅ Event '{event_name}' has {len(persistent_attendees)} persistent attendees")
-                else:
-                    print(f"⚠️ Event '{event_name}' has NO persistent attendees")
-
                 processed_events.append(instance)
 
             except Exception as e:
@@ -2796,6 +2851,8 @@ async def get_events(
             "page_size": limit,
             "debug_info": {
                 "user_role": user_role,
+                "is_admin": is_admin,
+                "is_registrant": is_registrant,
                 "is_leader_at_12": is_leader_at_12,
                 "is_leader_144_or_1728": is_leader_144_or_1728,
                 "leader_name": leader_name,
@@ -2803,15 +2860,19 @@ async def get_events(
                 "event_type_filter": event_type,
                 "total_found_in_db": total_count,
                 "returned_after_processing": len(processed_events),
-                "deduplication_applied": True
+                "deduplication_applied": True,
+                "leader_at_12_view": leader_at_12_filter,
+                "show_personal_cells": show_personal_cells,
+                "show_all_authorized": show_all_authorized
             }
         }
 
     except Exception as e:
-        print(f" ERROR: {str(e)}")
+        print(f"❌ ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/admin/migrate-persistent-attendees")
 async def migrate_persistent_attendees(current_user: dict = Depends(get_current_user)):
