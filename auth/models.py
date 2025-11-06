@@ -89,6 +89,7 @@ from typing import List, Optional
 
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
+    all_attendees: List[Attendee] = Field(default_factory=list)
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
@@ -120,6 +121,8 @@ class PersonCreate(BaseModel):
     leaders: List[str]  
     stage: str = "Win"
 
+class LeaderStatusResponse(BaseModel):
+    isLeader: bool
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -260,13 +263,15 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-
+# ============= Tasks Models =============
 # Nested contacted_person model
 class ContactedPerson(BaseModel):
     name: str
-    phone: str
+    Number: str
     email: EmailStr
-
+    
+    class Config:
+        populate_by_name = True
 
 # Main task model
 class TaskModel(BaseModel):
