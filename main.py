@@ -3971,7 +3971,6 @@ async def get_events(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/events/global")
 async def get_global_events(
     current_user: dict = Depends(get_current_user),
