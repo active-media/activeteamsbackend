@@ -31,25 +31,28 @@ class UserLogin(BaseModel):
 # ===== Event Models =====
 class EventBase(BaseModel):
     UUID: Optional[str] = None 
-    eventType: str
+    eventTypeId: Optional[str] = None  
+    eventTypeName: str  
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
     recurring_day: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
+    eventLeaderName: Optional[str] = None  
+    eventLeaderEmail: Optional[str] = None  
     description: Optional[str] = None
     userEmail: Optional[str] = None
     email: Optional[str] = None
+    day: Optional[str] = None  
     
-    # 🔥 CRITICAL: Add these fields
     isTicketed: Optional[bool] = False
     isGlobal: Optional[bool] = False
     hasPersonSteps: Optional[bool] = False
     priceTiers: Optional[List[dict]] = Field(default_factory=list)
     leader1: Optional[str] = None
     leader12: Optional[str] = None
-    price: Optional[float] = None  # For backward compatibility
+    price: Optional[float] = None
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
@@ -134,13 +137,14 @@ class EventTypeCreate(BaseModel):
     hasPersonSteps: Optional[bool] = False
     description: str
     createdAt: Optional[datetime] = None
+    UUID: Optional[str] = None  
 
 
 class EventUpdate(BaseModel):
-    UUID: str 
+    UUID: Optional[str] = None 
     _id: Optional[str] = None  
-    eventType: Optional[str] = None
-    eventName: Optional[str] = None
+    eventTypeId: Optional[str] = None 
+    eventTypeName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
     recurring_day: Optional[List[str]] = None
