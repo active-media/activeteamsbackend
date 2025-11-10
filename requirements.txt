@@ -45,3 +45,4 @@ six==1.17.0
 ecdsa==0.19.1
 pytz
 requests
+resend
