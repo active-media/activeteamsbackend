@@ -9,7 +9,8 @@ from auth.utils import hash_password, verify_password, get_next_occurrence_singl
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection
-from auth.email_utils import send_reset_email
+from auth.email_service import send_reset_email_resend, send_welcome_email_resend
+from auth.email_utils import send_reset_email as send_reset_email_original
 from typing import Optional, Literal, List, Any, Dict, Optional
 from collections import Counter
 from auth.utils import get_current_user  
@@ -1379,6 +1380,27 @@ async def login(user: UserLogin):
     }
     }
 
+# # ---------------- Forgot Password ----------------
+# @app.post("/forgot-password")
+# async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+#     logger.info(f"Forgot password requested: {payload.email}")
+#     user = await users_collection.find_one({"email": payload.email})
+
+#     if not user:
+#         logger.info(f"Forgot password - email not found: {payload.email}")
+#         return {"message": "If your email exists, a reset link has been sent."}
+
+#     reset_token = create_access_token(
+#         {"user_id": str(user["_id"])},
+#         expires_delta=timedelta(hours=1)
+#     )
+#     reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
+#     logger.info(f"Reset link generated for {payload.email}: {reset_link}")
+
+#     background_tasks.add_task(send_reset_email, payload.email, reset_link)
+#     logger.info(f"Reset email task added for {payload.email}")
+
+#     return {"message": "If your email exists, a reset link has been sent."}
 # ---------------- Forgot Password ----------------
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
@@ -1387,20 +1409,38 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
 
     if not user:
         logger.info(f"Forgot password - email not found: {payload.email}")
+        # Still return success to prevent email enumeration
         return {"message": "If your email exists, a reset link has been sent."}
 
+    # Create reset token
     reset_token = create_access_token(
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
+    
+    # Create the reset link that will work with your frontend
     reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
+    
     logger.info(f"Reset link generated for {payload.email}: {reset_link}")
 
-    background_tasks.add_task(send_reset_email, payload.email, reset_link)
-    logger.info(f"Reset email task added for {payload.email}")
-
-    return {"message": "If your email exists, a reset link has been sent."}
-
+    # Try to send via Resend
+    email_sent = send_reset_email_resend(payload.email, reset_link)
+    
+    if email_sent:
+        logger.info(f"✅ Reset email sent successfully via Resend to {payload.email}")
+        return {"message": "If your email exists, a reset link has been sent."}
+    else:
+        # Fallback to original method
+        logger.warning(f"❌ Resend failed, falling back to original email method for {payload.email}")
+        try:
+            background_tasks.add_task(send_reset_email_original, payload.email, reset_link)
+            logger.info(f"✅ Reset email queued via fallback method for {payload.email}")
+            return {"message": "If your email exists, a reset link has been sent."}
+        except Exception as fallback_error:
+            logger.error(f"❌ Fallback email also failed for {payload.email}: {fallback_error}")
+            # Still return success to prevent email enumeration
+            return {"message": "If your email exists, a reset link has been sent."}
+        
 # ---------------- Reset Password ----------------
 @app.post("/reset-password")
 async def reset_password(data: ResetPasswordRequest):
@@ -1438,6 +1478,27 @@ async def reset_password(data: ResetPasswordRequest):
         "token_type": "bearer"
     }
 
+@app.post("/test-email")
+async def test_email(
+    to_email: str = Query(..., description="Email address to send test to"),
+    email_type: str = Query("welcome", description="Type of email to test")
+):
+    """
+    Test endpoint to verify Resend email functionality
+    """
+    try:
+        if email_type == "welcome":
+            success = send_welcome_email_resend(to_email, "Test User")
+        else:
+            success = send_reset_email_resend(to_email, "https://example.com/test-reset-link")
+        
+        if success:
+            return {"message": f"Test {email_type} email sent successfully to {to_email}"}
+        else:
+            return {"error": f"Failed to send test {email_type} email"}
+            
+    except Exception as e:
+        return {"error": f"Email test failed: {str(e)}"}
 # ---------------- Refresh Token ----------------
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
