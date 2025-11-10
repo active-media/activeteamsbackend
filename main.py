@@ -1658,21 +1658,20 @@ async def get_events(
     show_all_authorized: Optional[bool] = Query(None)
 ):
     """
-     FIXED: Event retrieval with proper event type handling for all roles
-     ADMIN: Can see all event types and ALL users' cells (no restrictions)
-     ADMIN + LEADER AT 12: Treated as ADMIN (can see everything)
-     REGISTRANT: Can see all event types but only their own Cells events
-     LEADER AT 12 (NON-ADMIN): Can see Cells events (own + disciples) + Global Events
-     REGULAR USER: Can only see their own Cells events
+    Event retrieval with proper event type handling for all roles
+    ADMIN: Can see all event types and ALL users' cells (no restrictions)
+    ADMIN + LEADER AT 12: Treated as ADMIN (can see everything)
+    REGISTRANT: Can see all event types but only their own Cells events
+    LEADER AT 12 (NON-ADMIN): Can see Cells events (own + disciples) + Global Events
+    REGULAR USER: Can only see their own Cells events
     """
     try:
-        print(f"\n🔍 GET /events - User: {current_user.get('email')}, Role: {current_user.get('role')}, Personal: {personal}")
+        print(f"GET /events - User: {current_user.get('email')}, Role: {current_user.get('role')}, Personal: {personal}")
 
         user_role = current_user.get("role", "user").lower()
         email = current_user.get("email", "")
         user_id = current_user.get("user_id", "")
 
-        # ✅ ENHANCED: Leader at 12 detection from People database
         is_leader_at_12 = False
         leader_name = ""
         
@@ -1685,7 +1684,7 @@ async def get_events(
         
         if user_person:
             leader_name = f"{user_person.get('Name', '')} {user_person.get('Surname', '')}".strip()
-            print(f"🔍 Found person in People DB: {leader_name}")
+            print(f"Found person in People DB: {leader_name}")
             
             people_under_leadership = await people_collection.count_documents({
                 "$or": [
@@ -1696,25 +1695,21 @@ async def get_events(
             
             if people_under_leadership > 0:
                 is_leader_at_12 = True
-                print(f"🎯 Leader at 12 detected: {leader_name} leads {people_under_leadership} people")
+                print(f"Leader at 12 detected: {leader_name} leads {people_under_leadership} people")
         
         if "leader at 12" in user_role:
             is_leader_at_12 = True
-            print(f"🎯 Leader at 12 detected via user role")
+            print(f"Leader at 12 detected via user role")
         
         is_admin = user_role == "admin"
         is_registrant = user_role == "registrant"
         
-        # ✅ CRITICAL FIX: Admin takes priority over Leader at 12
-        # If user is BOTH Admin AND Leader at 12, treat them as ADMIN (full access)
         is_admin_and_leader_at_12 = is_admin and is_leader_at_12
         
         if is_admin_and_leader_at_12:
-            print(f"👑🔄 USER IS BOTH ADMIN AND LEADER AT 12 - TREATING AS ADMIN (FULL ACCESS)")
-            # Override: Admin privileges take precedence
+            print(f"USER IS BOTH ADMIN AND LEADER AT 12 - TREATING AS ADMIN (FULL ACCESS)")
             is_leader_at_12 = False
         
-        # ✅ CHECK: Is user a leader (144, 1728)?
         is_leader_144_or_1728 = False
         if not is_admin and not is_leader_at_12 and not is_registrant:
             leader_check = await events_collection.find_one({
@@ -1725,7 +1720,7 @@ async def get_events(
             })
             is_leader_144_or_1728 = bool(leader_check)
         
-        print(f"🎯 FINAL ROLE DETECTION for {email}:")
+        print(f"FINAL ROLE DETECTION for {email}:")
         print(f"   - Database Role: {user_role}")
         print(f"   - Is Admin: {is_admin}")
         print(f"   - Is Registrant: {is_registrant}")
@@ -1735,7 +1730,6 @@ async def get_events(
         print(f"   - Personal Filter: {personal}")
         print(f"   - Event Type Filter: {event_type}")
 
-        # Parse start_date
         try:
             start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
         except:
@@ -1744,31 +1738,24 @@ async def get_events(
         today = date.today()
         current_week = get_current_week_identifier()
 
-        # ✅ Build query
         query = {}
 
-        # ✅ CRITICAL FIX: EVENT TYPE FILTERING BASED ON ROLE
         if event_type and event_type.lower() != 'all':
-            # User requested specific event type
             query["$or"] = [
                 {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
                 {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
-                {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}  # ✅ Add this
+                {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
             ]
-            print(f"🎯 User requested specific event type: {event_type}")
+            print(f"User requested specific event type: {event_type}")
         else:
-            # No specific event type requested - show appropriate events based on role
             if is_admin:
-                print("👑 ADMIN - Can see ALL event types (no restrictions)")
-                # No event type restrictions for admin
+                print("ADMIN - Can see ALL event types (no restrictions)")
                 pass
             elif is_registrant:
-                print("📝 REGISTRANT - Can see ALL event types (no restrictions)")
-                # No event type restrictions for registrant
+                print("REGISTRANT - Can see ALL event types (no restrictions)")
                 pass
             elif is_leader_at_12:
-                # ✅ FIXED: Leader at 12 should see Cells events + Global Events
-                print("👥 LEADER AT 12 - Can see Cells events (own + disciples) + Global Events")
+                print("LEADER AT 12 - Can see Cells events (own + disciples) + Global Events")
                 query["$or"] = [
                     {"Event Type": {"$regex": "Cells", "$options": "i"}},
                     {"eventType": {"$regex": "Cells", "$options": "i"}},
@@ -1777,17 +1764,15 @@ async def get_events(
                     {"isGlobal": True}
                 ]
             else:
-                # Regular users and other leaders
-                print("👤 USER/OTHER LEADER - Restricted to Cells only")
+                print("USER/OTHER LEADER - Restricted to Cells only")
                 query["$or"] = [
                     {"Event Type": {"$regex": "Cells", "$options": "i"}},
                     {"eventType": {"$regex": "Cells", "$options": "i"}}
                 ]
 
-        # ✅ CRITICAL FIX: ADMIN FILTERING - ADMIN SEES EVERYTHING BY DEFAULT
         if is_admin:
             if personal:
-                print(f"👑 ADMIN PERSONAL - Showing only {leader_name}'s personal events")
+                print(f"ADMIN PERSONAL - Showing only {leader_name}'s personal events")
                 admin_personal_filter = {
                     "$or": [
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1802,16 +1787,12 @@ async def get_events(
                 else:
                     query.update(admin_personal_filter)
             else:
-                print(f"👑 ADMIN ALL CELLS - Showing ALL cells (no personal filtering)")
-                # ✅ FIXED: No personal filtering - admin sees ALL cells when personal=False
-                # This is the key fix - Admin sees EVERYTHING by default
+                print(f"ADMIN ALL CELLS - Showing ALL cells (no personal filtering)")
                 pass
 
-        # ✅ CRITICAL FIX: CELLS EVENT FILTERING FOR REGISTRANT
         elif is_registrant:
-            # Registrant can see all event types, but for Cells events, only show their own
             if (event_type and event_type.lower() == "cells") or (not event_type and not query):
-                print(f"📝 REGISTRANT - Showing only own Cells events for {email}")
+                print(f"REGISTRANT - Showing only own Cells events for {email}")
                 registrant_cells_filter = {
                     "$or": [
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1820,20 +1801,16 @@ async def get_events(
                     ]
                 }
                 
-                # Combine with existing query
                 if "$or" in query:
                     query = {"$and": [{"$or": query.pop("$or")}, registrant_cells_filter]}
                 else:
                     query.update(registrant_cells_filter)
             else:
-                print(f" REGISTRANT - Showing all {event_type if event_type else 'non-Cells'} events")
-                # No additional filtering for non-Cells events
+                print(f"REGISTRANT - Showing all {event_type if event_type else 'non-Cells'} events")
 
-        # ENHANCED: LEADER AT 12 FILTERING LOGIC - ONLY FOR NON-ADMINS
-        elif is_leader_at_12 and not is_admin:  # Added "and not is_admin" for safety
-            print(f" PROCESSING LEADER AT 12 FILTERING for {leader_name} (NON-ADMIN)")
+        elif is_leader_at_12 and not is_admin:
+            print(f"PROCESSING LEADER AT 12 FILTERING for {leader_name} (NON-ADMIN)")
             
-            # Get people under this leader at 12
             people_under_leader = await people_collection.find({
                 "$or": [
                     {"Leader @12": {"$regex": f"^{leader_name}$", "$options": "i"}},
@@ -1844,39 +1821,32 @@ async def get_events(
             emails_under_leader = [person.get("Email", "").strip() for person in people_under_leader if person.get("Email")]
             names_under_leader = [f"{person.get('Name','')} {person.get('Surname','')}".strip() for person in people_under_leader if person.get('Name')]
             
-            print(f" Found {len(emails_under_leader)} people under {leader_name}")
+            print(f"Found {len(emails_under_leader)} people under {leader_name}")
             
-            #  FIXED: Leader at 12 should see Cells events (with toggle) + Global Events
             if show_personal_cells or personal:
-                print(f"🎯 MY CELLS ONLY - Showing {leader_name}'s personal cells + Global Events")
-                # Only show events where the leader is directly involved + Global Events
+                print(f"MY CELLS ONLY - Showing {leader_name}'s personal cells + Global Events")
                 leader_filter = {
                     "$or": [
-                        # Leader's own events
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
                         {"email": {"$regex": f"^{email}$", "$options": "i"}},
                         {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
                         {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
                         {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                        # Global Events (always show regardless of personal filter)
                         {"Event Type": {"$regex": "Global", "$options": "i"}},
                         {"eventType": {"$regex": "Global", "$options": "i"}},
                         {"isGlobal": True}
                     ]
                 }
             elif show_all_authorized or (not personal and not show_personal_cells):
-                print(f"🎯 ALL CELLS - Showing {leader_name}'s cells + {len(emails_under_leader)} disciples' cells + Global Events")
-                # Show leader's events + disciples' events + Global Events
+                print(f"ALL CELLS - Showing {leader_name}'s cells + {len(emails_under_leader)} disciples' cells + Global Events")
                 leader_filter = {
                     "$or": [
-                        # Leader's own events
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
                         {"email": {"$regex": f"^{email}$", "$options": "i"}},
                         {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
                         {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
                         {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
                         
-                        # Disciples' events
                         *[{"Email": {"$regex": f"^{email}$", "$options": "i"}} for email in emails_under_leader if email],
                         *[{"email": {"$regex": f"^{email}$", "$options": "i"}} for email in emails_under_leader if email],
                         *[{"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}} for email in emails_under_leader if email],
@@ -1889,8 +1859,7 @@ async def get_events(
                     ]
                 }
             else:
-                # Default fallback - same as personal cells
-                print(f"🎯 DEFAULT - Showing {leader_name}'s personal cells + Global Events")
+                print(f"DEFAULT - Showing {leader_name}'s personal cells + Global Events")
                 leader_filter = {
                     "$or": [
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1898,22 +1867,19 @@ async def get_events(
                         {"eventLeaderEmail": {"$regex": f"^{email}$", "$options": "i"}},
                         {"Leader": {"$regex": f"^{leader_name}$", "$options": "i"}},
                         {"eventLeaderName": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                        # Global Events (always show regardless of personal filter)
                         {"Event Type": {"$regex": "Global", "$options": "i"}},
                         {"eventType": {"$regex": "Global", "$options": "i"}},
                         {"isGlobal": True}
                     ]
                 }
             
-            # Apply the leader filter
             if "$or" in query:
                 query = {"$and": [{"$or": query.pop("$or")}, leader_filter]}
             else:
                 query.update(leader_filter)
 
-        # ✅ REGULAR USER FILTERING
         elif user_role == "user" and not is_leader_at_12 and not is_registrant:
-            print(f"👤 Regular User - Showing only own events")
+            print(f"Regular User - Showing only own events")
             user_filter = {
                 "$or": [
                     {"Email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1927,7 +1893,7 @@ async def get_events(
                 query.update(user_filter)
 
         elif is_leader_144_or_1728:
-            print(f"👥 Leader 144/1728 - Showing only own cells")
+            print(f"Leader 144/1728 - Showing only own cells")
             leader_filter = {
                 "$or": [
                     {"Email": {"$regex": f"^{email}$", "$options": "i"}},
@@ -1942,7 +1908,6 @@ async def get_events(
             else:
                 query.update(leader_filter)
 
-        # Add search filter
         if search and search.strip():
             search_filter = {
                 "$or": [
@@ -1980,7 +1945,6 @@ async def get_events(
             {"$sort": {"Event Name": 1}}
         ])
 
-        # Get total count
         count_pipeline = pipeline.copy()
         count_pipeline.append({"$count": "total"})
         
@@ -1996,7 +1960,7 @@ async def get_events(
 
         
         events = await events_collection.aggregate(pipeline).to_list(length=limit)
-        print(f"📊 Found {total_count} unique events, returning {len(events)} for page {page}")
+        print(f"Found {total_count} unique events, returning {len(events)} for page {page}")
 
         processed_events = []
         day_mapping = {
@@ -2011,7 +1975,7 @@ async def get_events(
                 event_id = str(event.get("_id"))
                 
                 if event_id in seen_event_ids:
-                    print(f" Skipping duplicate event ID: {event_id}")
+                    print(f"Skipping duplicate event ID: {event_id}")
                     continue
                 seen_event_ids.add(event_id)
                 
@@ -2019,7 +1983,6 @@ async def get_events(
                 event_type_value = event.get("Event Type") or event.get("eventType", "Event")
                 is_cell_event = event_type_value.lower() in ["cells", "cell"]
                 
-                # ✅ FIXED: Get day from correct field
                 day_name = str(event.get("Day") or event.get("day", "")).lower().strip() if is_cell_event else "One-time"
                 
                 if is_cell_event and day_name in day_mapping:
@@ -2029,13 +1992,16 @@ async def get_events(
                     week_start = today - timedelta(days=days_since_monday)
                     event_date = week_start + timedelta(days=target_weekday)
                     
+                    # FIXED: Always filter out events before start_date
                     if event_date < start_date_obj:
                         continue
                         
-                    if status and status != 'incomplete' and event_date > today:
+                    # FIXED: Always filter out future events unless specifically requested
+                    # Only show events that have already occurred or are happening today
+                    if event_date > today:
                         continue
+                        
                 else:
-                    # ✅ FIXED: Get date from correct field for non-cell events
                     event_date_field = event.get("date") or event.get("Date Of Event")
                     if isinstance(event_date_field, datetime):
                         event_date = event_date_field.date()
@@ -2048,6 +2014,10 @@ async def get_events(
                         continue
                     
                     if event_date < start_date_obj:
+                        continue
+
+                    # FIXED: Also filter out future non-cell events
+                    if event_date > today:
                         continue
 
                 attendance_data = event.get("attendance", {})
@@ -2077,7 +2047,6 @@ async def get_events(
                 if status and status != 'all' and status != event_status:
                     continue
 
-                # ✅ CRITICAL FIX: Include ALL required fields for display
                 instance = {
                     "_id": event_id,
                     "UUID": event.get("UUID", ""), 
@@ -2106,7 +2075,7 @@ async def get_events(
                 processed_events.append(instance)
 
             except Exception as e:
-                print(f" Error processing event {event.get('_id')}: {str(e)}")
+                print(f"Error processing event {event.get('_id')}: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -2474,6 +2443,8 @@ async def get_event_types():
 from urllib.parse import unquote
 from datetime import datetime
 
+
+
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
     event_type_name: str = Path(..., description="Name of the event type to update"),
@@ -2483,7 +2454,7 @@ async def update_event_type(
         # Decode the URL-encoded event type name
         decoded_event_type_name = unquote(event_type_name)
         
-        print(f"🔍 Looking for event type to update: '{decoded_event_type_name}'")
+        print(f"🔍 [EVENT-TYPE UPDATE] Looking for event type to update: '{decoded_event_type_name}'")
         
         # Check if event type exists
         existing_event_type = await events_collection.find_one({
@@ -2492,17 +2463,22 @@ async def update_event_type(
         })
         
         if not existing_event_type:
-            print(f"❌ Event type '{decoded_event_type_name}' not found")
+            print(f"❌ [EVENT-TYPE UPDATE] Event type '{decoded_event_type_name}' not found")
             raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
         # If name is being changed, check for duplicates
         new_name = updated_data.name.strip().title()
-        if new_name != decoded_event_type_name:
+        name_changed = new_name != decoded_event_type_name
+        
+        print(f"📝 [EVENT-TYPE UPDATE] Name change check: '{decoded_event_type_name}' -> '{new_name}' (changed: {name_changed})")
+        
+        if name_changed:
             duplicate = await events_collection.find_one({
                 "name": new_name,
                 "isEventType": True
             })
             if duplicate:
+                print(f"❌ [EVENT-TYPE UPDATE] Duplicate event type found: '{new_name}'")
                 raise HTTPException(status_code=400, detail="Event type with this name already exists")
 
         # Prepare update data
@@ -2517,40 +2493,82 @@ async def update_event_type(
         for field in immutable_fields:
             update_data.pop(field, None)
 
-        print(f" Updating event type '{decoded_event_type_name}' to: {update_data}")
+        print(f"📝 [EVENT-TYPE UPDATE] Updating event type '{decoded_event_type_name}' with data: {update_data}")
 
-        # Update the event type
+        # ✅ CRITICAL: Update all related events with the new event type name FIRST
+        events_updated_count = 0
+        if name_changed:
+            print(f"🔄 [EVENT-TYPE UPDATE] Event type name changed from '{decoded_event_type_name}' to '{new_name}'")
+            
+            # Count events that will be updated
+            events_count = await events_collection.count_documents({
+                "eventType": decoded_event_type_name
+            })
+            print(f"📊 [EVENT-TYPE UPDATE] Found {events_count} events to update with new event type name")
+            
+            if events_count > 0:
+                # Get sample of events before update for debugging
+                events_before = await events_collection.find(
+                    {"eventType": decoded_event_type_name}
+                ).to_list(length=5)
+                print(f"🔍 [EVENT-TYPE UPDATE] Sample events before update: {[{'name': e.get('eventName'), 'type': e.get('eventType')} for e in events_before]}")
+                
+                # Update all events with the old event type name
+                events_update_result = await events_collection.update_many(
+                    {"eventType": decoded_event_type_name},
+                    {"$set": {
+                        "eventType": new_name,
+                        "updatedAt": datetime.utcnow()
+                    }}
+                )
+                events_updated_count = events_update_result.modified_count
+                print(f"✅ [EVENT-TYPE UPDATE] Updated {events_updated_count} events with new event type name")
+                
+                # Verify events were actually updated
+                if events_updated_count > 0:
+                    updated_events = await events_collection.find(
+                        {"eventType": new_name}
+                    ).to_list(length=5)
+                    print(f"🔍 [EVENT-TYPE UPDATE] Sample events after update: {[{'name': e.get('eventName'), 'type': e.get('eventType')} for e in updated_events]}")
+                else:
+                    print("❌ [EVENT-TYPE UPDATE] WARNING: No events were updated with the new event type name!")
+                    
+                    # Debug: Check what events actually exist
+                    all_events_with_old_name = await events_collection.find(
+                        {"eventType": decoded_event_type_name}
+                    ).to_list(length=None)
+                    print(f"🐛 [EVENT-TYPE UPDATE] Debug - Events still with old name: {len(all_events_with_old_name)}")
+                    for event in all_events_with_old_name:
+                        print(f"🐛 [EVENT-TYPE UPDATE] Event: {event.get('eventName')} - Type: {event.get('eventType')}")
+            else:
+                print(f"ℹ️ [EVENT-TYPE UPDATE] No events found with event type '{decoded_event_type_name}'")
+
+        # Now update the event type itself
         result = await events_collection.update_one(
             {"_id": existing_event_type["_id"]},
             {"$set": update_data}
         )
 
         if result.modified_count == 0:
-            print(f" No changes made to event type '{decoded_event_type_name}'")
-            # Still return the existing data
+            print(f" [EVENT-TYPE UPDATE] No changes made to event type '{decoded_event_type_name}'")
             existing_event_type["_id"] = str(existing_event_type["_id"])
             return existing_event_type
 
-        if new_name != decoded_event_type_name:
-            events_update_result = await events_collection.update_many(
-                {"eventType": decoded_event_type_name},
-                {"$set": {"eventType": new_name}}
-            )
-            print(f" Updated {events_update_result.modified_count} events with new event type name")
-
-        updated = await events_collection.find_one({"_id": existing_event_type["_id"]})
-        updated["_id"] = str(updated["_id"])
+        updated_event_type = await events_collection.find_one({"_id": existing_event_type["_id"]})
+        updated_event_type["_id"] = str(updated_event_type["_id"])
         
-        print(f"Successfully updated event type to: {updated['name']}")
-        return updated
+        print(f" [EVENT-TYPE UPDATE] Successfully updated event type to: {updated_event_type['name']}")
+        print(f" [EVENT-TYPE UPDATE] Summary - Events updated: {events_updated_count}, Event type: {updated_event_type['name']}")
+        
+        return updated_event_type
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error updating event type: {str(e)}")
+        print(f" [EVENT-TYPE UPDATE] Error updating event type: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
-    
-from urllib.parse import unquote
 
 @app.delete("/event-types/{event_type_name}")
 async def delete_event_type(event_type_name: str = Path(..., description="Name of the event type to delete")):
