@@ -1885,7 +1885,7 @@ async def get_cell_events(
         print(f"❌ ERROR in /events/cells: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-        # =----- Get other event types ---------------
+ # =----- Get other event types ---------------
 
 @app.get("/events/other")
 async def get_other_events(
