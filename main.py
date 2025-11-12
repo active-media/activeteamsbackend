@@ -3918,7 +3918,7 @@ async def get_global_events(
         # Build query for Global Events
         query = {
             "isGlobal": True,
-            "eventType": "Global Events"
+            "eventTypeName": "Global Events"
         }
         
         # Add search filter
