@@ -1818,14 +1818,20 @@ async def get_cell_events(
                         
                         did_not_meet = week_attendance.get("status") == "did_not_meet"
                         weekly_attendees = week_attendance.get("attendees", [])
-                        has_weekly_attendees = len(weekly_attendees) > 0
                         
+                        # Reverted: Prefer explicit week status, but FALLBACK to attendance-derived status
                         if did_not_meet:
                             event_status = "did_not_meet"
-                        elif has_weekly_attendees:
-                            event_status = "complete"
+                        elif week_attendance.get("status"):
+                            # Use explicit status if set
+                            event_status = str(week_attendance.get("status")).lower()
                         else:
-                            event_status = "incomplete"
+                            # No explicit status: derive from attendees if present, otherwise mark as overdue/incomplete
+                            if isinstance(weekly_attendees, list) and len(weekly_attendees) > 0:
+                                event_status = "complete"
+                            else:
+                                # If the instance date is in the past, mark as incomplete, otherwise leave as open
+                                event_status = "incomplete" if instance_date < today else "open"
                         
                         # Apply status filter
                         if status and status != 'all' and status != event_status:
@@ -2039,14 +2045,19 @@ async def get_other_events(
                 
                 did_not_meet = event_attendance.get("status") == "did_not_meet"
                 weekly_attendees = event_attendance.get("attendees", [])
-                has_weekly_attendees = len(weekly_attendees) > 0
                 
+                # Reverted: Prefer explicit event attendance status, but FALLBACK to attendance-derived status
                 if did_not_meet:
                     event_status = "did_not_meet"
-                elif has_weekly_attendees:
-                    event_status = "complete"
+                elif event_attendance.get("status"):
+                    # Use explicit status if set
+                    event_status = str(event_attendance.get("status")).lower()
                 else:
-                    event_status = "incomplete"
+                    # No explicit status: derive from attendees if present, otherwise mark as overdue/incomplete
+                    if isinstance(weekly_attendees, list) and len(weekly_attendees) > 0:
+                        event_status = "complete"
+                    else:
+                        event_status = "incomplete" if event_date < today else "open"
 
                 # Apply status filter
                 if status and status != 'all' and status != event_status:
@@ -3653,7 +3664,7 @@ async def get_registrant_events(
                     "day": day.capitalize(),
                     "date": most_recent_occurrence.isoformat(),
                     "location": event.get("Location", ""),
-                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
                     "did_not_meet": did_not_meet,
                     "status": cell_status,
                     "Status": cell_status.replace("_", " ").title(),
@@ -3832,7 +3843,7 @@ async def get_registrant_cell_events_debug(
                     "day": day.capitalize(),
                     "date": most_recent_occurrence.isoformat(),
                     "location": event.get("Location", ""),
-                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
                     "did_not_meet": did_not_meet,
                     "status": cell_status,
                     "Status": status_display,
@@ -3944,6 +3955,8 @@ async def get_global_events(
         
         for event in all_events:
             try:
+                print(f"📝 Processing event {event.get('_id')}: {event.get('eventName', event.get('Event Name', 'Unknown'))}")
+                
                 # Parse event date
                 event_date_field = event.get("date")
                 if isinstance(event_date_field, datetime):
@@ -3958,8 +3971,11 @@ async def get_global_events(
                 else:
                     event_date = today_date
                 
+                print(f"  📅 Event date: {event_date}, Start date filter: {start_date_obj}")
+                
                 # Filter by date range
                 if event_date < start_date_obj:
+                    print(f"  ⏭️  Skipped - before date range")
                     continue
                 
                 # Get event details
@@ -3967,23 +3983,33 @@ async def get_global_events(
                 leader_name = event.get("Leader") or event.get("eventLeader", "")
                 location = event.get("Location") or event.get("location", "")
                 
-                # Determine status
+                # Determine status - FIXED: Use explicit status field from database, not inferred from attendees
+                # This prevents events from being automatically marked "complete" just because attendees were checked in
                 did_not_meet = event.get("did_not_meet", False)
-                attendees = event.get("attendees", [])
-                has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+                
+                # Check for explicit status field first (set via close/update API call)
+                stored_status = event.get("status") or event.get("Status")
+                
+                print(f"  🔄 Status determination: did_not_meet={did_not_meet}, stored_status={stored_status}")
                 
                 if did_not_meet:
                     event_status = "did_not_meet"
                     status_display = "Did Not Meet"
-                elif has_attendees:
-                    event_status = "complete"
-                    status_display = "Complete"
+                elif stored_status:
+                    # Use the explicit status from the database
+                    event_status = str(stored_status).lower()
+                    status_display = str(stored_status).replace("_", " ").title()
                 else:
-                    event_status = "incomplete"
-                    status_display = "Incomplete"
+                    # Default to "open" for events without an explicit status
+                    # (This ensures new events start as open, not derived from attendees)
+                    event_status = "open"
+                    status_display = "Open"
+                
+                print(f"  ✓ Final status: {event_status}")
                 
                 # Apply status filter
                 if status and status != 'all' and status != event_status:
+                    print(f"  ⏭️  Skipped - status filter: requested={status}, actual={event_status}")
                     continue
                 
                 # Build event object
@@ -3998,7 +4024,7 @@ async def get_global_events(
                     "time": event.get("time", ""),
                     "location": location,
                     "description": event.get("description", ""),
-                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
                     "did_not_meet": did_not_meet,
                     "status": event_status,
                     "Status": status_display,
@@ -4013,9 +4039,12 @@ async def get_global_events(
                 }
                 
                 processed_events.append(final_event)
+                print(f"  ✅ Event added to processed list")
                 
             except Exception as e:
                 print(f"⚠️ Error processing global event {event.get('_id')}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         print(f"✅ Processed {len(processed_events)} global events after filtering")
@@ -5104,7 +5133,7 @@ async def get_admin_cell_events_debug(
                     "day": day.capitalize(),
                     "date": most_recent_occurrence.isoformat(),
                     "location": event.get("Location", ""),
-                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
                     "did_not_meet": did_not_meet,
                     "status": cell_status,
                     "Status": status_display,
