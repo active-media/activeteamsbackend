@@ -28,36 +28,6 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-# ===== Event Models =====
-class EventBase(BaseModel):
-    UUID: Optional[str] = None 
-    eventTypeId: Optional[str] = None  
-    eventTypeName: str  
-    eventName: str
-    date: Optional[datetime] = None
-    time: Optional[str] = None
-    recurring_day: List[str] = Field(default_factory=list)
-    location: str
-    eventLeader: Optional[str] = None
-    eventLeaderName: Optional[str] = None  
-    eventLeaderEmail: Optional[str] = None  
-    description: Optional[str] = None
-    userEmail: Optional[str] = None
-    email: Optional[str] = None
-    day: Optional[str] = None  
-    
-    isTicketed: Optional[bool] = False
-    isGlobal: Optional[bool] = False
-    hasPersonSteps: Optional[bool] = False
-    priceTiers: Optional[List[dict]] = Field(default_factory=list)
-    leader1: Optional[str] = None
-    leader12: Optional[str] = None
-    price: Optional[float] = None
-
-class EventCreate(EventBase):
-    """Schema for creating events (inherits from EventBase)."""
-    pass
-
 # ===== FIXED Attendee Model =====
 class Attendee(BaseModel):
     id: Optional[str] = None
@@ -70,7 +40,6 @@ class Attendee(BaseModel):
     phone: Optional[str] = None
     decision: Optional[str] = None
     
-    # 🔥 NEW: Ticketed event payment fields
     priceTier: Optional[str] = None
     price: Optional[float] = None
     ageGroup: Optional[str] = None
@@ -90,46 +59,40 @@ class Attendee(BaseModel):
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional
 
+# ===== FIXED AttendanceSubmission Model =====
+# ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
-    all_attendees: List[Attendee] = Field(default_factory=list)
-    persistent_attendees: List[dict] = Field(default_factory=list) 
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
     isTicketed: bool = False
-    status: Optional[str] = None
-    week: Optional[str] = None 
 
     @model_validator(mode="after")
     def validate_attendance(self):
         """
-        IMPROVED: More flexible validation
+        ✅ IMPROVED: More flexible validation
         - If `did_not_meet` is True: attendees should be empty (but don't block if not)
         - If `did_not_meet` is False: allow empty attendees (frontend might send empty array)
         """
         if self.did_not_meet and self.attendees:
-            print(f"Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
+            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
             # Don't raise error, just log it
         return self
     
 # Adding new Person in the Event screen
 class PersonCreate(BaseModel):
+    invitedBy: str
     name: str
     surname: str
+    gender: str
     email: str
     number: str
-    address: str
-    gender: str
     dob: str
-    invitedBy: str
-    leaders: List[str]  
-    stage: str = "Win"
-    
-class LeaderStatusResponse(BaseModel):
-    isLeader: bool
-    hasCell: Optional[bool] = None
-    canAccessEvents: Optional[bool] = True
+    address: str
+    leaders: list[str]
+    stage: Literal["Win"]
+
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -139,39 +102,7 @@ class EventTypeCreate(BaseModel):
     hasPersonSteps: Optional[bool] = False
     description: str
     createdAt: Optional[datetime] = None
-    UUID: Optional[str] = None  
 
-
-class EventUpdate(BaseModel):
-    UUID: Optional[str] = None 
-    _id: Optional[str] = None  
-    eventTypeId: Optional[str] = None 
-    eventTypeName: str
-    date: Optional[datetime] = None
-    time: Optional[str] = None
-    recurring_day: Optional[List[str]] = None
-    location: Optional[str] = None
-    eventLeader: Optional[str] = None
-    description: Optional[str] = None
-    userEmail: Optional[str] = None
-    status: Optional[str] = None
-    Status: Optional[str] = None
-    attendees: Optional[List[dict]] = None
-    did_not_meet: Optional[bool] = None
-    total_attendance: Optional[int] = None
-    isTicketed: Optional[bool] = None
-    isGlobal: Optional[bool] = None
-    hasPersonSteps: Optional[bool] = None
-    priceTiers: Optional[List[dict]] = None
-    leader1: Optional[str] = None
-    leader12: Optional[str] = None
-    price: Optional[float] = None
-
-class EventInDB(EventBase):
-    _id: str 
-    UUID: str 
-    attendees: List[dict] = []
-    total_attendance: int = 0
 
 # ===== Attendance =====
 class CheckIn(BaseModel):
@@ -191,6 +122,24 @@ class TokenData(BaseModel):
     sub: Optional[str] = None
     role: Optional[str] = None
 
+# ===== Event Models =====
+class EventBase(BaseModel):
+    eventTypeName: str
+    eventName: str
+    date: Optional[datetime] = None
+    time: Optional[str] = None
+    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
+    location: str
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    isTicketed: bool = False
+    price: Optional[float] = None  # Allow null values
+    userEmail: Optional[str] = None  # Add this field your frontend sends
+    # Add any other fields your frontend might send
+class EventCreate(EventBase):
+    """Schema for creating events (inherits from EventBase)."""
+    pass
+
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     formatted = [
         {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
@@ -200,6 +149,37 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         content={"errors": formatted}
     )
+
+class EventUpdate(BaseModel):
+    eventType: Optional[str] = None
+    eventName: Optional[str] = None
+    date: Optional[datetime] = None
+    time: Optional[str] = None
+    recurring_day: Optional[List[str]] = None
+    location: Optional[str] = None
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    userEmail: Optional[str] = None
+    status: Optional[str] = None
+    Status: Optional[str] = None
+    attendees: Optional[List[dict]] = None
+    did_not_meet: Optional[bool] = None
+    total_attendance: Optional[int] = None
+    
+    # 🔥 CRITICAL: Add these fields
+    isTicketed: Optional[bool] = None
+    isGlobal: Optional[bool] = None
+    hasPersonSteps: Optional[bool] = None
+    priceTiers: Optional[List[dict]] = None
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
+    price: Optional[float] = None
+
+class EventInDB(EventBase):
+    _id: str  # MongoDB ObjectId as string
+    attendees: List[dict] = []
+    total_attendance: int = 0
+
 # ============= PProfile Update =============
 
 class UserProfile(BaseModel):
@@ -214,7 +194,20 @@ class UserProfile(BaseModel):
     gender: str
     role: Optional[str] = "user"
 
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str]
+    surname: Optional[str]
+    date_of_birth: Optional[str]  # or date/datetime if you're parsing it
+    home_address: Optional[str]
+    invited_by: Optional[str]
+    phone_number: Optional[str]
+    email: Optional[EmailStr]
+    gender: Optional[str]
+
+
 # ===== Cell Events =====
+
 class CellEventCreate(BaseModel):
     service_name: str
     leader_id: str
@@ -270,15 +263,13 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-# ============= Tasks Models =============
+
 # Nested contacted_person model
 class ContactedPerson(BaseModel):
     name: str
-    Number: str
+    phone: str
     email: EmailStr
-    
-    class Config:
-        populate_by_name = True
+
 
 # Main task model
 class TaskModel(BaseModel):
@@ -327,6 +318,18 @@ class TaskUpdate(BaseModel):
     status: Optional[str]
     type: Optional[str]
 
+    # Adding new Person in the Event screen
+class PersonCreate(BaseModel):
+    invitedBy: str
+    name: str
+    surname: str
+    gender: str
+    email: str
+    number: str
+    dob: str
+    address: str
+    leaders: list[str]
+    stage: Literal["Win"]
 
 # Models for profile- dont modify
 class UserProfile(BaseModel):
@@ -383,6 +386,14 @@ class PermissionUpdate(BaseModel):
 class MessageResponse(BaseModel):
     message: str
 
+class LeaderStatusResponse(BaseModel):
+    """
+    Response model for checking a user's leadership and cell status.
+    Used for endpoints like /check-leader-status.
+    """
+    isLeader: bool
+    hasCell: bool
+    canAccessEvents: bool
 
 class UserCreater(BaseModel):
     name: str
@@ -410,17 +421,12 @@ class ConsolidationCreate(BaseModel):
     person_phone: Optional[str] = None
     decision_type: DecisionType
     decision_date: str
-    assigned_to: str  # Leader's name
-    assigned_to_email: Optional[str] = None  # Leader's email
+    assigned_to: str
+    notes: Optional[str] = None
     event_id: Optional[str] = None
     leaders: List[str] = []
-    notes: Optional[str] = None
-
 class ConsolidationTask(TaskModel):
     consolidation_id: str
     person_name: str
     person_surname: str
     decision_type: str
-    assigned_to_email: Optional[str] = None
-    leader_assigned: Optional[str] = None
-    is_consolidation_task: bool = True
