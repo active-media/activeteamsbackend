@@ -31,25 +31,28 @@ class UserLogin(BaseModel):
 # ===== Event Models =====
 class EventBase(BaseModel):
     UUID: Optional[str] = None 
-    eventType: str
+    eventTypeId: Optional[str] = None  
+    eventTypeName: str  
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
     recurring_day: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
+    eventLeaderName: Optional[str] = None  
+    eventLeaderEmail: Optional[str] = None  
     description: Optional[str] = None
     userEmail: Optional[str] = None
     email: Optional[str] = None
+    day: Optional[str] = None  
     
-    # 🔥 CRITICAL: Add these fields
     isTicketed: Optional[bool] = False
     isGlobal: Optional[bool] = False
     hasPersonSteps: Optional[bool] = False
     priceTiers: Optional[List[dict]] = Field(default_factory=list)
     leader1: Optional[str] = None
     leader12: Optional[str] = None
-    price: Optional[float] = None  # For backward compatibility
+    price: Optional[float] = None
 
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
@@ -90,21 +93,23 @@ from typing import List, Optional
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
     all_attendees: List[Attendee] = Field(default_factory=list)
+    persistent_attendees: List[dict] = Field(default_factory=list) 
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
     isTicketed: bool = False
     status: Optional[str] = None
+    week: Optional[str] = None 
 
     @model_validator(mode="after")
     def validate_attendance(self):
         """
-        ✅ IMPROVED: More flexible validation
+        IMPROVED: More flexible validation
         - If `did_not_meet` is True: attendees should be empty (but don't block if not)
         - If `did_not_meet` is False: allow empty attendees (frontend might send empty array)
         """
         if self.did_not_meet and self.attendees:
-            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
+            print(f"Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
             # Don't raise error, just log it
         return self
     
@@ -120,9 +125,11 @@ class PersonCreate(BaseModel):
     invitedBy: str
     leaders: List[str]  
     stage: str = "Win"
-
+    
 class LeaderStatusResponse(BaseModel):
     isLeader: bool
+    hasCell: Optional[bool] = None
+    canAccessEvents: Optional[bool] = True
 
 # ===== EventTypes =====
 class EventTypeCreate(BaseModel):
@@ -132,12 +139,14 @@ class EventTypeCreate(BaseModel):
     hasPersonSteps: Optional[bool] = False
     description: str
     createdAt: Optional[datetime] = None
+    UUID: Optional[str] = None  
 
 
 class EventUpdate(BaseModel):
-    UUID: Optional[str] = None
-    eventType: Optional[str] = None
-    eventName: Optional[str] = None
+    UUID: Optional[str] = None 
+    _id: Optional[str] = None  
+    eventTypeId: Optional[str] = None 
+    eventTypeName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
     recurring_day: Optional[List[str]] = None
@@ -150,8 +159,6 @@ class EventUpdate(BaseModel):
     attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
     total_attendance: Optional[int] = None
-    
-    # 🔥 CRITICAL: Add these fields
     isTicketed: Optional[bool] = None
     isGlobal: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
