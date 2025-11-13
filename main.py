@@ -6619,116 +6619,140 @@ async def debug_cell_status(event_id: str):
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str = Path(...),
-    submission: dict = Body(...)
+    submission: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
 ):
     """
-    Fixed: Proper attendee persistence across recurring events
+    Fixed: Handles frontend data structure properly
     """
     try:
-        print(f"DEBUG: Raw submission data received:")
-        print(f"   Event ID: {event_id}")
-        print(f"   Did not meet: {submission.get('did_not_meet')}")
-        print(f"   Attendees count: {len(submission.get('attendees', []))}")
-        print(f"   All attendees count: {len(submission.get('all_attendees', []))}")
-        print(f"   Persistent attendees count: {len(submission.get('persistent_attendees', []))}")
+        print(f"🎯 SUBMIT ATTENDANCE STARTED")
+        print(f"📥 Event ID: {event_id}")
+        print(f"📦 Submission keys: {list(submission.keys())}")
 
-        # Extract persistent_attendees before validation
-        persistent_attendees = submission.get('persistent_attendees', [])
+        # ✅ EXTRACT OBJECTID FROM COMPOSITE ID
+        actual_event_id = event_id
+        if "_" in event_id:
+            parts = event_id.split("_")
+            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
+                actual_event_id = parts[0]
+                print(f"✅ Extracted ObjectId: {actual_event_id}")
+            else:
+                raise HTTPException(status_code=400, detail="Invalid event ID format")
 
-        # Convert to Pydantic model for validation (without persistent_attendees)
-        submission_for_validation = {k: v for k, v in submission.items() if k != 'persistent_attendees'}
-        
-        try:
-            submission_model = AttendanceSubmission(**submission_for_validation)
-            print("Pydantic validation passed")
-        except Exception as validation_error:
-            print(f"Pydantic validation failed: {validation_error}")
-            raise HTTPException(status_code=422, detail=str(validation_error))
-
-        if not ObjectId.is_valid(event_id):
+        if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-        
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+
+        # ✅ FIND EVENT
+        print(f"🔍 Looking for event: {actual_event_id}")
+        event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
         if not event:
+            print(f"❌ Event not found: {actual_event_id}")
             raise HTTPException(status_code=404, detail="Event not found")
-        
+
         event_name = event.get("Event Name", "Unknown")
         current_week = get_current_week_identifier()
+        print(f"✅ Found event: {event_name}")
+
+        # ✅ SAFELY EXTRACT DATA FROM PAYLOAD
+        # Handle both payload.attendees and direct attendees key
+        attendees_data = submission.get('attendees', [])
+        if not attendees_data and 'payload' in submission:
+            # If data is nested under 'payload'
+            attendees_data = submission['payload'].get('attendees', [])
         
-        print(f"SUBMIT ATTENDANCE for: {event_name} (Week: {current_week})")
+        print(f"👥 Attendees data type: {type(attendees_data)}, length: {len(attendees_data)}")
+
+        # Handle both payload.persistent_attendees and direct persistent_attendees key
+        persistent_attendees = submission.get('persistent_attendees', [])
+        if not persistent_attendees and 'payload' in submission:
+            persistent_attendees = submission['payload'].get('persistent_attendees', [])
         
-        # Initialize attendance tracking if not exists
+        # Fallback to all_attendees if persistent_attendees is empty
+        if not persistent_attendees:
+            persistent_attendees = submission.get('all_attendees', [])
+            if not persistent_attendees and 'payload' in submission:
+                persistent_attendees = submission['payload'].get('all_attendees', [])
+
+        print(f"💾 Persistent attendees: {len(persistent_attendees)}")
+
+        # ✅ SAFELY PROCESS PERSISTENT ATTENDEES
+        persistent_attendees_dict = []
+        if persistent_attendees and isinstance(persistent_attendees, list):
+            for attendee in persistent_attendees:
+                if isinstance(attendee, dict):
+                    clean_attendee = {
+                        "id": attendee.get("id", ""),
+                        "name": attendee.get("name", ""),
+                        "fullName": attendee.get("fullName", attendee.get("name", "")),
+                        "email": attendee.get("email", ""),
+                        "phone": attendee.get("phone", ""),
+                        "leader12": attendee.get("leader12", ""),
+                        "leader144": attendee.get("leader144", "")
+                    }
+                    persistent_attendees_dict.append(clean_attendee)
+        else:
+            print("⚠️ No persistent attendees found or invalid format")
+
+        # ✅ SAFELY PROCESS DID_NOT_MEET
+        did_not_meet = submission.get('did_not_meet', False)
+        if not did_not_meet and 'payload' in submission:
+            did_not_meet = submission['payload'].get('did_not_meet', False)
+
+        print(f"❌ Did not meet: {did_not_meet}")
+
+        # ✅ INITIALIZE ATTENDANCE TRACKING
         if "attendance" not in event:
             event["attendance"] = {}
-        
-        # Get Common Attendee Pool (persistent list)
-        # Priority: 1. explicit persistent_attendees, 2. all_attendees, 3. existing persistent_attendees
-        if persistent_attendees:
-            common_attendee_pool = persistent_attendees
-        elif submission_model.all_attendees:
-            common_attendee_pool = submission_model.all_attendees
-        else:
-            common_attendee_pool = event.get("persistent_attendees", [])
-        
-        # Convert to dictionaries for MongoDB
-        common_attendee_pool_dict = []
-        for attendee in common_attendee_pool:
-            if hasattr(attendee, 'model_dump'):
-                common_attendee_pool_dict.append(attendee.model_dump())
-            else:
-                common_attendee_pool_dict.append(attendee)
-        
-        # Get checked-in attendees for this week
+
+        # ✅ PROCESS CHECKED-IN ATTENDEES
         checked_in_attendees = []
         
-        if submission_model.did_not_meet:
-            # Case 1: Did Not Meet
+        if did_not_meet:
+            # CASE 1: DID NOT MEET
+            print(f"📝 Marking as 'Did Not Meet'")
             weekly_attendance_entry = {
                 "status": "did_not_meet",
                 "attendees": [],
                 "submitted_at": datetime.utcnow(),
-                "submitted_by": submission_model.leaderEmail,
-                "common_attendee_pool_count": len(common_attendee_pool_dict)
+                "submitted_by": current_user.get('email', ''),
+                "persistent_attendees_count": len(persistent_attendees_dict)
             }
-            print(f"MARKING AS DID NOT MEET for week {current_week}")
             
             main_update_fields = {
                 "Status": "Did Not Meet",
                 "status": "did_not_meet",
                 "did_not_meet": True,
             }
-        
         else:
-            # Case 2: Attendance Captured
-            for att in submission_model.attendees:
-                attendee_data = att.model_dump() if hasattr(att, 'model_dump') else dict(att)
-                attendee_data.update({
-                    "checked_in": True,
-                    "check_in_date": datetime.utcnow().isoformat()
-                })
-                
-                if submission_model.isTicketed:
-                    attendee_data.update({
-                        "priceTier": att.priceTier,
-                        "price": att.price,
-                        "ageGroup": att.ageGroup,
-                        "memberType": att.memberType,
-                        "paymentMethod": att.paymentMethod,
-                        "paid": att.paid,
-                        "owing": att.owing
-                    })
-                
-                checked_in_attendees.append(attendee_data)
+            # CASE 2: ATTENDANCE CAPTURED
+            print(f"👥 Processing attendees for check-in")
             
-            # VALIDATION: Only mark as complete if we have checked-in attendees
+            if attendees_data and isinstance(attendees_data, list):
+                for att in attendees_data:
+                    if isinstance(att, dict):
+                        attendee_data = {
+                            "id": att.get("id", ""),
+                            "name": att.get("name", ""),
+                            "fullName": att.get("fullName", att.get("name", "")),
+                            "email": att.get("email", ""),
+                            "phone": att.get("phone", ""),
+                            "leader12": att.get("leader12", ""),
+                            "leader144": att.get("leader144", ""),
+                            "checked_in": True,
+                            "check_in_date": datetime.utcnow().isoformat()
+                        }
+                        checked_in_attendees.append(attendee_data)
+
+            # DETERMINE STATUS BASED ON CHECKED-IN ATTENDEES
             if len(checked_in_attendees) == 0:
-                print(f"No attendees checked in - keeping as incomplete")
+                print(f"⚠️ No attendees checked in - marking as incomplete")
                 weekly_attendance_entry = {
                     "status": "incomplete",
                     "attendees": [],
                     "submitted_at": datetime.utcnow(),
-                    "submitted_by": submission_model.leaderEmail,
-                    "common_attendee_pool_count": len(common_attendee_pool_dict)
+                    "submitted_by": current_user.get('email', ''),
+                    "persistent_attendees_count": len(persistent_attendees_dict)
                 }
                 
                 main_update_fields = {
@@ -6737,63 +6761,72 @@ async def submit_attendance(
                     "did_not_meet": False,
                 }
             else:
+                print(f"✅ Marking as complete with {len(checked_in_attendees)} attendees")
                 weekly_attendance_entry = {
                     "status": "complete",
                     "attendees": checked_in_attendees,
                     "submitted_at": datetime.utcnow(),
-                    "submitted_by": submission_model.leaderEmail,
-                    "common_attendee_pool_count": len(common_attendee_pool_dict)
+                    "submitted_by": current_user.get('email', ''),
+                    "persistent_attendees_count": len(persistent_attendees_dict)
                 }
-                print(f"MARKING AS COMPLETE with {len(checked_in_attendees)} attendees")
                 
                 main_update_fields = {
                     "Status": "Complete",
                     "status": "complete",
                     "did_not_meet": False,
                 }
-        
-        # Build update data with proper attendee persistence
+
+        # ✅ BUILD UPDATE DATA
         update_data = {
             "Date Captured": datetime.now().strftime("%d %B %Y"),
             "updated_at": datetime.utcnow(),
             **main_update_fields,
-            # CRITICAL: Always save the persistent attendees list
-            "persistent_attendees": common_attendee_pool_dict,
-            # Store this week's attendance data
+            "persistent_attendees": persistent_attendees_dict,
             f"attendance.{current_week}": weekly_attendance_entry
         }
-        
-        print(f"Saving: {len(common_attendee_pool_dict)} persistent attendees, {len(checked_in_attendees)} checked-in attendees")
-        
+
+        print(f"💾 Saving to database:")
+        print(f"   - Event: {event_name}")
+        print(f"   - Week: {current_week}")
+        print(f"   - Status: {weekly_attendance_entry['status']}")
+        print(f"   - Persistent attendees: {len(persistent_attendees_dict)}")
+        print(f"   - Checked-in this week: {len(checked_in_attendees)}")
+
+        # ✅ SAVE TO DATABASE
         result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
+            {"_id": ObjectId(actual_event_id)},
             {"$set": update_data}
         )
-        
-        print(f"Database result: matched={result.matched_count}, modified={result.modified_count}")
-        
+
+        print(f"📊 Database result - matched: {result.matched_count}, modified: {result.modified_count}")
+
         if result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event")
-        
-        return {
+
+        # ✅ SUCCESS RESPONSE
+        response_data = {
             "message": "Attendance submitted successfully",
-            "event_id": event_id,
+            "event_id": actual_event_id,
+            "event_name": event_name,
             "status": weekly_attendance_entry["status"],
-            "did_not_meet": submission_model.did_not_meet,
+            "did_not_meet": did_not_meet,
             "checked_in_count": len(checked_in_attendees),
-            "persistent_attendees_count": len(common_attendee_pool_dict),
+            "persistent_attendees_count": len(persistent_attendees_dict),
             "week": current_week,
             "success": True
         }
-        
+
+        print(f"🎉 ATTENDANCE SUBMISSION SUCCESSFUL")
+        return response_data
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in submit_attendance: {str(e)}")
+        print(f"❌ ERROR in submit_attendance: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Internal server error")
-
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
