@@ -1643,27 +1643,35 @@ async def create_event(event: EventCreate):
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
 
-# check a leader at 12
-
-
 async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
     """
-    Check if a user is ACTUALLY a Leader at 12 by looking in the database
-    We find their name in OTHER people's "Leader at 12" field
+    Check if a user is ACTUALLY a Leader at 12 by finding their name 
+    or email explicitly in a cell's "Leader at 12" field.
     """
     try:
         print(f"🔍 Checking if {user_name} ({user_email}) is Leader at 12...")
         
-        # Look for ANY cell where this user appears as Leader at 12
+        # 1. Escape the user input for safe regex use
+        safe_user_name = re.escape(user_name)
+        safe_user_email = re.escape(user_email)
+
         leader_at_12_query = {
             "Event Type": "Cells",
             "$or": [
-                {"Leader at 12": {"$regex": f"^{user_name}$", "$options": "i"}},
-                {"Leader @12": {"$regex": f"^{user_name}$", "$options": "i"}},
-                {"leader12": {"$regex": f"^{user_name}$", "$options": "i"}},
-                {"Leader at 12": {"$regex": user_name, "$options": "i"}},
-                {"Leader @12": {"$regex": user_name, "$options": "i"}},
-                {"leader12": {"$regex": user_name, "$options": "i"}},
+                # 1. Exact Name Match (whole field)
+                {"Leader at 12": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
+                {"Leader @12": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
+                {"leader12": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
+                
+                # 2. Name Match using Word Boundary (\b)
+                {"Leader at 12": {"$regex": f"\\b{safe_user_name}\\b", "$options": "i"}},
+                {"Leader @12": {"$regex": f"\\b{safe_user_name}\\b", "$options": "i"}},
+                {"leader12": {"$regex": f"\\b{safe_user_name}\\b", "$options": "i"}},
+
+                # 3. Email Match using Word Boundary
+                {"Leader at 12": {"$regex": f"\\b{safe_user_email}\\b", "$options": "i"}},
+                {"Leader @12": {"$regex": f"\\b{safe_user_email}\\b", "$options": "i"}},
+                {"leader12": {"$regex": f"\\b{safe_user_email}\\b", "$options": "i"}},
             ]
         }
         
@@ -1690,27 +1698,29 @@ async def get_cell_events(
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
-    start_date: Optional[str] = Query('2025-10-20'),  
+    start_date: Optional[str] = Query('2025-10-20'), 
     leader_at_12_view: Optional[bool] = Query(None),
     show_personal_cells: Optional[bool] = Query(None),
     show_all_authorized: Optional[bool] = Query(None),
     include_subordinate_cells: Optional[bool] = Query(None)
 ):
     """
-    Get ONLY cell events with proper Leader at 12 support
-    Leaders at 12 see cells where they appear in the "Leader at 12" field
+    Get ONLY cell events with proper Leader at 12 support.
+    Leaders at 12 see cells where they are the leader OR where they appear in the "Leader at 12" field.
     """
     try:
         print(f"GET /events/cells - User: {current_user.get('email')}")
         print(f"Query params - status: {status}, personal: {personal}, leader_at_12_view: {leader_at_12_view}")
-        print(f"Leader at 12 params - show_personal_cells: {show_personal_cells}, include_subordinate_cells: {include_subordinate_cells}")
-
         
         user_role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
-
+        
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
         is_actual_leader_at_12 = await is_user_leader_at_12(user_email, user_name)
+        
+        # Escape user input for safe regex use
+        safe_user_email = re.escape(user_email)
+        safe_user_name = re.escape(user_name)
         
         # Date range setup
         timezone = pytz.timezone("Africa/Johannesburg")
@@ -1724,11 +1734,6 @@ async def get_cell_events(
             print(f"Error parsing start_date: {e}")
             start_date_obj = datetime.strptime("2025-10-20", "%Y-%m-%d").date()
 
-        print(f"CELLS - Date range: {start_date_obj} to {today}")
-        print(f"User full name: '{user_name}'")
-        print(f"User role: '{user_role}'")
-        print(f"Is ACTUALLY Leader at 12: {is_actual_leader_at_12}")
-        
         # ===== BASE QUERY: ONLY CELL EVENTS (EXCLUDE EVENT TYPES) =====
         query = {
             "$and": [
@@ -1749,94 +1754,84 @@ async def get_cell_events(
             ]
         }
 
-        
+        # --- AUTHORIZATION AND VIEW LOGIC ---
+
         if is_actual_leader_at_12 and leader_at_12_view:
             print(f"LEADER AT 12 VIEW for: {user_name}")
-            print(f"   Personal cells only: {show_personal_cells}")
-            print(f"   Include subordinate cells: {include_subordinate_cells}")
             
+            # --- VIEW 1: PERSONAL CELLS ONLY ---
             if show_personal_cells or personal:
-                print("Showing ONLY leader's personal cells")
+                print("Showing ONLY leader's personal cells (PERSONAL tab equivalent)")
                 query["$or"] = [
-                    {"Email": {"$regex": f"^{user_email}$", "$options": "i"}},
-                    {"eventLeaderEmail": {"$regex": f"^{user_email}$", "$options": "i"}},
-                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
+                    {"Email": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
+                    {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
+                    {"Leader": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
                 ]
+            
+            # --- VIEW 2: LEADER AT 12 (DEFAULT/VIEW ALL) ---
             else:
-                # ✅ FIXED: Show cells where user appears as Leader at 12 in the event
-                print(f"Showing cells where {user_name} is Leader at 12")
+                print(f"Showing cells where {user_name} is Leader OR Leader at 12")
                 
                 leader_query_conditions = []
 
                 # 1. Their own cells (where they are the leader)
                 leader_query_conditions.extend([
-                    {"Email": {"$regex": f"^{user_email}$", "$options": "i"}},
-                    {"eventLeaderEmail": {"$regex": f"^{user_email}$", "$options": "i"}},
-                    {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
+                    {"Email": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
+                    {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
+                    {"Leader": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
                 ])
 
-                # 2. ✅ CRITICAL FIX: Cells where they are explicitly Leader at 12
-                # Match EXACTLY on the "Leader at 12" field in events
+                # 2. Cells where they are explicitly Leader at 12 (Name/Email match)
                 leader_fields_to_check = ["Leader at 12", "Leader @12", "leader12"]
 
                 for field in leader_fields_to_check:
-                    # Exact match
+                    # Match WHOLE name using word boundary (\b) for robustness
                     leader_query_conditions.append({
-                        field: {"$regex": f"^{user_name}$", "$options": "i"}
+                        field: {"$regex": f"\\b{safe_user_name}\\b", "$options": "i"}
                     })
-                    # Flexible match (in case of spacing/formatting issues)
+                    # Match WHOLE email using word boundary
                     leader_query_conditions.append({
-                        field: {"$regex": user_name, "$options": "i"}
+                        field: {"$regex": f"\\b{safe_user_email}\\b", "$options": "i"}
                     })
 
-                # 3. ✅ REMOVED: No longer searching for disciples in people collection
-                # We only care about the "Leader at 12" field in events
-                
                 query["$or"] = leader_query_conditions
-                print(f"📊 Query will find cells where '{user_name}' appears in Leader at 12 fields")
+                print(f"Query will find cells where '{user_name}' is leader or explicitly in Leader at 12 fields.")
 
-        elif user_role == "registrant":
-            print(f"REGISTRANT VIEW for: {user_email}")
-            # Registrants only see their own events
+        # --- REGISTRANT / USER VIEW / ADMIN PERSONAL VIEW ---
+        elif user_role == "registrant" or user_role == "user" or (user_role == "admin" and personal):
+            print(f"{user_role.upper()} PERSONAL VIEW for: {user_email}")
+            # Registrants/Users only see their own events
             query["$or"] = [
-                {"Email": {"$regex": f"^{user_email}$", "$options": "i"}},
-                {"eventLeaderEmail": {"$regex": f"^{user_email}$", "$options": "i"}},
-                {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
-            ]
-
-        # Admin with personal filter
-        elif user_role == "admin" and personal:
-            print(f"ADMIN PERSONAL VIEW for: {user_email}")
-            query["$or"] = [
-                {"Email": {"$regex": f"^{user_email}$", "$options": "i"}},
-                {"eventLeaderEmail": {"$regex": f"^{user_email}$", "$options": "i"}},
+                {"Email": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
+                {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
+                {"Leader": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
             ]
         
-        # Regular users - always show only their events
-        elif user_role == "user":
-            print(f"USER VIEW for: {user_email}")
-            query["$or"] = [
-                {"Email": {"$regex": f"^{user_email}$", "$options": "i"}},
-                {"eventLeaderEmail": {"$regex": f"^{user_email}$", "$options": "i"}},
-            ]
+        # --- ADMIN GLOBAL VIEW (No authorization filter added) ---
+        elif user_role == "admin" and not personal:
+            print(f"ADMIN GLOBAL VIEW for: {user_email}")
+            # Admin sees all cells (no $or clause added here)
+            pass
 
         # Apply search filter
         if search and search.strip():
             search_term = search.strip()
             print(f"Applying search: {search_term}")
+            # Escape search term as well
+            safe_search_term = re.escape(search_term)
             search_query = {
                 "$or": [
-                    {"Event Name": {"$regex": search_term, "$options": "i"}},
-                    {"eventName": {"$regex": search_term, "$options": "i"}},
-                    {"Leader": {"$regex": search_term, "$options": "i"}},
-                    {"Email": {"$regex": search_term, "$options": "i"}},
+                    {"Event Name": {"$regex": safe_search_term, "$options": "i"}},
+                    {"eventName": {"$regex": safe_search_term, "$options": "i"}},
+                    {"Leader": {"$regex": safe_search_term, "$options": "i"}},
+                    {"Email": {"$regex": safe_search_term, "$options": "i"}},
                 ]
             }
             query = {"$and": [query, search_query]}
 
-        print(f"Final query: {query}")
+        # print(f"Final query: {query}")
 
-        # ===== FETCH UNIQUE CELL TEMPLATES =====
+        # ===== FETCH UNIQUE CELL TEMPLATES (Aggregation Pipeline remains the same) =====
         pipeline = [
             {"$match": query},
             {
@@ -1856,7 +1851,7 @@ async def get_cell_events(
         events = await events_collection.aggregate(pipeline).to_list(length=None)
         print(f"Found {len(events)} unique cell templates")
 
-        # ===== GENERATE WEEKLY INSTANCES =====
+        # ===== GENERATE WEEKLY INSTANCES (Code block remains the same) =====
         day_mapping = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
             'friday': 4, 'saturday': 5, 'sunday': 6
@@ -1936,7 +1931,7 @@ async def get_cell_events(
                     }
                     
                     cell_instances.append(instance)
-                    print(f"{event_name} - {instance_date} (week {week_identifier}): {event_status}, attendees: {len(weekly_attendees)}, persistent: {len(persistent_attendees)}")
+                    # print(f"{event_name} - {instance_date} (week {week_identifier}): {event_status}, attendees: {len(weekly_attendees)}, persistent: {len(persistent_attendees)}")
                     
                     # Move to next week
                     instance_date += timedelta(days=7)
@@ -1945,7 +1940,7 @@ async def get_cell_events(
                 print(f"Error processing cell: {str(e)}")
                 continue
 
-        # ===== SORT AND PAGINATE =====
+        # ===== SORT AND PAGINATE (Code block remains the same) =====
         # Sort by date (most recent first)
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
         
@@ -2259,10 +2254,7 @@ async def debug_leader_at_12_detailed(user_email: str):
     except Exception as e:
         return {"error": str(e)}
     
-
-    
  # =----- Get other event types ---------------
-
 
 @app.get("/events/other")
 async def get_other_events(
@@ -6619,7 +6611,7 @@ async def debug_cell_status(event_id: str):
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str = Path(...),
-    submission: dict = Body(...),
+      submission: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -6642,33 +6634,28 @@ async def submit_attendance(
 
         if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
-        # ✅ FIND EVENT
-        print(f"🔍 Looking for event: {actual_event_id}")
         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
+
         if not event:
             print(f"❌ Event not found: {actual_event_id}")
             raise HTTPException(status_code=404, detail="Event not found")
-
+        
         event_name = event.get("Event Name", "Unknown")
         current_week = get_current_week_identifier()
         print(f"✅ Found event: {event_name}")
 
-        # ✅ SAFELY EXTRACT DATA FROM PAYLOAD
-        # Handle both payload.attendees and direct attendees key
         attendees_data = submission.get('attendees', [])
         if not attendees_data and 'payload' in submission:
             # If data is nested under 'payload'
             attendees_data = submission['payload'].get('attendees', [])
         
-        print(f"👥 Attendees data type: {type(attendees_data)}, length: {len(attendees_data)}")
+            print(f"👥 Attendees data type: {type(attendees_data)}, length: {len(attendees_data)}")
 
-        # Handle both payload.persistent_attendees and direct persistent_attendees key
         persistent_attendees = submission.get('persistent_attendees', [])
         if not persistent_attendees and 'payload' in submission:
             persistent_attendees = submission['payload'].get('persistent_attendees', [])
         
-        # Fallback to all_attendees if persistent_attendees is empty
+
         if not persistent_attendees:
             persistent_attendees = submission.get('all_attendees', [])
             if not persistent_attendees and 'payload' in submission:
@@ -6676,7 +6663,6 @@ async def submit_attendance(
 
         print(f"💾 Persistent attendees: {len(persistent_attendees)}")
 
-        # ✅ SAFELY PROCESS PERSISTENT ATTENDEES
         persistent_attendees_dict = []
         if persistent_attendees and isinstance(persistent_attendees, list):
             for attendee in persistent_attendees:
@@ -6701,15 +6687,12 @@ async def submit_attendance(
 
         print(f"❌ Did not meet: {did_not_meet}")
 
-        # ✅ INITIALIZE ATTENDANCE TRACKING
         if "attendance" not in event:
             event["attendance"] = {}
-
-        # ✅ PROCESS CHECKED-IN ATTENDEES
-        checked_in_attendees = []
         
+       
+        checked_in_attendees = []
         if did_not_meet:
-            # CASE 1: DID NOT MEET
             print(f"📝 Marking as 'Did Not Meet'")
             weekly_attendance_entry = {
                 "status": "did_not_meet",
@@ -6717,6 +6700,7 @@ async def submit_attendance(
                 "submitted_at": datetime.utcnow(),
                 "submitted_by": current_user.get('email', ''),
                 "persistent_attendees_count": len(persistent_attendees_dict)
+
             }
             
             main_update_fields = {
@@ -6724,10 +6708,8 @@ async def submit_attendance(
                 "status": "did_not_meet",
                 "did_not_meet": True,
             }
-        else:
-            # CASE 2: ATTENDANCE CAPTURED
+        
             print(f"👥 Processing attendees for check-in")
-            
             if attendees_data and isinstance(attendees_data, list):
                 for att in attendees_data:
                     if isinstance(att, dict):
@@ -6744,7 +6726,8 @@ async def submit_attendance(
                         }
                         checked_in_attendees.append(attendee_data)
 
-            # DETERMINE STATUS BASED ON CHECKED-IN ATTENDEES
+
+            # VALIDATION: Only mark as complete if we have checked-in attendees
             if len(checked_in_attendees) == 0:
                 print(f"⚠️ No attendees checked in - marking as incomplete")
                 weekly_attendance_entry = {
@@ -6761,30 +6744,29 @@ async def submit_attendance(
                     "did_not_meet": False,
                 }
             else:
-                print(f"✅ Marking as complete with {len(checked_in_attendees)} attendees")
                 weekly_attendance_entry = {
                     "status": "complete",
                     "attendees": checked_in_attendees,
                     "submitted_at": datetime.utcnow(),
                     "submitted_by": current_user.get('email', ''),
-                    "persistent_attendees_count": len(persistent_attendees_dict)
+                    "persistent_attendees": persistent_attendees_dict,
                 }
+                print(f"MARKING AS COMPLETE with {len(checked_in_attendees)} attendees")
                 
                 main_update_fields = {
                     "Status": "Complete",
                     "status": "complete",
                     "did_not_meet": False,
                 }
-
-        # ✅ BUILD UPDATE DATA
+        
         update_data = {
             "Date Captured": datetime.now().strftime("%d %B %Y"),
             "updated_at": datetime.utcnow(),
             **main_update_fields,
             "persistent_attendees": persistent_attendees_dict,
+            # Store this week's attendance data
             f"attendance.{current_week}": weekly_attendance_entry
         }
-
         print(f"💾 Saving to database:")
         print(f"   - Event: {event_name}")
         print(f"   - Week: {current_week}")
@@ -6792,19 +6774,17 @@ async def submit_attendance(
         print(f"   - Persistent attendees: {len(persistent_attendees_dict)}")
         print(f"   - Checked-in this week: {len(checked_in_attendees)}")
 
-        # ✅ SAVE TO DATABASE
+
         result = await events_collection.update_one(
             {"_id": ObjectId(actual_event_id)},
             {"$set": update_data}
         )
-
-        print(f"📊 Database result - matched: {result.matched_count}, modified: {result.modified_count}")
-
+        
+        print(f" Database result - matched: {result.matched_count}, modified: {result.modified_count}")        
         if result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event")
-
-        # ✅ SUCCESS RESPONSE
-        response_data = {
+        
+        response_data =  {
             "message": "Attendance submitted successfully",
             "event_id": actual_event_id,
             "event_name": event_name,
@@ -6816,7 +6796,7 @@ async def submit_attendance(
             "success": True
         }
 
-        print(f"🎉 ATTENDANCE SUBMISSION SUCCESSFUL")
+        print(f"ATTENDANCE SUBMISSION SUCCESSFUL")
         return response_data
 
     except HTTPException:
@@ -6826,7 +6806,6 @@ async def submit_attendance(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(

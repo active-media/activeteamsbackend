@@ -28,32 +28,6 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-# ===== Event Models =====
-class EventBase(BaseModel):
-    eventType: str
-    eventName: str
-    date: Optional[datetime] = None
-    time: Optional[str] = None
-    recurring_day: List[str] = Field(default_factory=list)
-    location: str
-    eventLeader: Optional[str] = None
-    description: Optional[str] = None
-    userEmail: Optional[str] = None
-    email: Optional[str] = None
-    
-    # 🔥 CRITICAL: Add these fields
-    isTicketed: Optional[bool] = False
-    isGlobal: Optional[bool] = False
-    hasPersonSteps: Optional[bool] = False
-    priceTiers: Optional[List[dict]] = Field(default_factory=list)
-    leader1: Optional[str] = None
-    leader12: Optional[str] = None
-    price: Optional[float] = None  # For backward compatibility
-
-class EventCreate(EventBase):
-    """Schema for creating events (inherits from EventBase)."""
-    pass
-
 # ===== FIXED Attendee Model =====
 class Attendee(BaseModel):
     id: Optional[str] = None
@@ -66,7 +40,6 @@ class Attendee(BaseModel):
     phone: Optional[str] = None
     decision: Optional[str] = None
     
-    # 🔥 NEW: Ticketed event payment fields
     priceTier: Optional[str] = None
     price: Optional[float] = None
     ageGroup: Optional[str] = None
@@ -131,6 +104,52 @@ class EventTypeCreate(BaseModel):
     createdAt: Optional[datetime] = None
 
 
+# ===== Attendance =====
+class CheckIn(BaseModel):
+    event_id: str
+    name: str
+
+class UncaptureRequest(BaseModel):
+    event_id: str
+    name: str
+
+# ===== Auth Tokens =====
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    sub: Optional[str] = None
+    role: Optional[str] = None
+
+# ===== Event Models =====
+class EventBase(BaseModel):
+    eventTypeName: str
+    eventName: str
+    date: Optional[datetime] = None
+    time: Optional[str] = None
+    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
+    location: str
+    eventLeader: Optional[str] = None
+    description: Optional[str] = None
+    isTicketed: bool = False
+    price: Optional[float] = None  # Allow null values
+    userEmail: Optional[str] = None  # Add this field your frontend sends
+    # Add any other fields your frontend might send
+class EventCreate(EventBase):
+    """Schema for creating events (inherits from EventBase)."""
+    pass
+
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    formatted = [
+        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={"errors": formatted}
+    )
+
 class EventUpdate(BaseModel):
     eventType: Optional[str] = None
     eventName: Optional[str] = None
@@ -161,51 +180,6 @@ class EventInDB(EventBase):
     attendees: List[dict] = []
     total_attendance: int = 0
 
-# ===== Attendance =====
-class CheckIn(BaseModel):
-    event_id: str
-    name: str
-
-class UncaptureRequest(BaseModel):
-    event_id: str
-    name: str
-
-# ===== Auth Tokens =====
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str
-
-class TokenData(BaseModel):
-    sub: Optional[str] = None
-    role: Optional[str] = None
-
-# ===== Event Models =====
-class EventBase(BaseModel):
-    eventType: str
-    eventName: str
-    date: Optional[datetime] = None
-    time: Optional[str] = None
-    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
-    location: str
-    eventLeader: Optional[str] = None
-    description: Optional[str] = None
-    isTicketed: bool = False
-    price: Optional[float] = None  # Allow null values
-    userEmail: Optional[str] = None  # Add this field your frontend sends
-    # Add any other fields your frontend might send
-class EventCreate(EventBase):
-    """Schema for creating events (inherits from EventBase)."""
-    pass
-
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    formatted = [
-        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
-        for err in exc.errors()
-    ]
-    return JSONResponse(
-        status_code=422,
-        content={"errors": formatted}
-    )
 # ============= PProfile Update =============
 
 class UserProfile(BaseModel):
@@ -412,6 +386,14 @@ class PermissionUpdate(BaseModel):
 class MessageResponse(BaseModel):
     message: str
 
+class LeaderStatusResponse(BaseModel):
+    """
+    Response model for checking a user's leadership and cell status.
+    Used for endpoints like /check-leader-status.
+    """
+    isLeader: bool
+    hasCell: bool
+    canAccessEvents: bool
 
 class UserCreater(BaseModel):
     name: str
