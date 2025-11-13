@@ -93,21 +93,23 @@ from typing import List, Optional
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
     all_attendees: List[Attendee] = Field(default_factory=list)
+    persistent_attendees: List[dict] = Field(default_factory=list) 
     leaderEmail: str
     leaderName: str
     did_not_meet: bool = False
     isTicketed: bool = False
     status: Optional[str] = None
+    week: Optional[str] = None 
 
     @model_validator(mode="after")
     def validate_attendance(self):
         """
-        ✅ IMPROVED: More flexible validation
+        IMPROVED: More flexible validation
         - If `did_not_meet` is True: attendees should be empty (but don't block if not)
         - If `did_not_meet` is False: allow empty attendees (frontend might send empty array)
         """
         if self.did_not_meet and self.attendees:
-            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
+            print(f"Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
             # Don't raise error, just log it
         return self
     
