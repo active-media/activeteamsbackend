@@ -1,47 +1,39 @@
+# auth/email_utils.py
+import smtplib
+from email.message import EmailMessage
 import os
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
-import logging
 
-logger = logging.getLogger(__name__)
-
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
-EMAIL_FROM = os.getenv("EMAIL_FROM")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))  # use 587 for STARTTLS
+SMTP_USER = os.getenv("SMTP_USER", "your_email@gmail.com")
+SMTP_PASS = os.getenv("SMTP_PASS", "your_app_password")  # use app password
 
 def send_reset_email(to_email: str, reset_link: str):
-    if not SENDGRID_API_KEY or not EMAIL_FROM:
-        logger.error("SendGrid API key or sender email not configured")
-        return 500
+    msg = EmailMessage()
+    msg['Subject'] = "Password Reset Request"
+    msg['From'] = SMTP_USER
+    msg['To'] = to_email
+    msg.set_content(f"""
+Dear User,
 
-    message = Mail(
-        from_email=EMAIL_FROM,
-        to_emails=to_email,
-        subject="Reset Your Active Teams Password",
-        html_content=f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Password Reset Request</h2>
-            <p>Hello,</p>
-            <p>You requested to reset your password. Click below to reset it:</p>
-            <a href="{reset_link}" 
-               style="background-color: #007bff; color: white; padding: 12px 24px; 
-                      text-decoration: none; border-radius: 4px; display: inline-block;">
-               Reset Password
-            </a>
-            <p>This link will expire in 1 hour.</p>
-            <hr>
-            <p style="font-size: 12px; color: #666;">
-                If the button above doesn’t work, copy and paste this link:<br>
-                <a href="{reset_link}">{reset_link}</a>
-            </p>
-        </div>
-        """
-    )
+We received a request to reset the password associated with this email address. 
+Please click the link below to securely reset your password:
 
-    try:
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        response = sg.send(message)
-        logger.info(f"Password reset email sent to {to_email}, status: {response.status_code}")
-        return response.status_code
-    except Exception as e:
-        logger.error(f"Error sending password reset email to {to_email}: {e}")
-        return 500
+{reset_link}
+
+If you did not request a password reset, please disregard this message. 
+Your account remains secure and no changes will be made.
+
+Thank you for using our service.
+
+Best regards,
+The Active Teams Support Team
+""")
+
+    # Use plain SMTP with STARTTLS
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.ehlo()
+        smtp.starttls()  # upgrade connection to secure
+        smtp.ehlo()
+        smtp.login(SMTP_USER, SMTP_PASS)
+        smtp.send_message(msg)
