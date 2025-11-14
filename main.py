@@ -1298,6 +1298,7 @@ async def signup(user: UserCreate):
         "Gender": user.gender.strip(),
         "Birthday": user.date_of_birth,
         "InvitedBy": inviter_full_name,
+        "Leader": user.leader,
         "Leader @1": leader1,
         "Leader @12": leader12,
         "Leader @144": leader144,
