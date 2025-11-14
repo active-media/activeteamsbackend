@@ -190,7 +190,7 @@ class UserProfile(BaseModel):
     date_of_birth: str
     home_address: str
     invited_by: Optional[str]
-    leader: Optional[str] = ""
+    leader: Optional[str] 
     phone_number: str
     email: EmailStr
     gender: str
