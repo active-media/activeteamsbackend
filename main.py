@@ -4300,7 +4300,6 @@ async def get_registrant_cell_events_debug(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
     
-
 @app.get("/events/global")
 async def get_global_events(
     current_user: dict = Depends(get_current_user),
@@ -4328,7 +4327,7 @@ async def get_global_events(
         # Build query for Global Events
         query = {
             "isGlobal": True,
-            "eventType": "Global Events"
+            "eventTypeName": "Global Events"
         }
         
         # Add search filter
@@ -4354,6 +4353,8 @@ async def get_global_events(
         
         for event in all_events:
             try:
+                print(f"📝 Processing event {event.get('_id')}: {event.get('eventName', event.get('Event Name', 'Unknown'))}")
+                
                 # Parse event date
                 event_date_field = event.get("date")
                 if isinstance(event_date_field, datetime):
@@ -4368,8 +4369,11 @@ async def get_global_events(
                 else:
                     event_date = today_date
                 
+                print(f"  📅 Event date: {event_date}, Start date filter: {start_date_obj}")
+                
                 # Filter by date range
                 if event_date < start_date_obj:
+                    print(f"  ⏭️  Skipped - before date range")
                     continue
                 
                 # Get event details
@@ -4377,23 +4381,33 @@ async def get_global_events(
                 leader_name = event.get("Leader") or event.get("eventLeader", "")
                 location = event.get("Location") or event.get("location", "")
                 
-                # Determine status
+                # Determine status - FIXED: Use explicit status field from database, not inferred from attendees
+                # This prevents events from being automatically marked "complete" just because attendees were checked in
                 did_not_meet = event.get("did_not_meet", False)
-                attendees = event.get("attendees", [])
-                has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+                
+                # Check for explicit status field first (set via close/update API call)
+                stored_status = event.get("status") or event.get("Status")
+                
+                print(f"  🔄 Status determination: did_not_meet={did_not_meet}, stored_status={stored_status}")
                 
                 if did_not_meet:
                     event_status = "did_not_meet"
                     status_display = "Did Not Meet"
-                elif has_attendees:
-                    event_status = "complete"
-                    status_display = "Complete"
+                elif stored_status:
+                    # Use the explicit status from the database
+                    event_status = str(stored_status).lower()
+                    status_display = str(stored_status).replace("_", " ").title()
                 else:
-                    event_status = "incomplete"
-                    status_display = "Incomplete"
+                    # Default to "open" for events without an explicit status
+                    # (This ensures new events start as open, not derived from attendees)
+                    event_status = "open"
+                    status_display = "Open"
+                
+                print(f"  ✓ Final status: {event_status}")
                 
                 # Apply status filter
                 if status and status != 'all' and status != event_status:
+                    print(f"  ⏭️  Skipped - status filter: requested={status}, actual={event_status}")
                     continue
                 
                 # Build event object
@@ -4408,7 +4422,7 @@ async def get_global_events(
                     "time": event.get("time", ""),
                     "location": location,
                     "description": event.get("description", ""),
-                    "attendees": attendees if isinstance(attendees, list) else [],
+                    "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
                     "did_not_meet": did_not_meet,
                     "status": event_status,
                     "Status": status_display,
@@ -4423,9 +4437,12 @@ async def get_global_events(
                 }
                 
                 processed_events.append(final_event)
+                print(f"  ✅ Event added to processed list")
                 
             except Exception as e:
                 print(f"⚠️ Error processing global event {event.get('_id')}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         print(f"✅ Processed {len(processed_events)} global events after filtering")
@@ -4561,7 +4578,58 @@ async def get_global_events_status_counts(
     except Exception as e:
         print(f"❌ ERROR in global events status counts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/admin/migrate-persistent-attendees")
+async def migrate_persistent_attendees(current_user: dict = Depends(get_current_user)):
+    """Migrate old attendee data to persistent_attendees format"""
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
     
+    try:
+        # Find all cell events
+        cursor = events_collection.find({"Event Type": "Cells"})
+        updated = 0
+        
+        async for event in cursor:
+            event_id = event["_id"]
+            
+            # Check if already has persistent_attendees
+            if event.get("persistent_attendees"):
+                continue
+            
+            # Get attendees from latest week
+            attendance = event.get("attendance", {})
+            if not attendance:
+                # Try old attendees field
+                old_attendees = event.get("attendees", [])
+                if old_attendees:
+                    await events_collection.update_one(
+                        {"_id": event_id},
+                        {"$set": {"persistent_attendees": old_attendees}}
+                    )
+                    updated += 1
+                continue
+            
+            # Get most recent week's attendees
+            sorted_weeks = sorted(attendance.keys(), reverse=True)
+            if sorted_weeks:
+                latest_week = sorted_weeks[0]
+                latest_attendees = attendance[latest_week].get("attendees", [])
+                
+                if latest_attendees:
+                    await events_collection.update_one(
+                        {"_id": event_id},
+                        {"$set": {"persistent_attendees": latest_attendees}}
+                    )
+                    updated += 1
+        
+        return {
+            "message": f"Migrated {updated} events",
+            "updated": updated
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/admin/migrate-persistent-attendees")
 async def migrate_persistent_attendees(current_user: dict = Depends(get_current_user)):
     """Migrate old attendee data to persistent_attendees format"""
