@@ -18,7 +18,7 @@ class UserCreate(BaseModel):
     date_of_birth: str
     home_address: str
     invited_by: str
-    leader: Optional[str] = None
+    leader: Optional[str] = "" 
     phone_number: str
     email: EmailStr
     gender: str
