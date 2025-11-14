@@ -422,6 +422,7 @@ class ConsolidationCreate(BaseModel):
     decision_type: DecisionType
     decision_date: str
     assigned_to: str
+    assigned_to_email: str
     notes: Optional[str] = None
     event_id: Optional[str] = None
     leaders: List[str] = []

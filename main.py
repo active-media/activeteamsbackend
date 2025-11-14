@@ -4300,6 +4300,193 @@ async def get_registrant_cell_events_debug(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
     
+# @app.get("/events/global")
+# async def get_global_events(
+#     current_user: dict = Depends(get_current_user),
+#     page: int = Query(1, ge=1),
+#     limit: int = Query(25, ge=1, le=100),
+#     status: Optional[str] = Query(None),
+#     search: Optional[str] = Query(None),
+#     start_date: Optional[str] = Query(None)
+# ):
+#     """
+#     Get Global Events (like Sunday Service)
+#     Shows events where isGlobal = True
+#     """
+#     try:
+#         timezone = pytz.timezone("Africa/Johannesburg")
+#         today = datetime.now(timezone)
+#         today_date = today.date()
+        
+#         # Parse start_date filter
+#         start_date_filter = start_date if start_date else '2025-10-20'
+#         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
+        
+#         print(f"🔍 Fetching Global Events from {start_date_obj}")
+        
+#         # Build query for Global Events
+#         query = {
+#             "isGlobal": True,
+#             "eventTypeName": "Global Events"
+#         }
+        
+#         # Add search filter
+#         if search and search.strip():
+#             search_regex = {"$regex": search.strip(), "$options": "i"}
+#             query["$or"] = [
+#                 {"Event Name": search_regex},
+#                 {"eventName": search_regex},
+#                 {"Leader": search_regex},
+#                 {"Location": search_regex}
+#             ]
+        
+#         print(f"📋 Query for Global Events: {query}")
+        
+#         # Fetch events
+#         cursor = events_collection.find(query).sort("date", -1)
+#         all_events = await cursor.to_list(length=None)
+        
+#         print(f"📊 Found {len(all_events)} raw global events")
+        
+#         # Process events
+#         processed_events = []
+        
+#         for event in all_events:
+#             try:
+#                 print(f"📝 Processing event {event.get('_id')}: {event.get('eventName', event.get('Event Name', 'Unknown'))}")
+                
+#                 # Parse event date
+#                 event_date_field = event.get("date")
+#                 if isinstance(event_date_field, datetime):
+#                     event_date = event_date_field.date()
+#                 elif isinstance(event_date_field, str):
+#                     try:
+#                         event_date = datetime.fromisoformat(
+#                             event_date_field.replace("Z", "+00:00")
+#                         ).date()
+#                     except Exception:
+#                         event_date = today_date
+#                 else:
+#                     event_date = today_date
+                
+#                 print(f"  📅 Event date: {event_date}, Start date filter: {start_date_obj}")
+                
+#                 # Filter by date range
+#                 if event_date < start_date_obj:
+#                     print(f"  ⏭️  Skipped - before date range")
+#                     continue
+                
+#                 # Get event details
+#                 event_name = event.get("Event Name") or event.get("eventName", "")
+#                 leader_name = event.get("Leader") or event.get("eventLeader", "")
+#                 location = event.get("Location") or event.get("location", "")
+                
+#                 # Determine status - FIXED: Use explicit status field from database, not inferred from attendees
+#                 # This prevents events from being automatically marked "complete" just because attendees were checked in
+#                 did_not_meet = event.get("did_not_meet", False)
+                
+#                 # Check for explicit status field first (set via close/update API call)
+#                 stored_status = event.get("status") or event.get("Status")
+                
+#                 print(f"  🔄 Status determination: did_not_meet={did_not_meet}, stored_status={stored_status}")
+                
+#                 if did_not_meet:
+#                     event_status = "did_not_meet"
+#                     status_display = "Did Not Meet"
+#                 elif stored_status:
+#                     # Use the explicit status from the database
+#                     event_status = str(stored_status).lower()
+#                     status_display = str(stored_status).replace("_", " ").title()
+#                 else:
+#                     # Default to "open" for events without an explicit status
+#                     # (This ensures new events start as open, not derived from attendees)
+#                     event_status = "open"
+#                     status_display = "Open"
+                
+#                 print(f"  ✓ Final status: {event_status}")
+                
+#                 # Apply status filter
+#                 if status and status != 'all' and status != event_status:
+#                     print(f"  ⏭️  Skipped - status filter: requested={status}, actual={event_status}")
+#                     continue
+                
+#                 # Build event object
+#                 final_event = {
+#                     "_id": str(event.get("_id", "")),
+#                     "eventName": event_name,
+#                     "eventType": "Global Events",
+#                     "eventLeaderName": leader_name,
+#                     "eventLeaderEmail": event.get("Email") or event.get("userEmail", ""),
+#                     "day": event.get("Day", ""),
+#                     "date": event_date.isoformat(),
+#                     "time": event.get("time", ""),
+#                     "location": location,
+#                     "description": event.get("description", ""),
+#                     "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
+#                     "did_not_meet": did_not_meet,
+#                     "status": event_status,
+#                     "Status": status_display,
+#                     "_is_overdue": event_date < today_date and event_status == "incomplete",
+#                     "isGlobal": True,
+#                     "isTicketed": event.get("isTicketed", False),
+#                     "priceTiers": event.get("priceTiers", []),
+#                     "total_attendance": event.get("total_attendance", 0),
+#                     "UUID": event.get("UUID", ""),
+#                     "created_at": event.get("created_at"),
+#                     "updated_at": event.get("updated_at")
+#                 }
+                
+#                 processed_events.append(final_event)
+#                 print(f"  ✅ Event added to processed list")
+                
+#             except Exception as e:
+#                 print(f"⚠️ Error processing global event {event.get('_id')}: {str(e)}")
+#                 import traceback
+#                 traceback.print_exc()
+#                 continue
+        
+#         print(f"✅ Processed {len(processed_events)} global events after filtering")
+        
+#         # Sort by date (most recent first)
+#         processed_events.sort(key=lambda x: x['date'], reverse=True)
+        
+#         # Calculate status counts
+#         status_counts = {
+#             "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
+#             "complete": sum(1 for e in processed_events if e["status"] == "complete"),
+#             "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet")
+#         }
+        
+#         print(f"📊 Global Events Status - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}")
+        
+#         # Pagination
+#         total = len(processed_events)
+#         total_pages = (total + limit - 1) // limit if total > 0 else 1
+#         start_idx = (page - 1) * limit
+#         end_idx = start_idx + limit
+#         paginated_events = processed_events[start_idx:end_idx]
+        
+#         print(f"✅ Returning page {page}/{total_pages}: {len(paginated_events)} global events")
+        
+#         return {
+#             "events": paginated_events,
+#             "total_events": total,
+#             "total_pages": total_pages,
+#             "current_page": page,
+#             "page_size": limit,
+#             "status_counts": status_counts,
+#             "date_range": {
+#                 "start_date": start_date_filter,
+#                 "end_date": today_date.isoformat()
+#             }
+#         }
+        
+#     except Exception as e:
+#         print(f"❌ ERROR in get_global_events: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Error fetching global events: {str(e)}")
+    
 @app.get("/events/global")
 async def get_global_events(
     current_user: dict = Depends(get_current_user),
@@ -4307,10 +4494,11 @@ async def get_global_events(
     limit: int = Query(25, ge=1, le=100),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    start_date: Optional[str] = Query(None)
+    start_date: Optional[str] = Query(None),
+    last_updated: Optional[str] = Query(None)  # ✅ NEW: Track last update time
 ):
     """
-    Get Global Events (like Sunday Service)
+    Get Global Events (like Sunday Service) with real-time updates
     Shows events where isGlobal = True
     """
     try:
@@ -4330,6 +4518,18 @@ async def get_global_events(
             "eventTypeName": "Global Events"
         }
         
+        # ✅ NEW: Filter by last_updated if provided (for real-time updates)
+        if last_updated:
+            try:
+                last_updated_dt = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+                query["$or"] = [
+                    {"created_at": {"$gte": last_updated_dt}},
+                    {"updated_at": {"$gte": last_updated_dt}}
+                ]
+                print(f"🔄 Real-time update: fetching events since {last_updated}")
+            except Exception as e:
+                print(f"⚠️ Error parsing last_updated: {e}")
+        
         # Add search filter
         if search and search.strip():
             search_regex = {"$regex": search.strip(), "$options": "i"}
@@ -4343,17 +4543,51 @@ async def get_global_events(
         print(f"📋 Query for Global Events: {query}")
         
         # Fetch events
-        cursor = events_collection.find(query).sort("date", -1)
+        cursor = events_collection.find(query).sort([("created_at", -1), ("date", -1)])
         all_events = await cursor.to_list(length=None)
         
         print(f"📊 Found {len(all_events)} raw global events")
         
+        # Get the latest update timestamp for real-time polling
+        latest_timestamp = None
+        if all_events:
+            # Find the most recently created or updated event
+            timestamps = []
+            for event in all_events:
+                created = event.get("created_at")
+                updated = event.get("updated_at")
+                if created:
+                    timestamps.append(created if isinstance(created, datetime) else datetime.fromisoformat(created.replace("Z", "+00:00")))
+                if updated:
+                    timestamps.append(updated if isinstance(updated, datetime) else datetime.fromisoformat(updated.replace("Z", "+00:00")))
+            
+            if timestamps:
+                latest_timestamp = max(timestamps)
+                print(f"🕒 Latest event timestamp: {latest_timestamp}")
+        
         # Process events
         processed_events = []
+        new_events_count = 0
         
         for event in all_events:
             try:
                 print(f"📝 Processing event {event.get('_id')}: {event.get('eventName', event.get('Event Name', 'Unknown'))}")
+                
+                # Check if this is a new event (for real-time tracking)
+                is_new_event = False
+                if last_updated:
+                    event_created = event.get("created_at")
+                    event_updated = event.get("updated_at")
+                    
+                    if event_created:
+                        if isinstance(event_created, datetime):
+                            created_dt = event_created
+                        else:
+                            created_dt = datetime.fromisoformat(event_created.replace("Z", "+00:00"))
+                        
+                        if created_dt > last_updated_dt:
+                            is_new_event = True
+                            new_events_count += 1
                 
                 # Parse event date
                 event_date_field = event.get("date")
@@ -4433,7 +4667,8 @@ async def get_global_events(
                     "total_attendance": event.get("total_attendance", 0),
                     "UUID": event.get("UUID", ""),
                     "created_at": event.get("created_at"),
-                    "updated_at": event.get("updated_at")
+                    "updated_at": event.get("updated_at"),
+                    "_is_new": is_new_event  # ✅ NEW: Flag for new events in real-time updates
                 }
                 
                 processed_events.append(final_event)
@@ -4446,6 +4681,7 @@ async def get_global_events(
                 continue
         
         print(f"✅ Processed {len(processed_events)} global events after filtering")
+        print(f"🆕 New events since last update: {new_events_count}")
         
         # Sort by date (most recent first)
         processed_events.sort(key=lambda x: x['date'], reverse=True)
@@ -4454,10 +4690,11 @@ async def get_global_events(
         status_counts = {
             "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
             "complete": sum(1 for e in processed_events if e["status"] == "complete"),
-            "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet")
+            "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet"),
+            "open": sum(1 for e in processed_events if e["status"] == "open")
         }
         
-        print(f"📊 Global Events Status - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}")
+        print(f"📊 Global Events Status - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}, Open: {status_counts['open']}")
         
         # Pagination
         total = len(processed_events)
@@ -4478,7 +4715,12 @@ async def get_global_events(
             "date_range": {
                 "start_date": start_date_filter,
                 "end_date": today_date.isoformat()
-            }
+            },
+            # ✅ NEW: Real-time update fields
+            "latest_timestamp": latest_timestamp.isoformat() if latest_timestamp else None,
+            "has_new_events": new_events_count > 0,
+            "new_events_count": new_events_count,
+            "polling_suggestion": "Use 'last_updated' parameter for real-time updates"
         }
         
     except Exception as e:
@@ -4486,8 +4728,7 @@ async def get_global_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching global events: {str(e)}")
-    
-    
+
 @app.get("/events/global/status-counts")
 async def get_global_events_status_counts(
     current_user: dict = Depends(get_current_user),
