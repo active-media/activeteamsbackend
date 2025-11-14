@@ -11,7 +11,7 @@ from bson import ObjectId
 
 app = FastAPI()
 
-# ===== User Creation =====
+# ===== User Models =====
 class UserCreate(BaseModel):
     name: str
     surname: str
@@ -22,8 +22,12 @@ class UserCreate(BaseModel):
     email: EmailStr
     gender: str
     password: str
-    role: Optional[str] = None  # Optional; default to 'user' in logic
+    role: Optional[str] = None
+    # Add these for complete compatibility:
+    title: Optional[str] = None
+    
 
+# ===== User Login =====
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
