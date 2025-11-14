@@ -1212,6 +1212,7 @@ async def signup(user: UserCreate):
         "date_of_birth": user.date_of_birth,
         "home_address": user.home_address,
         "invited_by": user.invited_by,
+        "leader": user.leader,
         "phone_number": user.phone_number,
         "email": email,
         "gender": user.gender,
