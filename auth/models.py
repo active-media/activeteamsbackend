@@ -18,6 +18,7 @@ class UserCreate(BaseModel):
     date_of_birth: str
     home_address: str
     invited_by: str
+    leader: Optional[str] = "" 
     phone_number: str
     email: EmailStr
     gender: str
@@ -189,6 +190,7 @@ class UserProfile(BaseModel):
     date_of_birth: str
     home_address: str
     invited_by: Optional[str]
+    leader: Optional[str] 
     phone_number: str
     email: EmailStr
     gender: str
@@ -201,6 +203,7 @@ class UserProfileUpdate(BaseModel):
     date_of_birth: Optional[str]  # or date/datetime if you're parsing it
     home_address: Optional[str]
     invited_by: Optional[str]
+    leader: Optional[str]
     phone_number: Optional[str]
     email: Optional[EmailStr]
     gender: Optional[str]

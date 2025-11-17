@@ -1212,6 +1212,7 @@ async def signup(user: UserCreate):
         "date_of_birth": user.date_of_birth,
         "home_address": user.home_address,
         "invited_by": user.invited_by,
+        "leader": user.leader,
         "phone_number": user.phone_number,
         "email": email,
         "gender": user.gender,
@@ -1297,6 +1298,7 @@ async def signup(user: UserCreate):
         "Gender": user.gender.strip(),
         "Birthday": user.date_of_birth,
         "InvitedBy": inviter_full_name,
+        "Leader": user.leader,
         "Leader @1": leader1,
         "Leader @12": leader12,
         "Leader @144": leader144,
@@ -7596,6 +7598,7 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "date_of_birth": user.get("date_of_birth", ""),
         "home_address": user.get("home_address", ""),
         "invited_by": user.get("invited_by", ""),
+        "leader": user.get("leader", ""), 
         "phone_number": user.get("phone_number", ""),
         "email": user.get("email", ""),
         "gender": user.get("gender", ""),
@@ -7656,13 +7659,15 @@ async def update_profile(
             "home_address": "home_address",
             "phone_number": "phone_number",
             "invited_by": "invited_by",
+            "leader": "leader", 
             "gender": "gender",
             "profile_picture": "profile_picture",
             
             # Alternative field names from frontend
             "dob": "date_of_birth",
             "address": "home_address",
-            "invitedBy": "invited_by", 
+            "invitedBy": "invited_by",
+            "leader": "leader",  
             "phone": "phone_number"
         }
         
