@@ -123,19 +123,25 @@ class TokenData(BaseModel):
     role: Optional[str] = None
 
 # ===== Event Models =====
+# ===== Event Models =====
 class EventBase(BaseModel):
     eventTypeName: str
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
+    recurring_day: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
     isTicketed: bool = False
-    price: Optional[float] = None  # Allow null values
-    userEmail: Optional[str] = None  # Add this field your frontend sends
-    # Add any other fields your frontend might send
+    price: Optional[float] = None
+    userEmail: Optional[str] = None
+    isGlobal: Optional[bool] = None  
+    hasPersonSteps: Optional[bool] = None  
+    eventLeaderEmail: Optional[str] = None  
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
+
 class EventCreate(EventBase):
     """Schema for creating events (inherits from EventBase)."""
     pass
