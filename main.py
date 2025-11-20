@@ -8999,3 +8999,4 @@ async def get_event_new_people(event_id: str = Path(...)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
