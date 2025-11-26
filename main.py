@@ -9790,3 +9790,109 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
     except Exception as e:
         print(f"❌ Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
+    
+    
+@app.patch("/events/{event_id}")
+async def update_event_status(
+    event_id: str = Path(...),
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update event status to complete - properly handles PATCH requests
+    """
+    try:
+        print(f"🔧 UPDATE EVENT STATUS: {event_id}")
+        print(f"📥 Update data: {update_data}")
+        
+        # Check if this is a status update to "complete"
+        new_status = update_data.get("status")
+        if new_status != "complete":
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Only status update to 'complete' is allowed"}
+            )
+        
+        # Find the event
+        if not ObjectId.is_valid(event_id):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid event ID format"}
+            )
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Event not found"}
+            )
+        
+        event_name = event.get("Event Name") or event.get("eventName", "Unknown Event")
+        print(f"✅ Found event: {event_name}")
+        
+        # Prepare update data
+        update_payload = {
+            "status": "complete",
+            "Status": "Complete",
+            "updated_at": datetime.utcnow().isoformat(),
+            "closed_at": datetime.utcnow().isoformat(),
+            "closed_by": current_user.get("email", ""),
+            "closed_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+        }
+        
+        # Update the event
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_payload}
+        )
+        
+        if result.modified_count == 0:
+            print(f"⚠️ No changes made to event {event_id}")
+            # Still return success as the event might already be complete
+            return {
+                "message": f"Event '{event_name}' status updated to complete",
+                "event": {
+                    "id": event_id,
+                    "eventName": event_name,
+                    "status": "complete"
+                }
+            }
+        
+        print(f"✅ Event '{event_name}' successfully closed")
+        
+        # Return the updated event data
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
+        response_data = {
+            "message": f"Event '{event_name}' closed successfully!",
+            "event": {
+                "id": event_id,
+                "eventName": event_name,
+                "status": "complete",
+                "closed_at": update_payload["closed_at"],
+                "closed_by": update_payload["closed_by"]
+            }
+        }
+        
+        return response_data
+        
+    except Exception as e:
+        print(f"❌ ERROR updating event status: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Event may still be open in the database. Please check. Error: {str(e)}"}
+        )
+
+# Also add PUT method for compatibility with your frontend fallback
+@app.put("/events/{event_id}")
+async def update_event_status_put(
+    event_id: str = Path(...),
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    PUT endpoint for event status update (fallback for frontend)
+    """
+    return await update_event_status(event_id, update_data, current_user)
