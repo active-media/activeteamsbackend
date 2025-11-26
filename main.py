@@ -1078,9 +1078,7 @@ async def get_cell_events(
     Get cell events with proper Leader at 12 filtering
     """
     try:
-        print(f"\n{'='*80}")
-        print(f"📋 GET /events/cells REQUEST")
-        print(f"{'='*80}")
+        print("GET /events/cells REQUEST")
         
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
@@ -1093,19 +1091,11 @@ async def get_cell_events(
         
         print(f"User: {user_name} ({user_email})")
         print(f"Role: {role}")
-        print(f"Params:")
-        print(f"  - personal: {personal}")
-        print(f"  - leader_at_12_view: {leader_at_12_view}")
-        print(f"  - show_personal_cells: {show_personal_cells}")
-        print(f"  - show_all_authorized: {show_all_authorized}")
-        print(f"  - status: {status}")
-        print(f"  - search: {search}")  # 🔥 ADD THIS
-        
-        # Check if user is ACTUALLY a Leader at 12
+        print(f"Params: personal: {personal}, leader_at_12_view: {leader_at_12_view}")
+
         is_actual_leader_at_12 = await is_user_leader_at_12(user_email, user_name)
         
-        print(f"\n✅ Is ACTUAL Leader at 12: {is_actual_leader_at_12}")
-        print(f"{'='*80}\n")
+        print(f"Is ACTUAL Leader at 12: {is_actual_leader_at_12}")
 
         # BASE QUERY
         query = {
@@ -1124,12 +1114,10 @@ async def get_cell_events(
         safe_user_email = re.escape(user_email)
         safe_user_name = re.escape(user_name)
 
-        # 🔥 CRITICAL FIX: ADD SEARCH FUNCTIONALITY HERE
         if search and search.strip():
             search_term = search.strip()
-            print(f"🎯 APPLYING SEARCH FILTER: '{search_term}'")
+            print(f"APPLYING SEARCH FILTER: '{search_term}'")
             
-            # Create search conditions
             search_conditions = {
                 "$or": [
                     {"Event Name": {"$regex": search_term, "$options": "i"}},
@@ -1148,21 +1136,14 @@ async def get_cell_events(
                 ]
             }
             
-            # Add search conditions to the main query
             query["$and"].append(search_conditions)
-            print(f"✅ Search conditions applied")
 
-        # Build name variations for better matching
-        name_variations = [user_name]
-        if first_name:
-            name_variations.append(first_name)
-        
         # ADMIN MODE
         if role == "admin":
-            print(f"🔐 ADMIN MODE")
+            print("ADMIN MODE")
             
             if personal or show_personal_cells:
-                print(f"   → PERSONAL: Showing admin's own cells")
+                print("PERSONAL: Showing admin's own cells")
                 query["$and"].append({
                     "$or": [
                         {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
@@ -1170,15 +1151,13 @@ async def get_cell_events(
                         {"Leader": {"$regex": f"^{safe_user_name}$", "$options": "i"}},
                     ]
                 })
-            else:
-                print(f"   → VIEW ALL: Showing ALL cells")
 
         # LEADER AT 12 MODE
         elif is_actual_leader_at_12 and leader_at_12_view:
-            print(f"🔐 LEADER AT 12 MODE")
+            print("LEADER AT 12 MODE")
             
             if show_personal_cells or personal:
-                print(f"   → PERSONAL: Showing leader's own cell only")
+                print("PERSONAL: Showing leader's own cell only")
                 query["$and"].append({
                     "$or": [
                         {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
@@ -1187,23 +1166,23 @@ async def get_cell_events(
                     ]
                 })
             else:
-                print(f"   → VIEW ALL: Showing disciples' cells")
+                print("VIEW ALL: Showing disciples' cells")
                 
-                # Build OR conditions for all name variations
                 or_conditions = []
-                for name in name_variations:
-                    safe_name = re.escape(name)
-                    or_conditions.extend([
-                        {"Leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                        {"Leader @12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                        {"leader12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                    ])
+                for name in [user_name, first_name]:
+                    if name:
+                        safe_name = re.escape(name)
+                        or_conditions.extend([
+                            {"Leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
+                            {"Leader @12": {"$regex": f"^{safe_name}$", "$options": "i"}},
+                            {"leader12": {"$regex": f"^{safe_name}$", "$options": "i"}},
+                        ])
                 
                 query["$and"].append({"$or": or_conditions})
 
         # REGULAR USERS
         elif role in ["user", "registrant", "leader"]:
-            print(f"🔐 REGULAR USER MODE")
+            print("REGULAR USER MODE")
             query["$and"].append({
                 "$or": [
                     {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
@@ -1213,7 +1192,7 @@ async def get_cell_events(
             })
 
         else:
-            print(f"🚫 NO ACCESS")
+            print("NO ACCESS")
             query["$and"].append({"_id": "nonexistent_id"})
 
         # Execute query
@@ -1235,15 +1214,7 @@ async def get_cell_events(
 
         events = await events_collection.aggregate(pipeline).to_list(length=None)
         
-        print(f"\n📊 QUERY RESULTS: Found {len(events)} unique cells")
-        
-        if events:
-            print(f"\nSample cells found:")
-            for i, event in enumerate(events[:5], 1):
-                print(f"  {i}. {event.get('Event Name')}")
-                print(f"     Leader: {event.get('Leader')} ({event.get('Email')})")
-                print(f"     Leader@12: {event.get('Leader at 12') or event.get('Leader @12')}")
-
+        print(f"QUERY RESULTS: Found {len(events)} unique cells")
         
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
@@ -1287,13 +1258,18 @@ async def get_cell_events(
                     did_not_meet = week_attendance.get("status") == "did_not_meet"
                     weekly_attendees = week_attendance.get("attendees", [])
                     has_weekly_attendees = len(weekly_attendees) > 0
-                    
+
+                    # FIXED: Check if attendees were actually CHECKED IN for this week
+                    has_checked_in_attendees = any(
+                        attendee.get("checked_in", False) for attendee in weekly_attendees
+                    )
+
                     main_event_status = event.get("status", "").lower()
                     main_event_did_not_meet = event.get("did_not_meet", False)
                     
                     if did_not_meet or main_event_did_not_meet or main_event_status == "did_not_meet":
                         event_status = "did_not_meet"
-                    elif has_weekly_attendees or main_event_status == "complete":
+                    elif has_checked_in_attendees:  # FIXED: Only complete if people were checked in
                         event_status = "complete"
                     else:
                         event_status = "incomplete"
@@ -1332,7 +1308,7 @@ async def get_cell_events(
                     instance_date += timedelta(days=7)
 
             except Exception as e:
-                print(f" Error processing cell: {str(e)}")
+                print(f"Error processing cell: {str(e)}")
                 continue
 
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
@@ -1342,9 +1318,8 @@ async def get_cell_events(
         skip = (page - 1) * limit
         paginated_events = cell_instances[skip:skip + limit]
 
-        print(f"\n RETURNING: {len(paginated_events)} events (page {page}/{total_pages})")
-        print(f" SEARCH SUMMARY: '{search}' returned {total_count} total instances")
-        print(f"{'='*80}\n")
+        print(f"RETURNING: {len(paginated_events)} events (page {page}/{total_pages})")
+        print(f"SEARCH SUMMARY: '{search}' returned {total_count} total instances")
 
         return {
             "events": paginated_events,
@@ -1361,7 +1336,7 @@ async def get_cell_events(
         }
 
     except Exception as e:
-        print(f" ERROR: {str(e)}")
+        print(f"ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -6631,7 +6606,6 @@ async def submit_attendance(
         weekly_attendance_entry = {}
         main_update_fields = {}
 
-        # ✅ PROCESS ATTENDEES FOR CHECK-IN (regardless of did_not_meet status)
         print(f"👥 Processing attendees for check-in")
         if attendees_data and isinstance(attendees_data, list):
             for att in attendees_data:
