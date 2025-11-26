@@ -589,13 +589,13 @@ async def signup(user: UserCreate):
                     print("2")
                     leader1 = inviter_leader1
                     leader12 = inviter_leader12
-                    leader144 = inviter_full_name
-                    leader1728 = ""
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
                 elif inviter_leader12:
                     print("3")
                     leader1 = inviter_leader1
-                    leader12 = inviter_full_name
-                    leader144 = ""
+                    leader12 = inviter_leader12
+                    leader144 = inviter_full_name
                     leader1728 = ""
                 elif inviter_leader1:
                     print("4")
