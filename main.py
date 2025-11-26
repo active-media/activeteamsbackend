@@ -2010,34 +2010,24 @@ async def create_event_type(event_type: EventTypeCreate):
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
 
-        # Normalize name
         name = event_type.name.strip().title()
 
-        # Prevent duplicate names
         exists = await events_collection.find_one({"isEventType": True, "name": name})
         if exists:
             raise HTTPException(status_code=400, detail="Event type already exists.")
 
         event_type_data = event_type.dict()
         event_type_data["name"] = name
-        event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
         event_type_data["isEventType"] = True
+        event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
         
-        # ✅ ADD THIS: Automatically set isGlobal and hasPersonSteps based on name
         name_lower = name.lower()
         
-        # Override with auto-detection if not explicitly set
-        if "global" in name_lower:
-            event_type_data["isGlobal"] = True
-            print(f"🌍 Auto-setting isGlobal=True for event type: {name}")
-        elif event_type_data.get("isGlobal") is None:
-            event_type_data["isGlobal"] = False
+        if event_type_data.get("isGlobal") is None:
+            event_type_data["isGlobal"] = "global" in name_lower
             
-        if "cell" in name_lower:
-            event_type_data["hasPersonSteps"] = True
-            print(f"🔧 Auto-setting hasPersonSteps=True for event type: {name}")
-        elif event_type_data.get("hasPersonSteps") is None:
-            event_type_data["hasPersonSteps"] = False
+        if event_type_data.get("hasPersonSteps") is None:
+            event_type_data["hasPersonSteps"] = any(keyword in name_lower for keyword in ["cell", "person", "individual"])
         
         if not event_type_data.get("UUID"):
             event_type_data["UUID"] = str(uuid.uuid4())
@@ -2045,8 +2035,6 @@ async def create_event_type(event_type: EventTypeCreate):
         result = await events_collection.insert_one(event_type_data)
         inserted = await events_collection.find_one({"_id": result.inserted_id})
         inserted["_id"] = str(inserted["_id"])
-        
-        print(f"✅ Event type created: {inserted['name']} (isGlobal: {inserted.get('isGlobal')}, hasPersonSteps: {inserted.get('hasPersonSteps')})")
         
         return inserted
 
@@ -2084,68 +2072,80 @@ async def get_event_types():
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     
 from urllib.parse import unquote
-from datetime import datetime
-
-
 
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
-    event_type_name: str = Path(..., description="Name of the event type to update"),
+    event_type_name: str,
     updated_data: EventTypeCreate = Body(...)
 ):
     try:
         # Decode the URL-encoded event type name
         decoded_event_type_name = unquote(event_type_name)
         
-        print(f"🔍 [EVENT-TYPE UPDATE] Looking for event type to update: '{decoded_event_type_name}'")
+        print(f"🔍 [EVENT-TYPE UPDATE] Looking for: '{decoded_event_type_name}'")
+        print(f"📝 [EVENT-TYPE UPDATE] Update data: {updated_data.dict()}")
         
-        # Check if event type exists
+        # Check if event type exists - FIXED: Use case-insensitive search
         existing_event_type = await events_collection.find_one({
-            "name": decoded_event_type_name, 
+            "name": {"$regex": f"^{decoded_event_type_name}$", "$options": "i"},
             "isEventType": True
         })
         
         if not existing_event_type:
             print(f"❌ [EVENT-TYPE UPDATE] Event type '{decoded_event_type_name}' not found")
-            raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
+            # Try to find by ID as well
+            try:
+                existing_event_type = await events_collection.find_one({
+                    "_id": ObjectId(decoded_event_type_name),
+                    "isEventType": True
+                })
+            except:
+                pass
+            
+            if not existing_event_type:
+                raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
         # If name is being changed, check for duplicates
         new_name = updated_data.name.strip().title()
-        name_changed = new_name != decoded_event_type_name
+        current_name = existing_event_type["name"]
+        name_changed = new_name.lower() != current_name.lower()
         
-        print(f"📝 [EVENT-TYPE UPDATE] Name change check: '{decoded_event_type_name}' -> '{new_name}' (changed: {name_changed})")
+        print(f"📝 [EVENT-TYPE UPDATE] Name change: '{current_name}' -> '{new_name}' (changed: {name_changed})")
         
         if name_changed:
             duplicate = await events_collection.find_one({
-                "name": new_name,
-                "isEventType": True
+                "name": {"$regex": f"^{new_name}$", "$options": "i"},
+                "isEventType": True,
+                "_id": {"$ne": existing_event_type["_id"]}
             })
             if duplicate:
-                print(f"❌ [EVENT-TYPE UPDATE] Duplicate event type found: '{new_name}'")
+                print(f"❌ [EVENT-TYPE UPDATE] Duplicate: '{new_name}' already exists")
                 raise HTTPException(status_code=400, detail="Event type with this name already exists")
 
-        # ✅ CRITICAL FIX: Update events using BOTH eventType AND eventTypeName fields
+        # ✅ Update events that reference this event type
         events_updated_count = 0
         if name_changed:
-            print(f"🔄 [EVENT-TYPE UPDATE] Event type name changed from '{decoded_event_type_name}' to '{new_name}'")
+            print(f"🔄 [EVENT-TYPE UPDATE] Updating events from '{current_name}' to '{new_name}'")
             
-            # Count events that will be updated
+            # Count and update events
             events_count = await events_collection.count_documents({
                 "$or": [
-                    {"eventType": decoded_event_type_name},
-                    {"eventTypeName": decoded_event_type_name}
-                ]
+                    {"eventType": current_name},
+                    {"eventTypeName": current_name}
+                ],
+                "isEventType": {"$ne": True}
             })
-            print(f"📊 [EVENT-TYPE UPDATE] Found {events_count} events to update with new event type name")
+            
+            print(f"📊 [EVENT-TYPE UPDATE] Found {events_count} events to update")
             
             if events_count > 0:
-                # Update all events with the old event type name in BOTH fields
                 events_update_result = await events_collection.update_many(
                     {
                         "$or": [
-                            {"eventType": decoded_event_type_name},
-                            {"eventTypeName": decoded_event_type_name}
-                        ]
+                            {"eventType": current_name},
+                            {"eventTypeName": current_name}
+                        ],
+                        "isEventType": {"$ne": True}
                     },
                     {"$set": {
                         "eventType": new_name,
@@ -2154,141 +2154,100 @@ async def update_event_type(
                     }}
                 )
                 events_updated_count = events_update_result.modified_count
-                print(f"✅ [EVENT-TYPE UPDATE] Updated {events_updated_count} events with new event type name")
-                
-                # Verify the update worked
-                updated_events_count = await events_collection.count_documents({
-                    "$or": [
-                        {"eventType": new_name},
-                        {"eventTypeName": new_name}
-                    ]
-                })
-                print(f"🔍 [EVENT-TYPE UPDATE] Verification: {updated_events_count} events now have the new type name")
-                
-        # Rest of your existing code for updating the event type...
-        # Prepare update data
+                print(f"✅ [EVENT-TYPE UPDATE] Updated {events_updated_count} events")
+
+        # Prepare update data for the event type itself
         update_data = updated_data.dict()
         update_data["name"] = new_name
         update_data["updatedAt"] = datetime.utcnow()
-
+        
         # Remove None values and protect immutable fields
         update_data = {k: v for k, v in update_data.items() if v is not None}
         
-        immutable_fields = ["createdAt", "UUID", "_id"]
+        # Protect these fields from being overwritten
+        immutable_fields = ["_id", "UUID", "createdAt", "isEventType"]
         for field in immutable_fields:
             update_data.pop(field, None)
 
-        print(f"📝 [EVENT-TYPE UPDATE] Updating event type '{decoded_event_type_name}' with data: {update_data}")
+        print(f"📝 [EVENT-TYPE UPDATE] Final update data: {update_data}")
 
-        # Now update the event type itself
+        # Update the event type document
         result = await events_collection.update_one(
             {"_id": existing_event_type["_id"]},
             {"$set": update_data}
         )
 
         if result.modified_count == 0:
-            print(f" [EVENT-TYPE UPDATE] No changes made to event type '{decoded_event_type_name}'")
+            print(f"ℹ️ [EVENT-TYPE UPDATE] No changes made to '{current_name}'")
+            # Still return the existing event type
             existing_event_type["_id"] = str(existing_event_type["_id"])
             return existing_event_type
 
+        # Fetch and return the updated event type
         updated_event_type = await events_collection.find_one({"_id": existing_event_type["_id"]})
         updated_event_type["_id"] = str(updated_event_type["_id"])
         
-        print(f" [EVENT-TYPE UPDATE] Successfully updated event type to: {updated_event_type['name']}")
-        print(f" [EVENT-TYPE UPDATE] Summary - Events updated: {events_updated_count}, Event type: {updated_event_type['name']}")
+        print(f" [EVENT-TYPE UPDATE] Successfully updated to: {updated_event_type['name']}")
+        print(f"[EVENT-TYPE UPDATE] Summary - Events updated: {events_updated_count}")
         
         return updated_event_type
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f" [EVENT-TYPE UPDATE] Error updating event type: {str(e)}")
+        print(f"❌ [EVENT-TYPE UPDATE] Error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
-
-
+    
 @app.delete("/event-types/{event_type_name}")
-async def delete_event_type(event_type_name: str = Path(..., description="Name of the event type to delete")):
+async def delete_event_type(event_type_name: str):
     try:
-        # Decode the URL-encoded event type name
         decoded_event_type_name = unquote(event_type_name)
         
-        print(f"🔍 DELETE: Looking for event type: '{decoded_event_type_name}'")
-        
-        # ✅ FIX: Use case-insensitive search to find the event type
-        event_type = await events_collection.find_one({
-            "name": {"$regex": f"^{decoded_event_type_name}$", "$options": "i"},
+        existing_event_type = await events_collection.find_one({
+            "name": decoded_event_type_name, 
             "isEventType": True
         })
         
-        if not event_type:
-            print(f"❌ Event type '{decoded_event_type_name}' not found in database")
-            # List all available event types for debugging
-            all_event_types = await events_collection.find({"isEventType": True}).to_list(length=100)
-            print(f"📋 Available event types: {[et['name'] for et in all_event_types]}")
-            
-            return {
-                "message": f"Event type '{decoded_event_type_name}' not found or already deleted",
-                "deleted_events_count": 0,
-                "success": False
-            }
+        if not existing_event_type:
+            raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
-        print(f"✅ Found event type: {event_type['name']} with ID: {event_type['_id']}")
-
-        # ✅ FIX: Use the exact name from the database for deletion
-        exact_event_type_name = event_type['name']
-        
-        # Find all events with this event type (case-insensitive)
         events_count = await events_collection.count_documents({
-            "eventType": {"$regex": f"^{exact_event_type_name}$", "$options": "i"}
+            "$or": [
+                {"eventType": decoded_event_type_name},
+                {"eventTypeName": decoded_event_type_name}
+            ],
+            "isEventType": {"$ne": True}
         })
         
-        print(f"📊 Found {events_count} events with type '{exact_event_type_name}'")
-        
-        # Delete all events that have this type
-        deleted_events_count = 0
         if events_count > 0:
-            result = await events_collection.delete_many({
-                "eventType": {"$regex": f"^{exact_event_type_name}$", "$options": "i"}
-            })
-            deleted_events_count = result.deleted_count
-            print(f"🗑️ Deleted {deleted_events_count} events with type '{exact_event_type_name}'")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot delete event type: {events_count} events are using it"
+            )
 
-        # Delete the event type document using the exact ID
-        delete_result = await events_collection.delete_one({
-            "_id": event_type["_id"]
-        })
+        result = await events_collection.delete_one({"_id": existing_event_type["_id"]})
         
-        if delete_result.deleted_count > 0:
-            print(f"✅ SUCCESS: Deleted event type '{exact_event_type_name}' from database")
-            
-            # Verify deletion by searching again
-            verify_deleted = await events_collection.find_one({
-                "_id": event_type["_id"]
-            })
-            
-            if not verify_deleted:
-                print(f"✅ VERIFIED: Event type '{exact_event_type_name}' is completely removed")
-            else:
-                print(f"❌ WARNING: Event type '{exact_event_type_name}' still exists after deletion")
-                
-            return {
-                "message": f"Deleted event type '{exact_event_type_name}' and {deleted_events_count} associated event(s)",
-                "deleted_events_count": deleted_events_count,
-                "success": True
-            }
+        if result.deleted_count == 1:
+            return {"message": f"Event type '{decoded_event_type_name}' deleted successfully"}
         else:
-            print(f"❌ FAILED: No event type document was deleted")
-            return {
-                "message": f"Failed to delete event type '{exact_event_type_name}'",
-                "deleted_events_count": deleted_events_count,
-                "success": False
-            }
+            raise HTTPException(status_code=500, detail="Failed to delete event type")
 
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"❌ Error deleting event type: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deleting event type: {str(e)}")
+
+# async def validation_exception_handler(request: Request, exc: RequestValidationError):
+#     formatted = [
+#         {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
+#         for err in exc.errors()
+#     ]
+#     return JSONResponse(
+#         status_code=422,
+#         content={"errors": formatted}
+#     )
 # CELLS ENDPOINTS SECTION 
 # ----------------------------
 #  Debug email fields & documents
