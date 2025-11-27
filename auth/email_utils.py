@@ -1,39 +1,37 @@
-# auth/email_utils.py
-import smtplib
-from email.message import EmailMessage
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 import os
 
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))  # use 587 for STARTTLS
-SMTP_USER = os.getenv("SMTP_USER", "your_email@gmail.com")
-SMTP_PASS = os.getenv("SMTP_PASS", "your_app_password")  # use app password
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+FROM_EMAIL = os.getenv("FROM_EMAIL", "activeteams10@gmail.com")  # default fallback
 
 def send_reset_email(to_email: str, reset_link: str):
-    msg = EmailMessage()
-    msg['Subject'] = "Password Reset Request"
-    msg['From'] = SMTP_USER
-    msg['To'] = to_email
-    msg.set_content(f"""
-Dear User,
+    subject = "Reset Your Password"
+    html_content = f"""
+    <html>
+      <body>
+        <p>Hi,</p>
+        <p>We received a request to reset your password. Click the link below to set a new password:</p>
+        <p><a href="{reset_link}" target="_blank">Reset Password</a></p>
+        <p>If you did not request this, you can safely ignore this email.</p>
+        <br>
+        <p>Active Teams Team</p>
+      </body>
+    </html>
+    """
 
-We received a request to reset the password associated with this email address. 
-Please click the link below to securely reset your password:
+    message = Mail(
+        from_email=FROM_EMAIL,
+        to_emails=to_email,
+        subject=subject,
+        html_content=html_content
+    )
 
-{reset_link}
-
-If you did not request a password reset, please disregard this message. 
-Your account remains secure and no changes will be made.
-
-Thank you for using our service.
-
-Best regards,
-The Active Teams Support Team
-""")
-
-    # Use plain SMTP with STARTTLS
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls()  # upgrade connection to secure
-        smtp.ehlo()
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(msg)
+    try:
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        print(f"Reset email sent to {to_email}: {response.status_code}")
+        return response.status_code
+    except Exception as e:
+        print(f"Error sending reset email to {to_email}: {e}")
+        return None
