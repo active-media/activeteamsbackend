@@ -910,39 +910,59 @@ async def create_event(event: EventCreate):
         
         print(f"🔍 Looking for event type: '{event_type_name}'")
         
-        # ✅ FIXED: Case-insensitive event type lookup
-        event_type = await events_collection.find_one({
-            "$or": [
-                {"name": {"$regex": f"^{event_type_name}$", "$options": "i"}},
-                {"Event Type": {"$regex": f"^{event_type_name}$", "$options": "i"}},
-                {"eventType": {"$regex": f"^{event_type_name}$", "$options": "i"}}
-            ],
-            "isEventType": True
-        })
+        # ✅ CRITICAL FIX: Handle "CELLS" and "ALL CELLS" explicitly
+        if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
+            # For CELLS, we don't need to look up an event type - it's built-in
+            event_data["eventTypeId"] = "CELLS_BUILT_IN"
+            event_data["eventTypeName"] = "CELLS"
+            event_data["hasPersonSteps"] = True  # ✅ Enable leader fields
+            event_data["isGlobal"] = False
+            print(f"✅ Using built-in CELLS event type with leader fields enabled")
+        else:
+            # For other event types, look them up in the database
+            event_type = await events_collection.find_one({
+                "$or": [
+                    {"name": {"$regex": f"^{event_type_name}$", "$options": "i"}},
+                    {"Event Type": {"$regex": f"^{event_type_name}$", "$options": "i"}},
+                    {"eventType": {"$regex": f"^{event_type_name}$", "$options": "i"}}
+                ],
+                "isEventType": True
+            })
+            
+            if not event_type:
+                print(f"❌ Event type '{event_type_name}' not found in database")
+                available_types = await events_collection.find({"isEventType": True}).to_list(length=50)
+                available_type_names = [et.get("name") for et in available_types if et.get("name")]
+                print(f"📋 Available event types: {available_type_names}")
+                raise HTTPException(status_code=400, detail=f"❌ Event type '{event_type_name}' not found")
+            
+            print(f"✅ Found event type: {event_type.get('name')}")
+            
+            exact_event_type_name = event_type.get("name")
+            event_data["eventTypeId"] = event_type["UUID"]  
+            event_data["eventTypeName"] = exact_event_type_name
+            
+            # Set flags based on event type
+            event_type_lower = exact_event_type_name.lower()
+            
+            if "global" in event_type_lower:
+                event_data["isGlobal"] = True
+            else:
+                event_data["isGlobal"] = event_data.get("isGlobal", False)
+            
+            if "cell" in event_type_lower:
+                event_data["hasPersonSteps"] = True
+            else:
+                event_data["hasPersonSteps"] = event_data.get("hasPersonSteps", False)
         
-        if not event_type:
-            print(f"❌ Event type '{event_type_name}' not found in database")
-            available_types = await events_collection.find({"isEventType": True}).to_list(length=50)
-            available_type_names = [et.get("name") for et in available_types if et.get("name")]
-            print(f"📋 Available event types: {available_type_names}")
-            raise HTTPException(status_code=400, detail=f"❌ Event type '{event_type_name}' not found")
-        
-        print(f"✅ Found event type: {event_type.get('name')}")
-        
-        # 🎯 Use the EXACT name from the database (preserve original case)
-        exact_event_type_name = event_type.get("name")
-        event_data["eventTypeId"] = event_type["UUID"]  
-        event_data["eventTypeName"] = exact_event_type_name
-        
+        # Remove duplicate email field
         event_data.pop("eventType", None)
-
-        # ✅ FIX: Remove duplicate email fields - only keep eventLeaderEmail
         if "userEmail" in event_data:
             del event_data["userEmail"]
         if "email" in event_data:
             del event_data["email"]
         
-        # ✅ FIX: Ensure date is properly saved
+        # Ensure date is properly saved
         if event_data.get("date"):
             if isinstance(event_data["date"], str):
                 try:
@@ -952,22 +972,21 @@ async def create_event(event: EventCreate):
         else:
             event_data["date"] = datetime.utcnow()
 
-        # ❌ REMOVE THIS SECTION - Frontend already sets day correctly
-        # if event_data.get("recurring_day") and len(event_data["recurring_day"]) > 0:
-        #     event_data["day"] = event_data["recurring_day"][0]
-        # else:
-        #     event_data["day"] = "One-time"
-
-        # ✅ KEEP: The day value from frontend is already correct
+        # Use the day value from frontend
         print(f"📅 Using day value from frontend: {event_data.get('day')}")
 
-        # ✅ FIX: Ensure leader fields are properly saved
+        # Ensure leader fields are properly saved
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
         event_data.setdefault("eventLeaderEmail", event_data.get("eventLeaderEmail", ""))
-        event_data.setdefault("leader1", event_data.get("leader1", ""))
-        event_data.setdefault("leader12", event_data.get("leader12", ""))
+        
+        # ✅ CRITICAL: Keep leader fields for CELLS events
+        if event_data.get("hasPersonSteps"):
+            event_data.setdefault("leader1", event_data.get("leader1", ""))
+            event_data.setdefault("leader12", event_data.get("leader12", ""))
+            event_data["persistent_attendees"] = event_data.get("persistent_attendees", [])
+            print(f"✅ Saved leader fields - Leader@1: {event_data.get('leader1')}, Leader@12: {event_data.get('leader12')}")
 
-        # 📊 Defaults
+        # Defaults
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data.get("attendees", []))
         event_data["created_at"] = datetime.utcnow()
@@ -975,28 +994,6 @@ async def create_event(event: EventCreate):
         event_data["status"] = "open"
         
         event_data["isTicketed"] = event_data.get("isTicketed", False)
-        
-        # ✅ CRITICAL FIX: Set isGlobal and hasPersonSteps based on event type
-        event_type_lower = exact_event_type_name.lower()
-        
-        # Auto-detect Global Events
-        if "global" in event_type_lower:
-            event_data["isGlobal"] = True
-            print(f"🌍 Auto-setting isGlobal=True for event type: {exact_event_type_name}")
-        else:
-            event_data["isGlobal"] = event_data.get("isGlobal", False)
-        
-        # Auto-detect Cell Events
-        if "cell" in event_type_lower:
-            event_data["hasPersonSteps"] = True
-            # Initialize persistent_attendees for Cells
-            event_data["persistent_attendees"] = event_data.get("persistent_attendees", [])
-            print(f"🔧 Auto-setting hasPersonSteps=True for event type: {exact_event_type_name}")
-        else:
-            event_data["hasPersonSteps"] = False
-            # Remove persistent_attendees for non-Cell events
-            if "persistent_attendees" in event_data:
-                del event_data["persistent_attendees"]
         
         if event_data.get("isTicketed") and event_data.get("priceTiers"):
             event_data["priceTiers"] = [
@@ -1012,29 +1009,26 @@ async def create_event(event: EventCreate):
         else:
             event_data["priceTiers"] = []
 
-        # ✅ FIX: Clean up fields for Global Events
+        # Clean up fields for Global Events only
         if event_data.get("isGlobal", False):
-            # Remove leader fields that don't apply to Global Events
             fields_to_remove = ["leader1", "leader12"]
             for field in fields_to_remove:
                 if field in event_data and not event_data[field]:
                     del event_data[field]
-            print(f"🧹 Cleaned up fields for Global Event: {exact_event_type_name}")
 
         print(f"🔍 DEBUG - Final event data being saved:")
-        print(f"  - Event Type: {exact_event_type_name}")
-        print(f"  - Day: {event_data.get('day')}")  # ✅ Check the day value
+        print(f"  - Event Type: {event_data.get('eventTypeName')}")
+        print(f"  - Day: {event_data.get('day')}")
         print(f"  - isGlobal: {event_data.get('isGlobal')}")
         print(f"  - hasPersonSteps: {event_data.get('hasPersonSteps')}")
-        print(f"  - eventLeaderEmail: {event_data.get('eventLeaderEmail')}")
+        print(f"  - leader1: {event_data.get('leader1')}")
+        print(f"  - leader12: {event_data.get('leader12')}")
 
         result = await events_collection.insert_one(event_data)
         
-        # ✅ FIX: Return the complete event data
         created_event = await events_collection.find_one({"_id": result.inserted_id})
         
         print(f"✅ Event created successfully: {result.inserted_id}")
-        print(f"📊 Event details - Day: {created_event.get('day')}, Type: {created_event.get('eventTypeName')}")
 
         return {
             "message": "🎉 Event created successfully", 
@@ -1045,21 +1039,23 @@ async def create_event(event: EventCreate):
                 "eventLeader": created_event.get("eventLeader"),
                 "eventLeaderName": created_event.get("eventLeaderName"),
                 "eventLeaderEmail": created_event.get("eventLeaderEmail"),
-                "day": created_event.get("day"),  # ✅ This should now show the correct day
+                "day": created_event.get("day"),
                 "date": created_event.get("date"),
                 "location": created_event.get("location"),
                 "eventTypeName": created_event.get("eventTypeName"),
                 "isGlobal": created_event.get("isGlobal"),
-                "hasPersonSteps": created_event.get("hasPersonSteps")
+                "hasPersonSteps": created_event.get("hasPersonSteps"),
+                "leader1": created_event.get("leader1"),
+                "leader12": created_event.get("leader12")
             }
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error creating event: {str(e)}")
+        print(f" Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
-    
+
 @app.get("/events/cells")
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
@@ -2566,32 +2562,68 @@ async def delete_event_type(event_type_name: str):
     try:
         decoded_event_type_name = unquote(event_type_name)
         
+        # Use case-insensitive search
         existing_event_type = await events_collection.find_one({
-            "name": decoded_event_type_name, 
+            "$or": [
+                {"name": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
+            ],
             "isEventType": True
         })
         
         if not existing_event_type:
             raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
-        events_count = await events_collection.count_documents({
+        # Get the actual identifier from the found document
+        actual_identifier = (
+            existing_event_type.get("name") or 
+            existing_event_type.get("eventType") or 
+            existing_event_type.get("eventTypeName")
+        )
+
+        # Find events using this event type with more details
+        events_using_type = await events_collection.find({
             "$or": [
-                {"eventType": decoded_event_type_name},
-                {"eventTypeName": decoded_event_type_name}
+                {"eventType": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                {"eventTypeName": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
             ],
             "isEventType": {"$ne": True}
-        })
+        }).to_list(length=50)  # Limit to 50 for performance
+
+        events_count = len(events_using_type)
         
         if events_count > 0:
+            # Return event details for debugging
+            event_details = [
+                {
+                    "id": str(event["_id"]),
+                    "name": event.get("eventName", "Unnamed"),
+                    "type": event.get("eventType"),
+                    "typeName": event.get("eventTypeName")
+                }
+                for event in events_using_type[:10]  # Limit details to first 10 events
+            ]
+            
             raise HTTPException(
                 status_code=400, 
-                detail=f"Cannot delete event type: {events_count} events are using it"
+                detail={
+                    "message": f"Cannot delete event type: {events_count} events are using it",
+                    "events_count": events_count,
+                    "event_samples": event_details
+                }
             )
 
+        # Delete the event type
         result = await events_collection.delete_one({"_id": existing_event_type["_id"]})
         
         if result.deleted_count == 1:
-            return {"message": f"Event type '{decoded_event_type_name}' deleted successfully"}
+            return {
+                "success": True,
+                "message": f"Event type '{actual_identifier}' deleted successfully"
+            }
         else:
             raise HTTPException(status_code=500, detail="Failed to delete event type")
 
@@ -2599,7 +2631,6 @@ async def delete_event_type(event_type_name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting event type: {str(e)}")
-
 # async def validation_exception_handler(request: Request, exc: RequestValidationError):
 #     formatted = [
 #         {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
