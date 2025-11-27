@@ -162,6 +162,7 @@ async def background_load_all_people():
                     "Surname": 1,
                     "Email": 1,
                     "Number": 1,
+                    "Gender":1, #getting gender as well
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
@@ -183,6 +184,7 @@ async def background_load_all_people():
                         "Surname": person.get("Surname", ""),
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
+                        "Gender": person.get("Gender",""), #getting gender
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
@@ -353,6 +355,7 @@ async def get_people_simple(
             "Surname": 1,
             "Email": 1,
             "Number": 1,
+            "Gender": 1, #getting gender is
             "Leader @1": 1,
             "Leader @12": 1,
             "Leader @144": 1
@@ -368,6 +371,7 @@ async def get_people_simple(
                 "Name": person.get("Name", ""),
                 "Surname": person.get("Surname", ""),
                 "Email": person.get("Email", ""),
+                "Gender": person.get("Gender",""),
                 "Number": person.get("Number", ""),
                 "Leader @1": person.get("Leader @1", ""),
                 "Leader @12": person.get("Leader @12", ""),
@@ -550,42 +554,65 @@ async def signup(user: UserCreate):
         
         if cached_inviter:
             print(f"✅ Found inviter in background cache: {cached_inviter.get('FullName')}")
-            
-            # Get the inviter's leader hierarchy from cache
-            inviter_leader1 = cached_inviter.get("Leader @1", "")
-            inviter_leader12 = cached_inviter.get("Leader @12", "")
-            inviter_leader144 = cached_inviter.get("Leader @144", "")
-            inviter_leader1728 = cached_inviter.get("Leader @1728", "")
-            
-            # Determine what level the inviter is at and set leaders accordingly
-            if inviter_leader1728:
-                leader1 = inviter_leader1
-                leader12 = inviter_leader12
-                leader144 = inviter_leader144
-                leader1728 = inviter_full_name
-            elif inviter_leader144:
-                leader1 = inviter_leader1
-                leader12 = inviter_leader12
-                leader144 = inviter_full_name
-                leader1728 = ""
-            elif inviter_leader12:
-                leader1 = inviter_leader1
-                leader12 = inviter_full_name
+            # checking if gender is matching so it's not it can just assign them a leader at 12
+            isGenderMatching = cached_inviter.get("Gender", "") == user.gender.capitalize()
+
+            print(cached_inviter)
+            print(isGenderMatching)
+            print(cached_inviter.get("Gender", ""),user.gender.capitalize())
+
+            if  not isGenderMatching:
+                if user.gender == "male":
+                    leader1 = "Gavin Enslin"
+                else:
+                    leader1 = "Vicky Enslin"
+                leader12 = ""   
                 leader144 = ""
-                leader1728 = ""
-            elif inviter_leader1:
-                leader1 = inviter_full_name
-                leader12 = ""
-                leader144 = ""
-                leader1728 = ""
-            else:
-                leader1 = inviter_full_name
-                leader12 = ""
-                leader144 = ""
-                leader1728 = ""
-            
-            logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+                leader1728 = ""     
+            else: #if gender is matching should go on as usual
+                # Get the inviter's leader hierarchy from cache
+                inviter_leader1 = cached_inviter.get("Leader @1", "")
+                inviter_leader12 = cached_inviter.get("Leader @12", "")
+                inviter_leader144 = cached_inviter.get("Leader @144", "")
+                inviter_leader1728 = cached_inviter.get("Leader @1728", "")
+                print(cached_inviter,inviter_leader1,inviter_leader12,inviter_leader144,inviter_leader1728)
+                
+                
+                # Determine what level the inviter is at and set leaders accordingly
+                if inviter_leader1728:
+                    print("1")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
+                elif inviter_leader144:
+                    print("2")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
+                elif inviter_leader12:
+                    print("3")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_full_name
+                    leader1728 = ""
+                elif inviter_leader1:
+                    print("4")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_full_name
+                    leader144 = ""
+                    leader1728 = ""
+                else:
+                    print("5")
+                    leader1 = user.gender
+                    leader12 = ""
+                    leader144 = ""
+                    leader1728 = ""
+                
+                logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
         else:
+            print("6")
             print(f"⚠️ Inviter '{inviter_full_name}' not found in background cache")
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
@@ -643,6 +670,9 @@ async def login(user: UserLogin):
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    person = await people_collection.find_one({"Email":user.email})
+    
+    
 
     access_token = create_access_token(
         {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
@@ -664,6 +694,7 @@ async def login(user: UserLogin):
     )
 
     logger.info(f"Login successful: {user.email}")
+    print(person)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -680,28 +711,61 @@ async def login(user: UserLogin):
         "phone_number": existing.get("phone_number", ""),
         "gender": existing.get("gender", ""),
         "invited_by": existing.get("invited_by", "")
+    },
+    "leaders":{
+        'leaderAt1':person.get("Leader @1",""),
+        'leaderAt12':person.get("Leader @12",""),
+        'leaderAt144':person.get("Leader @144",""),
     }
     }
 
-# ---------------- Forgot Password ----------------
+# # ---------------- Forgot Password ----------------
+# @app.post("/forgot-password")
+# async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+#     logger.info(f"Forgot password requested: {payload.email}")
+#     user = await users_collection.find_one({"email": payload.email})
+
+#     if not user:
+#         logger.info(f"Forgot password - email not found: {payload.email}")
+#         return {"message": "If your email exists, a reset link has been sent."}
+
+#     reset_token = create_access_token(
+#         {"user_id": str(user["_id"])},
+#         expires_delta=timedelta(hours=1)
+#     )
+#     reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
+#     logger.info(f"Reset link generated for {payload.email}: {reset_link}")
+
+#     background_tasks.add_task(send_reset_email, payload.email, reset_link)
+#     logger.info(f"Reset email task added for {payload.email}")
+
+#     return {"message": "If your email exists, a reset link has been sent."}
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
-    logger.info(f"Forgot password requested: {payload.email}")
+    logger.info(f"Forgot password requested for email: {payload.email}")
+    
+    # Find the user by email
     user = await users_collection.find_one({"email": payload.email})
-
+    
     if not user:
+        # Always return the same message to avoid leaking info
         logger.info(f"Forgot password - email not found: {payload.email}")
         return {"message": "If your email exists, a reset link has been sent."}
 
+    # Create a reset token valid for 1 hour
     reset_token = create_access_token(
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
+    
     reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
-    logger.info(f"Reset link generated for {payload.email}: {reset_link}")
+    recipient_name = user.get("name", "there")  # Default to "there" if name missing
 
-    background_tasks.add_task(send_reset_email, payload.email, reset_link)
-    logger.info(f"Reset email task added for {payload.email}")
+    logger.info(f"Reset link generated for {payload.email}")
+
+    # Add background task with all required arguments
+    background_tasks.add_task(send_reset_email, payload.email, recipient_name, reset_link)
+    logger.info(f"Reset email task scheduled for {payload.email}")
 
     return {"message": "If your email exists, a reset link has been sent."}
 
@@ -1087,7 +1151,7 @@ async def get_cell_events(
         
         # ADMIN MODE
         if role == "admin":
-            print("ADMIN MODE")
+            print(f"🔐 ADMIN MODE")
             
             if personal or show_personal_cells:
                 print("   PERSONAL: Admin's own cells")
@@ -1106,7 +1170,7 @@ async def get_cell_events(
 
         # LEADER AT 12 MODE - CASE INSENSITIVE FIELD NAMES
         elif is_actual_leader_at_12 and leader_at_12_view:
-            print("LEADER AT 12 MODE")
+            print(f"🔐 LEADER AT 12 MODE")
             
             # Check what view we want
             want_personal_view = (show_personal_cells or personal)
@@ -1176,6 +1240,7 @@ async def get_cell_events(
                 
                 print(f"   🔍 Leader '{user_name}' - Trying to match Leader at 12 with variations: {name_variations}")
                 
+                # Build OR conditions for all name variations
                 or_conditions = []
                 
                 for name_variant in name_variations:
@@ -1282,7 +1347,7 @@ async def get_cell_events(
 
         # REGULAR USERS
         elif role in ["user", "registrant", "leader"]:
-            print("REGULAR USER MODE")
+            print(f"🔐 REGULAR USER MODE")
             query["$and"].append({
                 "$or": [
                     {"eventLeaderEmail": {"$regex": f"^{safe_user_email}$", "$options": "i"}},
@@ -1295,7 +1360,7 @@ async def get_cell_events(
             })
 
         else:
-            print("NO ACCESS")
+            print(f"🚫 NO ACCESS")
             query["$and"].append({"_id": "nonexistent_id"})
 
         # EXECUTE QUERY
@@ -1457,7 +1522,7 @@ async def get_cell_events(
         }
 
     except Exception as e:
-        print(f"ERROR: {str(e)}")
+        print(f" ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -6862,6 +6927,7 @@ async def submit_attendance(
         weekly_attendance_entry = {}
         main_update_fields = {}
 
+        # ✅ PROCESS ATTENDEES FOR CHECK-IN (regardless of did_not_meet status)
         print(f"👥 Processing attendees for check-in")
         if attendees_data and isinstance(attendees_data, list):
             for att in attendees_data:
@@ -8638,8 +8704,7 @@ async def get_people_capture_stats():
             status_code=500, 
             detail=f"Failed to fetch capture statistics: {str(e)}"
         )
-        
-        
+
 # --- ROLE MANAGEMENT ENDPOINTS (Admin only) ---
 
 # Role permissions configuration
@@ -9556,3 +9621,573 @@ async def get_event_new_people(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.get("/service-checkin/real-time-data")
+async def get_service_checkin_real_time_data(
+    event_id: str = Query(..., description="Event ID to get real-time data for"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get real-time data for service check-in with all three data types
+    """
+    try:
+        print(f"🔍 Getting real-time data for event: {event_id}")
+        
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        # Get the event
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        # Extract the three data types from the event
+        attendees = event.get("attendees", [])
+        new_people = event.get("new_people", [])
+        consolidations = event.get("consolidations", [])
+
+        # Counts for stats cards
+        present_count = len([a for a in attendees if a.get("checked_in", False)])
+        new_people_count = len(new_people)
+        consolidation_count = len(consolidations)
+
+        print(f"📊 Real-time stats - Present: {present_count}, New: {new_people_count}, Consolidations: {consolidation_count}")
+
+        return {
+            "success": True,
+            "event_id": event_id,
+            "event_name": event.get("eventName", "Unknown Event"),
+            "present_attendees": attendees,
+            "new_people": new_people,
+            "consolidations": consolidations,
+            "present_count": present_count,
+            "new_people_count": new_people_count,
+            "consolidation_count": consolidation_count,
+            "total_attendance": len(attendees)
+        }
+
+    except Exception as e:
+        print(f"❌ Error getting real-time data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
+    
+@app.post("/service-checkin/checkin")
+async def service_checkin_person(
+    checkin_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Enhanced check-in for service that handles all three data types
+    """
+    try:
+        event_id = checkin_data.get("event_id")
+        person_data = checkin_data.get("person_data", {})
+        checkin_type = checkin_data.get("type", "attendee")  # attendee, new_person, consolidation
+
+        print(f"🎯 Service check-in - Event: {event_id}, Type: {checkin_type}")
+
+        if not event_id or not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        # Get the event
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        now = datetime.utcnow().isoformat()
+        response_data = {}
+
+        if checkin_type == "attendee":
+            # Regular attendee check-in
+            attendee_record = {
+                "id": person_data.get("id", f"attendee_{secrets.token_urlsafe(8)}"),
+                "name": person_data.get("name", ""),
+                "fullName": person_data.get("fullName", person_data.get("name", "")),
+                "email": person_data.get("email", ""),
+                "phone": person_data.get("phone", ""),
+                "leader12": person_data.get("leader12", ""),
+                "time": now,
+                "checked_in": True,
+                "type": "attendee"
+            }
+
+            # Add to attendees array
+            await events_collection.update_one(
+                {"_id": ObjectId(event_id)},
+                {
+                    "$push": {"attendees": attendee_record},
+                    "$inc": {"total_attendance": 1},
+                    "$set": {"updated_at": now}
+                }
+            )
+
+            response_data = {
+                "message": f"{person_data.get('name')} checked in successfully",
+                "type": "attendee",
+                "attendee": attendee_record
+            }
+            print(f"✅ Attendee checked in: {person_data.get('name')}")
+
+        elif checkin_type == "new_person":
+            # Add new person (not in main database)
+            new_person_id = f"new_{secrets.token_urlsafe(8)}"
+            new_person_record = {
+                "id": new_person_id,
+                "name": person_data.get("name", ""),
+                "surname": person_data.get("surname", ""),
+                "email": person_data.get("email", ""),
+                "phone": person_data.get("phone", ""),
+                "gender": person_data.get("gender", ""),
+                "invitedBy": person_data.get("invitedBy", ""),
+                "added_at": now,
+                "type": "new_person",
+                "is_checked_in": person_data.get("is_checked_in", False)
+            }
+
+            await events_collection.update_one(
+                {"_id": ObjectId(event_id)},
+                {
+                    "$push": {"new_people": new_person_record},
+                    "$set": {"updated_at": now}
+                }
+            )
+
+            response_data = {
+                "message": f"New person {person_data.get('name')} added successfully",
+                "type": "new_person",
+                "new_person": new_person_record
+            }
+            print(f"✅ New person added: {person_data.get('name')}")
+
+        elif checkin_type == "consolidation":
+            # Add consolidation record
+            consolidation_id = f"consolidation_{secrets.token_urlsafe(8)}"
+            consolidation_record = {
+                "id": consolidation_id,
+                "person_name": person_data.get("person_name", ""),
+                "person_surname": person_data.get("person_surname", ""),
+                "person_email": person_data.get("person_email", ""),
+                "person_phone": person_data.get("person_phone", ""),
+                "decision_type": person_data.get("decision_type", "first_time"),
+                "decision_display_name": person_data.get("decision_display_name", "First Time Decision"),
+                "assigned_to": person_data.get("assigned_to", ""),
+                "assigned_to_email": person_data.get("assigned_to_email", ""),
+                "created_at": now,
+                "type": "consolidation",
+                "status": "active",
+                "notes": person_data.get("notes", "")
+            }
+
+            await events_collection.update_one(
+                {"_id": ObjectId(event_id)},
+                {
+                    "$push": {"consolidations": consolidation_record},
+                    "$set": {"updated_at": now}
+                }
+            )
+
+            response_data = {
+                "message": f"Consolidation recorded for {person_data.get('person_name')}",
+                "type": "consolidation",
+                "consolidation": consolidation_record
+            }
+            print(f"✅ Consolidation recorded: {person_data.get('person_name')}")
+
+        else:
+            raise HTTPException(status_code=400, detail="Invalid check-in type. Must be: attendee, new_person, or consolidation")
+
+        return {
+            "success": True,
+            **response_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in service check-in: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error during check-in: {str(e)}")
+    
+@app.delete("/service-checkin/remove")
+async def remove_from_service_checkin(
+    removal_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Remove a person from any of the three data types in an event
+    """
+    try:
+        event_id = removal_data.get("event_id")
+        person_id = removal_data.get("person_id")
+        data_type = removal_data.get("type")  # attendees, new_people, consolidations
+
+        print(f"🗑️ Removing from service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
+
+        if not event_id or not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        if not person_id or not data_type:
+            raise HTTPException(status_code=400, detail="Person ID and type are required")
+
+        valid_types = ["attendees", "new_people", "consolidations"]
+        if data_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
+
+        # Build the update query
+        update_query = {
+            "$pull": {data_type: {"id": person_id}},
+            "$set": {"updated_at": datetime.utcnow().isoformat()}
+        }
+
+        # If removing from attendees, also decrement total_attendance
+        if data_type == "attendees":
+            update_query["$inc"] = {"total_attendance": -1}
+
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            update_query
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found in specified list")
+
+        print(f"✅ Successfully removed from {data_type}")
+
+        return {
+            "success": True,
+            "message": f"Person removed from {data_type} successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error removing from service check-in: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error removing person: {str(e)}")
+    
+@app.put("/service-checkin/update")
+async def update_service_checkin_person(
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update a person in any of the three data types
+    """
+    try:
+        event_id = update_data.get("event_id")
+        person_id = update_data.get("person_id")
+        data_type = update_data.get("type")  # attendees, new_people, consolidations
+        update_fields = update_data.get("update_fields", {})
+
+        print(f"✏️ Updating service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
+
+        if not event_id or not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        if not person_id or not data_type:
+            raise HTTPException(status_code=400, detail="Person ID and type are required")
+
+        valid_types = ["attendees", "new_people", "consolidations"]
+        if data_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
+
+        # Build the update query
+        set_fields = {}
+        for field, value in update_fields.items():
+            set_fields[f"{data_type}.$.{field}"] = value
+
+        set_fields["updated_at"] = datetime.utcnow().isoformat()
+
+        result = await events_collection.update_one(
+            {
+                "_id": ObjectId(event_id),
+                f"{data_type}.id": person_id
+            },
+            {
+                "$set": set_fields
+            }
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found or no changes made")
+
+        print(f"✅ Successfully updated in {data_type}")
+
+        return {
+            "success": True,
+            "message": f"Person updated in {data_type} successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating service check-in: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
+    
+    
+@app.post("/events/{event_id}/initialize-structure")
+async def initialize_event_structure(
+    event_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Initialize a new event with the three-type structure
+    """
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        # Check if structure already exists
+        if "new_people" in event and "consolidations" in event:
+            return {
+                "success": True,
+                "message": "Event already has the new structure",
+                "already_initialized": True
+            }
+
+        # Initialize the three arrays if they don't exist
+        update_data = {
+            "attendees": event.get("attendees", []),
+            "new_people": event.get("new_people", []),
+            "consolidations": event.get("consolidations", []),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        # Ensure total_attendance exists
+        if "total_attendance" not in event:
+            update_data["total_attendance"] = len(update_data["attendees"])
+
+        await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+
+        print(f"✅ Event structure initialized: {event_id}")
+
+        return {
+            "success": True,
+            "message": "Event structure initialized successfully",
+            "already_initialized": False,
+            "attendees_count": len(update_data["attendees"]),
+            "new_people_count": len(update_data["new_people"]),
+            "consolidations_count": len(update_data["consolidations"])
+        }
+
+    except Exception as e:
+        print(f"❌ Error initializing event structure: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error initializing event: {str(e)}")
+    
+@app.post("/admin/migrate-all-events-structure")
+async def migrate_all_events_structure(current_user: dict = Depends(get_current_user)):
+    """
+    Migrate ALL events to the new three-type structure
+    Admin only
+    """
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        print("🔄 Starting migration of all events to new structure...")
+        
+        # Get all events
+        all_events = await events_collection.find({}).to_list(length=None)
+        migrated_count = 0
+        results = []
+
+        for event in all_events:
+            try:
+                event_id = event["_id"]
+                
+                # Skip events that already have the new structure
+                if "new_people" in event and "consolidations" in event:
+                    continue
+
+                # Transform existing data
+                old_attendees = event.get("attendees", [])
+                new_attendees = []
+                new_people = []
+                consolidations = []
+
+                for attendee in old_attendees:
+                    if isinstance(attendee, dict):
+                        # Check if this is a consolidation (has decision field)
+                        if attendee.get("decision") or attendee.get("is_consolidation"):
+                            consolidation_record = {
+                                "id": attendee.get("id", f"consolidation_{secrets.token_urlsafe(8)}"),
+                                "person_name": attendee.get("name", ""),
+                                "person_surname": attendee.get("surname", ""),
+                                "person_email": attendee.get("email", ""),
+                                "person_phone": attendee.get("phone", ""),
+                                "decision_type": attendee.get("decision", "first_time"),
+                                "decision_display_name": attendee.get("decision_display", 
+                                    "First Time Decision" if attendee.get("decision") == "first_time" else "Recommitment"),
+                                "assigned_to": attendee.get("assigned_leader", ""),
+                                "assigned_to_email": attendee.get("assigned_leader_email", ""),
+                                "created_at": attendee.get("time", datetime.utcnow().isoformat()),
+                                "type": "consolidation",
+                                "status": "active"
+                            }
+                            consolidations.append(consolidation_record)
+                        else:
+                            # Regular attendee
+                            attendee_record = {
+                                "id": attendee.get("id", f"attendee_{secrets.token_urlsafe(8)}"),
+                                "name": attendee.get("name", ""),
+                                "fullName": attendee.get("fullName", attendee.get("name", "")),
+                                "email": attendee.get("email", ""),
+                                "phone": attendee.get("phone", ""),
+                                "leader12": attendee.get("leader12", ""),
+                                "time": attendee.get("time", datetime.utcnow().isoformat()),
+                                "checked_in": attendee.get("checked_in", True),
+                                "type": "attendee"
+                            }
+                            new_attendees.append(attendee_record)
+
+                update_data = {
+                    "attendees": new_attendees,
+                    "new_people": new_people,
+                    "consolidations": consolidations,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+
+                if "total_attendance" not in event:
+                    update_data["total_attendance"] = len(new_attendees)
+
+                await events_collection.update_one(
+                    {"_id": event_id},
+                    {"$set": update_data}
+                )
+
+                migrated_count += 1
+                results.append({
+                    "event_id": str(event_id),
+                    "event_name": event.get("eventName", "Unknown"),
+                    "attendees": len(new_attendees),
+                    "consolidations": len(consolidations)
+                })
+
+                print(f"✅ Migrated: {event.get('eventName', 'Unknown')}")
+
+            except Exception as e:
+                print(f"❌ Error migrating event {event.get('eventName')}: {str(e)}")
+                continue
+
+        print(f"🎉 Migration complete! Migrated {migrated_count} events")
+
+        return {
+            "success": True,
+            "message": f"Migrated {migrated_count} events to new structure",
+            "migrated_count": migrated_count,
+            "total_events": len(all_events),
+            "results": results
+        }
+
+    except Exception as e:
+        print(f"❌ Error in bulk migration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
+    
+    
+@app.patch("/events/{event_id}")
+async def update_event_status(
+    event_id: str = Path(...),
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update event status to complete - properly handles PATCH requests
+    """
+    try:
+        print(f"🔧 UPDATE EVENT STATUS: {event_id}")
+        print(f"📥 Update data: {update_data}")
+        
+        # Check if this is a status update to "complete"
+        new_status = update_data.get("status")
+        if new_status != "complete":
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Only status update to 'complete' is allowed"}
+            )
+        
+        # Find the event
+        if not ObjectId.is_valid(event_id):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid event ID format"}
+            )
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Event not found"}
+            )
+        
+        event_name = event.get("Event Name") or event.get("eventName", "Unknown Event")
+        print(f"✅ Found event: {event_name}")
+        
+        # Prepare update data
+        update_payload = {
+            "status": "complete",
+            "Status": "Complete",
+            "updated_at": datetime.utcnow().isoformat(),
+            "closed_at": datetime.utcnow().isoformat(),
+            "closed_by": current_user.get("email", ""),
+            "closed_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+        }
+        
+        # Update the event
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_payload}
+        )
+        
+        if result.modified_count == 0:
+            print(f"⚠️ No changes made to event {event_id}")
+            # Still return success as the event might already be complete
+            return {
+                "message": f"Event '{event_name}' status updated to complete",
+                "event": {
+                    "id": event_id,
+                    "eventName": event_name,
+                    "status": "complete"
+                }
+            }
+        
+        print(f"✅ Event '{event_name}' successfully closed")
+        
+        # Return the updated event data
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
+        response_data = {
+            "message": f"Event '{event_name}' closed successfully!",
+            "event": {
+                "id": event_id,
+                "eventName": event_name,
+                "status": "complete",
+                "closed_at": update_payload["closed_at"],
+                "closed_by": update_payload["closed_by"]
+            }
+        }
+        
+        return response_data
+        
+    except Exception as e:
+        print(f"❌ ERROR updating event status: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Event may still be open in the database. Please check. Error: {str(e)}"}
+        )
+
+# Also add PUT method for compatibility with your frontend fallback
+@app.put("/events/{event_id}")
+async def update_event_status_put(
+    event_id: str = Path(...),
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    PUT endpoint for event status update (fallback for frontend)
+    """
+    return await update_event_status(event_id, update_data, current_user)
