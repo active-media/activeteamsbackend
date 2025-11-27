@@ -117,13 +117,12 @@ people_cache = {
     "total_in_database": 0
 }
 
-CACHE_DURATION_MINUTES = 1440  # 24 hours - since we're loading everything
-BACKGROUND_LOAD_DELAY = 2  # seconds before starting background load
-
+CACHE_DURATION_MINUTES = 1440  
+BACKGROUND_LOAD_DELAY = 2  
 @app.on_event("startup")
 async def startup_event():
     """Start background loading of all people on startup"""
-    print("🚀 Starting background load of ALL people...")
+    print(" Starting background load of ALL people...")
     asyncio.create_task(background_load_all_people())
 
 async def background_load_all_people():
@@ -1131,7 +1130,7 @@ async def get_cell_events(
             query["$and"].append({
                 "$or": [
                     {"Event Name": {"$regex": search_term, "$options": "i"}},
-                    {"eventName": {"$regex": search_term, "$$options": "i"}},
+                    {"eventName": {"$regex": search_term, "$options": "i"}},
                     {"EventName": {"$regex": search_term, "$options": "i"}},
                     {"Leader": {"$regex": search_term, "$options": "i"}},
                     {"eventLeaderName": {"$regex": search_term, "$options": "i"}},
