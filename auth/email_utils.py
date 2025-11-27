@@ -33,7 +33,7 @@ def send_reset_email(to_email: str, recipient_name: str, reset_link: str):
           
           <!-- Header -->
           <div class="header">
-            <h1>Active Teams Church</h1>
+            <h1>Active Teams</h1>
             <p>Connecting Faith & Community</p>
           </div>
           
@@ -48,7 +48,7 @@ def send_reset_email(to_email: str, recipient_name: str, reset_link: str):
             <p>May your day be blessed and filled with peace.</p>
             <br>
             <p>With regards,</p>
-            <p><strong>The Active Teams Church Team</strong></p>
+            <p><strong>Active Teams</strong></p>
           </div>
           
           <!-- Footer -->

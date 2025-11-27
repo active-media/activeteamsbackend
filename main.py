@@ -719,25 +719,53 @@ async def login(user: UserLogin):
     }
     }
 
-# ---------------- Forgot Password ----------------
+# # ---------------- Forgot Password ----------------
+# @app.post("/forgot-password")
+# async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+#     logger.info(f"Forgot password requested: {payload.email}")
+#     user = await users_collection.find_one({"email": payload.email})
+
+#     if not user:
+#         logger.info(f"Forgot password - email not found: {payload.email}")
+#         return {"message": "If your email exists, a reset link has been sent."}
+
+#     reset_token = create_access_token(
+#         {"user_id": str(user["_id"])},
+#         expires_delta=timedelta(hours=1)
+#     )
+#     reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
+#     logger.info(f"Reset link generated for {payload.email}: {reset_link}")
+
+#     background_tasks.add_task(send_reset_email, payload.email, reset_link)
+#     logger.info(f"Reset email task added for {payload.email}")
+
+#     return {"message": "If your email exists, a reset link has been sent."}
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
-    logger.info(f"Forgot password requested: {payload.email}")
+    logger.info(f"Forgot password requested for email: {payload.email}")
+    
+    # Find the user by email
     user = await users_collection.find_one({"email": payload.email})
-
+    
     if not user:
+        # Always return the same message to avoid leaking info
         logger.info(f"Forgot password - email not found: {payload.email}")
         return {"message": "If your email exists, a reset link has been sent."}
 
+    # Create a reset token valid for 1 hour
     reset_token = create_access_token(
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
+    
     reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
-    logger.info(f"Reset link generated for {payload.email}: {reset_link}")
+    recipient_name = user.get("name", "there")  # Default to "there" if name missing
 
-    background_tasks.add_task(send_reset_email, payload.email, reset_link)
-    logger.info(f"Reset email task added for {payload.email}")
+    logger.info(f"Reset link generated for {payload.email}")
+
+    # Add background task with all required arguments
+    background_tasks.add_task(send_reset_email, payload.email, recipient_name, reset_link)
+    logger.info(f"Reset email task scheduled for {payload.email}")
 
     return {"message": "If your email exists, a reset link has been sent."}
 
