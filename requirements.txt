@@ -33,7 +33,7 @@ sendgrid==6.12.4
 # Async / networking
 anyio==4.10.0
 websockets==15.0.1
-uvloop==0.21.0
+# uvloop==0.21.0
 watchfiles==1.1.0
 typing-extensions==4.15.0
 typing-inspection==0.4.1

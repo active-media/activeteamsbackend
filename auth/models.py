@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, APIRouter
+from fastapi import FastAPI, HTTPException, Request, APIRouter, Body, Path
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Optional, List, Literal
 from datetime import datetime
 from bson import ObjectId
+import uuid
+from urllib.parse import unquote
 
 app = FastAPI()
 
@@ -22,7 +24,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     gender: str
     password: str
-    role: Optional[str] = None  # Optional; default to 'user' in logic
+    role: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -50,16 +52,10 @@ class Attendee(BaseModel):
 
     @field_validator("fullName", mode="before")
     def set_fullname(cls, v, info):
-        """If fullName is missing, use name"""
         if not v and info.data.get("name"):
             return info.data.get("name")
         return v
 
-
-from pydantic import BaseModel, Field, model_validator
-from typing import List, Optional
-
-# ===== FIXED AttendanceSubmission Model =====
 # ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
@@ -68,18 +64,12 @@ class AttendanceSubmission(BaseModel):
     did_not_meet: bool = False
     isTicketed: bool = False
 
-    @model_validator(mode="after")
-    def validate_attendance(self):
-        """
-        ✅ IMPROVED: More flexible validation
-        - If `did_not_meet` is True: attendees should be empty (but don't block if not)
-        - If `did_not_meet` is False: allow empty attendees (frontend might send empty array)
-        """
-        if self.did_not_meet and self.attendees:
-            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(self.attendees)} attendees")
-            # Don't raise error, just log it
-        return self
-    
+    @field_validator("attendees", mode="before")
+    def validate_attendance(cls, v, info):
+        if info.data.get("did_not_meet") and v:
+            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(v)} attendees")
+        return v
+
 # Adding new Person in the Event screen
 class PersonCreate(BaseModel):
     invitedBy: str
@@ -93,16 +83,15 @@ class PersonCreate(BaseModel):
     leaders: list[str]
     stage: Literal["Win"]
 
-
-# ===== EventTypes =====
+# ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
     name: str
-    isTicketed: Optional[bool] = False
-    isGlobal: Optional[bool] = False
-    hasPersonSteps: Optional[bool] = False
     description: str
+    isTicketed: Optional[bool] = False
+    isGlobal: Optional[bool] = None
+    hasPersonSteps: Optional[bool] = None
     createdAt: Optional[datetime] = None
-
+    isEventType: Optional[bool] = True
 
 # ===== Attendance =====
 class CheckIn(BaseModel):
@@ -128,27 +117,21 @@ class EventBase(BaseModel):
     eventName: str
     date: Optional[datetime] = None
     time: Optional[str] = None
-    recurring_day: List[str] = Field(default_factory=list)  # Fixed field name
+    recurring_day: List[str] = Field(default_factory=list)
     location: str
     eventLeader: Optional[str] = None
     description: Optional[str] = None
     isTicketed: bool = False
-    price: Optional[float] = None  # Allow null values
-    userEmail: Optional[str] = None  # Add this field your frontend sends
-    # Add any other fields your frontend might send
-class EventCreate(EventBase):
-    """Schema for creating events (inherits from EventBase)."""
-    pass
+    price: Optional[float] = None
+    userEmail: Optional[str] = None
+    isGlobal: Optional[bool] = None  
+    hasPersonSteps: Optional[bool] = None  
+    eventLeaderEmail: Optional[str] = None  
+    leader1: Optional[str] = None
+    leader12: Optional[str] = None
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    formatted = [
-        {"field": ".".join(err["loc"][1:]), "message": err["msg"]}
-        for err in exc.errors()
-    ]
-    return JSONResponse(
-        status_code=422,
-        content={"errors": formatted}
-    )
+class EventCreate(EventBase):
+    pass
 
 class EventUpdate(BaseModel):
     eventType: Optional[str] = None
@@ -165,8 +148,6 @@ class EventUpdate(BaseModel):
     attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
     total_attendance: Optional[int] = None
-    
-    # 🔥 CRITICAL: Add these fields
     isTicketed: Optional[bool] = None
     isGlobal: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
@@ -176,14 +157,13 @@ class EventUpdate(BaseModel):
     price: Optional[float] = None
 
 class EventInDB(EventBase):
-    _id: str  # MongoDB ObjectId as string
+    _id: str
     attendees: List[dict] = []
     total_attendance: int = 0
 
-# ============= PProfile Update =============
-
+# ============= Profile Update =============
 class UserProfile(BaseModel):
-    id: str  # stringified ObjectId
+    id: str
     name: str
     surname: str
     date_of_birth: str
@@ -194,20 +174,17 @@ class UserProfile(BaseModel):
     gender: str
     role: Optional[str] = "user"
 
-
 class UserProfileUpdate(BaseModel):
     name: Optional[str]
     surname: Optional[str]
-    date_of_birth: Optional[str]  # or date/datetime if you're parsing it
+    date_of_birth: Optional[str]
     home_address: Optional[str]
     invited_by: Optional[str]
     phone_number: Optional[str]
     email: Optional[EmailStr]
     gender: Optional[str]
 
-
 # ===== Cell Events =====
-
 class CellEventCreate(BaseModel):
     service_name: str
     leader_id: str
@@ -234,17 +211,8 @@ class CellEventCreate(BaseModel):
             data["recurring_day"] = data["recurring_day"].capitalize()
         return data
 
-
-
-    def model_dump(self, **kwargs):
-        data = super().model_dump(**kwargs)
-        if data.get("recurring_day"):
-            data["recurring_day"] = data["recurring_day"].capitalize()
-        return data
-
 class AddMemberNamesRequest(BaseModel):
     name: str
-
 
 class RemoveMemberRequest(BaseModel):
     name: str
@@ -262,18 +230,13 @@ class RefreshTokenRequest(BaseModel):
     refresh_token_id: str
     refresh_token: str
 
-
-
-# Nested contacted_person model
+# ===== Task Models =====
 class ContactedPerson(BaseModel):
     name: str
     phone: str
     email: EmailStr
 
-
-# Main task model
 class TaskModel(BaseModel):
-
     memberID: str
     name: str
     taskType: str
@@ -287,23 +250,12 @@ class TaskModel(BaseModel):
         validate_by_name = True
         arbitrary_types_allowed = True
 
-# --- Pydantic Model ---
 class TaskTypeIn(BaseModel):
     name: str
 
 class TaskTypeOut(BaseModel):
     id: str
     name: str
-
-# --- Pydantic model for task update ---
-class TaskUpdate(BaseModel):
-    name: str | None = None
-    taskType: str | None = None
-    contacted_person: dict | None = None
-    followup_date: str | None = None
-    status: str | None = None
-    type: str | None = None
-    assignedfor: str | None = None
 
 class PersonInfo(BaseModel):
     name: Optional[str]
@@ -318,45 +270,7 @@ class TaskUpdate(BaseModel):
     status: Optional[str]
     type: Optional[str]
 
-    # Adding new Person in the Event screen
-class PersonCreate(BaseModel):
-    invitedBy: str
-    name: str
-    surname: str
-    gender: str
-    email: str
-    number: str
-    dob: str
-    address: str
-    leaders: list[str]
-    stage: Literal["Win"]
-
-# Models for profile- dont modify
-class UserProfile(BaseModel):
-    id: str
-    name: str
-    surname: str
-    date_of_birth: Optional[str] = ""
-    home_address: Optional[str] = ""
-    invited_by: Optional[str] = ""
-    phone_number: Optional[str] = ""
-    email: str
-    gender: Optional[str] = ""
-    role: str = "user"
-    profile_picture: Optional[str] = ""
-
-class UserProfileUpdate(BaseModel):
-    name: Optional[str] = None
-    surname: Optional[str] = None
-    date_of_birth: Optional[str] = None
-    home_address: Optional[str] = None
-    invited_by: Optional[str] = None
-    phone_number: Optional[str] = None
-    email: Optional[str] = None
-    gender: Optional[str] = None
-    profile_picture: Optional[str] = None
-    
-
+# ===== User Management =====
 class UserListResponse(BaseModel):
     id: str
     name: str
@@ -373,6 +287,7 @@ class UserListResponse(BaseModel):
     leader1728: Optional[str] = None
     stage: Optional[str] = None
     created_at: Optional[datetime] = None
+
 class UserList(BaseModel):
     users: List[UserListResponse]
 
@@ -387,10 +302,6 @@ class MessageResponse(BaseModel):
     message: str
 
 class LeaderStatusResponse(BaseModel):
-    """
-    Response model for checking a user's leadership and cell status.
-    Used for endpoints like /check-leader-status.
-    """
     isLeader: bool
     hasCell: bool
     canAccessEvents: bool
@@ -401,7 +312,7 @@ class UserCreater(BaseModel):
     email: EmailStr
     password: str
     phone_number: str
-    date_of_birth: str  # Keep as string for flexibility
+    date_of_birth: str
     address: str
     gender: str
     invitedBy: Optional[str] = ""
@@ -410,6 +321,7 @@ class UserCreater(BaseModel):
     leader1728: Optional[str] = ""
     stage: Optional[str] = "Win"
     role: str
+
 class DecisionType(str, Enum):
     FIRST_TIME = "first_time"
     RECOMMITMENT = "recommitment"
@@ -426,8 +338,10 @@ class ConsolidationCreate(BaseModel):
     notes: Optional[str] = None
     event_id: Optional[str] = None
     leaders: List[str] = []
+
 class ConsolidationTask(TaskModel):
     consolidation_id: str
     person_name: str
     person_surname: str
     decision_type: str
+
