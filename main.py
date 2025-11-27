@@ -162,6 +162,7 @@ async def background_load_all_people():
                     "Surname": 1,
                     "Email": 1,
                     "Number": 1,
+                    "Gender":1, #getting gender as well
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
@@ -183,6 +184,7 @@ async def background_load_all_people():
                         "Surname": person.get("Surname", ""),
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
+                        "Gender": person.get("Gender",""), #getting gender
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
@@ -353,6 +355,7 @@ async def get_people_simple(
             "Surname": 1,
             "Email": 1,
             "Number": 1,
+            "Gender": 1, #getting gender is
             "Leader @1": 1,
             "Leader @12": 1,
             "Leader @144": 1
@@ -368,6 +371,7 @@ async def get_people_simple(
                 "Name": person.get("Name", ""),
                 "Surname": person.get("Surname", ""),
                 "Email": person.get("Email", ""),
+                "Gender": person.get("Gender",""),
                 "Number": person.get("Number", ""),
                 "Leader @1": person.get("Leader @1", ""),
                 "Leader @12": person.get("Leader @12", ""),
@@ -550,42 +554,65 @@ async def signup(user: UserCreate):
         
         if cached_inviter:
             print(f"✅ Found inviter in background cache: {cached_inviter.get('FullName')}")
-            
-            # Get the inviter's leader hierarchy from cache
-            inviter_leader1 = cached_inviter.get("Leader @1", "")
-            inviter_leader12 = cached_inviter.get("Leader @12", "")
-            inviter_leader144 = cached_inviter.get("Leader @144", "")
-            inviter_leader1728 = cached_inviter.get("Leader @1728", "")
-            
-            # Determine what level the inviter is at and set leaders accordingly
-            if inviter_leader1728:
-                leader1 = inviter_leader1
-                leader12 = inviter_leader12
-                leader144 = inviter_leader144
-                leader1728 = inviter_full_name
-            elif inviter_leader144:
-                leader1 = inviter_leader1
-                leader12 = inviter_leader12
-                leader144 = inviter_full_name
-                leader1728 = ""
-            elif inviter_leader12:
-                leader1 = inviter_leader1
-                leader12 = inviter_full_name
+            # checking if gender is matching so it's not it can just assign them a leader at 12
+            isGenderMatching = cached_inviter.get("Gender", "") == user.gender.capitalize()
+
+            print(cached_inviter)
+            print(isGenderMatching)
+            print(cached_inviter.get("Gender", ""),user.gender.capitalize())
+
+            if  not isGenderMatching:
+                if user.gender == "male":
+                    leader1 = "Gavin Enslin"
+                else:
+                    leader1 = "Vicky Enslin"
+                leader12 = ""   
                 leader144 = ""
-                leader1728 = ""
-            elif inviter_leader1:
-                leader1 = inviter_full_name
-                leader12 = ""
-                leader144 = ""
-                leader1728 = ""
-            else:
-                leader1 = inviter_full_name
-                leader12 = ""
-                leader144 = ""
-                leader1728 = ""
-            
-            logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+                leader1728 = ""     
+            else: #if gender is matching should go on as usual
+                # Get the inviter's leader hierarchy from cache
+                inviter_leader1 = cached_inviter.get("Leader @1", "")
+                inviter_leader12 = cached_inviter.get("Leader @12", "")
+                inviter_leader144 = cached_inviter.get("Leader @144", "")
+                inviter_leader1728 = cached_inviter.get("Leader @1728", "")
+                print(cached_inviter,inviter_leader1,inviter_leader12,inviter_leader144,inviter_leader1728)
+                
+                
+                # Determine what level the inviter is at and set leaders accordingly
+                if inviter_leader1728:
+                    print("1")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
+                elif inviter_leader144:
+                    print("2")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
+                elif inviter_leader12:
+                    print("3")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_full_name
+                    leader1728 = ""
+                elif inviter_leader1:
+                    print("4")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_full_name
+                    leader144 = ""
+                    leader1728 = ""
+                else:
+                    print("5")
+                    leader1 = user.gender
+                    leader12 = ""
+                    leader144 = ""
+                    leader1728 = ""
+                
+                logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
         else:
+            print("6")
             print(f"⚠️ Inviter '{inviter_full_name}' not found in background cache")
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
@@ -643,6 +670,9 @@ async def login(user: UserLogin):
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    person = await people_collection.find_one({"Email":user.email})
+    
+    
 
     access_token = create_access_token(
         {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
@@ -664,6 +694,7 @@ async def login(user: UserLogin):
     )
 
     logger.info(f"Login successful: {user.email}")
+    print(person)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -680,6 +711,11 @@ async def login(user: UserLogin):
         "phone_number": existing.get("phone_number", ""),
         "gender": existing.get("gender", ""),
         "invited_by": existing.get("invited_by", "")
+    },
+    "leaders":{
+        'leaderAt1':person.get("Leader @1",""),
+        'leaderAt12':person.get("Leader @12",""),
+        'leaderAt144':person.get("Leader @144",""),
     }
     }
 
