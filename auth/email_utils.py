@@ -42,7 +42,7 @@ def send_reset_email(to_email: str, recipient_name: str, reset_link: str):
             <p>Dear {recipient_name},</p>
             <p>We have received a request to reset your password. To continue your journey with us, please click the button below:</p>
             <p style="text-align: center; margin: 30px 0;">
-              <a href="{reset_link}" target="_blank" class="button">Reset Password</a>
+              <a href="{reset_link}" target="_blank" class="button" style="color:white">Reset Password</a>
             </p>
             <p>If you did not request this, you can safely ignore this email. Your account remains secure.</p>
             <p>May your day be blessed and filled with peace.</p>
