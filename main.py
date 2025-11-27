@@ -9006,6 +9006,138 @@ async def create_consolidation(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
 
+# === ADD THIS AT THE END OF main.py (no import needed) ===
+
+@app.get("/api/users")
+async def get_all_users():
+    try:
+        users_cursor = users_collection.find({}, {"password": 0})
+        users_list = await users_cursor.to_list(length=1000)
+
+        formatted_users = []
+        for user in users_list:
+            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+            if not full_name:
+                full_name = user.get("email", "").split("@")[0]
+
+            formatted_users.append({
+                "_id": str(user["_id"]),
+                "email": user.get("email", ""),
+                "name": user.get("name", ""),
+                "surname": user.get("surname", ""),
+                "fullName": full_name,
+                "role": user.get("role", "member"),
+                "phone": user.get("phone", ""),
+                "avatar": user.get("avatar"),
+                "created_at": user.get("created_at")
+            })
+
+        return {
+            "success": True,
+            "count": len(formatted_users),
+            "users": formatted_users
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch users: {str(e)}") 
+    
+@app.get("/tasks/all")
+async def get_all_tasks(
+        current_user: dict = Depends(get_current_user)
+    ):
+        """
+        Dedicated endpoint: Get ALL tasks for every user
+        Only accessible to leaders, admins, and managers
+        Used by StatsDashboard & Admin panels
+        """
+        try:
+            # Permission check — only leaders can see all tasks
+            role = current_user.get("role", "").lower()
+            if role not in ["admin", "leader", "manager"]:
+                return {
+                    "error": "Access denied. You must be a leader or admin to view all tasks.",
+                    "status": "failed"
+                }, 403
+
+            timezone = pytz.timezone("Africa/Johannesburg")
+            cursor = tasks_collection.find({})  # No filter → ALL tasks
+            all_tasks = []
+
+            async for task in cursor:
+                # Safely parse followup_date
+                followup_raw = task.get("followup_date")
+                followup_dt = None
+                if followup_raw:
+                    if isinstance(followup_raw, datetime):
+                        followup_dt = followup_raw
+                    else:
+                        try:
+                            dt_str = str(followup_raw).replace("Z", "+00:00")
+                            followup_dt = datetime.fromisoformat(dt_str)
+                        except:
+                            try:
+                                followup_dt = datetime.fromisoformat(str(followup_raw))
+                            except:
+                                logging.warning(f"Invalid date format in task {task['_id']}: {followup_raw}")
+
+                    if followup_dt:
+                        if followup_dt.tzinfo is None:
+                            followup_dt = pytz.utc.localize(followup_dt)
+                        followup_dt = followup_dt.astimezone(timezone)
+
+                # Resolve full user info for legacy assignedfor (email string)
+                assigned_to = None
+                if task.get("assignedTo") and isinstance(task["assignedTo"], dict):
+                    assigned_to = task["assignedTo"]
+                elif task.get("assignedfor"):
+                    user = await users_collection.find_one(
+                        {"email": {"$regex": f"^{task['assignedfor'].strip()}$", "$options": "i"}},
+                        {"name": 1, "surname": 1, "email": 1, "phone": 1}
+                    )
+                    if user:
+                        assigned_to = {
+                            "_id": str(user["_id"]),
+                            "name": user.get("name", ""),
+                            "surname": user.get("surname", ""),
+                            "email": user.get("email", ""),
+                            "phone": user.get("phone", "")
+                        }
+
+                all_tasks.append({
+                    "_id": str(task["_id"]),
+                    "name": task.get("name", "Unnamed Task"),
+                    "taskType": task.get("taskType", ""),
+                    "followup_date": followup_dt.isoformat() if followup_dt else None,
+                    "status": task.get("status", "Open"),
+                    "assignedfor": task.get("assignedfor", ""),
+                    "assignedTo": assigned_to,  # Fully resolved user
+                    "type": task.get("type", "call"),
+                    "contacted_person": task.get("contacted_person", {}),
+                    "isRecurring": bool(task.get("recurring_day")),
+                    "createdAt": task.get("createdAt", datetime.utcnow()).isoformat() if task.get("createdAt") else None,
+                })
+
+            # Sort newest first
+            all_tasks.sort(key=lambda x: x["followup_date"] or "9999-12-31", reverse=True)
+
+            return {
+                "total_tasks": len(all_tasks),
+                "tasks": all_tasks,
+                "status": "success",
+                "fetched_by": current_user.get("email"),
+                "role": current_user.get("role"),
+                "timestamp": datetime.now(timezone).isoformat(),
+                "message": "All tasks loaded successfully"
+            }
+
+        except Exception as e:
+            logging.error(f"Error in /tasks/all: {e}", exc_info=True)
+            return {
+                "error": "Failed to fetch all tasks",
+                "details": str(e),
+                "status": "failed"
+            }, 500        
+
 @app.get("/tasks/leader/{leader_email}")
 async def get_leader_tasks(
     leader_email: str,
