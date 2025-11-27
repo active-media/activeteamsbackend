@@ -8779,8 +8779,7 @@ async def get_people_capture_stats():
             status_code=500, 
             detail=f"Failed to fetch capture statistics: {str(e)}"
         )
-        
-        
+
 # --- ROLE MANAGEMENT ENDPOINTS (Admin only) ---
 
 # Role permissions configuration
