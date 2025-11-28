@@ -1076,7 +1076,7 @@ async def get_cell_events(
     show_all_authorized: Optional[bool] = Query(None),
     include_subordinate_cells: Optional[bool] = Query(None),
     leader_at_1_identifier: Optional[str] = Query(None),
-    isLeaderAt12: Optional[bool] = Query(None)
+    isLeaderAt12: Optional[bool] = Query(None) #getting if leader at 12 from frontend
 ):
     """
     Get cell events with proper separation between personal and disciples' cells
@@ -1084,6 +1084,7 @@ async def get_cell_events(
     try:
         print("=" * 100)
         print("GET /events/cells REQUEST")
+        print(isLeaderAt12)
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
 
