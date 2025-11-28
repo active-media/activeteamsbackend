@@ -9175,12 +9175,15 @@ async def create_consolidation(
                 {"$set": update_data}
             )
         else:
-            # Create new person
+            # 🚨 FIX: Create new person with ALL required fields
             person_doc = {
                 "Name": consolidation.person_name.strip(),
                 "Surname": consolidation.person_surname.strip(),
                 "Email": person_email,
                 "Number": consolidation.person_phone or "",
+                "Gender": "",  # Add default gender
+                "Address": "",  # Add default address
+                "Birthday": "",  # Add default birthday
                 "Stage": "Consolidate",
                 "DecisionType": consolidation.decision_type.value,
                 "DecisionDate": consolidation.decision_date,
@@ -9210,7 +9213,23 @@ async def create_consolidation(
             
             result = await people_collection.insert_one(person_doc)
             person_id = str(result.inserted_id)
-            print(f"✅ Created new person: {person_id}")
+            
+            # 🚨 CRITICAL: Add the new person to the background cache
+            new_person_cache_entry = {
+                "_id": person_id,
+                "Name": consolidation.person_name.strip(),
+                "Surname": consolidation.person_surname.strip(),
+                "Email": person_email,
+                "Number": consolidation.person_phone or "",
+                "Gender": "",
+                "Leader @1": consolidation.leaders[0] if len(consolidation.leaders) > 0 else "",
+                "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
+                "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
+                "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
+                "FullName": f"{consolidation.person_name.strip()} {consolidation.person_surname.strip()}".strip()
+            }
+            people_cache["data"].append(new_person_cache_entry)
+            print(f"✅ Added new person to background cache: {new_person_cache_entry['FullName']}")
 
         # 2. FIND OR CREATE LEADER'S USER ACCOUNT
         leader_email = consolidation.assigned_to_email
@@ -9277,31 +9296,34 @@ async def create_consolidation(
         task_id = str(task_result.inserted_id)
         print(f"✅ Created consolidation task: {task_id} assigned to {assigned_for}")
 
-        # 4. Add to event attendees
+        # 4. 🚨 CRITICAL FIX: Add to event consolidations array ONLY, NOT attendees
         if consolidation.event_id and ObjectId.is_valid(consolidation.event_id):
-            attendee_record = {
-                "id": person_id,
-                "name": consolidation.person_name,
-                "fullName": f"{consolidation.person_name} {consolidation.person_surname}",
-                "email": person_email,
-                "phone": consolidation.person_phone or "",
-                "decision": consolidation.decision_type.value,
-                "decision_display": decision_display_name,
-                "time": datetime.utcnow().isoformat(),
-                "is_consolidation": True,
-                "consolidation_id": consolidation_id,
-                "assigned_leader": consolidation.assigned_to,
-                "assigned_leader_email": leader_email
+            consolidation_record = {
+                "id": consolidation_id,
+                "person_id": person_id,
+                "person_name": consolidation.person_name,
+                "person_surname": consolidation.person_surname,
+                "person_email": person_email,
+                "person_phone": consolidation.person_phone or "",
+                "decision_type": consolidation.decision_type.value,
+                "decision_display_name": decision_display_name,
+                "assigned_to": consolidation.assigned_to,
+                "assigned_to_email": leader_email,
+                "created_at": datetime.utcnow().isoformat(),
+                "type": "consolidation",
+                "status": "active",
+                "notes": consolidation.notes
             }
 
+            # 🚨 FIX: Only add to consolidations array, NOT attendees
             await events_collection.update_one(
                 {"_id": ObjectId(consolidation.event_id)},
                 {
-                    "$push": {"attendees": attendee_record},
-                    "$inc": {"total_attendance": 1}
+                    "$push": {"consolidations": consolidation_record},
+                    "$set": {"updated_at": datetime.utcnow().isoformat()}
                 }
             )
-            print(f"✅ Added to event attendees: {consolidation.event_id}")
+            print(f"✅ Added to event consolidations: {consolidation.event_id}")
 
         # 5. Create consolidation record
         consolidation_doc = {
@@ -9329,6 +9351,11 @@ async def create_consolidation(
         await consolidations_collection.insert_one(consolidation_doc)
         print(f"✅ Created consolidation record: {consolidation_id}")
 
+        # 6. 🚨 UPDATE PEOPLE COUNT IN CACHE
+        # Refresh the total people count in cache
+        total_people_count = await people_collection.count_documents({})
+        print(f"📊 Updated total people count: {total_people_count}")
+
         return {
             "message": f"{decision_display_name} recorded successfully and assigned to {consolidation.assigned_to}",
             "consolidation_id": consolidation_id,
@@ -9338,6 +9365,7 @@ async def create_consolidation(
             "assigned_to": consolidation.assigned_to,
             "assigned_to_email": leader_email,
             "leader_user_id": leader_user_id,
+            "people_count_updated": total_people_count,
             "success": True
         }
 
@@ -9346,6 +9374,7 @@ async def create_consolidation(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
 
 # === ADD THIS AT THE END OF main.py (no import needed) ===
 
@@ -9847,41 +9876,66 @@ async def service_checkin_person(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Enhanced check-in for service that handles all three data types
+    Service Check-in:
+    - attendee:   Existing person in the People database
+    - new_person: Visitor NOT in database (only recorded for event)
+    - consolidation: Decision/Follow-up
     """
     try:
         event_id = checkin_data.get("event_id")
         person_data = checkin_data.get("person_data", {})
-        checkin_type = checkin_data.get("type", "attendee")  # attendee, new_person, consolidation
-
-        print(f"🎯 Service check-in - Event: {event_id}, Type: {checkin_type}")
+        checkin_type = checkin_data.get("type", "attendee")
 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        # Get the event
+        # Get event
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
         now = datetime.utcnow().isoformat()
-        response_data = {}
 
+        # ============================================================
+        # 1️⃣ ATTENDEE — Must exist in People database
+        # ============================================================
         if checkin_type == "attendee":
-            # Regular attendee check-in
+            person_id = person_data.get("id") or person_data.get("_id")
+            if not person_id or not ObjectId.is_valid(person_id):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Valid person ID is required for attendee check-in"
+                )
+
+            # Find person
+            existing = await people_collection.find_one({"_id": ObjectId(person_id)})
+            if not existing:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Person does not exist — add them first using /people"
+                )
+
+            # Prevent duplicate check-in
+            already_checked = await events_collection.find_one({
+                "_id": ObjectId(event_id),
+                "attendees.id": str(existing["_id"])
+            })
+            if already_checked:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{existing.get('Name')} is already checked in"
+                )
+
             attendee_record = {
-                "id": person_data.get("id", f"attendee_{secrets.token_urlsafe(8)}"),
-                "name": person_data.get("name", ""),
-                "fullName": person_data.get("fullName", person_data.get("name", "")),
-                "email": person_data.get("email", ""),
-                "phone": person_data.get("phone", ""),
-                "leader12": person_data.get("leader12", ""),
+                "id": str(existing["_id"]),
+                "name": existing.get("Name", ""),
+                "surname": existing.get("Surname", ""),
+                "email": existing.get("Email", ""),
+                "phone": existing.get("Number", ""),
                 "time": now,
-                "checked_in": True,
                 "type": "attendee"
             }
 
-            # Add to attendees array
             await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -9891,16 +9945,20 @@ async def service_checkin_person(
                 }
             )
 
-            response_data = {
-                "message": f"{person_data.get('name')} checked in successfully",
+            return {
+                "message": f"{existing.get('Name')} checked in",
                 "type": "attendee",
-                "attendee": attendee_record
+                "attendee": attendee_record,
+                "success": True
             }
-            print(f"✅ Attendee checked in: {person_data.get('name')}")
 
+        # ============================================================
+        # 2️⃣ NEW PERSON — Visitors NOT in database
+        # ============================================================
         elif checkin_type == "new_person":
-            # Add new person (not in main database)
+
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
+
             new_person_record = {
                 "id": new_person_id,
                 "name": person_data.get("name", ""),
@@ -9911,7 +9969,9 @@ async def service_checkin_person(
                 "invitedBy": person_data.get("invitedBy", ""),
                 "added_at": now,
                 "type": "new_person",
-                "is_checked_in": person_data.get("is_checked_in", False)
+                "needs_database_entry": True,  # Tells the team to add them via /people later
+                "is_checked_in": True,
+                "notes": "Visitor - add to database later if needed"
             }
 
             await events_collection.update_one(
@@ -9922,16 +9982,20 @@ async def service_checkin_person(
                 }
             )
 
-            response_data = {
-                "message": f"New person {person_data.get('name')} added successfully",
+            return {
+                "message": "Visitor added to event",
                 "type": "new_person",
-                "new_person": new_person_record
+                "new_person": new_person_record,
+                "success": True
             }
-            print(f"✅ New person added: {person_data.get('name')}")
 
+        # ============================================================
+        # 3️⃣ CONSOLIDATION — Follow-up decisions
+        # ============================================================
         elif checkin_type == "consolidation":
-            # Add consolidation record
-            consolidation_id = f"consolidation_{secrets.token_urlsafe(8)}"
+
+            consolidation_id = f"con_{secrets.token_urlsafe(8)}"
+
             consolidation_record = {
                 "id": consolidation_id,
                 "person_name": person_data.get("person_name", ""),
@@ -9939,13 +10003,12 @@ async def service_checkin_person(
                 "person_email": person_data.get("person_email", ""),
                 "person_phone": person_data.get("person_phone", ""),
                 "decision_type": person_data.get("decision_type", "first_time"),
-                "decision_display_name": person_data.get("decision_display_name", "First Time Decision"),
+                "decision_display_name": person_data.get("decision_display_name", ""),
                 "assigned_to": person_data.get("assigned_to", ""),
-                "assigned_to_email": person_data.get("assigned_to_email", ""),
+                "notes": person_data.get("notes", ""),
                 "created_at": now,
                 "type": "consolidation",
-                "status": "active",
-                "notes": person_data.get("notes", "")
+                "status": "active"
             }
 
             await events_collection.update_one(
@@ -9956,28 +10019,28 @@ async def service_checkin_person(
                 }
             )
 
-            response_data = {
-                "message": f"Consolidation recorded for {person_data.get('person_name')}",
+            return {
+                "message": "Decision recorded",
                 "type": "consolidation",
-                "consolidation": consolidation_record
+                "consolidation": consolidation_record,
+                "success": True
             }
-            print(f"✅ Consolidation recorded: {person_data.get('person_name')}")
 
+        # ============================================================
+        # ❌ INVALID TYPE
+        # ============================================================
         else:
-            raise HTTPException(status_code=400, detail="Invalid check-in type. Must be: attendee, new_person, or consolidation")
-
-        return {
-            "success": True,
-            **response_data
-        }
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid type — must be attendee, new_person, or consolidation"
+            )
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error in service check-in: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error during check-in: {str(e)}")
-    
-@app.delete("/service-checkin/remove")
+        print("Error in check-in:", e)
+        raise HTTPException(status_code=500, detail="Check-in failed")
+
 async def remove_from_service_checkin(
     removal_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
