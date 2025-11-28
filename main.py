@@ -670,7 +670,7 @@ async def login(user: UserLogin):
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email})
+    person = await people_collection.find_one({"Email":user.email}) or {}
     
     
 
@@ -694,7 +694,7 @@ async def login(user: UserLogin):
     )
 
     logger.info(f"Login successful: {user.email}")
-    print(person)
+    print("HEYAAA",person)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -1075,7 +1075,8 @@ async def get_cell_events(
     show_personal_cells: Optional[bool] = Query(None),
     show_all_authorized: Optional[bool] = Query(None),
     include_subordinate_cells: Optional[bool] = Query(None),
-    leader_at_1_identifier: Optional[str] = Query(None)
+    leader_at_1_identifier: Optional[str] = Query(None),
+    isLeaderAt12: Optional[bool] = Query(None)
 ):
     """
     Get cell events with proper separation between personal and disciples' cells
@@ -1083,13 +1084,15 @@ async def get_cell_events(
     try:
         print("=" * 100)
         print("GET /events/cells REQUEST")
-        
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
-        first_name = current_user.get('name', '').strip()
-        surname = current_user.get('surname', '').strip()
+
+
+        #using from person found in people 
+        person = await people_collection.find_one({"Email":user_email})  
+        first_name = person.get('Name', '').strip()
+        surname = person.get('Surname', '').strip()
         user_name = f"{first_name} {surname}".strip()
-        
         if not user_name:
             user_name = first_name or current_user.get("username", "")
         
@@ -1102,7 +1105,7 @@ async def get_cell_events(
         print(f"   leader_at_12_view: {leader_at_12_view}")
         print(f"   include_subordinate_cells: {include_subordinate_cells}")
 
-        is_actual_leader_at_12 = await is_user_leader_at_12(user_email, user_name)
+        is_actual_leader_at_12 = isLeaderAt12
         print(f"Is Leader at 12: {is_actual_leader_at_12}")
 
         # BASE QUERY
@@ -1145,7 +1148,7 @@ async def get_cell_events(
                     {"LeaderAt12": {"$regex": search_term, "$options": "i"}},
                     {"LeaderAt12": {"$regex": search_term, "$options": "i"}},
                 ]
-            })
+            }) 
 
         # ROLE-BASED FILTERING
         
@@ -1245,6 +1248,7 @@ async def get_cell_events(
                 
                 for name_variant in name_variations:
                     safe_name = re.escape(name_variant)
+                    print("LEADER AT 12 NAME",safe_name)    
                     
                     # CRITICAL FIX: Try ALL possible field name variations with different cases
                     # Lowercase field names
@@ -3608,15 +3612,15 @@ async def check_leader_at_12_status(current_user: dict = Depends(get_current_use
                 if cell.get("attendance"):
                     leader_at_12_attendance = cell["attendance"].get("Leader @12") or cell["attendance"].get("leader12")
                 
-                print(f"     * '{cell.get('Event Name')}'")
-                print(f"       Main Leader at 12: '{leader_at_12}'")
+                # print(f"     * '{cell.get('Event Name')}'")
+                # print(f"       Main Leader at 12: '{leader_at_12}'")
                 if leader_at_12_attendance:
                     print(f"       Attendance Leader @12: '{leader_at_12_attendance}'")
         
-        if own_cells:
-            print(f"   - Own cells:")
-            for cell in own_cells:
-                print(f"     * '{cell.get('Event Name')}' - Leader: '{cell.get('Leader')}'")
+        # if own_cells:
+        #     print(f"   - Own cells:")
+        #     for cell in own_cells:
+        #         # print(f"     * '{cell.get('Event Name')}' - Leader: '{cell.get('Leader')}'")
         
         return {
             "is_leader_at_12": is_leader_at_12,
