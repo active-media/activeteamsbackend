@@ -668,7 +668,7 @@ async def login(user: UserLogin):
     person = await people_collection.find_one({"Email":user.email}) or {}
 
 
-    full_name = f"{person.get("Name") or ""} {person.get("Surname") or ""}" #getting full name to search in events if they have a cell
+    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
     print("FULL NAME",full_name)
     is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
     is_Leader = bool(is_Leader)
@@ -2027,12 +2027,12 @@ async def get_other_events(
 
         user_role = current_user.get("role", "user").lower()
         email = current_user.get("email", "")
+        
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
         
         try:
-            # Use provided start_date or default to 2000 for other events
             start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime("2000-01-01", "%Y-%m-%d").date()
             end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today + timedelta(days=365)
         except Exception as e:
@@ -2064,15 +2064,15 @@ async def get_other_events(
                 {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
                 {"leader1": {"$regex": user_email, "$options": "i"}}
             ]
-            
+
         if event_type and event_type.lower() != 'all':
             print(f"Filtering by event type: '{event_type}'")
             
             event_type_query = {
                 "$or": [
-                    {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},          # CASE-INSENSITIVE
-                    {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},           # CASE-INSENSITIVE  
-                    {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}        # CASE-INSENSITIVE
+                    {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
+                    {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
+                    {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
                 ]
             }
             
@@ -2086,7 +2086,6 @@ async def get_other_events(
         if search and search.strip():
             search_term = search.strip()
             print(f"Applying search filter: '{search_term}'")
-            # Escape search term for regex
             safe_search_term = re.escape(search_term)
             search_query = {
                 "$or": [
@@ -2106,11 +2105,10 @@ async def get_other_events(
         print(f"Final query: {query}")
 
         cursor = events_collection.find(query)
-        events = await cursor.to_list(length=1000)  # Increased limit for testing
+        events = await cursor.to_list(length=1000)
         
         print(f"Found {len(events)} other events")
 
-        # Debug event types found
         if events and event_type and event_type.lower() != 'all':
             found_event_types = set()
             for event in events:
@@ -2126,10 +2124,11 @@ async def get_other_events(
                 event_name = event.get("Event Name") or event.get("eventName", "")
                 event_type_value = event.get("Event Type") or event.get("eventType", "Event")
                 
+                # Get the day value from multiple possible fields
                 day_name_raw = event.get("Day") or event.get("day") or event.get("eventDay") or ""
                 day_name = str(day_name_raw).strip()
-                actual_day_value = day_name.capitalize() if day_name else "One-time"
 
+                # Get event date for date range filtering
                 event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
                 if isinstance(event_date_field, datetime):
                     event_date = event_date_field.date()
@@ -2144,6 +2143,18 @@ async def get_other_events(
                         continue
                 else:
                     continue
+
+                # If no day is stored, calculate it from the date
+                if not day_name:
+                    try:
+                        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                        day_name = days[event_date.weekday()]
+                        print(f"Calculated day '{day_name}' from date {event_date}")
+                    except Exception as e:
+                        print(f"Error calculating day from date: {e}")
+                        day_name = "One-time"
+
+                actual_day_value = day_name.capitalize() if day_name else "One-time"
 
                 # For other events, use the wider date range to include historical events
                 if event_date < start_date_obj or event_date > end_date_obj:
@@ -2170,7 +2181,6 @@ async def get_other_events(
                 
                 print(f"Event '{event_name}' status - weekly: {event_attendance.get('status')}, main: {main_event_status}, final: {event_status}")
 
-                # Apply status filter
                 if status and status != event_status:
                     continue
 
@@ -2187,7 +2197,7 @@ async def get_other_events(
                     "date": event_date.isoformat(),
                     "location": event.get("Location") or event.get("location", ""),
                     "attendees": weekly_attendees,
-                    "hasPersonSteps": False,  # Always false for non-cell events
+                    "hasPersonSteps": False,
                     "status": event_status,
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
@@ -2205,7 +2215,6 @@ async def get_other_events(
                 print(f"Error processing other event: {str(e)}")
                 continue
 
-        # Sort by date (most recent first)
         other_events.sort(key=lambda x: x['date'], reverse=True)
         
         total_count = len(other_events)
