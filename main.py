@@ -665,8 +665,13 @@ async def login(user: UserLogin):
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email})
-    
+    person = await people_collection.find_one({"Email":user.email}) or {}
+
+
+    full_name = f"{person.get("Name") or ""} {person.get("Surname") or ""}" #getting full name to search in events if they have a cell
+    print("FULL NAME",full_name)
+    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
+    is_Leader = bool(is_Leader)
     
 
     access_token = create_access_token(
@@ -689,7 +694,6 @@ async def login(user: UserLogin):
     )
 
     logger.info(f"Login successful: {user.email}")
-    print(person)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -711,7 +715,8 @@ async def login(user: UserLogin):
         'leaderAt1':person.get("Leader @1",""),
         'leaderAt12':person.get("Leader @12",""),
         'leaderAt144':person.get("Leader @144",""),
-    }
+    },
+    "isLeader": is_Leader
     }
 
 @app.post("/forgot-password")
@@ -1044,7 +1049,8 @@ async def get_cell_events(
     show_personal_cells: Optional[bool] = Query(None),
     show_all_authorized: Optional[bool] = Query(None),
     include_subordinate_cells: Optional[bool] = Query(None),
-    leader_at_1_identifier: Optional[str] = Query(None)
+    leader_at_1_identifier: Optional[str] = Query(None),
+    isLeaderAt12: Optional[bool] = Query(None) #getting if leader at 12 from frontend
 ):
     """
     Get cell events with proper separation between personal and disciples' cells
@@ -1052,13 +1058,16 @@ async def get_cell_events(
     try:
         print("=" * 100)
         print("GET /events/cells REQUEST")
-        
+        print(isLeaderAt12)
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
-        first_name = current_user.get('name', '').strip()
-        surname = current_user.get('surname', '').strip()
+
+
+        #using from person found in people 
+        person = await people_collection.find_one({"Email":user_email})  
+        first_name = person.get('Name', '').strip()
+        surname = person.get('Surname', '').strip()
         user_name = f"{first_name} {surname}".strip()
-        
         if not user_name:
             user_name = first_name or current_user.get("username", "")
         
@@ -1071,7 +1080,7 @@ async def get_cell_events(
         print(f"   leader_at_12_view: {leader_at_12_view}")
         print(f"   include_subordinate_cells: {include_subordinate_cells}")
 
-        is_actual_leader_at_12 = await is_user_leader_at_12(user_email, user_name)
+        is_actual_leader_at_12 = isLeaderAt12
         print(f"Is Leader at 12: {is_actual_leader_at_12}")
 
         # BASE QUERY
@@ -1114,7 +1123,7 @@ async def get_cell_events(
                     {"LeaderAt12": {"$regex": search_term, "$options": "i"}},
                     {"LeaderAt12": {"$regex": search_term, "$options": "i"}},
                 ]
-            })
+            }) 
 
         # ROLE-BASED FILTERING
         
@@ -1214,6 +1223,7 @@ async def get_cell_events(
                 
                 for name_variant in name_variations:
                     safe_name = re.escape(name_variant)
+                    print("LEADER AT 12 NAME",safe_name)    
                     
                     # CRITICAL FIX: Try ALL possible field name variations with different cases
                     # Lowercase field names
@@ -3514,15 +3524,15 @@ async def check_leader_at_12_status(current_user: dict = Depends(get_current_use
                 if cell.get("attendance"):
                     leader_at_12_attendance = cell["attendance"].get("Leader @12") or cell["attendance"].get("leader12")
                 
-                print(f"     * '{cell.get('Event Name')}'")
-                print(f"       Main Leader at 12: '{leader_at_12}'")
+                # print(f"     * '{cell.get('Event Name')}'")
+                # print(f"       Main Leader at 12: '{leader_at_12}'")
                 if leader_at_12_attendance:
                     print(f"       Attendance Leader @12: '{leader_at_12_attendance}'")
         
-        if own_cells:
-            print(f"   - Own cells:")
-            for cell in own_cells:
-                print(f"     * '{cell.get('Event Name')}' - Leader: '{cell.get('Leader')}'")
+        # if own_cells:
+        #     print(f"   - Own cells:")
+        #     for cell in own_cells:
+        #         # print(f"     * '{cell.get('Event Name')}' - Leader: '{cell.get('Leader')}'")
         
         return {
             "is_leader_at_12": is_leader_at_12,
@@ -9688,6 +9698,54 @@ async def get_event_new_people(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+# @app.get("/service-checkin/real-time-data")
+# async def get_service_checkin_real_time_data(
+#     event_id: str = Query(..., description="Event ID to get real-time data for"),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """
+#     Get real-time data for service check-in with all three data types
+#     """
+#     try:
+#         print(f"🔍 Getting real-time data for event: {event_id}")
+        
+#         if not ObjectId.is_valid(event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID")
+
+#         # Get the event
+#         event = await events_collection.find_one({"_id": ObjectId(event_id)})
+#         if not event:
+#             raise HTTPException(status_code=404, detail="Event not found")
+
+#         # Extract the three data types from the event
+#         attendees = event.get("attendees", [])
+#         new_people = event.get("new_people", [])
+#         consolidations = event.get("consolidations", [])
+
+#         # Counts for stats cards
+#         present_count = len([a for a in attendees if a.get("checked_in", False)])
+#         new_people_count = len(new_people)
+#         consolidation_count = len(consolidations)
+
+#         print(f"📊 Real-time stats - Present: {present_count}, New: {new_people_count}, Consolidations: {consolidation_count}")
+
+#         return {
+#             "success": True,
+#             "event_id": event_id,
+#             "event_name": event.get("eventName", "Unknown Event"),
+#             "present_attendees": attendees,
+#             "new_people": new_people,
+#             "consolidations": consolidations,
+#             "present_count": present_count,
+#             "new_people_count": new_people_count,
+#             "consolidation_count": consolidation_count,
+#             "total_attendance": len(attendees)
+#         }
+
+#     except Exception as e:
+#         print(f"❌ Error getting real-time data: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
+    
 @app.get("/service-checkin/real-time-data")
 async def get_service_checkin_real_time_data(
     event_id: str = Query(..., description="Event ID to get real-time data for"),
@@ -9695,6 +9753,7 @@ async def get_service_checkin_real_time_data(
 ):
     """
     Get real-time data for service check-in with all three data types
+    - FIXED: Returns ACTUAL counts from database
     """
     try:
         print(f"Getting real-time data for event: {event_id}")
@@ -9702,18 +9761,18 @@ async def get_service_checkin_real_time_data(
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        # Get the event
+        # Get the event FRESH from database
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        # Extract the three data types from the event
+        # Extract the three data types from the event - COUNT PROPERLY
         attendees = event.get("attendees", [])
         new_people = event.get("new_people", [])
         consolidations = event.get("consolidations", [])
 
-        # Counts for stats cards
-        present_count = len([a for a in attendees if a.get("checked_in", False)])
+        # Counts for stats cards - COUNT ACTUAL CHECKED-IN PEOPLE
+        present_count = len([a for a in attendees if a.get("checked_in", False) or a.get("is_checked_in", False)])
         new_people_count = len(new_people)
         consolidation_count = len(consolidations)
 
@@ -9726,26 +9785,194 @@ async def get_service_checkin_real_time_data(
             "present_attendees": attendees,
             "new_people": new_people,
             "consolidations": consolidations,
-            "present_count": present_count,
-            "new_people_count": new_people_count,
-            "consolidation_count": consolidation_count,
-            "total_attendance": len(attendees)
+            "present_count": present_count,  # ACTUAL COUNT FROM DB
+            "new_people_count": new_people_count,  # ACTUAL COUNT FROM DB
+            "consolidation_count": consolidation_count,  # ACTUAL COUNT FROM DB
+            "total_attendance": len(attendees),
+            "refreshed_at": datetime.utcnow().isoformat()
         }
 
     except Exception as e:
         print(f"Error getting real-time data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
-    
+
+# @app.post("/service-checkin/checkin")
+# async def service_checkin_person(
+#     checkin_data: dict = Body(...),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """
+#     Service Check-in:
+#     - attendee:   Existing person in the People database
+#     - new_person: Visitor NOT in database (only recorded for event)
+#     - consolidation: Decision/Follow-up
+#     """
+#     try:
+#         event_id = checkin_data.get("event_id")
+#         person_data = checkin_data.get("person_data", {})
+#         checkin_type = checkin_data.get("type", "attendee")
+
+#         if not event_id or not ObjectId.is_valid(event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID")
+
+#         # Get event
+#         event = await events_collection.find_one({"_id": ObjectId(event_id)})
+#         if not event:
+#             raise HTTPException(status_code=404, detail="Event not found")
+
+#         now = datetime.utcnow().isoformat()
+
+#         # ============================================================
+#         # 1️⃣ ATTENDEE — Must exist in People database
+#         # ============================================================
+#         if checkin_type == "attendee":
+#             person_id = person_data.get("id") or person_data.get("_id")
+#             if not person_id or not ObjectId.is_valid(person_id):
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail="Valid person ID is required for attendee check-in"
+#                 )
+
+#             # Find person
+#             existing = await people_collection.find_one({"_id": ObjectId(person_id)})
+#             if not existing:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail="Person does not exist — add them first using /people"
+#                 )
+
+#             # Prevent duplicate check-in
+#             already_checked = await events_collection.find_one({
+#                 "_id": ObjectId(event_id),
+#                 "attendees.id": str(existing["_id"])
+#             })
+#             if already_checked:
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail=f"{existing.get('Name')} is already checked in"
+#                 )
+
+#             attendee_record = {
+#                 "id": str(existing["_id"]),
+#                 "name": existing.get("Name", ""),
+#                 "surname": existing.get("Surname", ""),
+#                 "email": existing.get("Email", ""),
+#                 "phone": existing.get("Number", ""),
+#                 "time": now,
+#                 "type": "attendee"
+#             }
+
+#             await events_collection.update_one(
+#                 {"_id": ObjectId(event_id)},
+#                 {
+#                     "$push": {"attendees": attendee_record},
+#                     "$inc": {"total_attendance": 1},
+#                     "$set": {"updated_at": now}
+#                 }
+#             )
+
+#             return {
+#                 "message": f"{existing.get('Name')} checked in",
+#                 "type": "attendee",
+#                 "attendee": attendee_record,
+#                 "success": True
+#             }
+
+#         # ============================================================
+#         # 2️⃣ NEW PERSON — Visitors NOT in database
+#         # ============================================================
+#         elif checkin_type == "new_person":
+
+#             new_person_id = f"new_{secrets.token_urlsafe(8)}"
+
+#             new_person_record = {
+#                 "id": new_person_id,
+#                 "name": person_data.get("name", ""),
+#                 "surname": person_data.get("surname", ""),
+#                 "email": person_data.get("email", ""),
+#                 "phone": person_data.get("phone", ""),
+#                 "gender": person_data.get("gender", ""),
+#                 "invitedBy": person_data.get("invitedBy", ""),
+#                 "added_at": now,
+#                 "type": "new_person",
+#                 "needs_database_entry": True,  # Tells the team to add them via /people later
+#                 "is_checked_in": True,
+#                 "notes": "Visitor - add to database later if needed"
+#             }
+
+#             await events_collection.update_one(
+#                 {"_id": ObjectId(event_id)},
+#                 {
+#                     "$push": {"new_people": new_person_record},
+#                     "$set": {"updated_at": now}
+#                 }
+#             )
+
+#             return {
+#                 "message": "Visitor added to event",
+#                 "type": "new_person",
+#                 "new_person": new_person_record,
+#                 "success": True
+#             }
+
+#         # ============================================================
+#         # 3️⃣ CONSOLIDATION — Follow-up decisions
+#         # ============================================================
+#         elif checkin_type == "consolidation":
+
+#             consolidation_id = f"con_{secrets.token_urlsafe(8)}"
+
+#             consolidation_record = {
+#                 "id": consolidation_id,
+#                 "person_name": person_data.get("person_name", ""),
+#                 "person_surname": person_data.get("person_surname", ""),
+#                 "person_email": person_data.get("person_email", ""),
+#                 "person_phone": person_data.get("person_phone", ""),
+#                 "decision_type": person_data.get("decision_type", "first_time"),
+#                 "decision_display_name": person_data.get("decision_display_name", ""),
+#                 "assigned_to": person_data.get("assigned_to", ""),
+#                 "notes": person_data.get("notes", ""),
+#                 "created_at": now,
+#                 "type": "consolidation",
+#                 "status": "active"
+#             }
+
+#             await events_collection.update_one(
+#                 {"_id": ObjectId(event_id)},
+#                 {
+#                     "$push": {"consolidations": consolidation_record},
+#                     "$set": {"updated_at": now}
+#                 }
+#             )
+
+#             return {
+#                 "message": "Decision recorded",
+#                 "type": "consolidation",
+#                 "consolidation": consolidation_record,
+#                 "success": True
+#             }
+
+#         # ============================================================
+#         # ❌ INVALID TYPE
+#         # ============================================================
+#         else:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="Invalid type — must be attendee, new_person, or consolidation"
+#             )
+
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print("Error in check-in:", e)
+#         raise HTTPException(status_code=500, detail="Check-in failed")
 @app.post("/service-checkin/checkin")
 async def service_checkin_person(
     checkin_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Service Check-in:
-    - attendee:   Existing person in the People database
-    - new_person: Visitor NOT in database (only recorded for event)
-    - consolidation: Decision/Follow-up
+    Service Check-in - FIXED: Returns ACTUAL counts after operation
     """
     try:
         event_id = checkin_data.get("event_id")
@@ -9755,7 +9982,7 @@ async def service_checkin_person(
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        # Get event
+        # Get event FRESH from database
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
@@ -9799,9 +10026,11 @@ async def service_checkin_person(
                 "email": existing.get("Email", ""),
                 "phone": existing.get("Number", ""),
                 "time": now,
+                "checked_in": True,  # IMPORTANT: Mark as checked in
                 "type": "attendee"
             }
 
+            # Update the event
             await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -9811,10 +10040,16 @@ async def service_checkin_person(
                 }
             )
 
+            # Get UPDATED event to return ACTUAL counts
+            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+            updated_attendees = updated_event.get("attendees", [])
+            present_count = len([a for a in updated_attendees if a.get("checked_in", False)])
+
             return {
                 "message": f"{existing.get('Name')} checked in",
                 "type": "attendee",
                 "attendee": attendee_record,
+                "present_count": present_count,  # ACTUAL COUNT FROM DB
                 "success": True
             }
 
@@ -9822,7 +10057,6 @@ async def service_checkin_person(
         # 2️⃣ NEW PERSON — Visitors NOT in database
         # ============================================================
         elif checkin_type == "new_person":
-
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
 
             new_person_record = {
@@ -9835,11 +10069,12 @@ async def service_checkin_person(
                 "invitedBy": person_data.get("invitedBy", ""),
                 "added_at": now,
                 "type": "new_person",
-                "needs_database_entry": True,  # Tells the team to add them via /people later
+                "needs_database_entry": True,
                 "is_checked_in": True,
                 "notes": "Visitor - add to database later if needed"
             }
 
+            # Update the event
             await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -9848,10 +10083,15 @@ async def service_checkin_person(
                 }
             )
 
+            # Get UPDATED event to return ACTUAL counts
+            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+            new_people_count = len(updated_event.get("new_people", []))
+
             return {
                 "message": "Visitor added to event",
                 "type": "new_person",
                 "new_person": new_person_record,
+                "new_people_count": new_people_count,  # ACTUAL COUNT FROM DB
                 "success": True
             }
 
@@ -9859,7 +10099,6 @@ async def service_checkin_person(
         # 3️⃣ CONSOLIDATION — Follow-up decisions
         # ============================================================
         elif checkin_type == "consolidation":
-
             consolidation_id = f"con_{secrets.token_urlsafe(8)}"
 
             consolidation_record = {
@@ -9877,6 +10116,7 @@ async def service_checkin_person(
                 "status": "active"
             }
 
+            # Update the event
             await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -9885,10 +10125,15 @@ async def service_checkin_person(
                 }
             )
 
+            # Get UPDATED event to return ACTUAL counts
+            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+            consolidation_count = len(updated_event.get("consolidations", []))
+
             return {
                 "message": "Decision recorded",
                 "type": "consolidation",
                 "consolidation": consolidation_record,
+                "consolidation_count": consolidation_count,  # ACTUAL COUNT FROM DB
                 "success": True
             }
 
