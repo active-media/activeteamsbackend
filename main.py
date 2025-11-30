@@ -3976,7 +3976,6 @@ async def get_registrant_cell_events_debug(
         today = datetime.now(timezone)
         today_date = today.date()
         
-        # USE PROVIDED START DATE OR DEFAULT TO OCT 20, 2025
         start_date_filter = start_date if start_date else '2025-11-30'
         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
         
