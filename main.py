@@ -10159,12 +10159,14 @@ async def service_checkin_person(
         print("Error in check-in:", e)
         raise HTTPException(status_code=500, detail="Check-in failed")
 
+@app.delete("/service-checkin/remove")
 async def remove_from_service_checkin(
     removal_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     """
     Remove a person from any of the three data types in an event
+    - attendees, new_people, or consolidations
     """
     try:
         event_id = removal_data.get("event_id")
@@ -10201,17 +10203,30 @@ async def remove_from_service_checkin(
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found in specified list")
 
-        print(f"Successfully removed from {data_type}")
+        print(f"✅ Successfully removed from {data_type}")
+
+        # Get updated counts for real-time sync
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
+        # Calculate updated counts
+        present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in", False)])
+        new_people_count = len(updated_event.get("new_people", []))
+        consolidation_count = len(updated_event.get("consolidations", []))
 
         return {
             "success": True,
-            "message": f"Person removed from {data_type} successfully"
+            "message": f"Person removed from {data_type} successfully",
+            "updated_counts": {
+                "present_count": present_count,
+                "new_people_count": new_people_count,
+                "consolidation_count": consolidation_count
+            }
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error removing from service check-in: {str(e)}")
+        print(f"❌ Error removing from service check-in: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error removing person: {str(e)}")
     
 @app.put("/service-checkin/update")
