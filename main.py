@@ -1394,9 +1394,9 @@ async def get_cell_events(
         today = datetime.now(timezone).date()
         
         try:
-            start_date_obj = datetime.strptime(start_date if start_date else "2025-10-20", "%Y-%m-%d").date()
+            start_date_obj = datetime.strptime(start_date if start_date else "2025-11-30", "%Y-%m-%d").date()
         except:
-            start_date_obj = datetime.strptime("2025-10-20", "%Y-%m-%d").date()
+            start_date_obj = datetime.strptime("2025-11-30", "%Y-%m-%d").date()
 
         day_mapping = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
@@ -2015,7 +2015,7 @@ async def get_other_events(
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
-    start_date: Optional[str] = Query('2025-10-27'),
+    start_date: Optional[str] = Query('2025-10-10'),
     end_date: Optional[str] = Query(None)
 ):
     """
@@ -3037,7 +3037,7 @@ async def debug_test_leader_at_12_search(name: str):
         return {"error": str(e)}
     
 def should_include_event_fixed(event_date: date, status: str, today_date: date, is_admin: bool = False) -> bool:
-    start_date = date(2025, 10, 20)  # October 20, 2025
+    start_date = date(2025, 11, 30) 
     
     if event_date < start_date:
         print(f"Filtered out - event date {event_date} is before {start_date}")
@@ -3117,7 +3117,7 @@ async def debug_user_hierarchy(email: str):
     try:
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone)
-        today_date = today.date() # Today is 2025-11-03
+        today_date = today.date()
         
         # Find user's name
         user_cell = await events_collection.find_one({
@@ -3630,8 +3630,7 @@ async def get_admin_events_status_counts(
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        # ADD DATE FILTER - Default to October 20, 2025
-        default_start_date = '2025-10-20'
+        default_start_date = '2025-11-30'
         start_date_filter = start_date if start_date else default_start_date
         
         print(f"Status counts - Date filter: {start_date_filter}")
@@ -3723,7 +3722,7 @@ async def get_registrant_events_status_counts(
             raise HTTPException(status_code=400, detail="User email not found")
 
         # ADD DATE FILTER
-        start_date_filter = start_date if start_date else '2025-10-20'
+        start_date_filter = start_date if start_date else '2025-11-30'
         
         # Registrants only see their own events
         query = {
@@ -3826,7 +3825,7 @@ async def get_registrant_events(
         today_date = today.date()
         
         # DATE FILTER
-        start_date_filter = start_date if start_date else '2025-10-20'
+        start_date_filter = start_date if start_date else '2025-11-30'
         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
         
         print(f"Registrant {email} - Fetching events from {start_date_obj}")
@@ -3978,7 +3977,7 @@ async def get_registrant_cell_events_debug(
         today_date = today.date()
         
         # USE PROVIDED START DATE OR DEFAULT TO OCT 20, 2025
-        start_date_filter = start_date if start_date else '2025-10-20'
+        start_date_filter = start_date if start_date else '2025-11-30'
         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
         
         print(f"Registrant - Cells from {start_date_obj} to {today_date}, Page {page}")
