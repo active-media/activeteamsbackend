@@ -2528,11 +2528,16 @@ async def update_event_type(
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
     
 @app.delete("/event-types/{event_type_name}")
-async def delete_event_type(event_type_name: str):
+async def delete_event_type(
+    event_type_name: str,
+    force: bool = Query(False, description="Force delete even if events exist")
+):
     try:
         decoded_event_type_name = unquote(event_type_name)
         
-        # Use case-insensitive search
+        print(f"🗑️ DELETE EVENT TYPE: {decoded_event_type_name}, force={force}")
+        
+        # Find the event type document
         existing_event_type = await events_collection.find_one({
             "$or": [
                 {"name": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
@@ -2543,65 +2548,219 @@ async def delete_event_type(event_type_name: str):
         })
         
         if not existing_event_type:
-            raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
-
-        # Get the actual identifier from the found document
+            print(f"❌ Event type '{decoded_event_type_name}' not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Event type '{decoded_event_type_name}' not found"
+            )
+        
         actual_identifier = (
             existing_event_type.get("name") or 
             existing_event_type.get("eventType") or 
             existing_event_type.get("eventTypeName")
         )
-
-        # Find events using this event type with more details
-        events_using_type = await events_collection.find({
-            "$or": [
-                {"eventType": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
-                {"eventTypeName": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
-                {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
-                {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
-            ],
-            "isEventType": {"$ne": True}
-        }).to_list(length=50)  # Limit to 50 for performance
-
+        
+        print(f"✅ Found event type: {actual_identifier}")
+        
+        # Find events using this type - COMPREHENSIVE SEARCH
+        events_query = {
+            "$and": [
+                {
+                    "$or": [
+                        {"eventType": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                        {"Event Type": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                        # Also check for the decoded name
+                        {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                        {"Event Type": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
+                    ]
+                },
+                # Ensure we're finding actual events, not event type definitions
+                {"isEventType": {"$ne": True}},
+                # Events should have at least one of these identifying fields
+                {"$or": [
+                    {"eventName": {"$exists": True}},
+                    {"Event Name": {"$exists": True}},
+                    {"date": {"$exists": True}},
+                    {"Date Of Event": {"$exists": True}}
+                ]}
+            ]
+        }
+        
+        print(f"📊 Searching for events with query: {events_query}")
+        
+        events_using_type = await events_collection.find(events_query).to_list(length=None)
         events_count = len(events_using_type)
         
+        print(f"📊 Found {events_count} events using '{actual_identifier}'")
+        
         if events_count > 0:
-            # Return event details for debugging
-            event_details = [
-                {
+            # Show detailed information about the events
+            event_details = []
+            for event in events_using_type[:20]:  # Show up to 20 events
+                detail = {
                     "id": str(event["_id"]),
-                    "name": event.get("eventName", "Unnamed"),
-                    "type": event.get("eventType"),
-                    "typeName": event.get("eventTypeName")
+                    "name": event.get("eventName") or event.get("Event Name", "Unnamed"),
+                    "type": event.get("eventType") or event.get("Event Type"),
+                    "typeName": event.get("eventTypeName"),
+                    "date": str(event.get("date") or event.get("Date Of Event", "")),
+                    "leader": event.get("eventLeaderName") or event.get("Leader", ""),
+                    "status": event.get("status", "unknown")
                 }
-                for event in events_using_type[:10]  # Limit details to first 10 events
-            ]
+                event_details.append(detail)
+                print(f"   📌 Event: {detail['name']} (ID: {detail['id']}, Status: {detail['status']})")
             
-            raise HTTPException(
-                status_code=400, 
-                detail={
-                    "message": f"Cannot delete event type: {events_count} events are using it",
-                    "events_count": events_count,
-                    "event_samples": event_details
-                }
-            )
-
-        # Delete the event type
+            if not force:
+                raise HTTPException(
+                    status_code=400, 
+                    detail={
+                        "message": f"Cannot delete event type '{actual_identifier}': {events_count} event(s) are using it.",
+                        "events_count": events_count,
+                        "event_samples": event_details,
+                        "suggestion": "Please delete these events first, or use force=true to delete everything"
+                    }
+                )
+            else:
+                print(f" FORCE DELETE: Deleting {events_count} events...")
+                
+                delete_result = await events_collection.delete_many(events_query)
+                print(f" Deleted {delete_result.deleted_count} events")
+        
+        # Now delete the event type itself
         result = await events_collection.delete_one({"_id": existing_event_type["_id"]})
         
         if result.deleted_count == 1:
+            print(f"✅ Event type '{actual_identifier}' deleted successfully")
             return {
                 "success": True,
-                "message": f"Event type '{actual_identifier}' deleted successfully"
+                "message": f"Event type '{actual_identifier}' deleted successfully",
+                "events_deleted": events_count if force else 0
             }
         else:
-            raise HTTPException(status_code=500, detail="Failed to delete event type")
-
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to delete event type from database"
+            )
+            
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting event type: {str(e)}")
+        print(f"❌ Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error deleting event type: {str(e)}"
+        )
 
+@app.get("/diagnostic/event-type-usage/{event_type_name}")
+async def check_event_type_usage(
+    event_type_name: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Diagnostic endpoint to see all events using a specific event type
+    """
+    try:
+        # Only allow admins to use this
+        user_role = current_user.get("role", "").lower()
+        if user_role != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        decoded_name = unquote(event_type_name)
+        
+        print(f"🔍 DIAGNOSTIC: Checking usage of event type: {decoded_name}")
+        
+        # Search for the event type definition
+        event_type_doc = await events_collection.find_one({
+            "$or": [
+                {"name": {"$regex": f"^{re.escape(decoded_name)}$", "$options": "i"}},
+                {"eventType": {"$regex": f"^{re.escape(decoded_name)}$", "$options": "i"}},
+                {"eventTypeName": {"$regex": f"^{re.escape(decoded_name)}$", "$options": "i"}}
+            ],
+            "isEventType": True
+        })
+        
+        if not event_type_doc:
+            return {
+                "event_type_exists": False,
+                "message": f"Event type '{decoded_name}' not found",
+                "events_using_it": []
+            }
+        
+        actual_name = (
+            event_type_doc.get("name") or 
+            event_type_doc.get("eventType") or 
+            event_type_doc.get("eventTypeName")
+        )
+        
+        print(f"✅ Found event type definition: {actual_name}")
+        
+        # Find ALL events using this type
+        events_query = {
+            "$and": [
+                {
+                    "$or": [
+                        {"eventType": {"$regex": f"^{re.escape(actual_name)}$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": f"^{re.escape(actual_name)}$", "$options": "i"}},
+                        {"Event Type": {"$regex": f"^{re.escape(actual_name)}$", "$options": "i"}},
+                    ]
+                },
+                {"isEventType": {"$ne": True}},
+                {"$or": [
+                    {"eventName": {"$exists": True}},
+                    {"Event Name": {"$exists": True}}
+                ]}
+            ]
+        }
+        
+        events = await events_collection.find(events_query).to_list(length=None)
+        
+        print(f"📊 Found {len(events)} events using '{actual_name}'")
+        
+        # Get detailed info about each event
+        event_details = []
+        for event in events:
+            detail = {
+                "_id": str(event["_id"]),
+                "eventName": event.get("eventName") or event.get("Event Name"),
+                "eventType": event.get("eventType") or event.get("Event Type"),
+                "eventTypeName": event.get("eventTypeName"),
+                "date": str(event.get("date") or event.get("Date Of Event", "")),
+                "eventLeaderName": event.get("eventLeaderName") or event.get("Leader"),
+                "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email"),
+                "status": event.get("status"),
+                "Status": event.get("Status"),
+                "did_not_meet": event.get("did_not_meet"),
+                "attendees_count": len(event.get("attendees", [])),
+                "isEventType": event.get("isEventType", False),
+                # Show ALL type-related fields
+                "all_type_fields": {
+                    "Event Type": event.get("Event Type"),
+                    "eventType": event.get("eventType"),
+                    "eventTypeName": event.get("eventTypeName")
+                }
+            }
+            event_details.append(detail)
+            print(f"   📌 {detail['eventName']} - {detail['date']} - Status: {detail['status']}")
+        
+        return {
+            "event_type_exists": True,
+            "event_type_name": actual_name,
+            "event_type_id": str(event_type_doc["_id"]),
+            "events_count": len(events),
+            "events": event_details,
+            "query_used": str(events_query)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f" Error in diagnostic: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Diagnostic error: {str(e)}")
 
 @app.get("/debug/emails")
 async def debug_emails():
