@@ -43,6 +43,7 @@ app.add_middleware(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://teams.theactivechurch.org/",
         "http://localhost:8000",
         "http://localhost:5173",  # Vite dev server
         "https://new-active-teams.netlify.app",
