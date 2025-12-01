@@ -33,22 +33,16 @@ from typing import Dict, List, Optional
 import asyncio
 
 app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://teams.theactivechurch.org/",
+        "https://teams.theactivechurch.org",
         "http://localhost:8000",
         "http://localhost:5173",  # Vite dev server
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
-        "https://activeteamsbackend2.0.onrender.com"  # Your render backend itself
+        "https://activeteamsbackend2.0.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
