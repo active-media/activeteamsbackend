@@ -737,7 +737,7 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
         expires_delta=timedelta(hours=1)
     )
     
-    reset_link = f"https://new-active-teams.netlify.app/reset-password?token={reset_token}"
+    reset_link = f"https://teams.theactivechurch.org/reset-password?token={reset_token}"
     recipient_name = user.get("name", "there")  # Default to "there" if name missing
 
     logger.info(f"Reset link generated for {payload.email}")
