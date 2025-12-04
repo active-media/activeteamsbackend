@@ -590,12 +590,12 @@ async def signup(user: UserCreate):
                 elif inviter_leader1:
                     print("4")
                     leader1 = inviter_leader1
-                    leader12 = inviter_full_name
+                    leader12 = ""
                     leader144 = ""
                     leader1728 = ""
                 else:
                     print("5")
-                    leader1 = user.gender
+                    leader1 = inviter_leader1
                     leader12 = ""
                     leader144 = ""
                     leader1728 = ""
@@ -1045,7 +1045,9 @@ async def get_cell_events(
     show_all_authorized: Optional[bool] = Query(None),
     include_subordinate_cells: Optional[bool] = Query(None),
     leader_at_1_identifier: Optional[str] = Query(None),
-    isLeaderAt12: Optional[bool] = Query(None) #getting if leader at 12 from frontend
+    isLeaderAt12: Optional[bool] = Query(None), #getting if leader at 12 from frontend
+    firstName: Optional[str] = Query(None), #getting user
+    userSurname:Optional[str] = Query(None) #getting user
 ):
     """
     Get cell events with proper separation between personal and disciples' cells
@@ -1053,15 +1055,21 @@ async def get_cell_events(
     try:
         print("=" * 100)
         print("GET /events/cells REQUEST")
-        print(isLeaderAt12)
+        print(f'THIER NAME {firstName} {userSurname}')
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
 
 
         #using from person found in people 
-        person = await people_collection.find_one({"Email":user_email})  
-        first_name = person.get('Name', '').strip()
-        surname = person.get('Surname', '').strip()
+
+        person = await people_collection.find_one({"Email":user_email}) 
+        if person: 
+            first_name = person.get('Name', '').strip() or firstName
+            surname = person.get('Surname', '').strip() or userSurname
+        else:
+            first_name = firstName
+            surname = userSurname
+
         user_name = f"{first_name} {surname}".strip()
         if not user_name:
             user_name = first_name or current_user.get("username", "")
@@ -1400,8 +1408,9 @@ async def get_cell_events(
         
         cell_instances = []
         
-        for event in events:
+        for event in events: 
             try:
+                print()
                 day_name = str(event.get("Day") or event.get("day") or "").strip().lower()
                 
                 if not day_name or day_name not in day_mapping:
@@ -1432,6 +1441,31 @@ async def get_cell_events(
                         instance_date += timedelta(days=7)
                         continue
                     
+                    #getting leader at 1 if field exists
+                    leaderAt1 = event.get("leader1") or event.get("Leader @1") or event.get("Leader at 1", "")
+
+                    # if leader at one field does not exist using name and surname of leader to look through people's field
+                    if not leaderAt1:
+
+                        # pipeline  to make a fullname field to look for event leader in people's collection using the eventleader field from events
+                        leaderPipeline = [{'$project': {'Gender':1, 'fullName': { '$concat': ["$Name", " ", "$Surname"] }}},{'$match': { 'fullName':event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", "")  }},{ '$limit': 1 }]
+
+                        
+
+                        peopleFullnames = await people_collection.aggregate(leaderPipeline).to_list(length=None)
+
+                        
+                        # getting first occurance of event leader in people's field
+
+                        eventLeader = peopleFullnames[0]
+                        if eventLeader:
+                            #assigning leader at 1 using gender attribute of the event leader
+                            gender = eventLeader.get("Gender","")
+                            if gender.upper() == "MALE":
+                                leaderAt1 = "Gavin Enslin"
+                            elif gender.upper() == "FEMALE":
+                                leaderAt1 = "Vicky Enslin"     
+
                     instance = {
                         "_id": f"{event.get('_id')}_{instance_date.isoformat()}",
                         "UUID": event.get("UUID", ""),
@@ -1439,7 +1473,7 @@ async def get_cell_events(
                         "eventType": "Cells",
                         "eventLeaderName": event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", ""),
                         "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("EventLeaderEmail") or event.get("Email", ""),
-                        "leader1": event.get("leader1") or event.get("Leader @1") or event.get("Leader at 1", ""),
+                        "leader1": leaderAt1,
                         "leader12": (
                             event.get("Leader at 12") or 
                             event.get("Leader @12") or 
