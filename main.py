@@ -867,7 +867,7 @@ def get_current_week_identifier():
     week = now.isocalendar()[1]
     return f"{year}-W{week:02d}"
 
-# EVENTS ENDPOINTS----------------------------
+# EVENTS ENDPOINTS-----------------------------------------------------------------
 
 # POST ENDOINT
 @app.post("/events")
@@ -875,6 +875,10 @@ async def create_event(event: EventCreate):
     """Create a new event"""
     try:
         event_data = event.dict()
+        
+        # Generate _id as ObjectId
+        event_data["_id"] = ObjectId()
+        
         if not event_data.get("UUID"):
             event_data["UUID"] = str(uuid.uuid4())
         
@@ -884,12 +888,11 @@ async def create_event(event: EventCreate):
         
         print(f"Looking for event type: '{event_type_name}'")
         
-        # CRITICAL FIX: Handle "CELLS" and "ALL CELLS" explicitly
+        # Handle "CELLS" and "ALL CELLS" explicitly
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
-            # For CELLS, we don't need to look up an event type - it's built-in
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
-            event_data["hasPersonSteps"] = True  # Enable leader fields
+            event_data["hasPersonSteps"] = True
             event_data["isGlobal"] = False
             print(f"Using built-in CELLS event type with leader fields enabled")
         else:
@@ -913,7 +916,7 @@ async def create_event(event: EventCreate):
             print(f"Found event type: {event_type.get('name')}")
             
             exact_event_type_name = event_type.get("name")
-            event_data["eventTypeId"] = event_type["UUID"]  
+            event_data["eventTypeId"] = event_type["UUID"]
             event_data["eventTypeName"] = exact_event_type_name
             
             # Set flags based on event type
@@ -946,14 +949,13 @@ async def create_event(event: EventCreate):
         else:
             event_data["date"] = datetime.utcnow()
 
-        # Use the day value from frontend
         print(f"Using day value from frontend: {event_data.get('day')}")
 
         # Ensure leader fields are properly saved
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
         event_data.setdefault("eventLeaderEmail", event_data.get("eventLeaderEmail", ""))
         
-        # CRITICAL: Keep leader fields for CELLS events
+        # Keep leader fields for CELLS events
         if event_data.get("hasPersonSteps"):
             event_data.setdefault("leader1", event_data.get("leader1", ""))
             event_data.setdefault("leader12", event_data.get("leader12", ""))
@@ -1005,12 +1007,13 @@ async def create_event(event: EventCreate):
         print(f"Event created successfully: {result.inserted_id}")
 
         return {
+            "success": True,
             "message": "Event created successfully", 
             "id": str(result.inserted_id),
             "event": {
-                "id": str(created_event["_id"]),
+                "_id": str(created_event["_id"]),
+                "UUID": created_event.get("UUID"),
                 "eventName": created_event.get("eventName"),
-                "eventLeader": created_event.get("eventLeader"),
                 "eventLeaderName": created_event.get("eventLeaderName"),
                 "eventLeaderEmail": created_event.get("eventLeaderEmail"),
                 "day": created_event.get("day"),
@@ -1020,16 +1023,18 @@ async def create_event(event: EventCreate):
                 "isGlobal": created_event.get("isGlobal"),
                 "hasPersonSteps": created_event.get("hasPersonSteps"),
                 "leader1": created_event.get("leader1"),
-                "leader12": created_event.get("leader12")
+                "leader12": created_event.get("leader12"),
+                "status": created_event.get("status", "open")
             }
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error creating event: {str(e)}")
+        print(f"Error creating event: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
-
 # @app.get("/events/cells")
 # async def get_cell_events(
 #     current_user: dict = Depends(get_current_user),
@@ -2367,7 +2372,281 @@ async def delete_event_type(
             status_code=500, 
             detail=f"Error deleting event type: {str(e)}"
         )
+    
+@app.get("/events/other")
+async def get_other_events(
+    current_user: dict = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    status: Optional[str] = Query(None),
+    event_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    personal: Optional[bool] = Query(None),
+    start_date: Optional[str] = Query('2025-10-10'),
+    end_date: Optional[str] = Query(None)
+):
+    """
+    Get Global Events and other non-cell events with their actual dates
+    """
+    try:
+        print(f"GET /events/other - User: {current_user.get('email')}, Event Type: {event_type}")
+        print(f"Query params - status: {status}, personal: {personal}, search: {search}")
 
+        user_role = current_user.get("role", "user").lower()
+        email = current_user.get("email", "")
+        
+        timezone = pytz.timezone("Africa/Johannesburg")
+        now = datetime.now(timezone)
+        today = now.date()
+        
+        try:
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime("2000-01-01", "%Y-%m-%d").date()
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today + timedelta(days=365)
+        except Exception as e:
+            print(f"Error parsing dates: {e}")
+            start_date_obj = datetime.strptime("2000-01-01", "%Y-%m-%d").date()
+            end_date_obj = today + timedelta(days=365)
+
+        print(f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}")
+
+        # Base query: exclude cells
+        query = {
+            "$nor": [
+                {"Event Type": {"$regex": "Cells", "$options": "i"}},
+                {"eventType": {"$regex": "Cells", "$options": "i"}},
+                {"eventTypeName": {"$regex": "Cells", "$options": "i"}}
+            ]
+        }
+
+        user_email = current_user.get("email", "").lower()
+        
+        if personal:
+            print(f"Applying PERSONAL filter for user: {user_email}")
+            query["$or"] = [
+                {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
+                {"leader1": {"$regex": user_email, "$options": "i"}}
+            ]
+        elif user_role == "user":
+            print(f"Regular user - showing personal events: {user_email}")
+            query["$or"] = [
+                {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
+                {"leader1": {"$regex": user_email, "$options": "i"}}
+            ]
+
+        # FIXED: Handle event_type filter correctly
+        if event_type and event_type.lower() != 'all':
+            print(f"Filtering by event type: '{event_type}'")
+            
+            # Create event type filter
+            event_type_filter = {
+                "$or": [
+                    {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
+                    {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
+                    {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
+                ]
+            }
+            
+            # Combine with existing query
+            if "$or" in query:
+                # If query already has $or, we need to use $and
+                if "$and" in query:
+                    query["$and"].append(event_type_filter)
+                else:
+                    query = {"$and": [query, event_type_filter]}
+            else:
+                # If query doesn't have $or, merge the $or conditions
+                if "$and" in query:
+                    query["$and"].append(event_type_filter)
+                else:
+                    # Need to handle merging properly
+                    existing_query = {k: v for k, v in query.items()}
+                    query = {
+                        "$and": [
+                            existing_query,
+                            event_type_filter
+                        ]
+                    }
+            
+            print(f"Event type filter applied: {event_type_filter}")
+
+        if search and search.strip():
+            search_term = search.strip()
+            print(f"Applying search filter: '{search_term}'")
+            safe_search_term = re.escape(search_term)
+            search_query = {
+                "$or": [
+                    {"Event Name": {"$regex": safe_search_term, "$options": "i"}},
+                    {"eventName": {"$regex": safe_search_term, "$options": "i"}},
+                    {"Leader": {"$regex": safe_search_term, "$options": "i"}},
+                    {"eventLeaderName": {"$regex": safe_search_term, "$options": "i"}},
+                    {"eventLeaderEmail": {"$regex": safe_search_term, "$options": "i"}},
+                    {"leader1": {"$regex": safe_search_term, "$options": "i"}},
+                    {"Location": {"$regex": safe_search_term, "$options": "i"}},
+                    {"location": {"$regex": safe_search_term, "$options": "i"}}
+                ]
+            }
+            
+            # Combine with existing query
+            if "$and" in query:
+                query["$and"].append(search_query)
+            else:
+                existing_query = {k: v for k, v in query.items()}
+                query = {"$and": [existing_query, search_query]}
+            
+            print(f"Search query applied: {search_query}")
+
+        print(f"Final query: {query}")
+
+        # Debug: Print query structure
+        print("Query structure:")
+        import json
+        print(json.dumps(query, indent=2, default=str))
+
+        cursor = events_collection.find(query)
+        events = await cursor.to_list(length=1000)
+        
+        print(f"Found {len(events)} other events")
+
+        if events and event_type and event_type.lower() != 'all':
+            found_event_types = set()
+            for event in events:
+                found_event_types.add(event.get("Event Type"))
+                found_event_types.add(event.get("eventType")) 
+                found_event_types.add(event.get("eventTypeName"))
+            print(f"Event types found in results: {found_event_types}")
+
+        other_events = []
+
+        for event in events:
+            try:
+                event_id = event.get("_id")
+                if not event_id:
+                    continue
+                    
+                event_name = event.get("Event Name") or event.get("eventName", "")
+                event_type_value = event.get("Event Type") or event.get("eventType", "Event")
+                
+                # Get the day value from multiple possible fields
+                day_name_raw = event.get("Day") or event.get("day") or event.get("eventDay") or ""
+                day_name = str(day_name_raw).strip()
+
+                # Get event date for date range filtering
+                event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
+                if isinstance(event_date_field, datetime):
+                    event_date = event_date_field.date()
+                elif isinstance(event_date_field, str):
+                    try:
+                        if 'T' in event_date_field:
+                            event_date = datetime.fromisoformat(event_date_field.replace("Z", "+00:00")).date()
+                        else:
+                            event_date = datetime.strptime(event_date_field, "%Y-%m-%d").date()
+                    except Exception as e:
+                        print(f"Error parsing date '{event_date_field}': {e}")
+                        continue
+                else:
+                    continue
+
+                # If no day is stored, calculate it from the date
+                if not day_name:
+                    try:
+                        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                        day_name = days[event_date.weekday()]
+                        print(f"Calculated day '{day_name}' from date {event_date}")
+                    except Exception as e:
+                        print(f"Error calculating day from date: {e}")
+                        day_name = "One-time"
+
+                actual_day_value = day_name.capitalize() if day_name else "One-time"
+
+                # For other events, use the wider date range to include historical events
+                if event_date < start_date_obj or event_date > end_date_obj:
+                    continue
+
+                attendance_data = event.get("attendance", {})
+                event_date_iso = event_date.isoformat()
+                event_attendance = attendance_data.get(event_date_iso, {})
+                
+                did_not_meet = event_attendance.get("status") == "did_not_meet"
+                weekly_attendees = event_attendance.get("attendees", [])
+                has_weekly_attendees = len(weekly_attendees) > 0
+                
+                main_event_status = event.get("status", "").lower()
+                main_event_did_not_meet = event.get("did_not_meet", False)
+                main_event_complete = event.get("Status", "").lower() == "complete"
+                
+                if did_not_meet or main_event_did_not_meet or main_event_status == "did_not_meet":
+                    event_status = "did_not_meet"
+                elif has_weekly_attendees or main_event_complete or main_event_status == "complete":
+                    event_status = "complete"
+                else:
+                    event_status = "incomplete"
+                
+                print(f"Event '{event_name}' status - weekly: {event_attendance.get('status')}, main: {main_event_status}, final: {event_status}")
+
+                if status and status != event_status:
+                    continue
+
+                instance = {
+                    "_id": str(event_id),
+                    "UUID": event.get("UUID", ""),
+                    "eventName": event_name,
+                    "eventType": event_type_value,
+                    "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
+                    "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
+                    "leader1": event.get("leader1", ""),
+                    "leader12": event.get("Leader @12") or event.get("Leader at 12", ""),
+                    "day": actual_day_value,
+                    "date": event_date.isoformat(),
+                    "location": event.get("Location") or event.get("location", ""),
+                    "attendees": weekly_attendees,
+                    "hasPersonSteps": False,
+                    "status": event_status,
+                    "Status": event_status.replace("_", " ").title(),
+                    "_is_overdue": event_date < today and event_status == "incomplete",
+                    "is_recurring": False,
+                    "original_event_id": str(event_id)
+                }
+                
+                if "persistent_attendees" in event:
+                    print(f"Removing persistent_attendees from non-cell event: {event_name}")
+                
+                other_events.append(instance)
+                print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status})")
+
+            except Exception as e:
+                print(f"Error processing other event {event.get('_id')}: {str(e)}")
+                continue
+
+        other_events.sort(key=lambda x: x['date'], reverse=True)
+        
+        total_count = len(other_events)
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        skip = (page - 1) * limit
+        paginated_events = other_events[skip:skip + limit]
+
+        print(f"Returning {len(paginated_events)} other events (page {page}/{total_pages})")
+        print(f"Status breakdown for other events:")
+        status_counts = {}
+        for event in other_events:
+            status_counts[event['status']] = status_counts.get(event['status'], 0) + 1
+        for stat, count in status_counts.items():
+            print(f"   - {stat}: {count}")
+
+        return {
+            "events": paginated_events,
+            "total_events": total_count,
+            "total_pages": total_pages,
+            "current_page": page,
+            "page_size": limit
+        }
+
+    except Exception as e:
+        print(f"ERROR in /events/other: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    
+#------------------ MIGRATION ENDPOINTS --------------------
 
 @app.get("/events/cells")
 async def get_cell_events(
@@ -4592,6 +4871,7 @@ async def get_global_events_status_counts(
     except Exception as e:
         print(f"ERROR in global events status counts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
 @app.post("/admin/migrate-persistent-attendees")
 async def migrate_persistent_attendees(current_user: dict = Depends(get_current_user)):
     """Migrate old attendee data to persistent_attendees format"""
