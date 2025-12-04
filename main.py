@@ -2670,7 +2670,7 @@ async def check_event_type_usage(
         
         events = await events_collection.find(events_query).to_list(length=None)
         
-        print(f" Found {len(events)} events using '{actual_name}'")
+        print(f"📊 Found {len(events)} events using '{actual_name}'")
         
         # Get detailed info about each event
         event_details = []
@@ -3621,11 +3621,17 @@ async def check_leader_at_12_status(current_user: dict = Depends(get_current_use
                 "leader-at-12", "leader_at_12", "leader @ 12"
             ])
         
-        print(f" Results:")
+        print(f"📊 Results:")
         print(f"   - Oversees {len(people_overseen)} people as Leader @12")
         print(f"   - Oversees {len(events_overseen)} cell events as Leader at 12")
         print(f"   - Has leader role in DB: {has_leader_role if 'has_leader_role' in locals() else False}")
         print(f"   - Has explicit Leader at 12 role: {is_role_leader_at_12}")
+        
+        # 4. Determine if user is Leader at 12
+        # User is Leader at 12 if they:
+        # - Have explicit Leader at 12 role, OR
+        # - Have "leader" role AND oversee people as Leader @12, OR
+        # - Oversee cell events as Leader at 12
         
         is_leader_at_12 = (
             is_role_leader_at_12 or  # Explicit role
@@ -4252,6 +4258,7 @@ async def get_registrant_cell_events_debug(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
     
+
     
 @app.get("/events/global")
 async def get_global_events(
@@ -6809,13 +6816,21 @@ async def submit_attendance(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Fixed: Handles frontend data structure properly with proper variable scope
+    Submit weekly attendance for an event
+    
+    IMPORTANT: 
+    - persistent_attendees are managed separately via PUT /events/{event_id}/persistent-attendees
+    - This endpoint handles WEEKLY attendance data only
+    - persistent_attendees passed here are saved to maintain consistency
     """
     try:
-        print(f"SUBMIT ATTENDANCE STARTED")
-        print(f" Event ID: {event_id}")
+        print(f"\n{'='*80}")
+        print(f"📝 SUBMIT ATTENDANCE STARTED")
+        print(f"{'='*80}")
+        print(f"Event ID: {event_id}")
         print(f"Submission keys: {list(submission.keys())}")
 
+        # Extract actual ObjectId
         actual_event_id = event_id
         if "_" in event_id:
             parts = event_id.split("_")
@@ -6828,23 +6843,25 @@ async def submit_attendance(
         if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
         
+        # Find event
         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
         if not event:
-            print(f"Event not found: {actual_event_id}")
+            print(f"❌ Event not found: {actual_event_id}")
             raise HTTPException(status_code=404, detail="Event not found")
         
         event_name = event.get("Event Name", "Unknown")
         current_week = get_current_week_identifier()
         print(f"Found event: {event_name}")
+        print(f"Current week: {current_week}")
 
         # EXTRACT DATA FROM SUBMISSION
         attendees_data = submission.get('attendees', [])
         if not attendees_data and 'payload' in submission:
             attendees_data = submission['payload'].get('attendees', [])
         
-        print(f"👥 Attendees data type: {type(attendees_data)}, length: {len(attendees_data)}")
+        print(f"👥 Attendees data: {len(attendees_data)} people")
 
-        # EXTRACT PERSISTENT ATTENDEES
+        # EXTRACT PERSISTENT ATTENDEES (for consistency, but main update is via separate endpoint)
         persistent_attendees = submission.get('persistent_attendees', [])
         if not persistent_attendees and 'payload' in submission:
             persistent_attendees = submission['payload'].get('persistent_attendees', [])
@@ -6854,9 +6871,9 @@ async def submit_attendance(
             if not persistent_attendees and 'payload' in submission:
                 persistent_attendees = submission['payload'].get('all_attendees', [])
 
-        print(f"Persistent attendees: {len(persistent_attendees)}")
+        print(f"📋 Persistent attendees: {len(persistent_attendees)} people")
 
-        # PROCESS PERSISTENT ATTENDEES
+        # PROCESS PERSISTENT ATTENDEES (Clean and validate)
         persistent_attendees_dict = []
         if persistent_attendees and isinstance(persistent_attendees, list):
             for attendee in persistent_attendees:
@@ -6871,22 +6888,23 @@ async def submit_attendance(
                         "leader144": attendee.get("leader144", "")
                     }
                     persistent_attendees_dict.append(clean_attendee)
+            print(f"✅ Cleaned persistent attendees: {len(persistent_attendees_dict)}")
         else:
-            print("No persistent attendees found or invalid format")
+            print("⚠️ No persistent attendees found or invalid format")
 
-        # SAFELY PROCESS DID_NOT_MEET
+        # EXTRACT DID_NOT_MEET FLAG
         did_not_meet = submission.get('did_not_meet', False)
         if not did_not_meet and 'payload' in submission:
             did_not_meet = submission['payload'].get('did_not_meet', False)
 
-        print(f"Did not meet: {did_not_meet}")
+        print(f"{'❌' if did_not_meet else '✅'} Did not meet: {did_not_meet}")
 
-        # INITIALIZE ALL VARIABLES AT THE START
+        # INITIALIZE VARIABLES
         checked_in_attendees = []
         weekly_attendance_entry = {}
         main_update_fields = {}
 
-        # PROCESS ATTENDEES FOR CHECK-IN (regardless of did_not_meet status)
+        # PROCESS CHECKED-IN ATTENDEES
         print(f"👥 Processing attendees for check-in")
         if attendees_data and isinstance(attendees_data, list):
             for att in attendees_data:
@@ -6900,13 +6918,29 @@ async def submit_attendance(
                         "leader12": att.get("leader12", ""),
                         "leader144": att.get("leader144", ""),
                         "checked_in": True,
-                        "check_in_date": datetime.utcnow().isoformat()
+                        "check_in_date": datetime.utcnow().isoformat(),
+                        "decision": att.get("decision", "")
                     }
+                    
+                    # Add ticketed event fields if present
+                    if att.get("isTicketed"):
+                        attendee_data.update({
+                            "priceTier": att.get("priceTier", ""),
+                            "price": att.get("price", 0),
+                            "ageGroup": att.get("ageGroup", ""),
+                            "memberType": att.get("memberType", ""),
+                            "paymentMethod": att.get("paymentMethod", ""),
+                            "paid": att.get("paid", 0),
+                            "owing": att.get("owing", 0)
+                        })
+                    
                     checked_in_attendees.append(attendee_data)
+            
+            print(f"✅ Processed {len(checked_in_attendees)} checked-in attendees")
 
         # HANDLE DID_NOT_MEET LOGIC
         if did_not_meet:
-            print(f"Marking as 'Did Not Meet'")
+            print(f"❌ Marking as 'Did Not Meet'")
             weekly_attendance_entry = {
                 "status": "did_not_meet",
                 "attendees": [],
@@ -6923,7 +6957,7 @@ async def submit_attendance(
         else:
             # HANDLE REGULAR ATTENDANCE
             if len(checked_in_attendees) == 0:
-                print(f"No attendees checked in - marking as incomplete")
+                print(f"⚠️ No attendees checked in - marking as incomplete")
                 weekly_attendance_entry = {
                     "status": "incomplete",
                     "attendees": [],
@@ -6943,9 +6977,9 @@ async def submit_attendance(
                     "attendees": checked_in_attendees,
                     "submitted_at": datetime.utcnow(),
                     "submitted_by": current_user.get('email', ''),
-                    "persistent_attendees": persistent_attendees_dict,
+                    "persistent_attendees_count": len(persistent_attendees_dict),
                 }
-                print(f"MARKING AS COMPLETE with {len(checked_in_attendees)} attendees")
+                print(f"✅ MARKING AS COMPLETE with {len(checked_in_attendees)} attendees")
                 
                 main_update_fields = {
                     "Status": "Complete",
@@ -6954,20 +6988,27 @@ async def submit_attendance(
                 }
 
         # PREPARE UPDATE DATA
+        # CRITICAL: Always preserve persistent_attendees from the existing event if not provided
+        existing_persistent = event.get("persistent_attendees", [])
+        final_persistent = persistent_attendees_dict if len(persistent_attendees_dict) > 0 else existing_persistent
+        
         update_data = {
             "Date Captured": datetime.now().strftime("%d %B %Y"),
             "updated_at": datetime.utcnow(),
             **main_update_fields,
-            "persistent_attendees": persistent_attendees_dict,
+            "persistent_attendees": final_persistent,  # ✅ ALWAYS preserve persistent attendees
             f"attendance.{current_week}": weekly_attendance_entry
         }
 
-        print(f"Saving to database:")
-        print(f"   - Event: {event_name}")
-        print(f"   - Week: {current_week}")
-        print(f"   - Status: {weekly_attendance_entry.get('status', 'unknown')}")
-        print(f"   - Persistent attendees: {len(persistent_attendees_dict)}")
-        print(f"   - Checked-in this week: {len(checked_in_attendees)}")
+        print(f"\n{'='*60}")
+        print(f"💾 SAVING TO DATABASE:")
+        print(f"{'='*60}")
+        print(f"Event: {event_name}")
+        print(f"Week: {current_week}")
+        print(f"Status: {weekly_attendance_entry.get('status', 'unknown')}")
+        print(f"Persistent attendees: {len(final_persistent)}")
+        print(f"Checked-in this week: {len(checked_in_attendees)}")
+        print(f"{'='*60}\n")
 
         # UPDATE DATABASE
         result = await events_collection.update_one(
@@ -6975,7 +7016,8 @@ async def submit_attendance(
             {"$set": update_data}
         )
         
-        print(f" Database result - matched: {result.matched_count}, modified: {result.modified_count}")        
+        print(f"📊 Database result - matched: {result.matched_count}, modified: {result.modified_count}")
+        
         if result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event")
         
@@ -6987,21 +7029,97 @@ async def submit_attendance(
             "status": weekly_attendance_entry.get("status", "unknown"),
             "did_not_meet": did_not_meet,
             "checked_in_count": len(checked_in_attendees),
-            "persistent_attendees_count": len(persistent_attendees_dict),
+            "persistent_attendees_count": len(final_persistent),
             "week": current_week,
             "success": True
         }
 
-        print(f"ATTENDANCE SUBMISSION SUCCESSFUL")
+        print(f"✅ ATTENDANCE SUBMISSION SUCCESSFUL")
+        print(f"{'='*80}\n")
+        
         return response_data
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"ERROR in submit_attendance: {str(e)}")
+        print(f"\n{'='*80}")
+        print(f"❌ ERROR in submit_attendance: {str(e)}")
+        print(f"{'='*80}")
         import traceback
         traceback.print_exc()
+        print(f"{'='*80}\n")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.put("/events/{event_id}/persistent-attendees")
+async def update_persistent_attendees(
+    event_id: str = Path(...),
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update persistent attendees for an event
+    This is called immediately when adding/removing people from the associate tab
+    """
+    try:
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        # Get persistent_attendees from request
+        persistent_attendees = data.get("persistent_attendees", [])
+        
+        print(f"\n{'='*80}")
+        print(f"📝 UPDATING PERSISTENT ATTENDEES")
+        print(f"{'='*80}")
+        print(f"Event ID: {event_id}")
+        print(f"User: {current_user.get('email', 'Unknown')}")
+        print(f"Attendees count: {len(persistent_attendees)}")
+        
+        # Validate and clean the data
+        cleaned_attendees = []
+        for attendee in persistent_attendees:
+            if isinstance(attendee, dict):
+                cleaned_attendees.append({
+                    "id": attendee.get("id", ""),
+                    "name": attendee.get("name", ""),
+                    "fullName": attendee.get("fullName", attendee.get("name", "")),
+                    "email": attendee.get("email", ""),
+                    "phone": attendee.get("phone", ""),
+                    "leader12": attendee.get("leader12", ""),
+                    "leader144": attendee.get("leader144", "")
+                })
+        
+        # Update the event in database
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {
+                "$set": {
+                    "persistent_attendees": cleaned_attendees,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        if result.matched_count == 0:
+            print(f"❌ Event not found: {event_id}")
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        print(f"✅ Successfully updated persistent attendees: {len(cleaned_attendees)} people")
+        print(f"{'='*80}\n")
+        
+        return {
+            "success": True,
+            "message": "Persistent attendees updated successfully",
+            "count": len(cleaned_attendees),
+            "attendees": cleaned_attendees
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating persistent attendees: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
@@ -9880,7 +9998,7 @@ async def get_event_new_people(event_id: str = Path(...)):
 #         new_people_count = len(new_people)
 #         consolidation_count = len(consolidations)
 
-#         print(f" Real-time stats - Present: {present_count}, New: {new_people_count}, Consolidations: {consolidation_count}")
+#         print(f"📊 Real-time stats - Present: {present_count}, New: {new_people_count}, Consolidations: {consolidation_count}")
 
 #         return {
 #             "success": True,
