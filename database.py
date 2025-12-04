@@ -14,5 +14,4 @@ users_collection = db["Users"]
 tasks_collection = db["tasks"]
 events_collection = db["Events"]  
 tasktypes_collection = db["TaskTypes"]
-cells_collection = db["Cells"]  
 
