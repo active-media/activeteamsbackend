@@ -9614,12 +9614,10 @@ async def create_user(
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        # Check if user already exists
         existing_user = await users_collection.find_one({"email": user_data.email})
         if existing_user:
             raise HTTPException(status_code=400, detail="User with this email already exists")
         
-        # Validate role
         if user_data.role not in ["admin", "leader", "user", "registrant"]:
             raise HTTPException(status_code=400, detail="Invalid role")
         
