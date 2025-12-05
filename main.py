@@ -105,27 +105,153 @@ people_cache = {
     "last_updated": None,
     "expires_at": None,
     "is_loading": False,
-    "background_task": None,
     "load_progress": 0,
     "total_loaded": 0,
     "last_error": None,
-    "total_in_database": 0
+    "total_in_database": 0,
+    "new_people_today": 0,
+    "new_people_this_week": 0,
+    "new_people_this_month": 0,
+    "people_growth_rate": 0.0,
+    # NEW: Church attendees tracking
+    "church_attendees_today": 0,
+    "church_attendees_this_week": 0,
+    "church_attendees_this_month": 0,
+    "church_attendees_growth_rate": 0.0
 }
 
-CACHE_DURATION_MINUTES = 1440  
-BACKGROUND_LOAD_DELAY = 2  
+# Enhanced cache storage for church attendees (from service check-in)
+church_attendees_cache = {
+    "daily": {
+        "data": [],
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None,
+        "count": 0,
+        "date": None
+    },
+    "weekly": {
+        "data": [],
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None,
+        "count": 0,
+        "week": None
+    },
+    "monthly": {
+        "data": [],
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None,
+        "count": 0,
+        "month": None
+    },
+    "all_time": {
+        "total_count": 0,
+        "conversion_rate": 0.0,  # Percentage converted to members
+        "growth_timeline": [],
+        "last_updated": None
+    }
+}
+# Enhanced cache storage for dashboard stats
+dashboard_stats_cache = {
+    "weekly": {
+        "data": None,
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None
+    },
+    "monthly": {
+        "data": None,
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None
+    }
+}
+
+# Enhanced cache storage for tasks
+tasks_cache = {
+    "all_tasks": {
+        "data": None,
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None,
+        "total_count": 0
+    },
+    "user_tasks": {  # New: Cache for individual user tasks
+        "data": {},  # key: user_email, value: task list
+        "last_updated": None,
+        "expires_at": None
+    }
+}
+
+# New: Cache for users data
+users_cache = {
+    "data": [],
+    "last_updated": None,
+    "expires_at": None,
+    "is_loading": False,
+    "load_progress": 0,
+    "last_error": None,
+    "total_count": 0
+}
+
+# New: Cache for cells data
+cells_cache = {
+    "all_cells": {
+        "data": [],
+        "last_updated": None,
+        "expires_at": None,
+        "is_loading": False,
+        "load_progress": 0,
+        "last_error": None,
+        "total_count": 0
+    }
+}
+
+CACHE_DURATION_MINUTES = 1440  # 24 hours
+BACKGROUND_LOAD_DELAY = 2
+
 @app.on_event("startup")
 async def startup_event():
-    """Start background loading of all people on startup"""
-    print(" Starting background load of ALL people...")
+    """Start background loading of all data on startup"""
+    print("Starting background load of ALL people...")
     asyncio.create_task(background_load_all_people())
-
+    
+    print("Starting background load of weekly dashboard stats...")
+    asyncio.create_task(background_load_dashboard_stats("weekly"))
+    
+    print("Starting background load of all tasks...")
+    asyncio.create_task(background_load_all_tasks())
+    
+    print("Starting background load of all users...")
+    asyncio.create_task(background_load_all_users())
+    
+    print("Starting background load of all cells...")
+    asyncio.create_task(background_load_all_cells())
+    
+    # New: Load church attendees statistics
+    print("Starting background load of church attendees statistics...")
+    asyncio.create_task(background_load_church_attendees("daily"))
+    asyncio.create_task(background_load_church_attendees("weekly"))
+    asyncio.create_task(background_load_church_attendees("monthly"))
+    asyncio.create_task(background_load_all_time_church_attendees())
+    
 async def background_load_all_people():
     """Background task to load ALL people from the database"""
     try:
-        # Small delay to ensure app is fully started
-        await asyncio.sleep(BACKGROUND_LOAD_DELAY)
-        
         if people_cache["is_loading"]:
             return
             
@@ -140,7 +266,20 @@ async def background_load_all_people():
         people_cache["total_in_database"] = total_count
         print(f"BACKGROUND: Total people in database: {total_count}")
         
-        # Load in large batches for efficiency
+        # Calculate date ranges
+        today = datetime.utcnow().date()
+        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
+        
+        # Reset counters
+        new_people_today = 0
+        new_people_this_week = 0
+        new_people_this_month = 0
+        church_attendees_today = 0
+        church_attendees_this_week = 0
+        church_attendees_this_month = 0
+        
+        # Load in batches
         batch_size = 5000
         page = 1
         total_loaded = 0
@@ -149,18 +288,23 @@ async def background_load_all_people():
             try:
                 skip = (page - 1) * batch_size
                 
-                # Minimal projection for signup form
                 projection = {
                     "_id": 1,
                     "Name": 1,
                     "Surname": 1,
                     "Email": 1,
                     "Number": 1,
-                    "Gender":1, #getting gender as well
+                    "Gender": 1,
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
-                    "Leader @1728": 1
+                    "Leader @1728": 1,
+                    "Date Created": 1,
+                    "UpdatedAt": 1,
+                    "Stage": 1,
+                    "Source": 1,  # NEW
+                    "IsChurchAttendee": 1,  # NEW
+                    "ServiceCheckinDate": 1  # NEW
                 }
                 
                 cursor = people_collection.find({}, projection).skip(skip).limit(batch_size)
@@ -172,19 +316,55 @@ async def background_load_all_people():
                 # Transform batch data
                 transformed_batch = []
                 for person in batch_data:
-                    transformed_batch.append({
+                    # Parse creation date
+                    created_date = None
+                    date_created = person.get("Date Created")
+                    if date_created:
+                        created_date = parse_date_from_string(date_created)
+                    
+                    source = person.get("Source", "manual")
+                    is_church_attendee = person.get("IsChurchAttendee", False)
+                    
+                    transformed_person = {
                         "_id": str(person["_id"]),
                         "Name": person.get("Name", ""),
                         "Surname": person.get("Surname", ""),
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
-                        "Gender": person.get("Gender",""), #getting gender
+                        "Gender": person.get("Gender", ""),
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
                         "Leader @1728": person.get("Leader @1728", ""),
-                        "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-                    })
+                        "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip(),
+                        "DateCreated": date_created,
+                        "CreatedDate": created_date,
+                        "UpdatedAt": person.get("UpdatedAt"),
+                        "Stage": person.get("Stage", "Win"),
+                        "Source": source,  # NEW
+                        "IsChurchAttendee": is_church_attendee,  # NEW
+                        "ServiceCheckinDate": person.get("ServiceCheckinDate")  # NEW
+                    }
+                    
+                    transformed_batch.append(transformed_person)
+                    
+                    # Count all new people by time period
+                    if created_date:
+                        if created_date == today:
+                            new_people_today += 1
+                        if created_date >= week_start:
+                            new_people_this_week += 1
+                        if created_date >= month_start:
+                            new_people_this_month += 1
+                    
+                    # Count church attendees specifically
+                    if is_church_attendee and created_date:
+                        if created_date == today:
+                            church_attendees_today += 1
+                        if created_date >= week_start:
+                            church_attendees_this_week += 1
+                        if created_date >= month_start:
+                            church_attendees_this_month += 1
                 
                 all_people_data.extend(transformed_batch)
                 total_loaded += len(transformed_batch)
@@ -198,12 +378,48 @@ async def background_load_all_people():
                 
                 page += 1
                 
-                # Small delay to prevent overwhelming the database
                 await asyncio.sleep(0.1)
                 
             except Exception as batch_error:
                 print(f"BACKGROUND: Error in batch {page}: {str(batch_error)}")
                 break
+        
+        # Calculate growth rates
+        previous_month_start = (month_start - timedelta(days=32)).replace(day=1)
+        previous_month_end = month_start - timedelta(days=1)
+        
+        # Calculate overall growth rate
+        previous_month_count = 0
+        try:
+            previous_month_count = await people_collection.count_documents({
+                "Date Created": {
+                    "$gte": previous_month_start.isoformat(),
+                    "$lte": previous_month_end.isoformat()
+                }
+            })
+        except:
+            previous_month_count = total_count - new_people_this_month
+        
+        overall_growth_rate = 0.0
+        if previous_month_count > 0:
+            overall_growth_rate = ((new_people_this_month / previous_month_count) * 100)
+        
+        # Calculate church attendees growth rate
+        previous_month_church_count = 0
+        try:
+            previous_month_church_count = await people_collection.count_documents({
+                "Date Created": {
+                    "$gte": previous_month_start.isoformat(),
+                    "$lte": previous_month_end.isoformat()
+                },
+                "IsChurchAttendee": True
+            })
+        except:
+            previous_month_church_count = church_attendees_this_month
+        
+        church_growth_rate = 0.0
+        if previous_month_church_count > 0:
+            church_growth_rate = ((church_attendees_this_month / previous_month_church_count) * 100)
         
         # Update cache with complete dataset
         people_cache["data"] = all_people_data
@@ -211,18 +427,27 @@ async def background_load_all_people():
         people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
         people_cache["is_loading"] = False
         people_cache["load_progress"] = 100
+        people_cache["new_people_today"] = new_people_today
+        people_cache["new_people_this_week"] = new_people_this_week
+        people_cache["new_people_this_month"] = new_people_this_month
+        people_cache["people_growth_rate"] = round(overall_growth_rate, 2)
+        people_cache["church_attendees_today"] = church_attendees_today
+        people_cache["church_attendees_this_week"] = church_attendees_this_week
+        people_cache["church_attendees_this_month"] = church_attendees_this_month
+        people_cache["church_attendees_growth_rate"] = round(church_growth_rate, 2)
         
         end_time = time.time()
         duration = end_time - start_time
         
-        print(f"BACKGROUND: Successfully loaded ALL {len(all_people_data)} people in {duration:.2f} seconds")
-        print(f"BACKGROUND: Cache ready with {len(all_people_data)} people")
+        print(f"BACKGROUND: Successfully loaded {len(all_people_data)} people in {duration:.2f} seconds")
+        print(f"BACKGROUND: New people - Today: {new_people_today}, This Week: {new_people_this_week}, This Month: {new_people_this_month}")
+        print(f"BACKGROUND: Church attendees - Today: {church_attendees_today}, This Week: {church_attendees_this_week}, This Month: {church_attendees_this_month}")
+        print(f"BACKGROUND: Growth rates - Overall: {overall_growth_rate:.2f}%, Church: {church_growth_rate:.2f}%")
         
     except Exception as e:
         people_cache["is_loading"] = False
         people_cache["last_error"] = str(e)
         print(f"BACKGROUND: Failed to load people: {str(e)}")
-
 # Update your cache endpoint to return the expected structure
 @app.get("/cache/people")
 async def get_cached_people():
@@ -317,7 +542,6 @@ async def get_cached_people():
             "cached_data": [],
             "total_count": 0
         }
-
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint"""
@@ -325,13 +549,39 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "cache_status": {
-            "has_data": len(people_cache["data"]) > 0,
-            "data_count": len(people_cache["data"]),
-            "is_loading": people_cache["is_loading"],
-            "last_updated": people_cache["last_updated"]
+            "people_cache": {
+                "has_data": len(people_cache["data"]) > 0,
+                "data_count": len(people_cache["data"]),
+                "is_loading": people_cache["is_loading"],
+                "last_updated": people_cache["last_updated"]
+            },
+            "dashboard_cache": {
+                "weekly_has_data": bool(dashboard_stats_cache["weekly"]["data"]),
+                "monthly_has_data": bool(dashboard_stats_cache["monthly"]["data"]),
+                "weekly_loading": dashboard_stats_cache["weekly"]["is_loading"],
+                "monthly_loading": dashboard_stats_cache["monthly"]["is_loading"]
+            },
+            "tasks_cache": {
+                "has_data": bool(tasks_cache["all_tasks"]["data"]),
+                "data_count": len(tasks_cache["all_tasks"]["data"] or []),
+                "is_loading": tasks_cache["all_tasks"]["is_loading"],
+                "last_updated": tasks_cache["all_tasks"]["last_updated"]
+            },
+            "users_cache": {
+                "has_data": len(users_cache["data"]) > 0,
+                "data_count": len(users_cache["data"]),
+                "is_loading": users_cache["is_loading"],
+                "last_updated": users_cache["last_updated"]
+            },
+            "cells_cache": {
+                "has_data": len(cells_cache["all_cells"]["data"] or []) > 0,
+                "data_count": len(cells_cache["all_cells"]["data"] or []),
+                "is_loading": cells_cache["all_cells"]["is_loading"],
+                "last_updated": cells_cache["all_cells"]["last_updated"]
+            }
         }
     }
-
+    
 @app.get("/people/simple")
 async def get_people_simple(
     page: int = Query(1, ge=1),
@@ -8856,6 +9106,81 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# @app.post("/people")
+# async def create_person(person_data: PersonCreate):
+#     try:
+#         # Normalize email
+#         email = person_data.email.lower().strip()
+
+#         # Check if email already exists
+#         if email:
+#             existing_person = await people_collection.find_one({"Email": email})
+#             if existing_person:
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail=f"A person with email '{email}' already exists"
+#                 )
+
+#         # Extract leader fields from the list
+#         leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
+#         leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
+#         leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
+#         leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
+
+#         # Prepare the document
+#         person_doc = {
+#             "Name": person_data.name.strip(),
+#             "Surname": person_data.surname.strip(),
+#             "Email": email,
+#             "Number": person_data.number.strip(),
+#             "Address": person_data.address.strip(),
+#             "Gender": person_data.gender.strip(),
+#             "Birthday": person_data.dob.strip(),
+#             "InvitedBy": person_data.invitedBy.strip(),
+#             "Leader @1": leader1,
+#             "Leader @12": leader12,
+#             "Leader @144": leader144,
+#             "Leader @1728": leader1728,
+#             "Stage": person_data.stage or "Win",
+#             "Date Created": datetime.utcnow().isoformat(),
+#             "UpdatedAt": datetime.utcnow().isoformat()
+#         }
+
+#         # Insert into MongoDB
+#         result = await people_collection.insert_one(person_doc)
+
+#         # Return the created person object
+#         created_person = {
+#             "_id": str(result.inserted_id),
+#             "Name": person_doc["Name"],
+#             "Surname": person_doc["Surname"],
+#             "Email": person_doc["Email"],
+#             "Number": person_doc["Number"],
+#             "Gender": person_doc["Gender"],
+#             "Birthday": person_doc["Birthday"],
+#             "Address": person_doc["Address"],
+#             "InvitedBy": person_doc["InvitedBy"],
+#             "Leader @1": person_doc["Leader @1"],
+#             "Leader @12": person_doc["Leader @12"],
+#             "Leader @144": person_doc["Leader @144"],
+#             "Leader @1728": person_doc["Leader @1728"],
+#             "Stage": person_doc["Stage"],
+#             "Date Created": person_doc["Date Created"],
+#             "UpdatedAt": person_doc["UpdatedAt"]
+#         }
+
+#         return {
+#             "message": "Person created successfully",
+#             "id": str(result.inserted_id),
+#             "_id": str(result.inserted_id),
+#             "person": created_person
+#         }
+
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Error creating person: {e}")
+#         raise HTTPException(status_code=500, detail="Internal Server Error")
 @app.post("/people")
 async def create_person(person_data: PersonCreate):
     try:
@@ -8878,6 +9203,7 @@ async def create_person(person_data: PersonCreate):
         leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
 
         # Prepare the document
+        now = datetime.utcnow().isoformat()
         person_doc = {
             "Name": person_data.name.strip(),
             "Surname": person_data.surname.strip(),
@@ -8892,9 +9218,19 @@ async def create_person(person_data: PersonCreate):
             "Leader @144": leader144,
             "Leader @1728": leader1728,
             "Stage": person_data.stage or "Win",
-            "Date Created": datetime.utcnow().isoformat(),
-            "UpdatedAt": datetime.utcnow().isoformat()
+            "Date Created": now,
+            "UpdatedAt": now,
+            "Source": person_data.source or "manual",
+            "IsChurchAttendee": person_data.is_church_attendee,
+            "AgeGroup": person_data.age_group,
+            "FollowUpRequired": person_data.follow_up_required,
+            "FollowUpStatus": "pending" if person_data.follow_up_required else "not_required"
         }
+        
+        # Add service check-in date if it's a church attendee
+        if person_data.is_church_attendee:
+            person_doc["ServiceCheckinDate"] = now
+            person_doc["LastServiceAttended"] = datetime.utcnow().date().isoformat()
 
         # Insert into MongoDB
         result = await people_collection.insert_one(person_doc)
@@ -8916,8 +9252,82 @@ async def create_person(person_data: PersonCreate):
             "Leader @1728": person_doc["Leader @1728"],
             "Stage": person_doc["Stage"],
             "Date Created": person_doc["Date Created"],
-            "UpdatedAt": person_doc["UpdatedAt"]
+            "UpdatedAt": person_doc["UpdatedAt"],
+            "Source": person_doc["Source"],
+            "IsChurchAttendee": person_doc["IsChurchAttendee"],
+            "AgeGroup": person_doc["AgeGroup"],
+            "FollowUpRequired": person_doc["FollowUpRequired"],
+            "FollowUpStatus": person_doc["FollowUpStatus"]
         }
+        
+        if person_data.is_church_attendee:
+            created_person["ServiceCheckinDate"] = person_doc.get("ServiceCheckinDate")
+
+        # ADD THE NEW PERSON TO BACKGROUND CACHE
+        new_person_cache_entry = {
+            "_id": str(result.inserted_id),
+            "Name": person_data.name.strip(),
+            "Surname": person_data.surname.strip(),
+            "Email": email,
+            "Number": person_data.number.strip(),
+            "Gender": person_data.gender.strip(),
+            "Leader @1": leader1,
+            "Leader @12": leader12,
+            "Leader @144": leader144,
+            "Leader @1728": leader1728,
+            "FullName": f"{person_data.name.strip()} {person_data.surname.strip()}".strip(),
+            "DateCreated": now,
+            "CreatedDate": datetime.utcnow().date(),
+            "Stage": person_data.stage or "Win",
+            "Source": person_data.source or "manual",
+            "IsChurchAttendee": person_data.is_church_attendee,
+            "AgeGroup": person_data.age_group,
+            "FollowUpRequired": person_data.follow_up_required,
+            "FollowUpStatus": "pending" if person_data.follow_up_required else "not_required",
+            "InvitedBy": person_data.invitedBy.strip()
+        }
+        
+        if person_data.is_church_attendee:
+            new_person_cache_entry["ServiceCheckinDate"] = now
+        
+        # Add to people cache
+        people_cache["data"].append(new_person_cache_entry)
+        
+        # UPDATE CHURCH ATTENDEES TRACKING
+        if person_data.is_church_attendee:
+            # Update church attendees count in cache
+            today = datetime.utcnow().date()
+            people_cache["church_attendees_today"] = people_cache.get("church_attendees_today", 0) + 1
+            people_cache["church_attendees_this_week"] = people_cache.get("church_attendees_this_week", 0) + 1
+            people_cache["church_attendees_this_month"] = people_cache.get("church_attendees_this_month", 0) + 1
+            
+            # Add to church attendees cache
+            church_attendee_entry = {
+                "_id": str(result.inserted_id),
+                "Name": person_data.name.strip(),
+                "Surname": person_data.surname.strip(),
+                "Email": email,
+                "Phone": person_data.number.strip(),
+                "Gender": person_data.gender.strip(),
+                "DateCreated": now,
+                "CreatedDate": today,
+                "InvitedBy": person_data.invitedBy.strip(),
+                "Source": person_data.source or "manual",
+                "FollowUpRequired": person_data.follow_up_required,
+                "FollowUpStatus": "pending" if person_data.follow_up_required else "not_required",
+                "FullName": f"{person_data.name.strip()} {person_data.surname.strip()}".strip(),
+                "ServiceCheckinDate": now,
+                "AgeGroup": person_data.age_group
+            }
+            
+            # Add to daily church attendees cache
+            if "data" in church_attendees_cache["daily"]:
+                church_attendees_cache["daily"]["data"].insert(0, church_attendee_entry)
+                church_attendees_cache["daily"]["count"] = len(church_attendees_cache["daily"]["data"])
+            
+            print(f"✅ Added new church attendee: {new_person_cache_entry['FullName']}")
+
+        print(f"✅ Added new person to background cache: {new_person_cache_entry['FullName']}")
 
         return {
             "message": "Person created successfully",
@@ -8930,7 +9340,7 @@ async def create_person(person_data: PersonCreate):
         raise
     except Exception as e:
         print(f"Error creating person: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @app.delete("/people/{person_id}")
 async def delete_person(person_id: str = Path(...)):
@@ -10745,13 +11155,187 @@ async def get_service_checkin_real_time_data(
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
 
 
+# @app.post("/service-checkin/checkin")
+# async def service_checkin_person(
+#     checkin_data: dict = Body(...),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """
+#     Service Check-in - FIXED: Returns ACTUAL counts after operation
+#     """
+#     try:
+#         event_id = checkin_data.get("event_id")
+#         person_data = checkin_data.get("person_data", {})
+#         checkin_type = checkin_data.get("type", "attendee")
+
+#         if not event_id or not ObjectId.is_valid(event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID")
+
+#         # Get event FRESH from database
+#         event = await events_collection.find_one({"_id": ObjectId(event_id)})
+#         if not event:
+#             raise HTTPException(status_code=404, detail="Event not found")
+
+#         now = datetime.utcnow().isoformat()
+
+#         if checkin_type == "attendee":
+#             person_id = person_data.get("id") or person_data.get("_id")
+#             if not person_id or not ObjectId.is_valid(person_id):
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail="Valid person ID is required for attendee check-in"
+#                 )
+
+#             # Find person
+#             existing = await people_collection.find_one({"_id": ObjectId(person_id)})
+#             if not existing:
+#                 raise HTTPException(
+#                     status_code=404,
+#                     detail="Person does not exist — add them first using /people"
+#                 )
+
+#             # Prevent duplicate check-in
+#             already_checked = await events_collection.find_one({
+#                 "_id": ObjectId(event_id),
+#                 "attendees.id": str(existing["_id"])
+#             })
+#             if already_checked:
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail=f"{existing.get('Name')} is already checked in"
+#                 )
+
+#             attendee_record = {
+#                 "id": str(existing["_id"]),
+#                 "name": existing.get("Name", ""),
+#                 "surname": existing.get("Surname", ""),
+#                 "email": existing.get("Email", ""),
+#                 "phone": existing.get("Number", ""),
+#                 "time": now,
+#                 "checked_in": True,  # IMPORTANT: Mark as checked in
+#                 "type": "attendee"
+#             }
+
+#             # Update the event
+#             await events_collection.update_one(
+#                 {"_id": ObjectId(event_id)},
+#                 {
+#                     "$push": {"attendees": attendee_record},
+#                     "$inc": {"total_attendance": 1},
+#                     "$set": {"updated_at": now}
+#                 }
+#             )
+
+#             # Get UPDATED event to return ACTUAL counts
+#             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+#             updated_attendees = updated_event.get("attendees", [])
+#             present_count = len([a for a in updated_attendees if a.get("checked_in", False)])
+
+#             return {
+#                 "message": f"{existing.get('Name')} checked in",
+#                 "type": "attendee",
+#                 "attendee": attendee_record,
+#                 "present_count": present_count,  # ACTUAL COUNT FROM DB
+#                 "success": True
+#             }
+#         elif checkin_type == "new_person":
+#             new_person_id = f"new_{secrets.token_urlsafe(8)}"
+
+#             new_person_record = {
+#                 "id": new_person_id,
+#                 "name": person_data.get("name", ""),
+#                 "surname": person_data.get("surname", ""),
+#                 "email": person_data.get("email", ""),
+#                 "phone": person_data.get("phone", ""),
+#                 "gender": person_data.get("gender", ""),
+#                 "invitedBy": person_data.get("invitedBy", ""),
+#                 "added_at": now,
+#                 "type": "new_person",
+#                 "needs_database_entry": True,
+#                 "is_checked_in": True,
+#                 "notes": "Visitor - add to database later if needed"
+#             }
+
+#             # Update the event
+#             await events_collection.update_one(
+#                 {"_id": ObjectId(event_id)},
+#                 {
+#                     "$push": {"new_people": new_person_record},
+#                     "$set": {"updated_at": now}
+#                 }
+#             )
+
+#             # Get UPDATED event to return ACTUAL counts
+#             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+#             new_people_count = len(updated_event.get("new_people", []))
+
+#             return {
+#                 "message": "Visitor added to event",
+#                 "type": "new_person",
+#                 "new_person": new_person_record,
+#                 "new_people_count": new_people_count, 
+#                 "success": True
+#             }
+
+
+#         elif checkin_type == "consolidation":
+#             consolidation_id = f"con_{secrets.token_urlsafe(8)}"
+
+#             consolidation_record = {
+#                 "id": consolidation_id,
+#                 "person_name": person_data.get("person_name", ""),
+#                 "person_surname": person_data.get("person_surname", ""),
+#                 "person_email": person_data.get("person_email", ""),
+#                 "person_phone": person_data.get("person_phone", ""),
+#                 "decision_type": person_data.get("decision_type", "first_time"),
+#                 "decision_display_name": person_data.get("decision_display_name", ""),
+#                 "assigned_to": person_data.get("assigned_to", ""),
+#                 "notes": person_data.get("notes", ""),
+#                 "created_at": now,
+#                 "type": "consolidation",
+#                 "status": "active"
+#             }
+
+#             # Update the event
+#             await events_collection.update_one(
+#                 {"_id": ObjectId(event_id)},
+#                 {
+#                     "$push": {"consolidations": consolidation_record},
+#                     "$set": {"updated_at": now}
+#                 }
+#             )
+
+#             # Get UPDATED event to return ACTUAL counts
+#             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+#             consolidation_count = len(updated_event.get("consolidations", []))
+
+#             return {
+#                 "message": "Decision recorded",
+#                 "type": "consolidation",
+#                 "consolidation": consolidation_record,
+#                 "consolidation_count": consolidation_count,  # ACTUAL COUNT FROM DB
+#                 "success": True
+#             }
+
+
+#         else:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="Invalid type — must be attendee, new_person, or consolidation"
+#             )
+
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print("Error in check-in:", e)
+#         raise HTTPException(status_code=500, detail="Check-in failed")
 @app.post("/service-checkin/checkin")
 async def service_checkin_person(
     checkin_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Service Check-in - FIXED: Returns ACTUAL counts after operation
+    Service Check-in - UPDATED: Creates church attendees in people database
     """
     try:
         event_id = checkin_data.get("event_id")
@@ -10767,6 +11351,7 @@ async def service_checkin_person(
             raise HTTPException(status_code=404, detail="Event not found")
 
         now = datetime.utcnow().isoformat()
+        current_date = datetime.utcnow().date()
 
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
@@ -10803,7 +11388,8 @@ async def service_checkin_person(
                 "phone": existing.get("Number", ""),
                 "time": now,
                 "checked_in": True,  # IMPORTANT: Mark as checked in
-                "type": "attendee"
+                "type": "attendee",
+                "person_exists": True
             }
 
             # Update the event
@@ -10828,22 +11414,196 @@ async def service_checkin_person(
                 "present_count": present_count,  # ACTUAL COUNT FROM DB
                 "success": True
             }
+            
         elif checkin_type == "new_person":
-            new_person_id = f"new_{secrets.token_urlsafe(8)}"
-
+            # Extract person data
+            name = person_data.get("name", "").strip()
+            surname = person_data.get("surname", "").strip()
+            email = person_data.get("email", "").strip().lower()
+            phone = person_data.get("phone", "").strip()
+            gender = person_data.get("gender", "").strip()
+            invited_by = person_data.get("invitedBy", "").strip()
+            age_group = person_data.get("age_group", "").strip()
+            
+            if not name or not surname:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Name and surname are required"
+                )
+            
+            # Generate email if not provided
+            if not email:
+                email = f"{name.lower()}.{surname.lower()}@church-visitor.tac"
+            
+            # Check if person already exists
+            existing_person = None
+            if email:
+                existing_person = await people_collection.find_one({
+                    "$or": [
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"Name": name, "Surname": surname}
+                    ]
+                })
+            
+            person_id = None
+            person_record_created = False
+            
+            if existing_person:
+                # Person exists, update their record
+                person_id = str(existing_person["_id"])
+                
+                # Mark as church attendee if not already marked
+                if not existing_person.get("IsChurchAttendee"):
+                    await people_collection.update_one(
+                        {"_id": ObjectId(person_id)},
+                        {
+                            "$set": {
+                                "IsChurchAttendee": True,
+                                "ServiceCheckinDate": now,
+                                "UpdatedAt": now,
+                                "Source": "service_checkin",
+                                "FollowUpRequired": True,
+                                "FollowUpStatus": "pending"
+                            }
+                        }
+                    )
+            else:
+                # CREATE NEW PERSON RECORD FOR CHURCH ATTENDEE
+                try:
+                    # Get invited person's leader hierarchy if available
+                    leader1 = ""
+                    leader12 = ""
+                    leader144 = ""
+                    leader1728 = ""
+                    
+                    if invited_by:
+                        # Search for inviter in people cache
+                        for person in people_cache["data"]:
+                            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+                            if full_name.lower() == invited_by.lower():
+                                leader1 = person.get("Leader @1", "")
+                                leader12 = person.get("Leader @12", "")
+                                leader144 = person.get("Leader @144", "")
+                                leader1728 = person.get("Leader @1728", "")
+                                break
+                    
+                    # Create person document
+                    person_doc = {
+                        "Name": name,
+                        "Surname": surname,
+                        "Email": email,
+                        "Number": phone,
+                        "Gender": gender,
+                        "AgeGroup": age_group,
+                        "Address": "",
+                        "Birthday": "",
+                        "InvitedBy": invited_by,
+                        "Leader @1": leader1,
+                        "Leader @12": leader12,
+                        "Leader @144": leader144,
+                        "Leader @1728": leader1728,
+                        "Stage": "Win",
+                        "Date Created": now,
+                        "UpdatedAt": now,
+                        "Source": "service_checkin",  # Track source
+                        "IsChurchAttendee": True,  # Mark as church attendee
+                        "ServiceCheckinDate": now,  # Date they attended
+                        "FollowUpRequired": True,  # Needs follow-up
+                        "FollowUpStatus": "pending",  # Initial status
+                        "LastServiceAttended": current_date.isoformat()  # Track last service
+                    }
+                    
+                    # Insert into people collection
+                    result = await people_collection.insert_one(person_doc)
+                    person_id = str(result.inserted_id)
+                    person_record_created = True
+                    
+                    # ADD THE NEW PERSON TO BACKGROUND CACHE
+                    new_person_cache_entry = {
+                        "_id": person_id,
+                        "Name": name,
+                        "Surname": surname,
+                        "Email": email,
+                        "Number": phone,
+                        "Gender": gender,
+                        "AgeGroup": age_group,
+                        "Leader @1": leader1,
+                        "Leader @12": leader12,
+                        "Leader @144": leader144,
+                        "Leader @1728": leader1728,
+                        "FullName": f"{name} {surname}".strip(),
+                        "DateCreated": now,
+                        "CreatedDate": current_date,
+                        "Stage": "Win",
+                        "Source": "service_checkin",
+                        "IsChurchAttendee": True,
+                        "ServiceCheckinDate": now,
+                        "FollowUpRequired": True,
+                        "FollowUpStatus": "pending",
+                        "InvitedBy": invited_by
+                    }
+                    
+                    # Add to people cache
+                    people_cache["data"].append(new_person_cache_entry)
+                    
+                    # UPDATE CHURCH ATTENDEES COUNTS IN CACHE
+                    people_cache["church_attendees_today"] = people_cache.get("church_attendees_today", 0) + 1
+                    people_cache["church_attendees_this_week"] = people_cache.get("church_attendees_this_week", 0) + 1
+                    people_cache["church_attendees_this_month"] = people_cache.get("church_attendees_this_month", 0) + 1
+                    
+                    # Also update total people counts
+                    people_cache["new_people_today"] = people_cache.get("new_people_today", 0) + 1
+                    people_cache["new_people_this_week"] = people_cache.get("new_people_this_week", 0) + 1
+                    people_cache["new_people_this_month"] = people_cache.get("new_people_this_month", 0) + 1
+                    
+                    # Add to church attendees cache for real-time display
+                    church_attendee_entry = {
+                        "_id": person_id,
+                        "Name": name,
+                        "Surname": surname,
+                        "Email": email,
+                        "Phone": phone,
+                        "Gender": gender,
+                        "AgeGroup": age_group,
+                        "DateCreated": now,
+                        "CreatedDate": current_date,
+                        "InvitedBy": invited_by,
+                        "Source": "service_checkin",
+                        "FollowUpRequired": True,
+                        "FollowUpStatus": "pending",
+                        "FullName": f"{name} {surname}".strip(),
+                        "ServiceCheckinDate": now
+                    }
+                    
+                    # Add to daily church attendees cache
+                    if "data" in church_attendees_cache["daily"]:
+                        church_attendees_cache["daily"]["data"].insert(0, church_attendee_entry)
+                        church_attendees_cache["daily"]["count"] = len(church_attendees_cache["daily"]["data"])
+                    
+                    print(f"✅ Created new church attendee: {name} {surname} (ID: {person_id})")
+                    
+                except Exception as create_error:
+                    print(f"Error creating person record: {create_error}")
+                    # Fallback: create temporary ID
+                    person_id = f"temp_{secrets.token_urlsafe(8)}"
+            
+            # Create new_person record for event
             new_person_record = {
-                "id": new_person_id,
-                "name": person_data.get("name", ""),
-                "surname": person_data.get("surname", ""),
-                "email": person_data.get("email", ""),
-                "phone": person_data.get("phone", ""),
-                "gender": person_data.get("gender", ""),
-                "invitedBy": person_data.get("invitedBy", ""),
+                "id": person_id,
+                "name": name,
+                "surname": surname,
+                "email": email,
+                "phone": phone,
+                "gender": gender,
+                "age_group": age_group,
+                "invitedBy": invited_by,
                 "added_at": now,
                 "type": "new_person",
-                "needs_database_entry": True,
-                "is_checked_in": True,
-                "notes": "Visitor - add to database later if needed"
+                "is_church_attendee": True,
+                "person_record_created": person_record_created,
+                "person_id": person_id,
+                "checked_in": True,
+                "notes": "Church visitor"
             }
 
             # Update the event
@@ -10851,6 +11611,7 @@ async def service_checkin_person(
                 {"_id": ObjectId(event_id)},
                 {
                     "$push": {"new_people": new_person_record},
+                    "$inc": {"total_attendance": 1},
                     "$set": {"updated_at": now}
                 }
             )
@@ -10858,32 +11619,53 @@ async def service_checkin_person(
             # Get UPDATED event to return ACTUAL counts
             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
             new_people_count = len(updated_event.get("new_people", []))
+            
+            # Also get updated present count
+            updated_attendees = updated_event.get("attendees", [])
+            present_count = len([a for a in updated_attendees if a.get("checked_in", False)])
 
             return {
-                "message": "Visitor added to event",
+                "message": "Visitor added to event" + (" and people database" if person_record_created else ""),
                 "type": "new_person",
                 "new_person": new_person_record,
-                "new_people_count": new_people_count, 
+                "new_people_count": new_people_count,
+                "present_count": present_count,
+                "person_id": person_id,
+                "person_record_created": person_record_created,
+                "is_church_attendee": True,
                 "success": True
             }
 
-
         elif checkin_type == "consolidation":
             consolidation_id = f"con_{secrets.token_urlsafe(8)}"
-
+            
+            # Extract consolidation data
+            person_name = person_data.get("person_name", "").strip()
+            person_surname = person_data.get("person_surname", "").strip()
+            person_email = person_data.get("person_email", "").strip().lower()
+            person_phone = person_data.get("person_phone", "").strip()
+            decision_type = person_data.get("decision_type", "first_time")
+            decision_display_name = person_data.get("decision_display_name", "")
+            assigned_to = person_data.get("assigned_to", "").strip()
+            notes = person_data.get("notes", "").strip()
+            
+            # Create consolidation record
             consolidation_record = {
                 "id": consolidation_id,
-                "person_name": person_data.get("person_name", ""),
-                "person_surname": person_data.get("person_surname", ""),
-                "person_email": person_data.get("person_email", ""),
-                "person_phone": person_data.get("person_phone", ""),
-                "decision_type": person_data.get("decision_type", "first_time"),
-                "decision_display_name": person_data.get("decision_display_name", ""),
-                "assigned_to": person_data.get("assigned_to", ""),
-                "notes": person_data.get("notes", ""),
+                "person_name": person_name,
+                "person_surname": person_surname,
+                "person_email": person_email,
+                "person_phone": person_phone,
+                "decision_type": decision_type,
+                "decision_display_name": decision_display_name or 
+                    ("First Time Decision" if decision_type == "first_time" else "Recommitment"),
+                "assigned_to": assigned_to,
+                "notes": notes,
                 "created_at": now,
                 "type": "consolidation",
-                "status": "active"
+                "status": "active",
+                "follow_up_required": True,
+                "follow_up_status": "pending"
             }
 
             # Update the event
@@ -10898,15 +11680,47 @@ async def service_checkin_person(
             # Get UPDATED event to return ACTUAL counts
             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
             consolidation_count = len(updated_event.get("consolidations", []))
+            
+            # Also create a task for follow-up if assigned_to is provided
+            if assigned_to:
+                try:
+                    task_doc = {
+                        "name": f"Consolidation: {person_name} {person_surname} ({decision_display_name or decision_type})",
+                        "taskType": "consolidation",
+                        "description": f"Follow up with {person_name} {person_surname} who made a {decision_display_name or decision_type} decision",
+                        "followup_date": datetime.utcnow().isoformat(),
+                        "status": "Open",
+                        "assignedfor": assigned_to,
+                        "type": "followup",
+                        "priority": "high",
+                        "consolidation_id": consolidation_id,
+                        "person_name": person_name,
+                        "person_surname": person_surname,
+                        "decision_type": decision_type,
+                        "contacted_person": {
+                            "name": f"{person_name} {person_surname}",
+                            "email": person_email,
+                            "phone": person_phone
+                        },
+                        "created_at": datetime.utcnow().isoformat(),
+                        "created_by": current_user.get("email", ""),
+                        "is_consolidation_task": True
+                    }
+                    
+                    await tasks_collection.insert_one(task_doc)
+                    print(f"✅ Created consolidation task for {assigned_to}")
+                    
+                except Exception as task_error:
+                    print(f"Error creating consolidation task: {task_error}")
 
             return {
-                "message": "Decision recorded",
+                "message": "Decision recorded" + (" and task created" if assigned_to else ""),
                 "type": "consolidation",
                 "consolidation": consolidation_record,
-                "consolidation_count": consolidation_count,  # ACTUAL COUNT FROM DB
+                "consolidation_count": consolidation_count,
+                "task_created": bool(assigned_to),
                 "success": True
             }
-
 
         else:
             raise HTTPException(
@@ -10918,7 +11732,9 @@ async def service_checkin_person(
         raise
     except Exception as e:
         print("Error in check-in:", e)
-        raise HTTPException(status_code=500, detail="Check-in failed")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Check-in failed: {str(e)}")
 
 @app.delete("/service-checkin/remove")
 async def remove_from_service_checkin(
@@ -11214,3 +12030,2340 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
         print(f"Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
     
+@app.get("/stats/dashboard-optimized")
+async def get_dashboard_optimized(
+    current_user: dict = Depends(get_current_user),
+    period: str = Query("weekly", description="Time period: weekly or monthly"),
+    include_details: bool = Query(True, description="Include detailed breakdowns")
+):
+    """
+    Optimized single endpoint for dashboard stats with all data in one call
+    """
+    try:
+        print(f"🔍 Dashboard optimized request - Period: {period}")
+        
+        # Calculate date range
+        today = datetime.utcnow()
+        if period == "weekly":
+            start_date = today - timedelta(days=today.weekday())
+            end_date = start_date + timedelta(days=6)
+        else:  # monthly
+            start_date = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            next_month = today.replace(day=28) + timedelta(days=4)
+            end_date = next_month - timedelta(days=next_month.day)
+        
+        start_date_str = start_date.date().isoformat()
+        end_date_str = end_date.date().isoformat()
+        
+        print(f"📅 Date range: {start_date_str} to {end_date_str}")
+        
+        # PARALLEL QUERIES INCLUDING CHURCH ATTENDEES
+        tasks = [
+            get_overdue_cells_count(start_date_str, end_date_str),
+            get_attendance_stats(start_date_str, end_date_str),
+            get_tasks_summary(start_date_str, end_date_str, include_details),
+            get_upcoming_events(start_date_str, end_date_str),
+            get_church_attendees_stats(start_date_str, end_date_str)  # NEW
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Unpack results
+        overdue_cells_data = results[0] if not isinstance(results[0], Exception) else {"count": 0, "cells": []}
+        attendance_data = results[1] if not isinstance(results[1], Exception) else {"total_attendance": 0, "total_events": 0}
+        tasks_data = results[2] if not isinstance(results[2], Exception) else {"summary": {}, "grouped_tasks": []}
+        upcoming_events = results[3] if not isinstance(results[3], Exception) else []
+        church_attendees_data = results[4] if not isinstance(results[4], Exception) else {"count": 0, "conversion_rate": 0.0}
+        
+        response = {
+            "success": True,
+            "period": period,
+            "date_range": {
+                "start": start_date_str,
+                "end": end_date_str
+            },
+            "overview": {
+                "total_attendance": attendance_data.get("total_attendance", 0),
+                "outstanding_cells": overdue_cells_data.get("count", 0),
+                "outstanding_tasks": tasks_data.get("summary", {}).get("incomplete", 0),
+                "total_tasks": tasks_data.get("summary", {}).get("total", 0),
+                "completed_tasks": tasks_data.get("summary", {}).get("completed", 0),
+                "new_church_attendees": church_attendees_data.get("count", 0),  # NEW
+                "attendee_conversion_rate": church_attendees_data.get("conversion_rate", 0.0)  # NEW
+            },
+            "overdue_cells": overdue_cells_data.get("cells", []),
+            "grouped_tasks": tasks_data.get("grouped_tasks", []),
+            "upcoming_events": upcoming_events,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        print(f"✅ Dashboard data ready - Church attendees: {response['overview']['new_church_attendees']}")
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Error in optimized dashboard: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def get_church_attendees_stats(start_date: str, end_date: str):
+    """Get church attendees statistics for the period"""
+    try:
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        # Query church attendees in date range
+        count = await people_collection.count_documents({
+            "IsChurchAttendee": True,
+            "Date Created": {
+                "$gte": start_date_obj.isoformat(),
+                "$lte": end_date_obj.isoformat()
+            }
+        })
+        
+        # Calculate conversion rate for these attendees
+        converted_count = await people_collection.count_documents({
+            "IsChurchAttendee": True,
+            "Date Created": {
+                "$gte": start_date_obj.isoformat(),
+                "$lte": end_date_obj.isoformat()
+            },
+            "Stage": {"$nin": ["Win", "Consolidate"]}  # Converted if not in initial stages
+        })
+        
+        conversion_rate = 0.0
+        if count > 0:
+            conversion_rate = (converted_count / count) * 100
+        
+        return {
+            "count": count,
+            "converted_count": converted_count,
+            "conversion_rate": round(conversion_rate, 2)
+        }
+        
+    except Exception as e:
+        print(f"Error getting church attendees stats: {e}")
+        return {"count": 0, "converted_count": 0, "conversion_rate": 0.0}
+
+# Helper functions for parallel execution
+async def get_overdue_cells_count(start_date: str, end_date: str):
+    """Get overdue/incomplete cells - FIXED for recurring cells"""
+    try:
+        # Get ALL cells first (they don't have date fields)
+        all_cells_cursor = events_collection.find({
+            "$or": [
+                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+            ]
+        })
+        
+        all_cells = await all_cells_cursor.to_list(length=None)
+        
+        overdue_cells = []
+        today_date = datetime.utcnow().date()
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        # Day mapping for recurring events
+        day_mapping = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        for cell in all_cells:
+            try:
+                cell_status = cell.get("status", "").lower()
+                cell_did_not_meet = cell.get("did_not_meet", False)
+                attendees = cell.get("attendees", [])
+                
+                # Determine if cell is incomplete/overdue
+                is_incomplete = False
+                if cell_did_not_meet:
+                    status_val = "did_not_meet"
+                elif cell_status == "complete" or (attendees and len(attendees) > 0):
+                    status_val = "complete"
+                else:
+                    status_val = "incomplete"
+                    is_incomplete = True
+                
+                # Check if cell is overdue (should have happened but didn't)
+                day_name = cell.get("Day", "").lower()
+                if day_name in day_mapping and is_incomplete:
+                    # Calculate when this cell should occur
+                    target_weekday = day_mapping[day_name]
+                    current_weekday = today_date.weekday()
+                    
+                    # Find the most recent occurrence
+                    days_diff = (current_weekday - target_weekday) % 7
+                    most_recent_date = today_date - timedelta(days=days_diff)
+                    
+                    # Check if it should have happened in our date range
+                    if start_date_obj <= most_recent_date <= end_date_obj:
+                        # Check if it's overdue (past its scheduled date)
+                        if most_recent_date < today_date:
+                            overdue_cells.append({
+                                "_id": str(cell["_id"]),
+                                "eventName": cell.get("Event Name") or cell.get("eventName", "Unknown"),
+                                "eventLeaderName": cell.get("Leader") or cell.get("eventLeaderName", ""),
+                                "date": most_recent_date.isoformat(),
+                                "status": "overdue",
+                                "location": cell.get("Location") or cell.get("location", ""),
+                                "attendees_count": len(attendees),
+                                "day": day_name.capitalize()
+                            })
+                            
+            except Exception as e:
+                print(f"Error processing cell {cell.get('_id')}: {e}")
+                continue
+        
+        return {
+            "count": len(overdue_cells),
+            "cells": overdue_cells[:10]  # Limit to 10 for dashboard
+        }
+        
+    except Exception as e:
+        print(f"Error getting overdue cells: {e}")
+        return {"count": 0, "cells": []}
+
+async def get_attendance_stats(start_date: str, end_date: str):
+    """Get attendance statistics - FIXED to include weekly attendance data"""
+    try:
+        # Get ALL events
+        all_events_cursor = events_collection.find({})
+        all_events = await all_events_cursor.to_list(length=None)
+        
+        total_attendance = 0
+        total_events = 0
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        
+        # For cell events: check weekly attendance data
+        # For other events: check date field
+        
+        for event in all_events:
+            try:
+                is_cell_event = (
+                    event.get("Event Type", "").lower() == "cells" or
+                    event.get("eventType", "").lower() == "cells" or
+                    event.get("eventTypeName", "").lower() == "cells"
+                )
+                
+                event_attendance = 0
+                
+                if is_cell_event:
+                    # For cells, check attendance for weeks in the date range
+                    attendance_data = event.get("attendance", {})
+                    
+                    # Generate all week identifiers in the date range
+                    current_date = start_date_obj
+                    while current_date <= end_date_obj:
+                        year, week, _ = current_date.isocalendar()
+                        week_id = f"{year}-W{week:02d}"
+                        
+                        if week_id in attendance_data:
+                            week_attendance = attendance_data[week_id]
+                            event_attendance += len(week_attendance.get("attendees", []))
+                        
+                        current_date += timedelta(days=7)
+                    
+                    # Also check old format attendees
+                    if event_attendance == 0:
+                        event_attendance = len(event.get("attendees", []))
+                        
+                else:
+                    # For non-cell events, check if date is in range
+                    event_date_field = event.get("date")
+                    event_date = None
+                    
+                    if isinstance(event_date_field, datetime):
+                        event_date = event_date_field.date()
+                    elif isinstance(event_date_field, str):
+                        try:
+                            event_date = datetime.fromisoformat(
+                                event_date_field.replace("Z", "+00:00")
+                            ).date()
+                        except:
+                            continue
+                    
+                    if event_date and start_date_obj <= event_date <= end_date_obj:
+                        event_attendance = event.get("total_attendance", 0)
+                        if event_attendance == 0:
+                            event_attendance = len(event.get("attendees", []))
+                
+                if event_attendance > 0:
+                    total_attendance += event_attendance
+                    total_events += 1
+                    
+            except Exception as e:
+                print(f"Error processing event attendance: {e}")
+                continue
+        
+        return {
+            "total_attendance": total_attendance,
+            "total_events": total_events
+        }
+        
+    except Exception as e:
+        print(f"Error getting attendance: {e}")
+        return {"total_attendance": 0, "total_events": 0}
+
+async def get_tasks_summary(start_date: str, end_date: str, include_details: bool):
+    """Get tasks summary with user grouping - NO CHANGE NEEDED"""
+    try:
+        # First get task summary
+        summary_pipeline = [
+            {"$match": {
+                "followup_date": {"$gte": start_date, "$lte": end_date}
+            }},
+            {"$group": {
+                "_id": None,
+                "total": {"$sum": 1},
+                "completed": {
+                    "$sum": {
+                        "$cond": [
+                            {"$in": ["$status", ["completed", "done", "closed"]]},
+                            1,
+                            0
+                        ]
+                    }
+                },
+                "incomplete": {
+                    "$sum": {
+                        "$cond": [
+                            {"$in": ["$status", ["completed", "done", "closed"]]},
+                            0,
+                            1
+                        ]
+                    }
+                }
+            }}
+        ]
+        
+        summary_result = await tasks_collection.aggregate(summary_pipeline).to_list(length=1)
+        summary = summary_result[0] if summary_result else {"total": 0, "completed": 0, "incomplete": 0}
+        
+        # Get tasks grouped by user if details are needed
+        grouped_tasks = []
+        if include_details:
+            # Get all tasks with user info
+            tasks_cursor = tasks_collection.find({
+                "followup_date": {"$gte": start_date, "$lte": end_date}
+            }).limit(100)  # Limit for performance
+            
+            tasks_by_user = {}
+            async for task in tasks_cursor:
+                user_email = task.get("assignedfor", "")
+                if not user_email:
+                    continue
+                    
+                if user_email not in tasks_by_user:
+                    tasks_by_user[user_email] = {
+                        "completed": 0,
+                        "incomplete": 0,
+                        "tasks": []
+                    }
+                
+                is_completed = task.get("status", "").lower() in ["completed", "done", "closed"]
+                if is_completed:
+                    tasks_by_user[user_email]["completed"] += 1
+                else:
+                    tasks_by_user[user_email]["incomplete"] += 1
+                
+                # Store task details
+                tasks_by_user[user_email]["tasks"].append({
+                    "_id": str(task["_id"]),
+                    "name": task.get("name", "Untitled"),
+                    "status": task.get("status", "pending"),
+                    "followup_date": task.get("followup_date"),
+                    "taskType": task.get("taskType", "")
+                })
+            
+            # Get user details for each email
+            user_emails = list(tasks_by_user.keys())
+            if user_emails:
+                users_cursor = users_collection.find(
+                    {"email": {"$in": user_emails}},
+                    {"name": 1, "surname": 1, "email": 1}
+                )
+                
+                users = await users_cursor.to_list(length=len(user_emails))
+                user_map = {u["email"]: u for u in users}
+                
+                # Build grouped tasks response
+                for email, data in tasks_by_user.items():
+                    user = user_map.get(email, {})
+                    grouped_tasks.append({
+                        "user": {
+                            "_id": str(user.get("_id", "")),
+                            "fullName": f"{user.get('name', '')} {user.get('surname', '')}".strip() or email,
+                            "email": email
+                        },
+                        "totalCount": data["completed"] + data["incomplete"],
+                        "completedCount": data["completed"],
+                        "incompleteCount": data["incomplete"],
+                        "tasks": data["tasks"][:5]  # Limit tasks per user for dashboard
+                    })
+        
+        return {
+            "summary": summary,
+            "grouped_tasks": grouped_tasks
+        }
+        
+    except Exception as e:
+        print(f"Error getting tasks summary: {e}")
+        return {"summary": {"total": 0, "completed": 0, "incomplete": 0}, "grouped_tasks": []}
+
+async def get_upcoming_events(start_date: str, end_date: str):
+    """Get upcoming events for the calendar - FIXED for cell events"""
+    try:
+        all_events_cursor = events_collection.find({})
+        all_events = await all_events_cursor.to_list(length=None)
+        
+        formatted_events = []
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+        today_date = datetime.utcnow().date()
+        
+        # Day mapping for recurring events
+        day_mapping = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        for event in all_events:
+            try:
+                is_cell_event = (
+                    event.get("Event Type", "").lower() == "cells" or
+                    event.get("eventType", "").lower() == "cells" or
+                    event.get("eventTypeName", "").lower() == "cells"
+                )
+                
+                event_date = None
+                event_day = None
+                
+                if is_cell_event:
+                    # For cell events, calculate next occurrence
+                    day_name = event.get("Day", "").lower()
+                    if day_name in day_mapping:
+                        event_day = day_name.capitalize()
+                        target_weekday = day_mapping[day_name]
+                        
+                        # Calculate next occurrence
+                        current_weekday = today_date.weekday()
+                        days_until = (target_weekday - current_weekday) % 7
+                        if days_until == 0 and target_weekday == current_weekday:
+                            # Today is the day
+                            event_date = today_date
+                        else:
+                            # Next occurrence
+                            event_date = today_date + timedelta(days=days_until)
+                else:
+                    # For non-cell events, use the date field
+                    event_date_field = event.get("date")
+                    if isinstance(event_date_field, datetime):
+                        event_date = event_date_field.date()
+                    elif isinstance(event_date_field, str):
+                        try:
+                            event_date = datetime.fromisoformat(
+                                event_date_field.replace("Z", "+00:00")
+                            ).date()
+                        except:
+                            continue
+                
+                # Check if event is in our date range
+                if event_date and start_date_obj <= event_date <= end_date_obj:
+                    formatted_events.append({
+                        "_id": str(event["_id"]),
+                        "eventName": event.get("Event Name") or event.get("eventName", ""),
+                        "eventType": "Cells" if is_cell_event else (event.get("Event Type") or event.get("eventType", "")),
+                        "date": event_date.isoformat(),
+                        "day": event_day,
+                        "time": event.get("time", "19:00"),
+                        "location": event.get("Location") or event.get("location", ""),
+                        "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
+                        "hasPersonSteps": is_cell_event
+                    })
+                    
+            except Exception as e:
+                print(f"Error processing event {event.get('_id')}: {e}")
+                continue
+        
+        # Sort by date
+        formatted_events.sort(key=lambda x: x['date'])
+        
+        return formatted_events[:20]  # Limit to 20
+        
+    except Exception as e:
+        print(f"Error getting upcoming events: {e}")
+        return []
+    
+async def background_load_dashboard_stats(period="weekly"):
+    """Background task to load dashboard stats"""
+    try:
+        if dashboard_stats_cache[period]["is_loading"]:
+            return
+            
+        dashboard_stats_cache[period]["is_loading"] = True
+        dashboard_stats_cache[period]["last_error"] = None
+        dashboard_stats_cache[period]["load_progress"] = 0
+        
+        print(f"BACKGROUND: Starting to load {period} dashboard stats...")
+        
+        # Calculate date range based on period
+        today = datetime.utcnow()
+        if period == "weekly":
+            # Monday to Sunday week
+            start_date = today - timedelta(days=today.weekday())
+            end_date = start_date + timedelta(days=6)
+        else:  # monthly
+            start_date = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            next_month = today.replace(day=28) + timedelta(days=4)
+            end_date = next_month - timedelta(days=next_month.day)
+        
+        # Format dates for queries
+        start_date_str = start_date.date().isoformat()
+        end_date_str = end_date.date().isoformat()
+        
+        # Execute the dashboard queries in parallel
+        tasks = [
+            get_overdue_cells_count(start_date_str, end_date_str),
+            get_attendance_stats(start_date_str, end_date_str),
+            get_tasks_summary(start_date_str, end_date_str, True),
+            get_upcoming_events(start_date_str, end_date_str)
+        ]
+        
+        # Execute all queries concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Unpack results with error handling
+        overdue_cells_data = results[0] if not isinstance(results[0], Exception) else {"count": 0, "cells": []}
+        attendance_data = results[1] if not isinstance(results[1], Exception) else {"total_attendance": 0, "total_events": 0}
+        tasks_data = results[2] if not isinstance(results[2], Exception) else {"summary": {}, "grouped_tasks": []}
+        upcoming_events = results[3] if not isinstance(results[3], Exception) else []
+        
+        # Build the complete stats object WITHOUT people_behind
+        stats_data = {
+            "success": True,
+            "period": period,
+            "date_range": {
+                "start": start_date_str,
+                "end": end_date_str
+            },
+            "overview": {
+                "total_attendance": attendance_data.get("total_attendance", 0),
+                "outstanding_cells": overdue_cells_data.get("count", 0),
+                "outstanding_tasks": tasks_data.get("summary", {}).get("incomplete", 0),
+                "total_tasks": tasks_data.get("summary", {}).get("total", 0),
+                "completed_tasks": tasks_data.get("summary", {}).get("completed", 0)
+            },
+            "overdue_cells": overdue_cells_data.get("cells", []),
+            "grouped_tasks": tasks_data.get("grouped_tasks", []),
+            "upcoming_events": upcoming_events,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Update cache
+        dashboard_stats_cache[period]["data"] = stats_data
+        dashboard_stats_cache[period]["last_updated"] = datetime.utcnow().isoformat()
+        dashboard_stats_cache[period]["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        dashboard_stats_cache[period]["is_loading"] = False
+        dashboard_stats_cache[period]["load_progress"] = 100
+        
+        print(f"BACKGROUND: Successfully loaded {period} dashboard stats")
+        print(f"  - Outstanding cells: {stats_data['overview']['outstanding_cells']}")
+        print(f"  - Total attendance: {stats_data['overview']['total_attendance']}")
+        
+    except Exception as e:
+        dashboard_stats_cache[period]["is_loading"] = False
+        dashboard_stats_cache[period]["last_error"] = str(e)
+        dashboard_stats_cache[period]["load_progress"] = 0
+        print(f"BACKGROUND: Failed to load dashboard stats: {str(e)}") 
+        
+@app.get("/cache/dashboard-stats")
+async def get_cached_dashboard_stats(period: str = Query("weekly", regex="^(weekly|monthly)$")):
+    """
+    Get cached dashboard stats - returns whatever is available immediately
+    """
+    try:
+        cache_entry = dashboard_stats_cache.get(period, dashboard_stats_cache["weekly"])
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (cache_entry["data"] and 
+            cache_entry["expires_at"] and 
+            current_time < datetime.fromisoformat(cache_entry["expires_at"])):
+            
+            print(f"DASHBOARD CACHE HIT ({period}): Returning cached stats")
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "cache",
+                "is_complete": True,
+                "load_progress": 100
+            }
+        
+        # If we're still loading in background, return progress
+        if cache_entry["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],  # Return whatever we have so far
+                "cached_at": cache_entry["last_updated"],
+                "source": "loading",
+                "is_complete": False,
+                "load_progress": cache_entry["load_progress"],
+                "message": f"Loading {period} stats... {cache_entry['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not cache_entry["data"] and not cache_entry["is_loading"]:
+            print(f"DASHBOARD: Cache empty for {period}, triggering background load...")
+            asyncio.create_task(background_load_dashboard_stats(period))
+            
+            # Return empty but indicate loading will start
+            return {
+                "success": True,
+                "cached_data": None,
+                "cached_at": None,
+                "source": "triggered_load",
+                "is_complete": False,
+                "message": f"Background loading started for {period} stats...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if cache_entry["data"]:
+            print(f"DASHBOARD: Cache expired for {period}, returning stale data while refreshing...")
+            # Trigger refresh in background
+            if not cache_entry["is_loading"]:
+                asyncio.create_task(background_load_dashboard_stats(period))
+            
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "stale_cache",
+                "is_complete": True,
+                "message": f"Using stale {period} data (refresh in progress)",
+                "load_progress": cache_entry["load_progress"]
+            }
+        
+        # Fallback - return empty
+        return {
+            "success": True,
+            "cached_data": None,
+            "cached_at": None,
+            "source": "empty",
+            "is_complete": False,
+            "message": "No data available"
+        }
+        
+    except Exception as e:
+        print(f"Error in dashboard cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": None
+        }
+
+@app.post("/cache/dashboard-stats/refresh")
+async def refresh_dashboard_cache(period: str = Query("weekly", regex="^(weekly|monthly)$")):
+    """
+    Manually refresh the dashboard stats cache
+    """
+    try:
+        if not dashboard_stats_cache[period]["is_loading"]:
+            print(f"Manual {period} dashboard cache refresh triggered")
+            asyncio.create_task(background_load_dashboard_stats(period))
+            
+        return {
+            "success": True,
+            "message": f"{period.capitalize()} dashboard cache refresh triggered",
+            "is_loading": dashboard_stats_cache[period]["is_loading"],
+            "current_progress": dashboard_stats_cache[period]["load_progress"]
+        }
+        
+    except Exception as e:
+        print(f"Error refreshing dashboard cache: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/cache/dashboard-stats/status")
+async def get_dashboard_cache_status():
+    """
+    Get detailed dashboard cache status and loading progress
+    """
+    status_info = {
+        "weekly": {
+            "has_data": bool(dashboard_stats_cache["weekly"]["data"]),
+            "last_updated": dashboard_stats_cache["weekly"]["last_updated"],
+            "expires_at": dashboard_stats_cache["weekly"]["expires_at"],
+            "is_loading": dashboard_stats_cache["weekly"]["is_loading"],
+            "load_progress": dashboard_stats_cache["weekly"]["load_progress"],
+            "last_error": dashboard_stats_cache["weekly"]["last_error"]
+        },
+        "monthly": {
+            "has_data": bool(dashboard_stats_cache["monthly"]["data"]),
+            "last_updated": dashboard_stats_cache["monthly"]["last_updated"],
+            "expires_at": dashboard_stats_cache["monthly"]["expires_at"],
+            "is_loading": dashboard_stats_cache["monthly"]["is_loading"],
+            "load_progress": dashboard_stats_cache["monthly"]["load_progress"],
+            "last_error": dashboard_stats_cache["monthly"]["last_error"]
+        }
+    }
+    
+    return status_info
+
+@app.get("/cache/tasks/all")
+async def get_cached_all_tasks(current_user: dict = Depends(get_current_user)):
+    """
+    Get cached all tasks data - for leaders/admins only
+    Returns cached tasks data with permission checking
+    """
+    try:
+        # Permission check — only leaders can see all tasks
+        role = current_user.get("role", "").lower()
+        if role not in ["admin", "leader", "manager"]:
+            return {
+                "error": "Access denied. You must be a leader or admin to view all tasks.",
+                "status": "failed"
+            }, 403
+        
+        cache_entry = tasks_cache["all_tasks"]
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (cache_entry["data"] and 
+            cache_entry["expires_at"] and 
+            current_time < datetime.fromisoformat(cache_entry["expires_at"])):
+            
+            print(f"TASKS CACHE HIT: Returning {len(cache_entry['data'])} tasks")
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "cache",
+                "total_count": cache_entry["total_count"],
+                "is_complete": True,
+                "load_progress": 100,
+                "fetched_by": current_user.get("email"),
+                "role": current_user.get("role"),
+                "timestamp": datetime.now(pytz.timezone("Africa/Johannesburg")).isoformat()
+            }
+        
+        # If we're still loading in background, return progress
+        if cache_entry["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],  # Return whatever we have so far
+                "cached_at": cache_entry["last_updated"],
+                "source": "loading",
+                "total_count": cache_entry.get("total_count", 0),
+                "is_complete": False,
+                "load_progress": cache_entry["load_progress"],
+                "fetched_by": current_user.get("email"),
+                "role": current_user.get("role"),
+                "message": f"Loading tasks... {cache_entry['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not cache_entry["data"] and not cache_entry["is_loading"]:
+            print("Tasks cache empty, triggering background load...")
+            asyncio.create_task(background_load_all_tasks())
+            
+            # Return empty but indicate loading will start
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "is_complete": False,
+                "fetched_by": current_user.get("email"),
+                "role": current_user.get("role"),
+                "message": "Background loading started for tasks...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if cache_entry["data"]:
+            print("Tasks cache expired, returning stale data while refreshing...")
+            # Trigger refresh in background
+            if not cache_entry["is_loading"]:
+                asyncio.create_task(background_load_all_tasks())
+            
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "stale_cache",
+                "total_count": cache_entry["total_count"],
+                "is_complete": True,
+                "fetched_by": current_user.get("email"),
+                "role": current_user.get("role"),
+                "message": "Using stale tasks data (refresh in progress)"
+            }
+        
+        # Fallback - return empty
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "is_complete": False,
+            "fetched_by": current_user.get("email"),
+            "role": current_user.get("role")
+        }
+        
+    except Exception as e:
+        print(f"Error in tasks cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0
+        }
+        
+async def background_load_all_tasks():
+    """Background task to load ALL tasks for leaders/admins"""
+    try:
+        cache_entry = tasks_cache["all_tasks"]
+        
+        if cache_entry["is_loading"]:
+            return
+            
+        cache_entry["is_loading"] = True
+        cache_entry["last_error"] = None
+        start_time = time.time()
+        
+        print("BACKGROUND: Starting to load ALL tasks...")
+        
+        cursor = tasks_collection.find({})
+        all_tasks_data = []
+        total_count = await tasks_collection.count_documents({})
+        
+        timezone = pytz.timezone("Africa/Johannesburg")
+        
+        async for task in cursor:
+            try:
+                # Safely parse followup_date
+                followup_raw = task.get("followup_date")
+                followup_dt = None
+                if followup_raw:
+                    if isinstance(followup_raw, datetime):
+                        followup_dt = followup_raw
+                    else:
+                        try:
+                            dt_str = str(followup_raw).replace("Z", "+00:00")
+                            followup_dt = datetime.fromisoformat(dt_str)
+                        except:
+                            try:
+                                followup_dt = datetime.fromisoformat(str(followup_raw))
+                            except:
+                                logging.warning(f"Invalid date format in task {task['_id']}: {followup_raw}")
+
+                    if followup_dt:
+                        if followup_dt.tzinfo is None:
+                            followup_dt = pytz.utc.localize(followup_dt)
+                        followup_dt = followup_dt.astimezone(timezone)
+
+                # Resolve full user info for legacy assignedfor (email string)
+                assigned_to = None
+                if task.get("assignedTo") and isinstance(task["assignedTo"], dict):
+                    assigned_to = task["assignedTo"]
+                elif task.get("assignedfor"):
+                    user = await users_collection.find_one(
+                        {"email": {"$regex": f"^{task['assignedfor'].strip()}$", "$options": "i"}},
+                        {"name": 1, "surname": 1, "email": 1, "phone": 1}
+                    )
+                    if user:
+                        assigned_to = {
+                            "_id": str(user["_id"]),
+                            "name": user.get("name", ""),
+                            "surname": user.get("surname", ""),
+                            "email": user.get("email", ""),
+                            "phone": user.get("phone", "")
+                        }
+
+                all_tasks_data.append({
+                    "_id": str(task["_id"]),
+                    "name": task.get("name", "Unnamed Task"),
+                    "taskType": task.get("taskType", ""),
+                    "followup_date": followup_dt.isoformat() if followup_dt else None,
+                    "status": task.get("status", "Open"),
+                    "assignedfor": task.get("assignedfor", ""),
+                    "assignedTo": assigned_to,  # Fully resolved user
+                    "type": task.get("type", "call"),
+                    "contacted_person": task.get("contacted_person", {}),
+                    "isRecurring": bool(task.get("recurring_day")),
+                    "createdAt": task.get("createdAt", datetime.utcnow()).isoformat() if task.get("createdAt") else None,
+                })
+                
+            except Exception as e:
+                print(f"Error processing task {task.get('_id')}: {e}")
+                continue
+        
+        # Sort newest first
+        all_tasks_data.sort(key=lambda x: x["followup_date"] or "9999-12-31", reverse=True)
+        
+        # Update cache
+        cache_entry["data"] = all_tasks_data
+        cache_entry["total_count"] = len(all_tasks_data)
+        cache_entry["last_updated"] = datetime.utcnow().isoformat()
+        cache_entry["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        cache_entry["is_loading"] = False
+        cache_entry["load_progress"] = 100
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        print(f"BACKGROUND: Successfully loaded {len(all_tasks_data)} tasks in {duration:.2f} seconds")
+        
+    except Exception as e:
+        tasks_cache["all_tasks"]["is_loading"] = False
+        tasks_cache["all_tasks"]["last_error"] = str(e)
+        print(f"BACKGROUND: Failed to load tasks: {str(e)}")
+        
+async def background_load_all_users():
+    """Background task to load ALL users from the database"""
+    try:
+        if users_cache["is_loading"]:
+            return
+            
+        users_cache["is_loading"] = True
+        users_cache["last_error"] = None
+        start_time = time.time()
+        
+        print("BACKGROUND: Starting to load ALL users...")
+        
+        cursor = users_collection.find({})
+        all_users_data = []
+        total_count = await users_collection.count_documents({})
+        users_cache["total_count"] = total_count
+        print(f"BACKGROUND: Total users in database: {total_count}")
+        
+        async for user in cursor:
+            try:
+                all_users_data.append({
+                    "_id": str(user["_id"]),
+                    "name": user.get("name", ""),
+                    "surname": user.get("surname", ""),
+                    "email": user.get("email", ""),
+                    "phone_number": user.get("phone_number", ""),
+                    "role": user.get("role", "user"),
+                    "date_of_birth": user.get("date_of_birth", ""),
+                    "gender": user.get("gender", ""),
+                    "invited_by": user.get("invited_by", ""),
+                    "created_at": user.get("created_at"),
+                    "fullName": f"{user.get('name', '')} {user.get('surname', '')}".strip()
+                })
+            except Exception as e:
+                print(f"Error processing user {user.get('_id')}: {e}")
+                continue
+        
+        # Update cache
+        users_cache["data"] = all_users_data
+        users_cache["last_updated"] = datetime.utcnow().isoformat()
+        users_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        users_cache["is_loading"] = False
+        users_cache["load_progress"] = 100
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        print(f"BACKGROUND: Successfully loaded {len(all_users_data)} users in {duration:.2f} seconds")
+        
+    except Exception as e:
+        users_cache["is_loading"] = False
+        users_cache["last_error"] = str(e)
+        print(f"BACKGROUND: Failed to load users: {str(e)}")
+
+@app.get("/cache/users")
+async def get_cached_users():
+    """
+    Get cached users data
+    """
+    try:
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (users_cache["data"] and 
+            users_cache["expires_at"] and 
+            current_time < datetime.fromisoformat(users_cache["expires_at"])):
+            
+            print(f"USERS CACHE HIT: Returning {len(users_cache['data'])} users")
+            return {
+                "success": True,
+                "cached_data": users_cache["data"],
+                "cached_at": users_cache["last_updated"],
+                "expires_at": users_cache["expires_at"],
+                "source": "cache",
+                "total_count": len(users_cache["data"]),
+                "is_complete": True,
+                "load_progress": 100
+            }
+        
+        # If we're still loading in background, return progress
+        if users_cache["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": users_cache["data"],
+                "cached_at": users_cache["last_updated"],
+                "source": "loading",
+                "total_count": len(users_cache["data"]),
+                "is_complete": False,
+                "load_progress": users_cache["load_progress"],
+                "message": f"Loading users... {users_cache['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not users_cache["data"] and not users_cache["is_loading"]:
+            print("Users cache empty, triggering background load...")
+            asyncio.create_task(background_load_all_users())
+            
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "is_complete": False,
+                "message": "Background loading started...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if users_cache["data"]:
+            print("Users cache expired, returning stale data while refreshing...")
+            if not users_cache["is_loading"]:
+                asyncio.create_task(background_load_all_users())
+            
+            return {
+                "success": True,
+                "cached_data": users_cache["data"],
+                "cached_at": users_cache["last_updated"],
+                "expires_at": users_cache["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(users_cache["data"]),
+                "is_complete": True,
+                "message": "Using stale users data (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "is_complete": False
+        }
+        
+    except Exception as e:
+        print(f"Error in users cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0
+        }
+
+@app.get("/cache/users")
+async def get_cached_users():
+    """
+    Get cached users data
+    """
+    try:
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (users_cache["data"] and 
+            users_cache["expires_at"] and 
+            current_time < datetime.fromisoformat(users_cache["expires_at"])):
+            
+            print(f"USERS CACHE HIT: Returning {len(users_cache['data'])} users")
+            return {
+                "success": True,
+                "cached_data": users_cache["data"],
+                "cached_at": users_cache["last_updated"],
+                "expires_at": users_cache["expires_at"],
+                "source": "cache",
+                "total_count": len(users_cache["data"]),
+                "is_complete": True,
+                "load_progress": 100
+            }
+        
+        # If we're still loading in background, return progress
+        if users_cache["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": users_cache["data"],
+                "cached_at": users_cache["last_updated"],
+                "source": "loading",
+                "total_count": len(users_cache["data"]),
+                "is_complete": False,
+                "load_progress": users_cache["load_progress"],
+                "message": f"Loading users... {users_cache['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not users_cache["data"] and not users_cache["is_loading"]:
+            print("Users cache empty, triggering background load...")
+            asyncio.create_task(background_load_all_users())
+            
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "is_complete": False,
+                "message": "Background loading started...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if users_cache["data"]:
+            print("Users cache expired, returning stale data while refreshing...")
+            if not users_cache["is_loading"]:
+                asyncio.create_task(background_load_all_users())
+            
+            return {
+                "success": True,
+                "cached_data": users_cache["data"],
+                "cached_at": users_cache["last_updated"],
+                "expires_at": users_cache["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(users_cache["data"]),
+                "is_complete": True,
+                "message": "Using stale users data (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "is_complete": False
+        }
+        
+    except Exception as e:
+        print(f"Error in users cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0
+        }
+        
+async def background_load_all_cells():
+    """Background task to load ALL cells from the database"""
+    try:
+        cache_entry = cells_cache["all_cells"]
+        
+        if cache_entry["is_loading"]:
+            return
+            
+        cache_entry["is_loading"] = True
+        cache_entry["last_error"] = None
+        start_time = time.time()
+        
+        print("BACKGROUND: Starting to load ALL cells...")
+        
+        # Query for cell events
+        cursor = events_collection.find({
+            "$or": [
+                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+            ]
+        })
+        
+        all_cells_data = []
+        total_count = await events_collection.count_documents({
+            "$or": [
+                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+            ]
+        })
+        
+        cache_entry["total_count"] = total_count
+        print(f"BACKGROUND: Total cells in database: {total_count}")
+        
+        async for cell in cursor:
+            try:
+                # Determine status
+                did_not_meet = cell.get("did_not_meet", False)
+                attendees = cell.get("attendees", [])
+                has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
+                
+                if did_not_meet:
+                    cell_status = "did_not_meet"
+                elif has_attendees:
+                    cell_status = "complete"
+                else:
+                    cell_status = "incomplete"
+                
+                all_cells_data.append({
+                    "_id": str(cell["_id"]),
+                    "eventName": cell.get("Event Name") or cell.get("eventName", ""),
+                    "eventLeaderName": cell.get("Leader") or cell.get("eventLeaderName", ""),
+                    "eventLeaderEmail": cell.get("Email") or cell.get("eventLeaderEmail", ""),
+                    "day": cell.get("Day", ""),
+                    "location": cell.get("Location", ""),
+                    "status": cell_status,
+                    "did_not_meet": did_not_meet,
+                    "attendees_count": len(attendees),
+                    "leader12": cell.get("Leader at 12") or cell.get("Leader @12", ""),
+                    "leader144": cell.get("Leader at 144") or cell.get("Leader @144", "")
+                })
+            except Exception as e:
+                print(f"Error processing cell {cell.get('_id')}: {e}")
+                continue
+        
+        # Update cache
+        cache_entry["data"] = all_cells_data
+        cache_entry["last_updated"] = datetime.utcnow().isoformat()
+        cache_entry["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        cache_entry["is_loading"] = False
+        cache_entry["load_progress"] = 100
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        print(f"BACKGROUND: Successfully loaded {len(all_cells_data)} cells in {duration:.2f} seconds")
+        
+    except Exception as e:
+        cells_cache["all_cells"]["is_loading"] = False
+        cells_cache["all_cells"]["last_error"] = str(e)
+        print(f"BACKGROUND: Failed to load cells: {str(e)}")
+
+@app.get("/cache/cells")
+async def get_cached_cells():
+    """
+    Get cached cells data
+    """
+    try:
+        cache_entry = cells_cache["all_cells"]
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (cache_entry["data"] and 
+            cache_entry["expires_at"] and 
+            current_time < datetime.fromisoformat(cache_entry["expires_at"])):
+            
+            print(f"CELLS CACHE HIT: Returning {len(cache_entry['data'])} cells")
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "cache",
+                "total_count": len(cache_entry["data"]),
+                "is_complete": True,
+                "load_progress": 100
+            }
+        
+        # If we're still loading in background, return progress
+        if cache_entry["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "source": "loading",
+                "total_count": len(cache_entry["data"]),
+                "is_complete": False,
+                "load_progress": cache_entry["load_progress"],
+                "message": f"Loading cells... {cache_entry['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not cache_entry["data"] and not cache_entry["is_loading"]:
+            print("Cells cache empty, triggering background load...")
+            asyncio.create_task(background_load_all_cells())
+            
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "is_complete": False,
+                "message": "Background loading started...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if cache_entry["data"]:
+            print("Cells cache expired, returning stale data while refreshing...")
+            if not cache_entry["is_loading"]:
+                asyncio.create_task(background_load_all_cells())
+            
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(cache_entry["data"]),
+                "is_complete": True,
+                "message": "Using stale cells data (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "is_complete": False
+        }
+        
+    except Exception as e:
+        print(f"Error in cells cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0
+        }
+
+@app.get("/cache/cells")
+async def get_cached_cells():
+    """
+    Get cached cells data
+    """
+    try:
+        cache_entry = cells_cache["all_cells"]
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (cache_entry["data"] and 
+            cache_entry["expires_at"] and 
+            current_time < datetime.fromisoformat(cache_entry["expires_at"])):
+            
+            print(f"CELLS CACHE HIT: Returning {len(cache_entry['data'])} cells")
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "cache",
+                "total_count": len(cache_entry["data"]),
+                "is_complete": True,
+                "load_progress": 100
+            }
+        
+        # If we're still loading in background, return progress
+        if cache_entry["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "source": "loading",
+                "total_count": len(cache_entry["data"]),
+                "is_complete": False,
+                "load_progress": cache_entry["load_progress"],
+                "message": f"Loading cells... {cache_entry['load_progress']}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not cache_entry["data"] and not cache_entry["is_loading"]:
+            print("Cells cache empty, triggering background load...")
+            asyncio.create_task(background_load_all_cells())
+            
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "is_complete": False,
+                "message": "Background loading started...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if cache_entry["data"]:
+            print("Cells cache expired, returning stale data while refreshing...")
+            if not cache_entry["is_loading"]:
+                asyncio.create_task(background_load_all_cells())
+            
+            return {
+                "success": True,
+                "cached_data": cache_entry["data"],
+                "cached_at": cache_entry["last_updated"],
+                "expires_at": cache_entry["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(cache_entry["data"]),
+                "is_complete": True,
+                "message": "Using stale cells data (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "is_complete": False
+        }
+        
+    except Exception as e:
+        print(f"Error in cells cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0
+        }
+        
+async def background_load_user_tasks(user_email: str):
+    """Background task to load tasks for a specific user"""
+    try:
+        # Initialize user entry if not exists
+        if user_email not in tasks_cache["user_tasks"]["data"]:
+            tasks_cache["user_tasks"]["data"][user_email] = {
+                "data": [],
+                "last_updated": None,
+                "expires_at": None,
+                "is_loading": False
+            }
+        
+        user_entry = tasks_cache["user_tasks"]["data"][user_email]
+        
+        if user_entry["is_loading"]:
+            return
+            
+        user_entry["is_loading"] = True
+        start_time = time.time()
+        
+        print(f"BACKGROUND: Starting to load tasks for user: {user_email}")
+        
+        # Query tasks for this user
+        cursor = tasks_collection.find({
+            "assignedfor": {"$regex": f"^{user_email}$", "$options": "i"}
+        })
+        
+        user_tasks_data = []
+        
+        async for task in cursor:
+            try:
+                # Safely parse followup_date
+                followup_raw = task.get("followup_date")
+                followup_dt = None
+                if followup_raw:
+                    if isinstance(followup_raw, datetime):
+                        followup_dt = followup_raw
+                    else:
+                        try:
+                            dt_str = str(followup_raw).replace("Z", "+00:00")
+                            followup_dt = datetime.fromisoformat(dt_str)
+                        except:
+                            try:
+                                followup_dt = datetime.fromisoformat(str(followup_raw))
+                            except:
+                                continue
+
+                user_tasks_data.append({
+                    "_id": str(task["_id"]),
+                    "name": task.get("name", "Unnamed Task"),
+                    "taskType": task.get("taskType", ""),
+                    "followup_date": followup_dt.isoformat() if followup_dt else None,
+                    "status": task.get("status", "Open"),
+                    "assignedfor": task.get("assignedfor", ""),
+                    "type": task.get("type", "call"),
+                    "contacted_person": task.get("contacted_person", {}),
+                    "isRecurring": bool(task.get("recurring_day"))
+                })
+            except Exception as e:
+                print(f"Error processing task for {user_email}: {e}")
+                continue
+        
+        # Sort by date
+        user_tasks_data.sort(key=lambda x: x["followup_date"] or "9999-12-31", reverse=True)
+        
+        # Update cache
+        user_entry["data"] = user_tasks_data
+        user_entry["last_updated"] = datetime.utcnow().isoformat()
+        user_entry["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        user_entry["is_loading"] = False
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        print(f"BACKGROUND: Successfully loaded {len(user_tasks_data)} tasks for {user_email} in {duration:.2f} seconds")
+        
+    except Exception as e:
+        if user_email in tasks_cache["user_tasks"]["data"]:
+            tasks_cache["user_tasks"]["data"][user_email]["is_loading"] = False
+        print(f"BACKGROUND: Failed to load tasks for {user_email}: {str(e)}")
+
+@app.get("/cache/tasks/user")
+async def get_cached_user_tasks(
+    user_email: str = Query(..., description="User email to get tasks for"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get cached tasks for a specific user
+    """
+    try:
+        # Verify the requesting user can access these tasks
+        requesting_email = current_user.get("email", "")
+        is_admin = current_user.get("role") in ["admin", "leader", "manager"]
+        
+        if not is_admin and requesting_email.lower() != user_email.lower():
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only view your own tasks"
+            )
+        
+        # Check if user entry exists in cache
+        if user_email not in tasks_cache["user_tasks"]["data"]:
+            tasks_cache["user_tasks"]["data"][user_email] = {
+                "data": [],
+                "last_updated": None,
+                "expires_at": None,
+                "is_loading": False
+            }
+        
+        user_entry = tasks_cache["user_tasks"]["data"][user_email]
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (user_entry["data"] and 
+            user_entry["expires_at"] and 
+            current_time < datetime.fromisoformat(user_entry["expires_at"])):
+            
+            print(f"USER TASKS CACHE HIT: Returning {len(user_entry['data'])} tasks for {user_email}")
+            return {
+                "success": True,
+                "cached_data": user_entry["data"],
+                "cached_at": user_entry["last_updated"],
+                "expires_at": user_entry["expires_at"],
+                "source": "cache",
+                "total_count": len(user_entry["data"]),
+                "user_email": user_email,
+                "is_complete": True
+            }
+        
+        # If we're still loading in background, return progress
+        if user_entry["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": user_entry["data"],
+                "cached_at": user_entry["last_updated"],
+                "source": "loading",
+                "total_count": len(user_entry["data"]),
+                "user_email": user_email,
+                "is_complete": False,
+                "message": f"Loading tasks for {user_email}..."
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not user_entry["data"] and not user_entry["is_loading"]:
+            print(f"User tasks cache empty for {user_email}, triggering background load...")
+            asyncio.create_task(background_load_user_tasks(user_email))
+            
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "user_email": user_email,
+                "is_complete": False,
+                "message": f"Background loading started for {user_email}..."
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if user_entry["data"]:
+            print(f"User tasks cache expired for {user_email}, returning stale data while refreshing...")
+            if not user_entry["is_loading"]:
+                asyncio.create_task(background_load_user_tasks(user_email))
+            
+            return {
+                "success": True,
+                "cached_data": user_entry["data"],
+                "cached_at": user_entry["last_updated"],
+                "expires_at": user_entry["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(user_entry["data"]),
+                "user_email": user_email,
+                "is_complete": True,
+                "message": f"Using stale tasks data for {user_email} (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "user_email": user_email,
+            "is_complete": False
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in user tasks cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0,
+            "user_email": user_email
+        }
+
+@app.get("/cache/tasks/user")
+async def get_cached_user_tasks(
+    user_email: str = Query(..., description="User email to get tasks for"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get cached tasks for a specific user
+    """
+    try:
+        # Verify the requesting user can access these tasks
+        requesting_email = current_user.get("email", "")
+        is_admin = current_user.get("role") in ["admin", "leader", "manager"]
+        
+        if not is_admin and requesting_email.lower() != user_email.lower():
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only view your own tasks"
+            )
+        
+        # Check if user entry exists in cache
+        if user_email not in tasks_cache["user_tasks"]["data"]:
+            tasks_cache["user_tasks"]["data"][user_email] = {
+                "data": [],
+                "last_updated": None,
+                "expires_at": None,
+                "is_loading": False
+            }
+        
+        user_entry = tasks_cache["user_tasks"]["data"][user_email]
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (user_entry["data"] and 
+            user_entry["expires_at"] and 
+            current_time < datetime.fromisoformat(user_entry["expires_at"])):
+            
+            print(f"USER TASKS CACHE HIT: Returning {len(user_entry['data'])} tasks for {user_email}")
+            return {
+                "success": True,
+                "cached_data": user_entry["data"],
+                "cached_at": user_entry["last_updated"],
+                "expires_at": user_entry["expires_at"],
+                "source": "cache",
+                "total_count": len(user_entry["data"]),
+                "user_email": user_email,
+                "is_complete": True
+            }
+        
+        # If we're still loading in background, return progress
+        if user_entry["is_loading"]:
+            return {
+                "success": True,
+                "cached_data": user_entry["data"],
+                "cached_at": user_entry["last_updated"],
+                "source": "loading",
+                "total_count": len(user_entry["data"]),
+                "user_email": user_email,
+                "is_complete": False,
+                "message": f"Loading tasks for {user_email}..."
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not user_entry["data"] and not user_entry["is_loading"]:
+            print(f"User tasks cache empty for {user_email}, triggering background load...")
+            asyncio.create_task(background_load_user_tasks(user_email))
+            
+            return {
+                "success": True,
+                "cached_data": [],
+                "cached_at": None,
+                "source": "triggered_load",
+                "total_count": 0,
+                "user_email": user_email,
+                "is_complete": False,
+                "message": f"Background loading started for {user_email}..."
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if user_entry["data"]:
+            print(f"User tasks cache expired for {user_email}, returning stale data while refreshing...")
+            if not user_entry["is_loading"]:
+                asyncio.create_task(background_load_user_tasks(user_email))
+            
+            return {
+                "success": True,
+                "cached_data": user_entry["data"],
+                "cached_at": user_entry["last_updated"],
+                "expires_at": user_entry["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(user_entry["data"]),
+                "user_email": user_email,
+                "is_complete": True,
+                "message": f"Using stale tasks data for {user_email} (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "cached_data": [],
+            "cached_at": None,
+            "source": "empty",
+            "total_count": 0,
+            "user_email": user_email,
+            "is_complete": False
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in user tasks cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "total_count": 0,
+            "user_email": user_email
+        }
+        
+@app.post("/cache/refresh/all")
+async def refresh_all_caches(current_user: dict = Depends(get_current_user)):
+    """
+    Manually refresh all caches
+    """
+    try:
+        print("Refreshing all caches...")
+        
+        # Refresh people cache
+        if not people_cache["is_loading"]:
+            asyncio.create_task(background_load_all_people())
+        
+        # Refresh dashboard cache
+        if not dashboard_stats_cache["weekly"]["is_loading"]:
+            asyncio.create_task(background_load_dashboard_stats("weekly"))
+        if not dashboard_stats_cache["monthly"]["is_loading"]:
+            asyncio.create_task(background_load_dashboard_stats("monthly"))
+        
+        # Refresh tasks cache
+        if not tasks_cache["all_tasks"]["is_loading"]:
+            asyncio.create_task(background_load_all_tasks())
+        
+        # Refresh users cache
+        if not users_cache["is_loading"]:
+            asyncio.create_task(background_load_all_users())
+        
+        # Refresh cells cache
+        if not cells_cache["all_cells"]["is_loading"]:
+            asyncio.create_task(background_load_all_cells())
+        
+        return {
+            "success": True,
+            "message": "All cache refreshes triggered",
+            "refreshing": {
+                "people": not people_cache["is_loading"],
+                "dashboard_weekly": not dashboard_stats_cache["weekly"]["is_loading"],
+                "dashboard_monthly": not dashboard_stats_cache["monthly"]["is_loading"],
+                "tasks": not tasks_cache["all_tasks"]["is_loading"],
+                "users": not users_cache["is_loading"],
+                "cells": not cells_cache["all_cells"]["is_loading"]
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error refreshing all caches: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/cache/status/all")
+async def get_all_cache_status():
+    """
+    Get detailed status of all caches
+    """
+    try:
+        # Calculate coverage for people cache
+        people_coverage = 0
+        if people_cache["total_in_database"] > 0:
+            people_coverage = (len(people_cache["data"]) / people_cache["total_in_database"]) * 100
+        
+        # Calculate coverage for tasks cache
+        tasks_coverage = 0
+        if tasks_cache["all_tasks"]["total_count"] > 0:
+            tasks_coverage = (len(tasks_cache["all_tasks"]["data"] or []) / tasks_cache["all_tasks"]["total_count"]) * 100
+        
+        # Calculate coverage for users cache
+        users_coverage = 0
+        if users_cache["total_count"] > 0:
+            users_coverage = (len(users_cache["data"]) / users_cache["total_count"]) * 100
+        
+        # Calculate coverage for cells cache
+        cells_coverage = 0
+        if cells_cache["all_cells"]["total_count"] > 0:
+            cells_coverage = (len(cells_cache["all_cells"]["data"] or []) / cells_cache["all_cells"]["total_count"]) * 100
+        
+        return {
+            "people_cache": {
+                "has_data": len(people_cache["data"]) > 0,
+                "data_count": len(people_cache["data"]),
+                "total_in_database": people_cache["total_in_database"],
+                "coverage_percentage": round(people_coverage, 1),
+                "is_loading": people_cache["is_loading"],
+                "load_progress": people_cache["load_progress"],
+                "last_updated": people_cache["last_updated"],
+                "expires_at": people_cache["expires_at"],
+                "last_error": people_cache["last_error"]
+            },
+            "dashboard_cache": {
+                "weekly": {
+                    "has_data": bool(dashboard_stats_cache["weekly"]["data"]),
+                    "is_loading": dashboard_stats_cache["weekly"]["is_loading"],
+                    "load_progress": dashboard_stats_cache["weekly"]["load_progress"],
+                    "last_updated": dashboard_stats_cache["weekly"]["last_updated"],
+                    "expires_at": dashboard_stats_cache["weekly"]["expires_at"]
+                },
+                "monthly": {
+                    "has_data": bool(dashboard_stats_cache["monthly"]["data"]),
+                    "is_loading": dashboard_stats_cache["monthly"]["is_loading"],
+                    "load_progress": dashboard_stats_cache["monthly"]["load_progress"],
+                    "last_updated": dashboard_stats_cache["monthly"]["last_updated"],
+                    "expires_at": dashboard_stats_cache["monthly"]["expires_at"]
+                }
+            },
+            "tasks_cache": {
+                "all_tasks": {
+                    "has_data": bool(tasks_cache["all_tasks"]["data"]),
+                    "data_count": len(tasks_cache["all_tasks"]["data"] or []),
+                    "total_count": tasks_cache["all_tasks"]["total_count"],
+                    "coverage_percentage": round(tasks_coverage, 1),
+                    "is_loading": tasks_cache["all_tasks"]["is_loading"],
+                    "load_progress": tasks_cache["all_tasks"]["load_progress"],
+                    "last_updated": tasks_cache["all_tasks"]["last_updated"],
+                    "expires_at": tasks_cache["all_tasks"]["expires_at"]
+                },
+                "user_tasks": {
+                    "cached_users_count": len(tasks_cache["user_tasks"]["data"]),
+                    "last_updated": tasks_cache["user_tasks"]["last_updated"]
+                }
+            },
+            "users_cache": {
+                "has_data": len(users_cache["data"]) > 0,
+                "data_count": len(users_cache["data"]),
+                "total_count": users_cache["total_count"],
+                "coverage_percentage": round(users_coverage, 1),
+                "is_loading": users_cache["is_loading"],
+                "load_progress": users_cache["load_progress"],
+                "last_updated": users_cache["last_updated"],
+                "expires_at": users_cache["expires_at"],
+                "last_error": users_cache["last_error"]
+            },
+            "cells_cache": {
+                "has_data": len(cells_cache["all_cells"]["data"] or []) > 0,
+                "data_count": len(cells_cache["all_cells"]["data"] or []),
+                "total_count": cells_cache["all_cells"]["total_count"],
+                "coverage_percentage": round(cells_coverage, 1),
+                "is_loading": cells_cache["all_cells"]["is_loading"],
+                "load_progress": cells_cache["all_cells"]["load_progress"],
+                "last_updated": cells_cache["all_cells"]["last_updated"],
+                "expires_at": cells_cache["all_cells"]["expires_at"],
+                "last_error": cells_cache["all_cells"]["last_error"]
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+            "cache_duration_minutes": CACHE_DURATION_MINUTES
+        }
+        
+    except Exception as e:
+        print(f"Error getting cache status: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/cache/status/all")
+async def get_all_cache_status():
+    """
+    Get detailed status of all caches
+    """
+    try:
+        # Calculate coverage for people cache
+        people_coverage = 0
+        if people_cache["total_in_database"] > 0:
+            people_coverage = (len(people_cache["data"]) / people_cache["total_in_database"]) * 100
+        
+        # Calculate coverage for tasks cache
+        tasks_coverage = 0
+        if tasks_cache["all_tasks"]["total_count"] > 0:
+            tasks_coverage = (len(tasks_cache["all_tasks"]["data"] or []) / tasks_cache["all_tasks"]["total_count"]) * 100
+        
+        # Calculate coverage for users cache
+        users_coverage = 0
+        if users_cache["total_count"] > 0:
+            users_coverage = (len(users_cache["data"]) / users_cache["total_count"]) * 100
+        
+        # Calculate coverage for cells cache
+        cells_coverage = 0
+        if cells_cache["all_cells"]["total_count"] > 0:
+            cells_coverage = (len(cells_cache["all_cells"]["data"] or []) / cells_cache["all_cells"]["total_count"]) * 100
+        
+        return {
+            "people_cache": {
+                "has_data": len(people_cache["data"]) > 0,
+                "data_count": len(people_cache["data"]),
+                "total_in_database": people_cache["total_in_database"],
+                "coverage_percentage": round(people_coverage, 1),
+                "is_loading": people_cache["is_loading"],
+                "load_progress": people_cache["load_progress"],
+                "last_updated": people_cache["last_updated"],
+                "expires_at": people_cache["expires_at"],
+                "last_error": people_cache["last_error"]
+            },
+            "dashboard_cache": {
+                "weekly": {
+                    "has_data": bool(dashboard_stats_cache["weekly"]["data"]),
+                    "is_loading": dashboard_stats_cache["weekly"]["is_loading"],
+                    "load_progress": dashboard_stats_cache["weekly"]["load_progress"],
+                    "last_updated": dashboard_stats_cache["weekly"]["last_updated"],
+                    "expires_at": dashboard_stats_cache["weekly"]["expires_at"]
+                },
+                "monthly": {
+                    "has_data": bool(dashboard_stats_cache["monthly"]["data"]),
+                    "is_loading": dashboard_stats_cache["monthly"]["is_loading"],
+                    "load_progress": dashboard_stats_cache["monthly"]["load_progress"],
+                    "last_updated": dashboard_stats_cache["monthly"]["last_updated"],
+                    "expires_at": dashboard_stats_cache["monthly"]["expires_at"]
+                }
+            },
+            "tasks_cache": {
+                "all_tasks": {
+                    "has_data": bool(tasks_cache["all_tasks"]["data"]),
+                    "data_count": len(tasks_cache["all_tasks"]["data"] or []),
+                    "total_count": tasks_cache["all_tasks"]["total_count"],
+                    "coverage_percentage": round(tasks_coverage, 1),
+                    "is_loading": tasks_cache["all_tasks"]["is_loading"],
+                    "load_progress": tasks_cache["all_tasks"]["load_progress"],
+                    "last_updated": tasks_cache["all_tasks"]["last_updated"],
+                    "expires_at": tasks_cache["all_tasks"]["expires_at"]
+                },
+                "user_tasks": {
+                    "cached_users_count": len(tasks_cache["user_tasks"]["data"]),
+                    "last_updated": tasks_cache["user_tasks"]["last_updated"]
+                }
+            },
+            "users_cache": {
+                "has_data": len(users_cache["data"]) > 0,
+                "data_count": len(users_cache["data"]),
+                "total_count": users_cache["total_count"],
+                "coverage_percentage": round(users_coverage, 1),
+                "is_loading": users_cache["is_loading"],
+                "load_progress": users_cache["load_progress"],
+                "last_updated": users_cache["last_updated"],
+                "expires_at": users_cache["expires_at"],
+                "last_error": users_cache["last_error"]
+            },
+            "cells_cache": {
+                "has_data": len(cells_cache["all_cells"]["data"] or []) > 0,
+                "data_count": len(cells_cache["all_cells"]["data"] or []),
+                "total_count": cells_cache["all_cells"]["total_count"],
+                "coverage_percentage": round(cells_coverage, 1),
+                "is_loading": cells_cache["all_cells"]["is_loading"],
+                "load_progress": cells_cache["all_cells"]["load_progress"],
+                "last_updated": cells_cache["all_cells"]["last_updated"],
+                "expires_at": cells_cache["all_cells"]["expires_at"],
+                "last_error": cells_cache["all_cells"]["last_error"]
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+            "cache_duration_minutes": CACHE_DURATION_MINUTES
+        }
+        
+    except Exception as e:
+        print(f"Error getting cache status: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+        
+async def background_load_church_attendees(period: str = "daily"):
+    """Background task to load church attendees (from service check-in)"""
+    try:
+        if church_attendees_cache[period]["is_loading"]:
+            return
+            
+        church_attendees_cache[period]["is_loading"] = True
+        church_attendees_cache[period]["last_error"] = None
+        church_attendees_cache[period]["load_progress"] = 0
+        
+        print(f"BACKGROUND: Starting to load church attendees for {period}...")
+        
+        # Calculate date range
+        start_date, end_date = calculate_date_range(period)
+        
+        # Build query for church attendees in date range
+        query = {
+            "IsChurchAttendee": True,
+            "Date Created": {
+                "$gte": start_date.isoformat(),
+                "$lte": end_date.isoformat()
+            }
+        }
+        
+        # Get church attendees
+        cursor = people_collection.find(query, {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Number": 1,
+            "Gender": 1,
+            "Date Created": 1,
+            "Stage": 1,
+            "InvitedBy": 1,
+            "FollowUpRequired": 1,
+            "FollowUpStatus": 1,
+            "Source": 1
+        }).sort("Date Created", -1)
+        
+        church_attendees_data = []
+        async for person in cursor:
+            church_attendees_data.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Number", ""),
+                "Gender": person.get("Gender", ""),
+                "DateCreated": person.get("Date Created"),
+                "Stage": person.get("Stage", "Win"),
+                "InvitedBy": person.get("InvitedBy", ""),
+                "FollowUpRequired": person.get("FollowUpRequired", False),
+                "FollowUpStatus": person.get("FollowUpStatus", "pending"),
+                "Source": person.get("Source", "service_checkin"),
+                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            })
+        
+        # Calculate count
+        count = len(church_attendees_data)
+        
+        # Update cache
+        church_attendees_cache[period]["data"] = church_attendees_data
+        church_attendees_cache[period]["count"] = count
+        church_attendees_cache[period]["last_updated"] = datetime.utcnow().isoformat()
+        church_attendees_cache[period]["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        church_attendees_cache[period]["is_loading"] = False
+        church_attendees_cache[period]["load_progress"] = 100
+        
+        # Set period identifier
+        if period == "daily":
+            church_attendees_cache[period]["date"] = start_date.isoformat()
+        elif period == "weekly":
+            church_attendees_cache[period]["week"] = f"Week {start_date.isocalendar()[1]}, {start_date.year}"
+        elif period == "monthly":
+            church_attendees_cache[period]["month"] = start_date.strftime("%B %Y")
+        
+        print(f"BACKGROUND: Loaded {count} church attendees for {period}")
+        
+    except Exception as e:
+        church_attendees_cache[period]["is_loading"] = False
+        church_attendees_cache[period]["last_error"] = str(e)
+        print(f"BACKGROUND: Failed to load church attendees for {period}: {str(e)}")
+
+async def background_load_all_time_church_attendees():
+    """Background task to load all-time church attendees statistics"""
+    try:
+        print("BACKGROUND: Starting to load all-time church attendees stats...")
+        
+        # Get all church attendees sorted by creation date
+        cursor = people_collection.find(
+            {"IsChurchAttendee": True},
+            {"_id": 1, "Date Created": 1, "Stage": 1}
+        ).sort("Date Created", 1)
+        
+        # Group by date and track conversion
+        attendees_by_date = {}
+        total_converted = 0
+        
+        async for person in cursor:
+            date_created = person.get("Date Created")
+            stage = person.get("Stage", "Win")
+            
+            if date_created:
+                created_date = parse_date_from_string(date_created)
+                if created_date:
+                    date_str = created_date.isoformat()
+                    if date_str not in attendees_by_date:
+                        attendees_by_date[date_str] = {
+                            "daily_count": 0,
+                            "converted_count": 0
+                        }
+                    
+                    attendees_by_date[date_str]["daily_count"] += 1
+                    
+                    # Check if converted (moved beyond Win/Consolidate stage)
+                    if stage not in ["Win", "Consolidate"]:
+                        attendees_by_date[date_str]["converted_count"] += 1
+                        total_converted += 1
+        
+        # Create growth timeline
+        growth_timeline = []
+        total_count = 0
+        cumulative_converted = 0
+        
+        # Sort dates chronologically
+        sorted_dates = sorted(attendees_by_date.keys())
+        for date_str in sorted_dates:
+            daily_data = attendees_by_date[date_str]
+            total_count += daily_data["daily_count"]
+            cumulative_converted += daily_data["converted_count"]
+            
+            conversion_rate = 0.0
+            if daily_data["daily_count"] > 0:
+                conversion_rate = (daily_data["converted_count"] / daily_data["daily_count"]) * 100
+            
+            growth_timeline.append({
+                "date": date_str,
+                "daily_count": daily_data["daily_count"],
+                "converted_count": daily_data["converted_count"],
+                "daily_conversion_rate": round(conversion_rate, 2),
+                "cumulative_count": total_count,
+                "cumulative_converted": cumulative_converted
+            })
+        
+        # Calculate overall conversion rate
+        overall_conversion_rate = 0.0
+        if total_count > 0:
+            overall_conversion_rate = (cumulative_converted / total_count) * 100
+        
+        # Update cache
+        church_attendees_cache["all_time"]["total_count"] = total_count
+        church_attendees_cache["all_time"]["converted_count"] = cumulative_converted
+        church_attendees_cache["all_time"]["conversion_rate"] = round(overall_conversion_rate, 2)
+        church_attendees_cache["all_time"]["growth_timeline"] = growth_timeline[-365:]  # Keep last year
+        church_attendees_cache["all_time"]["last_updated"] = datetime.utcnow().isoformat()
+        
+        print(f"BACKGROUND: Loaded all-time church attendees: {total_count} total, {cumulative_converted} converted ({overall_conversion_rate:.2f}% conversion rate)")
+        
+    except Exception as e:
+        print(f"BACKGROUND: Failed to load all-time church attendees stats: {str(e)}")
+        
+@app.get("/cache/church-attendees")
+async def get_cached_church_attendees(
+    period: str = Query("daily", description="Time period: daily, weekly, monthly, or all_time")
+):
+    """
+    Get cached church attendees (from service check-in)
+    """
+    try:
+        if period not in ["daily", "weekly", "monthly", "all_time"]:
+            raise HTTPException(status_code=400, detail="Invalid period. Must be daily, weekly, monthly, or all_time")
+        
+        cache_entry = church_attendees_cache[period]
+        current_time = datetime.utcnow()
+        
+        # If we have data and it's not expired, return it
+        if (cache_entry.get("data") is not None and 
+            cache_entry.get("expires_at") and 
+            current_time < datetime.fromisoformat(cache_entry["expires_at"])):
+            
+            print(f"CHURCH ATTENDEES CACHE HIT ({period}): Returning {cache_entry.get('count', 0)} attendees")
+            return {
+                "success": True,
+                "period": period,
+                "cached_data": cache_entry.get("data", []),
+                "count": cache_entry.get("count", 0),
+                "cached_at": cache_entry.get("last_updated"),
+                "expires_at": cache_entry.get("expires_at"),
+                "source": "cache",
+                "is_complete": True,
+                "load_progress": 100,
+                "date": cache_entry.get("date"),
+                "week": cache_entry.get("week"),
+                "month": cache_entry.get("month"),
+                "conversion_rate": cache_entry.get("conversion_rate", 0.0) if period == "all_time" else None,
+                "growth_timeline": cache_entry.get("growth_timeline", []) if period == "all_time" else None
+            }
+        
+        # If we're still loading in background, return progress
+        if cache_entry.get("is_loading", False):
+            return {
+                "success": True,
+                "period": period,
+                "cached_data": cache_entry.get("data", []),
+                "count": cache_entry.get("count", 0),
+                "cached_at": cache_entry.get("last_updated"),
+                "source": "loading",
+                "is_complete": False,
+                "load_progress": cache_entry.get("load_progress", 0),
+                "message": f"Loading church attendees for {period}... {cache_entry.get('load_progress', 0)}% complete"
+            }
+        
+        # If cache is empty/expired and not loading, trigger background load
+        if not cache_entry.get("data") and not cache_entry.get("is_loading", False):
+            print(f"Church attendees cache empty for {period}, triggering background load...")
+            
+            if period == "all_time":
+                asyncio.create_task(background_load_all_time_church_attendees())
+            else:
+                asyncio.create_task(background_load_church_attendees(period))
+            
+            return {
+                "success": True,
+                "period": period,
+                "cached_data": [],
+                "count": 0,
+                "cached_at": None,
+                "source": "triggered_load",
+                "is_complete": False,
+                "message": f"Background loading started for {period} church attendees...",
+                "load_progress": 0
+            }
+            
+        # If we have some data but it's expired, return it anyway while refreshing
+        if cache_entry.get("data"):
+            print(f"Church attendees cache expired for {period}, returning stale data while refreshing...")
+            if not cache_entry.get("is_loading", False):
+                if period == "all_time":
+                    asyncio.create_task(background_load_all_time_church_attendees())
+                else:
+                    asyncio.create_task(background_load_church_attendees(period))
+            
+            return {
+                "success": True,
+                "period": period,
+                "cached_data": cache_entry.get("data", []),
+                "count": cache_entry.get("count", 0),
+                "cached_at": cache_entry.get("last_updated"),
+                "expires_at": cache_entry.get("expires_at"),
+                "source": "stale_cache",
+                "is_complete": True,
+                "message": f"Using stale {period} church attendees data (refresh in progress)"
+            }
+        
+        # Fallback
+        return {
+            "success": True,
+            "period": period,
+            "cached_data": [],
+            "count": 0,
+            "cached_at": None,
+            "source": "empty",
+            "is_complete": False
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in church attendees cache endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cached_data": [],
+            "count": 0,
+            "period": period
+        }
+
+@app.get("/cache/church-attendees/summary")
+async def get_cached_church_attendees_summary():
+    """
+    Get summary of church attendees across all time periods
+    """
+    try:
+        current_time = datetime.utcnow()
+        
+        # Check if people cache is fresh
+        if (people_cache["last_updated"] and 
+            people_cache["expires_at"] and 
+            current_time < datetime.fromisoformat(people_cache["expires_at"])):
+            
+            print("CHURCH ATTENDEES SUMMARY CACHE HIT: Returning summary from cache")
+            
+            # Get conversion rate from all_time cache
+            conversion_rate = church_attendees_cache["all_time"].get("conversion_rate", 0.0)
+            total_converted = church_attendees_cache["all_time"].get("converted_count", 0)
+            
+            return {
+                "success": True,
+                "summary": {
+                    "today": {
+                        "count": people_cache.get("church_attendees_today", 0)
+                    },
+                    "this_week": {
+                        "count": people_cache.get("church_attendees_this_week", 0)
+                    },
+                    "this_month": {
+                        "count": people_cache.get("church_attendees_this_month", 0),
+                        "growth_rate": people_cache.get("church_attendees_growth_rate", 0.0)
+                    },
+                    "all_time": {
+                        "total_count": church_attendees_cache["all_time"].get("total_count", 0),
+                        "converted_count": total_converted,
+                        "conversion_rate": conversion_rate
+                    }
+                },
+                "cached_at": people_cache["last_updated"],
+                "expires_at": people_cache["expires_at"],
+                "source": "cache"
+            }
+        
+        # If cache is stale, trigger refresh
+        print("Church attendees summary cache stale, refreshing...")
+        if not people_cache["is_loading"]:
+            asyncio.create_task(background_load_all_people())
+        
+        # Return stale data with refresh notice
+        return {
+            "success": True,
+            "summary": {
+                "today": {
+                    "count": people_cache.get("church_attendees_today", 0)
+                },
+                "this_week": {
+                    "count": people_cache.get("church_attendees_this_week", 0)
+                },
+                "this_month": {
+                    "count": people_cache.get("church_attendees_this_month", 0),
+                    "growth_rate": people_cache.get("church_attendees_growth_rate", 0.0)
+                },
+                "all_time": {
+                    "total_count": church_attendees_cache["all_time"].get("total_count", 0),
+                    "converted_count": church_attendees_cache["all_time"].get("converted_count", 0),
+                    "conversion_rate": church_attendees_cache["all_time"].get("conversion_rate", 0.0)
+                }
+            },
+            "cached_at": people_cache["last_updated"],
+            "expires_at": people_cache["expires_at"],
+            "source": "stale_cache_refreshing",
+            "message": "Data is being refreshed in background"
+        }
+        
+    except Exception as e:
+        print(f"Error in church attendees summary endpoint: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": {
+                "today": {"count": 0},
+                "this_week": {"count": 0},
+                "this_month": {"count": 0, "growth_rate": 0.0},
+                "all_time": {"total_count": 0, "converted_count": 0, "conversion_rate": 0.0}
+            }
+        }

@@ -72,16 +72,20 @@ class AttendanceSubmission(BaseModel):
 
 # Adding new Person in the Event screen
 class PersonCreate(BaseModel):
-    invitedBy: str
     name: str
     surname: str
-    gender: str
     email: str
     number: str
-    dob: str
     address: str
-    leaders: list[str]
-    stage: Literal["Win"]
+    gender: str
+    dob: str
+    invitedBy: str
+    leaders: List[str] = Field(default_factory=list)
+    stage: Optional[str] = "Win"
+    source: Optional[str] = "manual" 
+    is_church_attendee: Optional[bool] = False
+    age_group: Optional[str] = None
+    follow_up_required: Optional[bool] = False
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
