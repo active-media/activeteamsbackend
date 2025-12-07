@@ -2965,7 +2965,14 @@ async def get_all_leaders():
 # -----------------------
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-
+def get_current_week_identifier():
+    """
+    Returns a string representing the current week in format 'YYYY-WW'
+    Example: '2025-48' for the 48th week of 2025
+    """
+    today = datetime.now()
+    year, week, _ = today.isocalendar()
+    return f"{year}-{week:02d}"
 
 def get_actual_event_status(event: dict, today: date) -> str:
     current_week = get_current_week_identifier()
