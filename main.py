@@ -837,6 +837,13 @@ async def logout(user_id: str = Body(..., embed=True)):
     return {"message": "Logged out successfully"}
 
 # EVENTS ENDPOINTS-----------------------------------------------------------------
+
+def get_current_week_identifier():
+    """Get current week identifier in format YYYY-WW"""
+    now = datetime.utcnow()
+    year = now.isocalendar()[0]
+    week = now.isocalendar()[1]
+    return f"{year}-W{week:02d}"
 # POST 
 @app.post("/events")
 async def create_event(event: EventCreate):
@@ -1379,10 +1386,12 @@ async def get_cell_events(
         }
        
         cell_instances = []
-       
+        i = 0
+        
         for event in events:
+            i = i+1
             try:
-                print()
+                
                 day_name = str(event.get("Day") or event.get("day") or "").strip().lower()
                
                 if not day_name or day_name not in day_mapping:
@@ -1392,7 +1401,13 @@ async def get_cell_events(
                 days_until = (target_day - start_date_obj.weekday()) % 7
                 instance_date = start_date_obj + timedelta(days=days_until)
                
+                
                 while instance_date <= today:
+                    
+                    if instance_date == start_date_obj:
+                       instance_date += timedelta(days=7)
+                       continue
+
                     year, week, _ = instance_date.isocalendar()
                     week_id = f"{year}-W{week:02d}"
                    
@@ -1401,6 +1416,7 @@ async def get_cell_events(
                     did_not_meet = attendance.get("status") == "did_not_meet"
                    
                     has_checked_in = any(a.get("checked_in", False) for a in attendees)
+                    
                    
                     if did_not_meet or event.get("did_not_meet"):
                         event_status = "did_not_meet"
