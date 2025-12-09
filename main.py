@@ -6848,22 +6848,53 @@ async def debug_event_status(event_id: str):
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
     try:
+        print(f" DELETE REQUEST - Event ID: {event_id}")
+        print(f" ID length: {len(event_id)}")
+        print(f" ID is valid ObjectId: {ObjectId.is_valid(event_id)}")
+        
         if not ObjectId.is_valid(event_id):
+            print(f" Invalid ObjectId format: {event_id}")
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-           
+        
+        # Find the event first
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
         if not existing_event:
-            raise HTTPException(status_code=404, detail="Event not found")
-       
+            print(f"❌ Event not found with ID: {event_id}")
+            print(f"🔍 Checking if event exists with different casing or format...")
+            
+            # Debug: Show some events that might be similar
+            similar_events = await events_collection.find({
+                "eventName": {"$regex": ".*", "$options": "i"}
+            }).limit(3).to_list(None)
+            
+            print(f"🔍 Sample events in DB:")
+            for evt in similar_events:
+                print(f"   - ID: {evt.get('_id')}, Name: {evt.get('eventName', 'N/A')}")
+            
+            raise HTTPException(status_code=404, detail=f"Event not found. ID: {event_id}")
+        
+        print(f"✅ Found event to delete:")
+        print(f"   - ID: {existing_event.get('_id')}")
+        print(f"   - Name: {existing_event.get('eventName', 'N/A')}")
+        print(f"   - Date: {existing_event.get('dateOfEvent', 'N/A')}")
+        
+        # Delete the event
         result = await events_collection.delete_one({"_id": ObjectId(event_id)})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Event not found")
-       
-        return {"message": "Event deleted successfully"}
+        
+        if result.deleted_count == 1:
+            print(f" Successfully deleted event: {event_id}")
+            return {"message": "Event deleted successfully"}
+        else:
+            print(f" Delete operation failed for: {event_id}")
+            raise HTTPException(status_code=500, detail="Failed to delete event")
+            
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Unexpected error deleting event {event_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
+
 
 
 @app.delete("/events/cell/{event_id}/members/{member_id}")
