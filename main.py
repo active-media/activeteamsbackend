@@ -9981,3 +9981,536 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
         print(f"Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
    
+@app.get("/stats/dashboard-comprehensive")
+async def get_dashboard_comprehensive(
+    period: str = Query("weekly", regex="^(weekly|monthly)$"),
+    start_date: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    COMPREHENSIVE: Get overdue cells and all users' tasks in one optimized query
+    Returns everything the dashboard needs in a single response
+    """
+    try:
+        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, User: {current_user.get('email')}")
+        
+        # Calculate date range
+        now = datetime.utcnow()
+        start = now
+        end = now
+        
+        if start_date:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+                end = start
+            except ValueError:
+                print(f"[DASHBOARD] Invalid start_date: {start_date}")
+        
+        if period == 'weekly':
+            day = now.weekday()
+            start = now - timedelta(days=day)
+            end = start + timedelta(days=6)
+        elif period == 'monthly': 
+            start = now.replace(day=1)
+            if now.month == 12:
+                end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+            else:
+                end = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+        
+        start_date_str = start.date().isoformat()
+        end_date_str = end.date().isoformat()
+        
+        print(f"[DASHBOARD] Date range: {start_date_str} to {end_date_str}")
+        
+        # 1. GET OVERDUE CELLS
+        print(f"[DASHBOARD] Fetching overdue cells...")
+        
+        # Use aggregation to get overdue cells efficiently
+        overdue_cells_pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                        {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+                    ],
+                    "date": {"$lte": now},  # Past dates only
+                    "$or": [
+                        {"status": "incomplete"},
+                        {"status": {"$exists": False}},
+                        {"status": None},
+                        {"Status": "Incomplete"},
+                        {"_is_overdue": True}
+                    ]
+                }
+            },
+            {
+                "$sort": {"date": -1}
+            },
+            {
+                "$limit": 100  # Limit for dashboard
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "UUID": 1,
+                    "eventName": {
+                        "$ifNull": [
+                            "$Event Name",
+                            "$eventName",
+                            "$EventName",
+                            "Unnamed Event"
+                        ]
+                    },
+                    "eventType": {
+                        "$ifNull": [
+                            "$Event Type",
+                            "$eventType",
+                            "$eventTypeName",
+                            "Cells"
+                        ]
+                    },
+                    "eventLeaderName": {
+                        "$ifNull": [
+                            "$Leader",
+                            "$eventLeaderName",
+                            "$EventLeaderName",
+                            "Unknown Leader"
+                        ]
+                    },
+                    "eventLeaderEmail": {
+                        "$ifNull": [
+                            "$Email",
+                            "$eventLeaderEmail",
+                            "$EventLeaderEmail",
+                            ""
+                        ]
+                    },
+                    "leader1": {"$ifNull": ["$leader1", "$Leader @1", ""]},
+                    "leader12": {
+                        "$ifNull": [
+                            "$Leader at 12",
+                            "$Leader @12",
+                            "$leader12",
+                            "$Leader12",
+                            ""
+                        ]
+                    },
+                    "day": {"$ifNull": ["$Day", "$day", ""]},
+                    "date": 1,
+                    "location": {"$ifNull": ["$Location", "$location", ""]},
+                    "attendees": {"$ifNull": ["$attendees", []]},
+                    "persistent_attendees": {"$ifNull": ["$persistent_attendees", []]},
+                    "hasPersonSteps": {"$ifNull": ["$hasPersonSteps", True]},
+                    "status": {
+                        "$ifNull": [
+                            "$status",
+                            "$Status",
+                            "incomplete"
+                        ]
+                    },
+                    "Status": 1,
+                    "_is_overdue": {"$literal": True},
+                    "is_recurring": {"$ifNull": ["$is_recurring", True]},
+                    "week_identifier": 1,
+                    "original_event_id": {"$toString": "$_id"}
+                }
+            }
+        ]
+        
+        # 2. GET ALL TASKS GROUPED BY USER
+        print(f"[DASHBOARD] Fetching tasks grouped by user...")
+        
+        tasks_pipeline = [
+            {
+                "$match": {
+                    "followup_date": {"$gte": start, "$lte": end}
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$assignedfor",
+                    "tasks": {
+                        "$push": {
+                            "_id": "$_id",
+                            "name": "$name",
+                            "taskType": "$taskType",
+                            "followup_date": "$followup_date",
+                            "status": "$status",
+                            "assignedfor": "$assignedfor",
+                            "type": "$type",
+                            "contacted_person": "$contacted_person",
+                            "isRecurring": {
+                                "$cond": [
+                                    {"$ifNull": ["$recurring_day", False]},
+                                    True,
+                                    False
+                                ]
+                            },
+                            "priority": "$priority",
+                            "createdAt": "$createdAt"
+                        }
+                    },
+                    "total": {"$sum": 1},
+                    "completed": {
+                        "$sum": {
+                            "$cond": [
+                                {"$in": ["$status", ["completed", "done", "closed"]]},
+                                1,
+                                0
+                            ]
+                        }
+                    }
+                }
+            },
+            {
+                "$match": {
+                    "total": {"$gt": 0}
+                }
+            },
+            {
+                "$sort": {"_id": 1}
+            }
+        ]
+        
+        # 3. GET ALL USERS
+        print(f"[DASHBOARD] Fetching all users...")
+        
+        # Execute all queries in parallel
+        overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
+        tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
+        users_cursor = users_collection.find(
+            {}, 
+            {"_id": 1, "email": 1, "name": 1, "surname": 1}
+        ).limit(limit)
+        
+        # Get results in parallel
+        overdue_cells, task_groups, users = await asyncio.gather(
+            overdue_cells_cursor.to_list(length=100),
+            tasks_cursor.to_list(length=None),
+            users_cursor.to_list(length=limit)
+        )
+        
+        print(f"[DASHBOARD] Found: {len(overdue_cells)} overdue cells, {len(task_groups)} task groups, {len(users)} users")
+        
+        # 4. PROCESS OVERDUE CELLS
+        formatted_overdue_cells = []
+        for cell in overdue_cells:
+            cell["_id"] = str(cell.get("_id", ""))
+            # Ensure date is string
+            if cell.get("date") and isinstance(cell["date"], datetime):
+                cell["date"] = cell["date"].isoformat()
+            formatted_overdue_cells.append(cell)
+        
+        # 5. BUILD USER MAP FOR TASK ASSIGNMENT
+        user_map = {}
+        for user in users:
+            user_id = str(user["_id"])
+            email = user.get("email", "").lower()
+            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+            
+            user_map[email] = {
+                "_id": user_id,
+                "email": email,
+                "fullName": full_name or email.split("@")[0]
+            }
+            
+            # Also map by user ID
+            user_map[user_id] = user_map[email]
+        
+        # 6. GROUP TASKS BY USER WITH USER DETAILS
+        grouped_tasks = []
+        all_tasks_list = []
+        
+        for task_group in task_groups:
+            user_email = task_group["_id"]
+            if not user_email:
+                continue
+                
+            user_info = user_map.get(user_email.lower())
+            
+            if not user_info:
+                # Create minimal user info if not found
+                user_info = {
+                    "_id": f"unknown_{user_email}",
+                    "email": user_email,
+                    "fullName": user_email.split("@")[0]
+                }
+            
+            tasks_list = task_group["tasks"]
+            for task in tasks_list:
+                task["_id"] = str(task["_id"])
+                if task.get("followup_date") and isinstance(task["followup_date"], datetime):
+                    task["followup_date"] = task["followup_date"].isoformat()
+                if task.get("createdAt") and isinstance(task["createdAt"], datetime):
+                    task["createdAt"] = task["createdAt"].isoformat()
+            
+            grouped_tasks.append({
+                "user": {
+                    "_id": user_info["_id"],
+                    "fullName": user_info["fullName"],
+                    "email": user_info["email"]
+                },
+                "tasks": tasks_list,
+                "totalCount": task_group["total"],
+                "completedCount": task_group["completed"],
+                "incompleteCount": task_group["total"] - task_group["completed"]
+            })
+            
+            all_tasks_list.extend(tasks_list)
+        
+        # Sort grouped tasks by user name
+        grouped_tasks.sort(key=lambda x: x["user"]["fullName"].lower())
+        
+        # 7. CALCULATE OVERVIEW STATS
+        total_attendance = sum(len(cell.get("attendees", [])) for cell in formatted_overdue_cells)
+        outstanding_tasks = sum(1 for task in all_tasks_list 
+                              if task.get("status", "").lower() not in ["completed", "done", "closed"])
+        
+        overview = {
+            "total_attendance": total_attendance,
+            "outstanding_cells": len(formatted_overdue_cells),
+            "outstanding_tasks": outstanding_tasks,
+            "people_behind": len([g for g in grouped_tasks if g["incompleteCount"] > 0]),
+            "total_users": len(users),
+            "total_tasks": len(all_tasks_list)
+        }
+        
+        print(f"[DASHBOARD] Overview: {overview}")
+        
+        # 8. PREPARE FINAL RESPONSE
+        response = {
+            "overview": overview,
+            "overdueCells": formatted_overdue_cells,
+            "groupedTasks": grouped_tasks,
+            "allTasks": all_tasks_list,
+            "allUsers": [
+                {
+                    "_id": str(user["_id"]),
+                    "email": user.get("email", ""),
+                    "name": user.get("name", ""),
+                    "surname": user.get("surname", ""),
+                    "fullName": f"{user.get('name', '')} {user.get('surname', '')}".strip() or user.get("email", "").split("@")[0]
+                }
+                for user in users
+            ],
+            "period": period,
+            "date_range": {
+                "start": start_date_str,
+                "end": end_date_str
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        print(f"[DASHBOARD] Response prepared: {len(formatted_overdue_cells)} cells, {len(grouped_tasks)} users with tasks")
+        return response
+        
+    except Exception as e:
+        print(f"[DASHBOARD] ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching comprehensive stats: {str(e)}")
+
+@app.get("/stats/dashboard-quick")
+async def get_dashboard_quick_stats(
+    period: str = Query("weekly", regex="^(weekly|monthly)$"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    ULTRA-FAST: Get only essential stats for dashboard
+    Minimal data, maximum speed
+    """
+    try:
+        now = datetime.utcnow()
+        
+        # Calculate date range
+        if period == 'weekly':
+            day = now.weekday()
+            start = now - timedelta(days=day)
+            end = start + timedelta(days=6)
+        else:  # monthly
+            start = now.replace(day=1)
+            if now.month == 12:
+                end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+            else:
+                end = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+        
+        # Use MongoDB aggregations for maximum speed
+        pipeline = [
+            {
+                "$facet": {
+                    # 1. Overdue cells count
+                    "overdue_cells_count": [
+                        {
+                            "$match": {
+                                "$or": [
+                                    {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                    {"eventType": {"$regex": "^Cells$", "$options": "i"}}
+                                ],
+                                "date": {"$lte": now},
+                                "$or": [
+                                    {"status": "incomplete"},
+                                    {"status": {"$exists": False}},
+                                    {"status": None}
+                                ]
+                            }
+                        },
+                        {"$count": "count"}
+                    ],
+                    
+                    # 2. Tasks summary
+                    "tasks_summary": [
+                        {
+                            "$match": {
+                                "followup_date": {"$gte": start, "$lte": end}
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": "$assignedfor",
+                                "total": {"$sum": 1},
+                                "completed": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$in": ["$status", ["completed", "done", "closed"]]},
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total_tasks": {"$sum": "$total"},
+                                "completed_tasks": {"$sum": "$completed"},
+                                "people_with_tasks": {"$sum": 1},
+                                "people_behind": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$gt": [{"$subtract": ["$total", "$completed"]}, 0]},
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    
+                    # 3. Cell attendance
+                    "cell_attendance": [
+                        {
+                            "$match": {
+                                "$or": [
+                                    {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                    {"eventType": {"$regex": "^Cells$", "$options": "i"}}
+                                ],
+                                "date": {"$gte": start, "$lte": end}
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total_attendance": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$isArray": "$attendees"},
+                                            {"$size": "$attendees"},
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    
+                    # 4. Sample overdue cells (5 only)
+                    "overdue_cells_sample": [
+                        {
+                            "$match": {
+                                "$or": [
+                                    {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                    {"eventType": {"$regex": "^Cells$", "$options": "i"}}
+                                ],
+                                "date": {"$lte": now},
+                                "$or": [
+                                    {"status": "incomplete"},
+                                    {"status": {"$exists": False}},
+                                    {"status": None}
+                                ]
+                            }
+                        },
+                        {"$sort": {"date": -1}},
+                        {"$limit": 5},
+                        {
+                            "$project": {
+                                "_id": 1,
+                                "eventName": {
+                                    "$ifNull": [
+                                        "$Event Name",
+                                        "$eventName",
+                                        "Unnamed"
+                                    ]
+                                },
+                                "date": 1,
+                                "eventLeaderName": {
+                                    "$ifNull": [
+                                        "$Leader",
+                                        "$eventLeaderName",
+                                        "Unknown"
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+        
+        # Execute single aggregation
+        result = await events_collection.aggregate(pipeline).to_list(length=1)
+        facet_result = result[0] if result else {}
+        
+        # Extract results
+        overdue_cells_count = facet_result.get("overdue_cells_count", [{}])[0].get("count", 0)
+        tasks_summary = facet_result.get("tasks_summary", [{}])[0] or {}
+        cell_attendance = facet_result.get("cell_attendance", [{}])[0] or {}
+        overdue_cells_sample = facet_result.get("overdue_cells_sample", [])
+        
+        # Format response
+        response = {
+            "overview": {
+                "total_attendance": cell_attendance.get("total_attendance", 0),
+                "outstanding_cells": overdue_cells_count,
+                "outstanding_tasks": tasks_summary.get("total_tasks", 0) - tasks_summary.get("completed_tasks", 0),
+                "people_behind": tasks_summary.get("people_behind", 0),
+                "total_tasks": tasks_summary.get("total_tasks", 0),
+                "completed_tasks": tasks_summary.get("completed_tasks", 0)
+            },
+            "overdueCellsSample": [
+                {
+                    "_id": str(cell["_id"]),
+                    "eventName": cell.get("eventName", "Unnamed"),
+                    "date": cell.get("date"),
+                    "eventLeaderName": cell.get("eventLeaderName", "Unknown")
+                }
+                for cell in overdue_cells_sample
+            ],
+            "period": period,
+            "date_range": {
+                "start": start.date().isoformat(),
+                "end": end.date().isoformat()
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+            "optimized": True,
+            "query_time_ms": None  # You can add query timing if needed
+        }
+        
+        return response
+        
+    except Exception as e:
+        print(f"[DASHBOARD QUICK] ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching quick stats: {str(e)}")
