@@ -9984,7 +9984,11 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
 @app.get("/stats/dashboard-comprehensive")
 async def get_dashboard_comprehensive(
     period: str = Query("weekly", regex="^(weekly|monthly)$"),
-    start_date: Optional[str] = Query(None),
+    task_filter: str = Query("all", regex="^(all|lastWeek|lastMonth|thisWeek|thisMonth)$"),
+    task_start: Optional[str] = Query(None),
+    task_end: Optional[str] = Query(None),
+    period_start: Optional[str] = Query(None),
+    period_end: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(get_current_user)
 ):
@@ -9993,37 +9997,66 @@ async def get_dashboard_comprehensive(
     Returns everything the dashboard needs in a single response
     """
     try:
-        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, User: {current_user.get('email')}")
+        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, Task Filter: {task_filter}, User: {current_user.get('email')}")
         
-        # Calculate date range
+        # Calculate date range for period (overdue cells)
         now = datetime.utcnow()
-        start = now
-        end = now
+        period_start_date = now
+        period_end_date = now
         
-        if start_date:
+        # Use provided period dates or calculate based on period parameter
+        if period_start and period_end:
             try:
-                start = datetime.strptime(start_date, "%Y-%m-%d")
-                end = start
+                period_start_date = datetime.strptime(period_start, "%Y-%m-%d")
+                period_end_date = datetime.strptime(period_end, "%Y-%m-%d")
             except ValueError:
-                print(f"[DASHBOARD] Invalid start_date: {start_date}")
+                print(f"[DASHBOARD] Invalid period date range: {period_start} to {period_end}")
+                # Fallback to period calculation
+                if period == 'weekly':
+                    day = now.weekday()
+                    period_start_date = now - timedelta(days=day)
+                    period_end_date = period_start_date + timedelta(days=6)
+                else:  # monthly
+                    period_start_date = now.replace(day=1)
+                    if now.month == 12:
+                        period_end_date = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+                    else:
+                        period_end_date = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+        else:
+            # Calculate period date range based on period parameter
+            if period == 'weekly':
+                day = now.weekday()
+                period_start_date = now - timedelta(days=day)
+                period_end_date = period_start_date + timedelta(days=6)
+            else:  # monthly
+                period_start_date = now.replace(day=1)
+                if now.month == 12:
+                    period_end_date = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+                else:
+                    period_end_date = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
         
-        if period == 'weekly':
-            day = now.weekday()
-            start = now - timedelta(days=day)
-            end = start + timedelta(days=6)
-        elif period == 'monthly': 
-            start = now.replace(day=1)
-            if now.month == 12:
-                end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
-            else:
-                end = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+        # Calculate task filter date range
+        task_start_date = now
+        task_end_date = now
         
-        start_date_str = start.date().isoformat()
-        end_date_str = end.date().isoformat()
+        # Use provided task dates or calculate based on task_filter parameter
+        if task_start and task_end:
+            try:
+                task_start_date = datetime.strptime(task_start, "%Y-%m-%d")
+                task_end_date = datetime.strptime(task_end, "%Y-%m-%d")
+                print(f"[DASHBOARD] Using provided task date range: {task_start} to {task_end}")
+            except ValueError:
+                print(f"[DASHBOARD] Invalid task date range: {task_start} to {task_end}")
+                # Fallback to task filter calculation
+                task_start_date, task_end_date = calculate_task_filter_dates(task_filter)
+        else:
+            # Calculate task date range based on task_filter parameter
+            task_start_date, task_end_date = calculate_task_filter_dates(task_filter)
         
-        print(f"[DASHBOARD] Date range: {start_date_str} to {end_date_str}")
+        print(f"[DASHBOARD] Period range: {period_start_date.date()} to {period_end_date.date()}")
+        print(f"[DASHBOARD] Task filter range: {task_start_date.date()} to {task_end_date.date()} (filter: {task_filter})")
         
-        # 1. GET OVERDUE CELLS
+        # 1. GET OVERDUE CELLS (using period date range)
         print(f"[DASHBOARD] Fetching overdue cells...")
         
         # Use aggregation to get overdue cells efficiently
@@ -10035,7 +10068,7 @@ async def get_dashboard_comprehensive(
                         {"eventType": {"$regex": "^Cells$", "$options": "i"}},
                         {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
                     ],
-                    "date": {"$lte": now},  # Past dates only
+                    "date": {"$lte": period_end_date},  # Cells that should have happened by end of period
                     "$or": [
                         {"status": "incomplete"},
                         {"status": {"$exists": False}},
@@ -10119,13 +10152,13 @@ async def get_dashboard_comprehensive(
             }
         ]
         
-        # 2. GET ALL TASKS GROUPED BY USER
+        # 2. GET ALL TASKS GROUPED BY USER (using task filter date range)
         print(f"[DASHBOARD] Fetching tasks grouped by user...")
         
         tasks_pipeline = [
             {
                 "$match": {
-                    "followup_date": {"$gte": start, "$lte": end}
+                    "followup_date": {"$gte": task_start_date, "$lte": task_end_date}
                 }
             },
             {
@@ -10149,7 +10182,9 @@ async def get_dashboard_comprehensive(
                                 ]
                             },
                             "priority": "$priority",
-                            "createdAt": "$createdAt"
+                            "createdAt": "$createdAt",
+                            "due_date": "$due_date",
+                            "description": "$description"
                         }
                     },
                     "total": {"$sum": 1},
@@ -10157,6 +10192,22 @@ async def get_dashboard_comprehensive(
                         "$sum": {
                             "$cond": [
                                 {"$in": ["$status", ["completed", "done", "closed"]]},
+                                1,
+                                0
+                            ]
+                        }
+                    },
+                    "overdue": {
+                        "$sum": {
+                            "$cond": [
+                                {
+                                    "$and": [
+                                        {"$ne": ["$status", "completed"]},
+                                        {"$ne": ["$status", "done"]},
+                                        {"$ne": ["$status", "closed"]},
+                                        {"$lt": ["$followup_date", now]}
+                                    ]
+                                },
                                 1,
                                 0
                             ]
@@ -10245,6 +10296,8 @@ async def get_dashboard_comprehensive(
                     task["followup_date"] = task["followup_date"].isoformat()
                 if task.get("createdAt") and isinstance(task["createdAt"], datetime):
                     task["createdAt"] = task["createdAt"].isoformat()
+                if task.get("due_date") and isinstance(task["due_date"], datetime):
+                    task["due_date"] = task["due_date"].isoformat()
             
             grouped_tasks.append({
                 "user": {
@@ -10255,7 +10308,8 @@ async def get_dashboard_comprehensive(
                 "tasks": tasks_list,
                 "totalCount": task_group["total"],
                 "completedCount": task_group["completed"],
-                "incompleteCount": task_group["total"] - task_group["completed"]
+                "incompleteCount": task_group["total"] - task_group["completed"],
+                "overdueCount": task_group.get("overdue", 0)
             })
             
             all_tasks_list.extend(tasks_list)
@@ -10274,7 +10328,13 @@ async def get_dashboard_comprehensive(
             "outstanding_tasks": outstanding_tasks,
             "people_behind": len([g for g in grouped_tasks if g["incompleteCount"] > 0]),
             "total_users": len(users),
-            "total_tasks": len(all_tasks_list)
+            "total_tasks": len(all_tasks_list),
+            "completed_tasks": sum(g["completedCount"] for g in grouped_tasks),
+            "task_filter": task_filter,
+            "task_date_range": {
+                "start": task_start_date.date().isoformat(),
+                "end": task_end_date.date().isoformat()
+            }
         }
         
         print(f"[DASHBOARD] Overview: {overview}")
@@ -10297,8 +10357,8 @@ async def get_dashboard_comprehensive(
             ],
             "period": period,
             "date_range": {
-                "start": start_date_str,
-                "end": end_date_str
+                "start": period_start_date.date().isoformat(),
+                "end": period_end_date.date().isoformat()
             },
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -10312,6 +10372,376 @@ async def get_dashboard_comprehensive(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching comprehensive stats: {str(e)}")
 
+
+def calculate_task_filter_dates(task_filter: str) -> tuple:
+    """Calculate date range based on task filter"""
+    now = datetime.utcnow()
+    
+    if task_filter == "lastWeek":
+        # Last week: Monday to Sunday of previous week
+        day = now.weekday()  # Monday is 0, Sunday is 6
+        start = now - timedelta(days=day + 7)
+        end = start + timedelta(days=6)
+        
+    elif task_filter == "lastMonth":
+        # Last month: 1st to last day of previous month
+        if now.month == 1:
+            start = now.replace(year=now.year - 1, month=12, day=1)
+        else:
+            start = now.replace(month=now.month - 1, day=1)
+        
+        # Get last day of previous month
+        end = start.replace(day=1) + timedelta(days=32)  # Go to next month
+        end = end.replace(day=1) - timedelta(days=1)  # Last day of previous month
+        
+    elif task_filter == "thisWeek":
+        # This week: Monday to Sunday of current week
+        day = now.weekday()
+        start = now - timedelta(days=day)
+        end = start + timedelta(days=6)
+        
+    elif task_filter == "thisMonth":
+        # This month: 1st to last day of current month
+        start = now.replace(day=1)
+        if now.month == 12:
+            end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+        else:
+            end = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+            
+    else:  # "all"
+        # All time: 1 year back to 1 year forward
+        start = now - timedelta(days=365)
+        end = now + timedelta(days=365)
+    
+    # Set time to beginning and end of day
+    start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
+    
+    return start, end
+
+
+# Also update the quick stats endpoint to handle task filters
+@app.get("/stats/dashboard-quick")
+async def get_dashboard_quick_stats(
+    period: str = Query("weekly", regex="^(weekly|monthly)$"),
+    task_filter: str = Query("all", regex="^(all|lastWeek|lastMonth|thisWeek|thisMonth)$"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    ULTRA-FAST: Get only essential stats for dashboard
+    Minimal data, maximum speed
+    """
+    try:
+        now = datetime.utcnow()
+        
+        # Calculate date range for period
+        if period == 'weekly':
+            day = now.weekday()
+            start = now - timedelta(days=day)
+            end = start + timedelta(days=6)
+        else:  # monthly
+            start = now.replace(day=1)
+            if now.month == 12:
+                end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(seconds=1)
+            else:
+                end = now.replace(month=now.month + 1, day=1) - timedelta(seconds=1)
+        
+        # Calculate task filter date range
+        task_start_date, task_end_date = calculate_task_filter_dates(task_filter)
+        
+        print(f"[DASHBOARD QUICK] Period: {period}, Task Filter: {task_filter}, Task Range: {task_start_date.date()} to {task_end_date.date()}")
+        
+        # Use MongoDB aggregations for maximum speed
+        pipeline = [
+            {
+                "$facet": {
+                    # 1. Overdue cells count
+                    "overdue_cells_count": [
+                        {
+                            "$match": {
+                                "$or": [
+                                    {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                    {"eventType": {"$regex": "^Cells$", "$options": "i"}}
+                                ],
+                                "date": {"$lte": now},
+                                "$or": [
+                                    {"status": "incomplete"},
+                                    {"status": {"$exists": False}},
+                                    {"status": None}
+                                ]
+                            }
+                        },
+                        {"$count": "count"}
+                    ],
+                    
+                    # 2. Tasks summary (using task filter dates)
+                    "tasks_summary": [
+                        {
+                            "$match": {
+                                "followup_date": {"$gte": task_start_date, "$lte": task_end_date}
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": "$assignedfor",
+                                "total": {"$sum": 1},
+                                "completed": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$in": ["$status", ["completed", "done", "closed"]]},
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total_tasks": {"$sum": "$total"},
+                                "completed_tasks": {"$sum": "$completed"},
+                                "people_with_tasks": {"$sum": 1},
+                                "people_behind": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$gt": [{"$subtract": ["$total", "$completed"]}, 0]},
+                                            1,
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    
+                    # 3. Cell attendance (using period dates)
+                    "cell_attendance": [
+                        {
+                            "$match": {
+                                "$or": [
+                                    {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                    {"eventType": {"$regex": "^Cells$", "$options": "i"}}
+                                ],
+                                "date": {"$gte": start, "$lte": end}
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total_attendance": {
+                                    "$sum": {
+                                        "$cond": [
+                                            {"$isArray": "$attendees"},
+                                            {"$size": "$attendees"},
+                                            0
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    
+                    # 4. Sample overdue cells (5 only)
+                    "overdue_cells_sample": [
+                        {
+                            "$match": {
+                                "$or": [
+                                    {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                    {"eventType": {"$regex": "^Cells$", "$options": "i"}}
+                                ],
+                                "date": {"$lte": now},
+                                "$or": [
+                                    {"status": "incomplete"},
+                                    {"status": {"$exists": False}},
+                                    {"status": None}
+                                ]
+                            }
+                        },
+                        {"$sort": {"date": -1}},
+                        {"$limit": 5},
+                        {
+                            "$project": {
+                                "_id": 1,
+                                "eventName": {
+                                    "$ifNull": [
+                                        "$Event Name",
+                                        "$eventName",
+                                        "Unnamed"
+                                    ]
+                                },
+                                "date": 1,
+                                "eventLeaderName": {
+                                    "$ifNull": [
+                                        "$Leader",
+                                        "$eventLeaderName",
+                                        "Unknown"
+                                    ]
+                                }
+                            }
+                        }
+                    ],
+                    
+                    # 5. Task filter info
+                    "task_date_range": [
+                        {
+                            "$match": {
+                                "followup_date": {"$gte": task_start_date, "$lte": task_end_date}
+                            }
+                        },
+                        {
+                            "$group": {
+                                "_id": None,
+                                "earliest_date": {"$min": "$followup_date"},
+                                "latest_date": {"$max": "$followup_date"}
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+        
+        # Execute single aggregation
+        result = await tasks_collection.aggregate(pipeline).to_list(length=1)
+        facet_result = result[0] if result else {}
+        
+        # Extract results
+        overdue_cells_count = facet_result.get("overdue_cells_count", [{}])[0].get("count", 0)
+        tasks_summary = facet_result.get("tasks_summary", [{}])[0] or {}
+        cell_attendance = facet_result.get("cell_attendance", [{}])[0] or {}
+        overdue_cells_sample = facet_result.get("overdue_cells_sample", [])
+        task_date_info = facet_result.get("task_date_range", [{}])[0] or {}
+        
+        # Get task date range info
+        task_date_range = {
+            "start": task_start_date.date().isoformat(),
+            "end": task_end_date.date().isoformat()
+        }
+        
+        if task_date_info.get("earliest_date") and task_date_info.get("latest_date"):
+            task_date_range["actual_earliest"] = task_date_info["earliest_date"].date().isoformat()
+            task_date_range["actual_latest"] = task_date_info["latest_date"].date().isoformat()
+        
+        # Format response
+        response = {
+            "overview": {
+                "total_attendance": cell_attendance.get("total_attendance", 0),
+                "outstanding_cells": overdue_cells_count,
+                "outstanding_tasks": tasks_summary.get("total_tasks", 0) - tasks_summary.get("completed_tasks", 0),
+                "people_behind": tasks_summary.get("people_behind", 0),
+                "total_tasks": tasks_summary.get("total_tasks", 0),
+                "completed_tasks": tasks_summary.get("completed_tasks", 0)
+            },
+            "overdueCellsSample": [
+                {
+                    "_id": str(cell["_id"]),
+                    "eventName": cell.get("eventName", "Unnamed"),
+                    "date": cell.get("date"),
+                    "eventLeaderName": cell.get("eventLeaderName", "Unknown")
+                }
+                for cell in overdue_cells_sample
+            ],
+            "period": period,
+            "task_filter": task_filter,
+            "date_range": {
+                "start": start.date().isoformat(),
+                "end": end.date().isoformat()
+            },
+            "task_date_range": task_date_range,
+            "timestamp": datetime.utcnow().isoformat(),
+            "optimized": True
+        }
+        
+        return response
+        
+    except Exception as e:
+        print(f"[DASHBOARD QUICK] ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching quick stats: {str(e)}")
+
+
+# Add a new endpoint to get tasks with filtering
+@app.get("/tasks/filtered")
+async def get_filtered_tasks(
+    task_filter: str = Query("all", regex="^(all|lastWeek|lastMonth|thisWeek|thisMonth)$"),
+    assigned_to: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, regex="^(all|completed|pending|overdue)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    skip: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get tasks with flexible filtering"""
+    try:
+        # Calculate date range based on filter
+        task_start_date, task_end_date = calculate_task_filter_dates(task_filter)
+        
+        # Build query
+        query = {
+            "followup_date": {"$gte": task_start_date, "$lte": task_end_date}
+        }
+        
+        if assigned_to:
+            query["assignedfor"] = assigned_to
+            
+        if status and status != "all":
+            if status == "completed":
+                query["status"] = {"$in": ["completed", "done", "closed"]}
+            elif status == "pending":
+                query["status"] = {"$nin": ["completed", "done", "closed"]}
+                query["followup_date"] = {"$gte": datetime.utcnow(), "$lte": task_end_date}
+            elif status == "overdue":
+                query["status"] = {"$nin": ["completed", "done", "closed"]}
+                query["followup_date"] = {"$lt": datetime.utcnow()}
+        
+        # Get tasks
+        tasks = await tasks_collection.find(
+            query,
+            {
+                "_id": 1,
+                "name": 1,
+                "taskType": 1,
+                "followup_date": 1,
+                "status": 1,
+                "assignedfor": 1,
+                "type": 1,
+                "contacted_person": 1,
+                "priority": 1,
+                "createdAt": 1,
+                "description": 1
+            }
+        ).sort("followup_date", 1).skip(skip).limit(limit).to_list(length=limit)
+        
+        # Format response
+        formatted_tasks = []
+        for task in tasks:
+            task["_id"] = str(task["_id"])
+            if task.get("followup_date") and isinstance(task["followup_date"], datetime):
+                task["followup_date"] = task["followup_date"].isoformat()
+            if task.get("createdAt") and isinstance(task["createdAt"], datetime):
+                task["createdAt"] = task["createdAt"].isoformat()
+            formatted_tasks.append(task)
+        
+        # Get total count
+        total = await tasks_collection.count_documents(query)
+        
+        return {
+            "tasks": formatted_tasks,
+            "total": total,
+            "filter": task_filter,
+            "date_range": {
+                "start": task_start_date.date().isoformat(),
+                "end": task_end_date.date().isoformat()
+            },
+            "pagination": {
+                "limit": limit,
+                "skip": skip,
+                "has_more": total > (skip + limit)
+            }
+        }
+        
+    except Exception as e:
+        print(f"[TASKS FILTERED] ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching filtered tasks: {str(e)}")
+    
 @app.get("/stats/dashboard-quick")
 async def get_dashboard_quick_stats(
     period: str = Query("weekly", regex="^(weekly|monthly)$"),
