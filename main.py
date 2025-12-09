@@ -9980,4 +9980,76 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
     except Exception as e:
         print(f"Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
-   
+
+
+@app.patch("/events/{event_id}/close")
+async def close_event(
+    event_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Close/Complete an event - Update status to "complete"
+    """
+    try:
+        print(f"🔒 Closing event: {event_id}")
+        
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        # Get event first to check if it exists
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Check if event is already closed
+        current_status = event.get("status", "").lower()
+        if current_status in ["complete", "closed"]:
+            return {
+                "message": f"Event '{event.get('eventName', 'Unknown')}' is already closed",
+                "status": current_status,
+                "already_closed": True
+            }
+
+        # Update event status to "complete"
+        update_data = {
+            "status": "complete",
+            "updated_at": datetime.utcnow().isoformat(),
+            "closed_by": current_user.get("email", ""),
+            "closed_at": datetime.utcnow().isoformat()
+        }
+
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to update event status")
+
+        # Get updated event
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
+        # Log the activity
+        await log_activity(
+            user_id=current_user.get("_id"),
+            action="EVENT_CLOSED",
+            details=f"Closed event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
+        )
+
+        print(f"✅ Event {event.get('eventName')} closed successfully")
+
+        return {
+            "success": True,
+            "message": f"Event '{event.get('eventName', 'Unknown')}' closed successfully",
+            "event_id": event_id,
+            "event_name": event.get("eventName", "Unknown"),
+            "new_status": "complete",
+            "closed_by": current_user.get("email", ""),
+            "closed_at": update_data["closed_at"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error closing event: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
