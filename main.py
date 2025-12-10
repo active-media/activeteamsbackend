@@ -9560,4 +9560,853 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
     except Exception as e:
         print(f"Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
-   
+
+
+def get_period_range(period: str):
+    """
+    Accurate date range calculator matching frontend's DailyTasks filter:
+    - today
+    - thisWeek
+    - thisMonth
+    - previous7 (last 7 days)
+    - previousWeek
+    - previousMonth
+    """
+    now = datetime.utcnow()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # TODAY
+    if period == "today":
+        start = today
+        end = today.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return start, end
+    
+    # THIS WEEK (Monday to Sunday)
+    if period == "thisWeek":
+        start = today - timedelta(days=today.weekday())  # Monday
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
+        return start, end
+    
+    # THIS MONTH
+    if period == "thisMonth":
+        start = today.replace(day=1)
+        if today.month == 12:
+            end = datetime(today.year + 1, 1, 1) - timedelta(microseconds=1)
+        else:
+            end = datetime(today.year, today.month + 1, 1) - timedelta(microseconds=1)
+        return start, end
+    
+    # PREVIOUS 7 DAYS
+    if period == "previous7":
+        end = today - timedelta(days=1)  # Yesterday
+        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
+        start = end - timedelta(days=6)  # 7 days ago (inclusive)
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, end
+    
+    # PREVIOUS WEEK (complete last week, Monday to Sunday)
+    if period == "previousWeek":
+        last_week = today - timedelta(weeks=1)
+        start = last_week - timedelta(days=last_week.weekday())  # Monday of last week
+        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
+        return start, end
+    
+    # PREVIOUS MONTH (complete last month)
+    if period == "previousMonth":
+        year = today.year
+        month = today.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+        
+        start = datetime(year, month, 1)
+        if month == 12:
+            end = datetime(year + 1, 1, 1) - timedelta(microseconds=1)
+        else:
+            end = datetime(year, month + 1, 1) - timedelta(microseconds=1)
+        return start, end
+    
+    raise ValueError(f"Invalid period '{period}'")
+
+# Define task types to exclude from completed counts - USING EXACT VALUES FROM DATABASE
+EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
+
+@app.get("/stats/dashboard-comprehensive")
+async def get_dashboard_comprehensive(
+    period: str = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
+    limit: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    COMPREHENSIVE DASHBOARD
+    Counts completed tasks EXCLUDING "no answer" and "Awaiting Call"
+    """
+    try:
+        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, User: {current_user.get('email')}")
+        print(f"[DASHBOARD] Excluding task types from completed count: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
+
+        # DATE RANGE
+        start, end = get_period_range(period)
+        start_date_str = start.date().isoformat()
+        end_date_str = end.date().isoformat()
+        print(f"[DASHBOARD] Date range: {start_date_str} → {end_date_str}")
+
+        # -------- 1. GET ALL TASK TYPES FROM DATABASE (for reference only) --------
+        task_types_cursor = tasktypes_collection.find({}, {"name": 1})
+        task_types_list = await task_types_cursor.to_list(length=None)
+        all_task_types = [tt.get("name") for tt in task_types_list if tt.get("name")]
+        print(f"[DASHBOARD] Found {len(all_task_types)} task types in database: {all_task_types}")
+
+        # -------- 2. OVERDUE CELLS PIPELINE --------
+        overdue_cells_pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                        {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+                    ],
+                    "date": {"$lte": end},
+                    "$or": [
+                        {"status": "incomplete"},
+                        {"status": {"$exists": False}},
+                        {"status": None},
+                        {"Status": "Incomplete"},
+                        {"_is_overdue": True}
+                    ]
+                }
+            },
+            {"$sort": {"date": -1}},
+            {"$limit": 100},
+            {
+                "$project": {
+                    "_id": 1,
+                    "UUID": 1,
+                    "eventName": {
+                        "$ifNull": ["$Event Name", "$eventName", "$EventName", "Unnamed Event"]
+                    },
+                    "eventType": {
+                        "$ifNull": ["$Event Type", "$eventType", "$eventTypeName", "Cells"]
+                    },
+                    "eventLeaderName": {
+                        "$ifNull": ["$Leader", "$eventLeaderName", "$EventLeaderName", "Unknown Leader"]
+                    },
+                    "eventLeaderEmail": {
+                        "$ifNull": ["$Email", "$eventLeaderEmail", "$EventLeaderEmail", ""]
+                    },
+                    "leader1": {"$ifNull": ["$leader1", "$Leader @1", ""]},
+                    "leader12": {
+                        "$ifNull": ["$Leader at 12", "$Leader @12", "$leader12", "$Leader12", ""]
+                    },
+                    "day": {"$ifNull": ["$Day", "$day", ""]},
+                    "date": 1,
+                    "location": {"$ifNull": ["$Location", "$location", ""]},
+                    "attendees": {"$ifNull": ["$attendees", []]},
+                    "persistent_attendees": {"$ifNull": ["$persistent_attendees", []]},
+                    "hasPersonSteps": {"$ifNull": ["$hasPersonSteps", True]},
+                    "status": {"$ifNull": ["$status", "$Status", "incomplete"]},
+                    "_is_overdue": {"$literal": True},
+                    "is_recurring": {"$ifNull": ["$is_recurring", True]},
+                    "week_identifier": 1,
+                    "original_event_id": {"$toString": "$_id"}
+                }
+            }
+        ]
+
+        # -------- 3. TASKS PIPELINE - COUNT TASKS WITH EXCLUSIONS --------
+        tasks_pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"followup_date": {"$gte": start, "$lte": end}},
+                        {"completedAt": {"$gte": start, "$lte": end}},
+                        {"createdAt": {"$gte": start, "$lte": end}}
+                    ]
+                }
+            },
+            {
+                "$addFields": {
+                    # Get task type or default - use case-sensitive exact matching
+                    "task_type_label": {
+                        "$ifNull": ["$taskType", "Uncategorized"]
+                    },
+                    # Check if task is excluded from completed count (EXACT MATCH)
+                    "is_excluded_type": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$taskType", None]},
+                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    },
+                    # Check if task is completed (considering exclusions)
+                    "is_completed": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {
+                                        "$in": [
+                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                            ["completed", "done", "closed", "finished"]
+                                        ]
+                                    },
+                                    {
+                                        "$not": {
+                                            "$cond": [
+                                                {
+                                                    "$and": [
+                                                        {"$ne": ["$taskType", None]},
+                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                    ]
+                                                },
+                                                True,
+                                                False
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    },
+                    # Check if task is completed in this period (considering exclusions)
+                    "completed_in_period": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$completedAt", None]},
+                                    {"$gte": ["$completedAt", start]},
+                                    {"$lte": ["$completedAt", end]},
+                                    {
+                                        "$in": [
+                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                            ["completed", "done", "closed", "finished"]
+                                        ]
+                                    },
+                                    {
+                                        "$not": {
+                                            "$cond": [
+                                                {
+                                                    "$and": [
+                                                        {"$ne": ["$taskType", None]},
+                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                    ]
+                                                },
+                                                True,
+                                                False
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    },
+                    # Check if task is due in this period
+                    "is_due_in_period": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$followup_date", None]},
+                                    {"$gte": ["$followup_date", start]},
+                                    {"$lte": ["$followup_date", end]}
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$assignedfor",
+                    "tasks": {
+                        "$push": {
+                            "_id": "$_id",
+                            "name": "$name",
+                            "taskType": "$taskType",
+                            "task_type_label": "$task_type_label",
+                            "followup_date": "$followup_date",
+                            "due_date": "$followup_date",
+                            "completedAt": "$completedAt",
+                            "createdAt": "$createdAt",
+                            "status": "$status",
+                            "assignedfor": "$assignedfor",
+                            "type": "$type",
+                            "contacted_person": "$contacted_person",
+                            "isRecurring": {
+                                "$cond": [{"$ifNull": ["$recurring_day", False]}, True, False]
+                            },
+                            "priority": "$priority",
+                            "is_completed": "$is_completed",
+                            "is_due_in_period": "$is_due_in_period",
+                            "completed_in_period": "$completed_in_period",
+                            "is_excluded_type": "$is_excluded_type",
+                            "description": "$description"
+                        }
+                    },
+                    # Count ALL tasks for this user
+                    "total_tasks": {"$sum": 1},
+                    # Count completed tasks (excluding "no answer" and "Awaiting Call")
+                    "completed_tasks": {
+                        "$sum": {
+                            "$cond": ["$is_completed", 1, 0]
+                        }
+                    },
+                    # Count tasks completed IN THIS PERIOD (excluding specific types)
+                    "completed_in_period": {
+                        "$sum": {
+                            "$cond": ["$completed_in_period", 1, 0]
+                        }
+                    },
+                    # Count tasks due in period
+                    "due_in_period": {
+                        "$sum": {
+                            "$cond": ["$is_due_in_period", 1, 0]
+                        }
+                    },
+                    # Group by task type for breakdown
+                    "task_type_counts": {
+                        "$push": {
+                            "task_type": "$task_type_label",
+                            "is_completed": "$is_completed",
+                            "completed_in_period": "$completed_in_period",
+                            "is_due_in_period": "$is_due_in_period",
+                            "is_excluded_type": "$is_excluded_type"
+                        }
+                    }
+                }
+            },
+            {"$match": {"total_tasks": {"$gt": 0}}},
+            {"$sort": {"_id": 1}}
+        ]
+
+        # -------- 4. FETCH DATA IN PARALLEL --------
+        overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
+        tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
+        users_cursor = users_collection.find(
+            {},
+            {"_id": 1, "email": 1, "name": 1, "surname": 1}
+        ).limit(limit)
+
+        overdue_cells, task_groups, users = await asyncio.gather(
+            overdue_cells_cursor.to_list(100),
+            tasks_cursor.to_list(None),
+            users_cursor.to_list(limit),
+        )
+
+        # -------- 5. FORMAT OVERDUE CELLS --------
+        formatted_overdue_cells = []
+        for cell in overdue_cells:
+            cell["_id"] = str(cell["_id"])
+            if isinstance(cell.get("date"), datetime):
+                cell["date"] = cell["date"].isoformat()
+            formatted_overdue_cells.append(cell)
+
+        # -------- 6. USER MAP --------
+        user_map = {}
+        for user in users:
+            uid = str(user["_id"])
+            email = user.get("email", "").lower()
+            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip() or email.split("@")[0]
+
+            user_map[email] = {"_id": uid, "email": email, "fullName": full_name}
+            user_map[uid] = user_map[email]
+
+        # -------- 7. GROUP TASKS - WITH EXCLUSIONS --------
+        grouped_tasks = []
+        all_tasks_list = []
+        
+        # Global totals
+        global_total_tasks = 0
+        global_completed_tasks = 0
+        global_completed_in_period = 0
+        global_due_in_period = 0
+        global_incomplete_due = 0
+        
+        # Task type statistics - dynamic based on actual task types found
+        task_type_stats = {}
+
+        for task_group in task_groups:
+            email = task_group["_id"]
+            if not email:
+                email = "unassigned@example.com"
+
+            user_info = user_map.get(email.lower(), {
+                "_id": f"unknown_{email}",
+                "email": email,
+                "fullName": email.split("@")[0]
+            })
+
+            tasks_list = task_group["tasks"]
+            
+            # DEBUG: Print task types found
+            task_types_in_group = set()
+            for task in tasks_list:
+                task_type = task.get("taskType")
+                if task_type:
+                    task_types_in_group.add(task_type)
+            
+            if task_types_in_group:
+                print(f"[DASHBOARD DEBUG] Task types for {email}: {task_types_in_group}")
+            
+            # Process and format each task
+            for task in tasks_list:
+                task["_id"] = str(task["_id"])
+                # Format dates
+                for date_field in ["followup_date", "due_date", "completedAt", "createdAt"]:
+                    if isinstance(task.get(date_field), datetime):
+                        task[date_field] = task[date_field].isoformat()
+                
+                # Track task type statistics
+                task_type = task.get("taskType") or "Uncategorized"
+                is_excluded = task.get("is_excluded_type", False)
+                
+                # Initialize task type in stats if not exists
+                if task_type not in task_type_stats:
+                    task_type_stats[task_type] = {
+                        "total": 0, 
+                        "completed": 0, 
+                        "completed_in_period": 0,
+                        "due_in_period": 0,
+                        "incomplete_due": 0,
+                        "is_excluded": is_excluded
+                    }
+                
+                # Update task type stats
+                task_type_stats[task_type]["total"] += 1
+                if task.get("is_completed"):
+                    task_type_stats[task_type]["completed"] += 1
+                if task.get("completed_in_period"):
+                    task_type_stats[task_type]["completed_in_period"] += 1
+                if task.get("is_due_in_period"):
+                    task_type_stats[task_type]["due_in_period"] += 1
+                if task.get("is_due_in_period") and not task.get("is_completed"):
+                    task_type_stats[task_type]["incomplete_due"] += 1
+
+            # User-specific counts
+            total_for_user = task_group["total_tasks"]
+            completed_all = task_group["completed_tasks"]
+            completed_in_period = task_group["completed_in_period"]
+            due_in_period = task_group["due_in_period"]
+            
+            # Calculate incomplete due tasks
+            incomplete_due = sum(
+                1 for t in tasks_list 
+                if t.get("is_due_in_period") and not t.get("is_completed")
+            )
+            
+            incomplete_all = total_for_user - completed_all
+
+            # Update global totals
+            global_total_tasks += total_for_user
+            global_completed_tasks += completed_all
+            global_completed_in_period += completed_in_period
+            global_due_in_period += due_in_period
+            global_incomplete_due += incomplete_due
+
+            grouped_tasks.append({
+                "user": user_info,
+                "tasks": tasks_list,
+                "totalCount": total_for_user,
+                "completedCount": completed_all,
+                "incompleteCount": incomplete_all,
+                "dueInPeriodCount": due_in_period,
+                "completedInPeriodCount": completed_in_period,
+                "incompleteDueInPeriodCount": incomplete_due,
+                "taskTypes": list(set([t.get("taskType") or "Uncategorized" for t in tasks_list]))
+            })
+
+            all_tasks_list.extend(tasks_list)
+
+        grouped_tasks.sort(key=lambda x: x["user"]["fullName"].lower())
+
+        # -------- 8. COMPREHENSIVE OVERVIEW WITH EXCLUSIONS --------
+        # Calculate completion rates (excluding specific task types)
+        completion_rate_due = (
+            round((global_completed_in_period / global_due_in_period * 100), 2)
+            if global_due_in_period > 0 else 0
+        )
+        
+        completion_rate_overall = (
+            round((global_completed_tasks / global_total_tasks * 100), 2)
+            if global_total_tasks > 0 else 0
+        )
+
+        # Get unique task types found
+        unique_task_types_found = list(task_type_stats.keys())
+        
+        # DEBUG: Print task type stats
+        print(f"[DASHBOARD DEBUG] Task type stats:")
+        for task_type, stats in task_type_stats.items():
+            print(f"  - {task_type}: total={stats['total']}, completed={stats['completed']}, is_excluded={stats.get('is_excluded', False)}")
+
+        overview = {
+            # Attendance & Cells
+            "total_attendance": sum(len(c.get("attendees", [])) for c in formatted_overdue_cells),
+            "outstanding_cells": len(formatted_overdue_cells),
+            
+            # Task metrics - WITH EXCLUSIONS
+            "outstanding_tasks": global_incomplete_due,
+            "tasks_due_in_period": global_due_in_period,
+            "tasks_completed_in_period": global_completed_in_period,  # Excludes "no answer" and "Awaiting Call"
+            "total_tasks_in_period": global_total_tasks,
+            "total_tasks_completed": global_completed_tasks,  # Excludes "no answer" and "Awaiting Call"
+            "total_tasks_incomplete": global_total_tasks - global_completed_tasks,
+            
+            # Special counts
+            "consolidation_tasks": task_type_stats.get("consolidation", {}).get("total", 0),
+            "consolidation_completed": task_type_stats.get("consolidation", {}).get("completed", 0),
+            "consolidation_completed_in_period": task_type_stats.get("consolidation", {}).get("completed_in_period", 0),
+            
+            # People metrics
+            "people_behind": len([g for g in grouped_tasks if g["incompleteDueInPeriodCount"] > 0]),
+            "total_users": len(users),
+            
+            # Completion rates (with exclusions)
+            "completion_rate_due_tasks": completion_rate_due,
+            "completion_rate_overall": completion_rate_overall,
+            "consolidation_completion_rate": (
+                round((task_type_stats.get("consolidation", {}).get("completed", 0) / 
+                      task_type_stats.get("consolidation", {}).get("total", 1) * 100), 2)
+                if task_type_stats.get("consolidation", {}).get("total", 0) > 0 else 0
+            ),
+            
+            # Task type breakdown - ALL types found
+            "task_type_breakdown": task_type_stats,
+            
+            # Count of users with tasks
+            "users_with_tasks": len(grouped_tasks),
+            "users_without_tasks": len(users) - len(grouped_tasks),
+            
+            # Task type info
+            "available_task_types": all_task_types,
+            "task_types_found": unique_task_types_found,
+            "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
+            "total_unique_task_types": len(unique_task_types_found),
+            "note": f"'no answer' and 'Awaiting Call' task types are excluded from completed counts"
+        }
+
+        return {
+            "overview": overview,
+            "overdueCells": formatted_overdue_cells,
+            "groupedTasks": grouped_tasks,
+            "allTasks": all_tasks_list,
+            "allUsers": [
+                {
+                    "_id": str(u["_id"]),
+                    "email": u.get("email", ""),
+                    "name": u.get("name", ""),
+                    "surname": u.get("surname", ""),
+                    "fullName": f"{u.get('name', '')} {u.get('surname', '')}".strip()
+                        or u.get("email", "").split("@")[0]
+                }
+                for u in users
+            ],
+            "period": period,
+            "date_range": {"start": start_date_str, "end": end_date_str},
+            "task_type_stats": task_type_stats,
+            "available_task_types": all_task_types,
+            "task_types_found": unique_task_types_found,
+            "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Error fetching comprehensive stats: {str(e)}")
+
+
+@app.get("/stats/dashboard-quick")
+async def get_dashboard_quick_stats(
+    period: str = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    QUICK DASHBOARD SUMMARY - Counts completed tasks EXCLUDING "no answer" and "Awaiting Call"
+    """
+    try:
+        start, end = get_period_range(period)
+
+        start_str = start.date().isoformat()
+        end_str = end.date().isoformat()
+
+        print(f"[QUICK STATS] Excluding task types: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
+
+        # -------- 1. COUNT TASKS WITH EXCLUSIONS --------
+        # Total tasks in period
+        total_tasks_all = await tasks_collection.count_documents({
+            "$or": [
+                {"followup_date": {"$gte": start, "$lte": end}},
+                {"completedAt": {"$gte": start, "$lte": end}},
+                {"createdAt": {"$gte": start, "$lte": end}}
+            ]
+        })
+
+        # Tasks DUE in period
+        tasks_due_in_period = await tasks_collection.count_documents({
+            "followup_date": {"$gte": start, "$lte": end}
+        })
+
+        # Tasks COMPLETED in period (EXCLUDING "no answer" and "Awaiting Call")
+        tasks_completed_in_period = await tasks_collection.count_documents({
+            "completedAt": {"$gte": start, "$lte": end},
+            "status": {"$in": ["completed", "done", "closed", "finished"]},
+            "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
+        })
+
+        # All completed tasks (regardless of when, EXCLUDING specific types)
+        total_completed = await tasks_collection.count_documents({
+            "status": {"$in": ["completed", "done", "closed", "finished"]},
+            "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
+        })
+
+        # Consolidation-specific counts
+        consolidation_completed_in_period = await tasks_collection.count_documents({
+            "completedAt": {"$gte": start, "$lte": end},
+            "status": {"$in": ["completed", "done", "closed", "finished"]},
+            "taskType": "consolidation"
+        })
+
+        total_consolidation_tasks = await tasks_collection.count_documents({
+            "taskType": "consolidation"
+        })
+
+        total_consolidation_completed = await tasks_collection.count_documents({
+            "taskType": "consolidation",
+            "status": {"$in": ["completed", "done", "closed", "finished"]}
+        })
+
+        # DEBUG: Count excluded task types
+        no_answer_count = await tasks_collection.count_documents({
+            "taskType": "no answer",
+            "status": {"$in": ["completed", "done", "closed", "finished"]}
+        })
+        
+        awaiting_call_count = await tasks_collection.count_documents({
+            "taskType": "Awaiting Call",
+            "status": {"$in": ["completed", "done", "closed", "finished"]}
+        })
+        
+        print(f"[QUICK STATS DEBUG] Excluded task counts - no answer: {no_answer_count}, Awaiting Call: {awaiting_call_count}")
+
+        # -------- 2. GET TASK TYPE BREAKDOWN WITH EXCLUSIONS --------
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"followup_date": {"$gte": start, "$lte": end}},
+                        {"completedAt": {"$gte": start, "$lte": end}},
+                        {"createdAt": {"$gte": start, "$lte": end}}
+                    ]
+                }
+            },
+            {
+                "$addFields": {
+                    # Use taskType or default to Uncategorized
+                    "task_type": {"$ifNull": ["$taskType", "Uncategorized"]},
+                    # Check if task type is excluded
+                    "is_excluded": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$taskType", None]},
+                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    },
+                    # Check if completed (considering exclusions)
+                    "is_completed": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {
+                                        "$in": [
+                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                            ["completed", "done", "closed", "finished"]
+                                        ]
+                                    },
+                                    {
+                                        "$not": {
+                                            "$cond": [
+                                                {
+                                                    "$and": [
+                                                        {"$ne": ["$taskType", None]},
+                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                    ]
+                                                },
+                                                True,
+                                                False
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    },
+                    # Check if completed in period (considering exclusions)
+                    "completed_in_period": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$completedAt", None]},
+                                    {"$gte": ["$completedAt", start]},
+                                    {"$lte": ["$completedAt", end]},
+                                    {
+                                        "$in": [
+                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                            ["completed", "done", "closed", "finished"]
+                                        ]
+                                    },
+                                    {
+                                        "$not": {
+                                            "$cond": [
+                                                {
+                                                    "$and": [
+                                                        {"$ne": ["$taskType", None]},
+                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                    ]
+                                                },
+                                                True,
+                                                False
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$task_type",
+                    "total": {"$sum": 1},
+                    "completed": {
+                        "$sum": {
+                            "$cond": ["$is_completed", 1, 0]
+                        }
+                    },
+                    "completed_in_period": {
+                        "$sum": {
+                            "$cond": ["$completed_in_period", 1, 0]
+                        }
+                    },
+                    "due_in_period": {
+                        "$sum": {
+                            "$cond": [
+                                {
+                                    "$and": [
+                                        {"$ne": ["$followup_date", None]},
+                                        {"$gte": ["$followup_date", start]},
+                                        {"$lte": ["$followup_date", end]}
+                                    ]
+                                },
+                                1,
+                                0
+                            ]
+                        }
+                    },
+                    "is_excluded": {"$first": "$is_excluded"}
+                }
+            },
+            {"$sort": {"total": -1}}
+        ]
+        
+        task_type_cursor = tasks_collection.aggregate(pipeline)
+        task_type_stats_raw = await task_type_cursor.to_list(None)
+        
+        # Format task type stats
+        task_type_stats = {}
+        for stat in task_type_stats_raw:
+            task_type = stat["_id"] or "Uncategorized"
+            total = stat["total"]
+            completed = stat["completed"]
+            is_excluded = stat["is_excluded"]
+            
+            task_type_stats[task_type] = {
+                "total": total,
+                "completed": completed,
+                "completed_in_period": stat["completed_in_period"],
+                "due_in_period": stat["due_in_period"],
+                "is_excluded": is_excluded,
+                "completion_rate": round((completed / total * 100), 2) if total > 0 else 0,
+                "completion_rate_in_period": round((stat["completed_in_period"] / stat["due_in_period"] * 100), 2) if stat["due_in_period"] > 0 else 0
+            }
+
+        # -------- 3. OVERDUE CELLS COUNT --------
+        overdue_cells_count = await events_collection.count_documents({
+            "$or": [
+                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+            ],
+            "date": {"$lte": end},
+            "$or": [
+                {"status": "incomplete"},
+                {"status": {"$exists": False}},
+                {"Status": "Incomplete"},
+                {"_is_overdue": True}
+            ]
+        })
+
+        return {
+            "period": period,
+            "date_range": {"start": start_str, "end": end_str},
+            
+            # Task counts - WITH EXCLUSIONS
+            "taskCount": total_tasks_all,
+            "tasksDueInPeriod": tasks_due_in_period,
+            "tasksCompletedInPeriod": tasks_completed_in_period,  # Excludes "no answer" and "Awaiting Call"
+            "totalCompletedTasks": total_completed,  # Excludes "no answer" and "Awaiting Call"
+            
+            # Consolidation-specific
+            "consolidationTasks": total_consolidation_tasks,
+            "consolidationCompleted": total_consolidation_completed,
+            "consolidationCompletedInPeriod": consolidation_completed_in_period,
+            "consolidationCompletionRate": (
+                round((total_consolidation_completed / total_consolidation_tasks * 100), 2)
+                if total_consolidation_tasks > 0 else 0
+            ),
+            
+            # Overdue cells
+            "overdueCells": overdue_cells_count,
+            
+            # Completion rates (with exclusions)
+            "completionRateDueTasks": (
+                round((tasks_completed_in_period / tasks_due_in_period * 100), 2)
+                if tasks_due_in_period > 0 else 0
+            ),
+            "overallCompletionRate": (
+                round((total_completed / total_tasks_all * 100), 2)
+                if total_tasks_all > 0 else 0
+            ),
+            
+            # Task type breakdown
+            "taskTypeBreakdown": task_type_stats,
+            "totalTaskTypesFound": len(task_type_stats),
+            "excludedTaskTypes": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
+            
+            "timestamp": datetime.utcnow().isoformat(),
+            "note": "'no answer' and 'Awaiting Call' task types are excluded from completed counts"
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Error fetching quick stats: {str(e)}")
