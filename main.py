@@ -851,7 +851,6 @@ async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
         
-        # Generate _id as ObjectId
         event_data["_id"] = ObjectId()
         
         if not event_data.get("UUID"):
@@ -863,7 +862,6 @@ async def create_event(event: EventCreate):
         
         print(f"Looking for event type: '{event_type_name}'")
         
-        # Handle "CELLS" and "ALL CELLS" explicitly
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
@@ -871,7 +869,6 @@ async def create_event(event: EventCreate):
             event_data["isGlobal"] = False
             print(f"Using built-in CELLS event type with leader fields enabled")
         else:
-            # For other event types, look them up in the database
             event_type = await events_collection.find_one({
                 "$or": [
                     {"name": {"$regex": f"^{event_type_name}$", "$options": "i"}},
@@ -1024,9 +1021,9 @@ async def get_cell_events(
     show_all_authorized: Optional[bool] = Query(None),
     include_subordinate_cells: Optional[bool] = Query(None),
     leader_at_1_identifier: Optional[str] = Query(None),
-    isLeaderAt12: Optional[bool] = Query(None), #getting if leader at 12 from frontend
-    firstName: Optional[str] = Query(None), #getting user
-    userSurname:Optional[str] = Query(None) #getting user
+    isLeaderAt12: Optional[bool] = Query(None), 
+    firstName: Optional[str] = Query(None),
+    userSurname:Optional[str] = Query(None) 
 ):
     """
     Get cell events with proper separation between personal and disciples' cells
@@ -1037,10 +1034,6 @@ async def get_cell_events(
         print(f'THIER NAME {firstName} {userSurname}')
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
-
-
-        #using from person found in people
-
         person = await people_collection.find_one({"Email":user_email})
         if person:
             first_name = person.get('Name', '').strip() or firstName
@@ -1163,22 +1156,20 @@ async def get_cell_events(
                
                 # 2. Try different name format combinations
                 name_variations.extend([
-                    f"{first_name} {surname}",  # Standard format
-                    first_name,  # Just first name
-                    user_name.replace(" ", ""),  # No spaces
-                    user_name.replace(" ", "-"),  # Hyphenated
+                    f"{first_name} {surname}", 
+                    first_name, 
+                    user_name.replace(" ", ""),  
+                    user_name.replace(" ", "-"),  
                 ])
                
-                # 3. Handle hyphenated names dynamically
                 if "-" in first_name:
                     hyphen_parts = first_name.split("-")
                     # Try different combinations
                     name_variations.extend([
-                        f"{hyphen_parts[0]} {surname}",  # First part only
-                        f"{hyphen_parts[0]}-{surname}",  # First part hyphenated with surname
-                        f"{first_name} {surname}",  # Full hyphenated name
+                        f"{hyphen_parts[0]} {surname}", 
+                        f"{hyphen_parts[0]}-{surname}",  
+                        f"{first_name} {surname}",  
                     ])
-                    # Also try each part of the hyphenated name
                     for part in hyphen_parts:
                         if part and part.strip():
                             name_variations.append(f"{part} {surname}")
@@ -1386,12 +1377,9 @@ async def get_cell_events(
         }
        
         cell_instances = []
-        i = 0
         
         for event in events:
-            i = i+1
             try:
-                
                 day_name = str(event.get("Day") or event.get("day") or "").strip().lower()
                
                 if not day_name or day_name not in day_mapping:
@@ -1401,9 +1389,7 @@ async def get_cell_events(
                 days_until = (target_day - start_date_obj.weekday()) % 7
                 instance_date = start_date_obj + timedelta(days=days_until)
                
-                
                 while instance_date <= today:
-                    
                     if instance_date == start_date_obj:
                        instance_date += timedelta(days=7)
                        continue
@@ -1411,43 +1397,43 @@ async def get_cell_events(
                     year, week, _ = instance_date.isocalendar()
                     week_id = f"{year}-W{week:02d}"
                    
-                    attendance = event.get("attendance", {}).get(week_id, {})
-                    attendees = attendance.get("attendees", [])
-                    did_not_meet = attendance.get("status") == "did_not_meet"
+                    attendance = event.get("attendance", {})
+                    week_attendance = attendance.get(week_id, {})
+                    attendees = week_attendance.get("attendees", [])
+                    
+                    # Check did_not_meet ONLY for this specific week from attendance data
+                    did_not_meet = week_attendance.get("status") == "did_not_meet"
                    
                     has_checked_in = any(a.get("checked_in", False) for a in attendees)
                     
-                   
-                    if did_not_meet or event.get("did_not_meet"):
+                    # Determine status based on SPECIFIC week's data only
+                    if did_not_meet:
+                        # This specific week was marked as did_not_meet
                         event_status = "did_not_meet"
                     elif has_checked_in:
+                        # This specific week has attendees checked in
                         event_status = "complete"
                     else:
+                        # No attendance data for this specific week
                         event_status = "incomplete"
-                   
+                    
+                    # Skip if filtering by status and doesn't match
                     if status and status != event_status:
                         instance_date += timedelta(days=7)
                         continue
                    
-                    #getting leader at 1 if field exists
+                    # Get leader at 1 if field exists
                     leaderAt1 = event.get("leader1") or event.get("Leader @1") or event.get("Leader at 1", "")
 
-                    # if leader at one field does not exist using name and surname of leader to look through people's field
                     if not leaderAt1:
-
-                        # pipeline  to make a fullname field to look for event leader in people's collection using the eventleader field from events
-                        leaderPipeline = [{'$project': {'Gender':1, 'fullName': { '$concat': ["$Name", " ", "$Surname"] }}},{'$match': { 'fullName':event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", "")  }},{ '$limit': 1 }]
-
-                       
-
+                        leaderPipeline = [
+                            {'$project': {'Gender':1, 'fullName': { '$concat': ["$Name", " ", "$Surname"] }}},
+                            {'$match': { 'fullName':event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", "") }},
+                            { '$limit': 1 }
+                        ]
                         peopleFullnames = await people_collection.aggregate(leaderPipeline).to_list(length=None)
-
-                       
-                        # getting first occurance of event leader in people's field
-
-                        eventLeader = peopleFullnames[0]
+                        eventLeader = peopleFullnames[0] if peopleFullnames else None
                         if eventLeader:
-                            #assigning leader at 1 using gender attribute of the event leader
                             gender = eventLeader.get("Gender","")
                             if gender.upper() == "MALE":
                                 leaderAt1 = "Gavin Enslin"
@@ -1491,6 +1477,8 @@ async def get_cell_events(
 
             except Exception as e:
                 print(f"Error processing event: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
 
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
@@ -1522,6 +1510,7 @@ async def get_cell_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
@@ -3048,31 +3037,6 @@ def parse_event_date(event_date_field, default_date: date) -> date:
     else:
         return default_date
    
-@app.get("/debug/event-status/{event_id}")
-async def debug_event_status(event_id: str):
-    try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
-       
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-       
-        return {
-            "event_id": str(event["_id"]),
-            "event_name": event.get("Event Name", ""),
-            "status_field_lowercase": event.get("status", "NOT SET"),
-            "status_field_uppercase": event.get("Status", "NOT SET"),
-            "did_not_meet_flag": event.get("did_not_meet", False),
-            "attendees_count": len(event.get("attendees", [])),
-            "computed_status": get_actual_event_status(event, datetime.now().date()),
-            "raw_event_data": {
-                k: v for k, v in event.items()
-                if k in ["status", "Status", "did_not_meet", "attendees", "total_attendance"]
-            }
-        }
-    except Exception as e:
-        return {"error": str(e)}
 
 def get_day_order(day: str) -> int:
     day_map = {
@@ -3206,31 +3170,6 @@ def should_show_cell_for_user(
    
     return cell_instances
    
-@app.get("/debug/test-leader-at-12-search/{name}")
-async def debug_test_leader_at_12_search(name: str):
-    try:
-        cells = await events_collection.find({
-            "Event Type": "Cells",
-            "Leader at 12": {"$regex": f".*{name}.*", "$options": "i"}
-        }).to_list(length=100)
-       
-        return {
-            "search_name": name,
-            "total_found": len(cells),
-            "cells": [
-                {
-                    "event_name": c.get("Event Name"),
-                    "leader": c.get("Leader"),
-                    "leader_at_12": c.get("Leader at 12"),
-                    "email": c.get("Email"),
-                    "day": c.get("Day")
-                }
-                for c in cells[:20]  # First 20
-            ]
-        }
-       
-    except Exception as e:
-        return {"error": str(e)}
    
 def should_include_event_fixed(event_date: date, status: str, today_date: date, is_admin: bool = False) -> bool:
     start_date = date(2025, 11, 30)
@@ -3272,41 +3211,6 @@ def parse_time(time_str):
         return hour, minute
     except:
         return 19, 0
-   
-@app.get("/debug/cell-dates")
-async def debug_cell_dates():
-    try:
-        timezone = pytz.timezone("Africa/Johannesburg")
-        today = datetime.now(timezone)
-        today_date = today.date()
-        today_day = today.strftime("%A").lower()
-       
-        print(f"DEBUG: Today is {today_day} ({today_date})")
-       
-        sample_cells = await events_collection.find({
-            "Event Type": "Cells"
-        }).limit(10).to_list(length=10)
-       
-        results = []
-        for cell in sample_cells:
-            event_obj = build_event_object(cell, timezone, today_date)
-            results.append({
-                "event_name": cell.get("Event Name"),
-                "recurring_day": cell.get("Day"),
-                "calculated_date": event_obj["date"],
-                "status": event_obj["status"],
-                "is_overdue": event_obj["_is_overdue"],
-                "today": today_date.isoformat()
-            })
-       
-        return {
-            "today": today_date.isoformat(),
-            "today_day": today_day,
-            "sample_cells": results
-        }
-       
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.get("/debug/user-hierarchy/{email}")
 async def debug_user_hierarchy(email: str):
@@ -4010,7 +3914,6 @@ async def get_registrant_cell_events_debug(
         print(f"Registrant - Cells from {start_date_obj} to {today_date}, Page {page}")
         print(f"Search: '{search}', Status: '{status}', Personal: {personal}, Event Type: '{event_type}', Start Date: '{start_date_filter}'")
 
-        # Build query - Registrants only see their own events
         query = {
             "Event Type": "Cells",
             "$or": [
@@ -4768,7 +4671,7 @@ async def update_event(event_id: str, event_data: dict):
     """
     try:
         print(f"Attempting to update event with ID: {event_id}")
-        print(f"📥 Received data: {event_data}")
+        print(f" Received data: {event_data}")
        
         # Try to find event by _id first (MongoDB ObjectId)
         event = None
@@ -5797,75 +5700,6 @@ async def get_user_cell_events_fixed_future(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
    
-@app.get("/debug/leader-check/{leader_name}")
-async def debug_leader_check(leader_name: str):
-    """Debug endpoint to check why a specific leader isn't getting Leader at 1"""
-    try:
-        print(f"DEBUG: Checking leader: {leader_name}")
-       
-        # Clean the name for searching
-        cleaned_name = leader_name.strip()
-       
-        # We need to find the PERSON who IS the leader, not people who HAVE the leader
-        search_queries = [
-            # The person's own name matches
-            {"Name": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
-            # Full name combination matches
-            {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, cleaned_name]}},
-            # First name only (more flexible)
-            {"Name": {"$regex": f"^{cleaned_name.split()[0]}$", "$options": "i"}},
-        ]
-       
-        person = None
-        search_method = ""
-       
-        for i, query in enumerate(search_queries):
-            found_person = await people_collection.find_one(query)
-            if found_person:
-                person = found_person
-                search_method = f"Strategy {i+1}"
-                break
-       
-        if person:
-            gender = person.get("Gender", "").lower().strip()
-            person_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-           
-            print(f"Found THE PERSON: {person_name} using {search_method}")
-            print(f"   Gender: {gender}")
-            print(f"   Their Leader @12: {person.get('Leader @12')}")
-            print(f"   Their Leader @1: {person.get('Leader @1')}")
-           
-            # Determine Leader at 1 based only on gender from database
-            if gender in ["female", "f", "woman", "lady", "girl"]:
-                assigned_leader = "Vicky Enslin"
-            elif gender in ["male", "m", "man", "gentleman", "boy"]:
-                assigned_leader = "Gavin Enslin"
-            else:
-                assigned_leader = "UNKNOWN GENDER"
-           
-            return {
-                "leader_name": leader_name,
-                "found_in_database": True,
-                "search_method_used": search_method,
-                "person_data": {
-                    "name": person.get("Name"),
-                    "surname": person.get("Surname"),
-                    "gender": gender,
-                    "leader_12": person.get("Leader @12"),  # Who leads THEM
-                    "leader_1": person.get("Leader @1")     # Who leads their leader
-                },
-                "assigned_leader_at_1": assigned_leader
-            }
-        else:
-            print(f"Person '{cleaned_name}' not found in database with any search method")
-            return {
-                "leader_name": leader_name,
-                "found_in_database": False,
-                "assigned_leader_at_1": "NOT FOUND - CANNOT ASSIGN"
-            }
-       
-    except Exception as e:
-        return {"error": str(e)}
 
 async def get_leader_at_1_for_leader_at_12(leader_at_12_name: str) -> str:
     """
@@ -6150,9 +5984,8 @@ async def get_current_user_leader_at_1(current_user: dict = Depends(get_current_
         email_username = ""
         if user_email and "@" in user_email:
             email_username = user_email.split("@")[0]
-            print(f"📧 Email username part: {email_username}")
+            print(f"Email username part: {email_username}")
        
-        # Build flexible search query
         query_conditions = []
        
         if user_name:
@@ -6226,184 +6059,6 @@ async def get_current_user_leader_at_1(current_user: dict = Depends(get_current_
         print(f"Error getting current user leader at 1: {e}")
         return {"leader_at_1": ""}
    
-
-
-@app.get("/debug/leader-gender/{leader_name}")
-async def debug_leader_gender(leader_name: str):
-    """
-    Debug endpoint to check gender detection for a specific leader
-    """
-    try:
-        # Find the person in people collection
-        person = await people_collection.find_one({
-            "$or": [
-                {"Name": {"$regex": f"^{leader_name}$", "$options": "i"}},
-                {"Name": leader_name}
-            ]
-        })
-       
-        if not person:
-            return {
-                "leader_name": leader_name,
-                "found_in_database": False,
-                "error": "Person not found in people database"
-            }
-       
-        gender = person.get("Gender", "").lower().strip()
-        leader_at_1 = await get_leader_at_1_for_leader_at_12(leader_name)
-       
-        return {
-            "leader_name": leader_name,
-            "found_in_database": True,
-            "person_data": {
-                "name": person.get("Name"),
-                "surname": person.get("Surname"),
-                "gender": gender,
-                "leader_12": person.get("Leader @12"),
-                "leader_144": person.get("Leader @144"),
-                "leader_1728": person.get("Leader @ 1728")
-            },
-            "assigned_leader_at_1": leader_at_1,
-            "gender_detection": {
-                "raw_gender": gender,
-                "is_female": gender in ["female", "f", "woman", "lady", "girl"],
-                "is_male": gender in ["male", "m", "man", "gentleman", "boy"]
-            }
-        }
-       
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/debug/find-exact-leader/{leader_name}")
-async def debug_find_exact_leader(leader_name: str):
-    """Find the exact leader in People database"""
-    try:
-        print(f"DEBUG: Finding EXACT leader: {leader_name}")
-       
-        cleaned_name = leader_name.strip()
-       
-        # Try exact matching
-        exact_person = await people_collection.find_one({
-            "$or": [
-                {"Name": cleaned_name},
-                {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, cleaned_name]}},
-            ]
-        })
-       
-        if exact_person:
-            return {
-                "leader_name": leader_name,
-                "found": True,
-                "exact_match": True,
-                "person_data": {
-                    "name": exact_person.get("Name"),
-                    "surname": exact_person.get("Surname"),
-                    "gender": exact_person.get("Gender"),
-                    "leader_12": exact_person.get("Leader @12"),
-                    "leader_1": exact_person.get("Leader @1")
-                }
-            }
-       
-        # Try partial matching
-        first_name = cleaned_name.split()[0]
-        partial_person = await people_collection.find_one({
-            "Name": first_name
-        })
-       
-        if partial_person:
-            return {
-                "leader_name": leader_name,
-                "found": True,
-                "exact_match": False,
-                "match_type": "first_name_only",
-                "person_data": {
-                    "name": partial_person.get("Name"),
-                    "surname": partial_person.get("Surname"),
-                    "gender": partial_person.get("Gender"),
-                    "leader_12": partial_person.get("Leader @12"),
-                    "leader_1": partial_person.get("Leader @1")
-                }
-            }
-       
-        return {
-            "leader_name": leader_name,
-            "found": False,
-            "exact_match": False
-        }
-       
-    except Exception as e:
-        return {"error": str(e)}
-
-# @app.get("/debug/test-leader-assignment/{leader_name}")
-# async def debug_test_leader_assignment(leader_name: str):
-#     """Test the actual leader assignment logic used in build_event_object"""
-#     try:
-#         print(f"TESTING ACTUAL LOGIC for: {leader_name}")
-       
-#         # This is the EXACT logic from build_event_object
-#         leader_at_1 = ""
-       
-#         if leader_name:
-#             print(f"   Leader at 12 provided: {leader_name}")
-#             leader_at_1 = await get_leader_at_1_for_leader_at_12(leader_name)
-#             print(f"   → Leader @1 assigned: {leader_at_1}")
-       
-#         return {
-#             "leader_at_12_input": leader_name,
-#             "leader_at_1_output": leader_at_1,
-#             "success": bool(leader_at_1)
-#         }
-       
-#     except Exception as e:
-#         return {"error": str(e)}
-
-@app.get("/debug/debug-search/{leader_name}")
-async def debug_debug_search(leader_name: str):
-    """Debug the exact search logic in get_leader_at_1_for_leader_at_12"""
-    try:
-        print(f"DEBUGGING SEARCH for: {leader_name}")
-       
-        # This is the EXACT logic from get_leader_at_1_for_leader_at_12
-        cleaned_name = leader_name.strip().title()
-       
-        search_queries = [
-            {"Name": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
-            {"Leader @12": {"$regex": f"^{cleaned_name}$", "$options": "i"}},
-            {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, cleaned_name]}},
-        ]
-       
-        results = []
-        for i, query in enumerate(search_queries):
-            person = await people_collection.find_one(query)
-            if person:
-                results.append({
-                    "query_number": i+1,
-                    "query": str(query),
-                    "found": True,
-                    "person_found": f"{person.get('Name')} {person.get('Surname')}",
-                    "gender": person.get('Gender'),
-                    "leader_12": person.get('Leader @12')
-                })
-            else:
-                results.append({
-                    "query_number": i+1,
-                    "query": str(query),
-                    "found": False
-                })
-       
-        return {
-            "leader_name": leader_name,
-            "cleaned_name": cleaned_name,
-            "search_results": results,
-            "any_found": any(r["found"] for r in results)
-        }
-       
-    except Exception as e:
-        return {"error": str(e)}
-   
-
-
-
 @app.get("/debug/find-user")
 async def debug_find_user(current_user: dict = Depends(get_current_user)):
     """Debug endpoint to test user finding logic"""
@@ -6447,48 +6102,6 @@ async def debug_find_user(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/debug/current-user-info")
-async def debug_current_user_info(current_user: dict = Depends(get_current_user)):
-    """Debug endpoint to see current user information"""
-    try:
-        user_name = current_user.get("name", "").strip()
-        user_email = current_user.get("email", "").strip()
-        user_id = current_user.get("user_id", "")
-       
-        # Search for user in people collection
-        person_by_name = await people_collection.find_one({
-            "Name": {"$regex": f"^{user_name}$", "$options": "i"}
-        })
-       
-        person_by_email = await people_collection.find_one({
-            "Email": {"$regex": f"^{user_email}$", "$options": "i"}
-        })
-       
-        return {
-            "token_data": {
-                "user_id": user_id,
-                "name": user_name,
-                "email": user_email,
-                "role": current_user.get("role")
-            },
-            "search_results": {
-                "by_name": {
-                    "found": bool(person_by_name),
-                    "name": person_by_name.get("Name") if person_by_name else None,
-                    "email": person_by_name.get("Email") if person_by_name else None,
-                    "leader_12": person_by_name.get("Leader @12") if person_by_name else None
-                },
-                "by_email": {
-                    "found": bool(person_by_email),
-                    "name": person_by_email.get("Name") if person_by_email else None,
-                    "email": person_by_email.get("Email") if person_by_email else None,
-                    "leader_12": person_by_email.get("Leader @12") if person_by_email else None
-                }
-            }
-        }
-       
-    except Exception as e:
-        return {"error": str(e)}
 
 async def get_leader_at_1_for_leader_at_1728(leader_at_1728_name: str) -> str:
     """
@@ -6498,7 +6111,7 @@ async def get_leader_at_1_for_leader_at_1728(leader_at_1728_name: str) -> str:
     if not leader_at_1728_name:
         return ""
    
-    # FIRST: Try to find the person by Name (their own record)
+    # FIRST: Try to find the person by Name 
     person = await people_collection.find_one({
         "$or": [
             {"Name": {"$regex": f"^{leader_at_1728_name}$", "$options": "i"}},
@@ -6513,42 +6126,6 @@ async def get_leader_at_1_for_leader_at_1728(leader_at_1728_name: str) -> str:
    
     return ""
 
-@app.get("/debug/cell-status/{event_id}")
-async def debug_cell_status(event_id: str):
-    """
-    Debug endpoint to check why a cell shows as complete/incomplete
-    """
-    try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
-       
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-       
-        attendees = event.get("attendees", [])
-        status_lower = event.get("status", "")
-        status_upper = event.get("Status", "")
-        did_not_meet = event.get("did_not_meet", False)
-       
-        return {
-            "event_name": event.get("Event Name", ""),
-            "event_id": str(event["_id"]),
-            "status_field_lowercase": status_lower,
-            "status_field_uppercase": status_upper,
-            "did_not_meet_flag": did_not_meet,
-            "attendees_count": len(attendees),
-            "attendees": attendees[:5] if attendees else [],  # First 5 only
-            "computed_status": get_actual_event_status(event, datetime.now().date()),
-            "diagnosis": {
-                "has_attendees": len(attendees) > 0,
-                "has_status_field": bool(status_lower or status_upper),
-                "is_did_not_meet": did_not_meet,
-                "why_complete": "Has attendees" if len(attendees) > 0 else "No attendees but status field says complete"
-            }
-        }
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
@@ -6561,7 +6138,7 @@ async def submit_attendance(
     """
     try:
         print(f"SUBMIT ATTENDANCE STARTED")
-        print(f"📥 Event ID: {event_id}")
+        print(f" Event ID: {event_id}")
         print(f"Submission keys: {list(submission.keys())}")
 
         # EXTRACT OBJECTID FROM COMPOSITE ID
@@ -6819,31 +6396,6 @@ async def get_last_attendance(
     except Exception as e:
         print(f"Error getting last attendance: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-   
-
-@app.get("/debug/event/{event_id}")
-async def debug_event_status(event_id: str):
-    """Debug endpoint to check event status"""
-    try:
-        if not ObjectId.is_valid(event_id):
-            return {"error": "Invalid event ID"}
-       
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        if not event:
-            return {"error": "Event not found"}
-       
-        return {
-            "event_id": str(event["_id"]),
-            "event_name": event.get("Event Name"),
-            "did_not_meet": event.get("did_not_meet"),
-            "status_field": event.get("status"),
-            "Status_field": event.get("Status"),
-            "attendees_count": len(event.get("attendees", [])),
-            "attendees": event.get("attendees", []),
-            "all_fields": {k: v for k, v in event.items() if k not in ['_id']}
-        }
-    except Exception as e:
-        return {"error": str(e)}
 
 @app.delete("/events/{event_id}")
 async def delete_event(event_id: str = Path(...)):
@@ -6856,25 +6408,23 @@ async def delete_event(event_id: str = Path(...)):
             print(f" Invalid ObjectId format: {event_id}")
             raise HTTPException(status_code=400, detail="Invalid event ID format")
         
-        # Find the event first
         existing_event = await events_collection.find_one({"_id": ObjectId(event_id)})
         
         if not existing_event:
-            print(f"❌ Event not found with ID: {event_id}")
-            print(f"🔍 Checking if event exists with different casing or format...")
+            print(f" Event not found with ID: {event_id}")
+            print(f" Checking if event exists with different casing or format...")
             
-            # Debug: Show some events that might be similar
             similar_events = await events_collection.find({
                 "eventName": {"$regex": ".*", "$options": "i"}
             }).limit(3).to_list(None)
             
-            print(f"🔍 Sample events in DB:")
+            print(f" Sample events in DB:")
             for evt in similar_events:
                 print(f"   - ID: {evt.get('_id')}, Name: {evt.get('eventName', 'N/A')}")
             
             raise HTTPException(status_code=404, detail=f"Event not found. ID: {event_id}")
         
-        print(f"✅ Found event to delete:")
+        print(f" Found event to delete:")
         print(f"   - ID: {existing_event.get('_id')}")
         print(f"   - Name: {existing_event.get('eventName', 'N/A')}")
         print(f"   - Date: {existing_event.get('dateOfEvent', 'N/A')}")
@@ -6894,7 +6444,6 @@ async def delete_event(event_id: str = Path(...)):
     except Exception as e:
         print(f"Unexpected error deleting event {event_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deleting event: {str(e)}")
-
 
 
 @app.delete("/events/cell/{event_id}/members/{member_id}")
@@ -10011,852 +9560,4 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
     except Exception as e:
         print(f"Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
-
-def get_period_range(period: str):
-    """
-    Accurate date range calculator matching frontend's DailyTasks filter:
-    - today
-    - thisWeek
-    - thisMonth
-    - previous7 (last 7 days)
-    - previousWeek
-    - previousMonth
-    """
-    now = datetime.utcnow()
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # TODAY
-    if period == "today":
-        start = today
-        end = today.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return start, end
-    
-    # THIS WEEK (Monday to Sunday)
-    if period == "thisWeek":
-        start = today - timedelta(days=today.weekday())  # Monday
-        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
-        return start, end
-    
-    # THIS MONTH
-    if period == "thisMonth":
-        start = today.replace(day=1)
-        if today.month == 12:
-            end = datetime(today.year + 1, 1, 1) - timedelta(microseconds=1)
-        else:
-            end = datetime(today.year, today.month + 1, 1) - timedelta(microseconds=1)
-        return start, end
-    
-    # PREVIOUS 7 DAYS
-    if period == "previous7":
-        end = today - timedelta(days=1)  # Yesterday
-        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start = end - timedelta(days=6)  # 7 days ago (inclusive)
-        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start, end
-    
-    # PREVIOUS WEEK (complete last week, Monday to Sunday)
-    if period == "previousWeek":
-        last_week = today - timedelta(weeks=1)
-        start = last_week - timedelta(days=last_week.weekday())  # Monday of last week
-        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
-        return start, end
-    
-    # PREVIOUS MONTH (complete last month)
-    if period == "previousMonth":
-        year = today.year
-        month = today.month - 1
-        if month == 0:
-            month = 12
-            year -= 1
-        
-        start = datetime(year, month, 1)
-        if month == 12:
-            end = datetime(year + 1, 1, 1) - timedelta(microseconds=1)
-        else:
-            end = datetime(year, month + 1, 1) - timedelta(microseconds=1)
-        return start, end
-    
-    raise ValueError(f"Invalid period '{period}'")
-
-# Define task types to exclude from completed counts - USING EXACT VALUES FROM DATABASE
-EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
-
-@app.get("/stats/dashboard-comprehensive")
-async def get_dashboard_comprehensive(
-    period: str = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
-    limit: int = Query(100, ge=1, le=1000),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    COMPREHENSIVE DASHBOARD
-    Counts completed tasks EXCLUDING "no answer" and "Awaiting Call"
-    """
-    try:
-        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, User: {current_user.get('email')}")
-        print(f"[DASHBOARD] Excluding task types from completed count: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
-
-        # DATE RANGE
-        start, end = get_period_range(period)
-        start_date_str = start.date().isoformat()
-        end_date_str = end.date().isoformat()
-        print(f"[DASHBOARD] Date range: {start_date_str} → {end_date_str}")
-
-        # -------- 1. GET ALL TASK TYPES FROM DATABASE (for reference only) --------
-        task_types_cursor = tasktypes_collection.find({}, {"name": 1})
-        task_types_list = await task_types_cursor.to_list(length=None)
-        all_task_types = [tt.get("name") for tt in task_types_list if tt.get("name")]
-        print(f"[DASHBOARD] Found {len(all_task_types)} task types in database: {all_task_types}")
-
-        # -------- 2. OVERDUE CELLS PIPELINE --------
-        overdue_cells_pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
-                        {"eventType": {"$regex": "^Cells$", "$options": "i"}},
-                        {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
-                    ],
-                    "date": {"$lte": end},
-                    "$or": [
-                        {"status": "incomplete"},
-                        {"status": {"$exists": False}},
-                        {"status": None},
-                        {"Status": "Incomplete"},
-                        {"_is_overdue": True}
-                    ]
-                }
-            },
-            {"$sort": {"date": -1}},
-            {"$limit": 100},
-            {
-                "$project": {
-                    "_id": 1,
-                    "UUID": 1,
-                    "eventName": {
-                        "$ifNull": ["$Event Name", "$eventName", "$EventName", "Unnamed Event"]
-                    },
-                    "eventType": {
-                        "$ifNull": ["$Event Type", "$eventType", "$eventTypeName", "Cells"]
-                    },
-                    "eventLeaderName": {
-                        "$ifNull": ["$Leader", "$eventLeaderName", "$EventLeaderName", "Unknown Leader"]
-                    },
-                    "eventLeaderEmail": {
-                        "$ifNull": ["$Email", "$eventLeaderEmail", "$EventLeaderEmail", ""]
-                    },
-                    "leader1": {"$ifNull": ["$leader1", "$Leader @1", ""]},
-                    "leader12": {
-                        "$ifNull": ["$Leader at 12", "$Leader @12", "$leader12", "$Leader12", ""]
-                    },
-                    "day": {"$ifNull": ["$Day", "$day", ""]},
-                    "date": 1,
-                    "location": {"$ifNull": ["$Location", "$location", ""]},
-                    "attendees": {"$ifNull": ["$attendees", []]},
-                    "persistent_attendees": {"$ifNull": ["$persistent_attendees", []]},
-                    "hasPersonSteps": {"$ifNull": ["$hasPersonSteps", True]},
-                    "status": {"$ifNull": ["$status", "$Status", "incomplete"]},
-                    "_is_overdue": {"$literal": True},
-                    "is_recurring": {"$ifNull": ["$is_recurring", True]},
-                    "week_identifier": 1,
-                    "original_event_id": {"$toString": "$_id"}
-                }
-            }
-        ]
-
-        # -------- 3. TASKS PIPELINE - COUNT TASKS WITH EXCLUSIONS --------
-        tasks_pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"followup_date": {"$gte": start, "$lte": end}},
-                        {"completedAt": {"$gte": start, "$lte": end}},
-                        {"createdAt": {"$gte": start, "$lte": end}}
-                    ]
-                }
-            },
-            {
-                "$addFields": {
-                    # Get task type or default - use case-sensitive exact matching
-                    "task_type_label": {
-                        "$ifNull": ["$taskType", "Uncategorized"]
-                    },
-                    # Check if task is excluded from completed count (EXACT MATCH)
-                    "is_excluded_type": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$taskType", None]},
-                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    },
-                    # Check if task is completed (considering exclusions)
-                    "is_completed": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
-                                        ]
-                                    },
-                                    {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                                    ]
-                                                },
-                                                True,
-                                                False
-                                            ]
-                                        }
-                                    }
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    },
-                    # Check if task is completed in this period (considering exclusions)
-                    "completed_in_period": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$completedAt", None]},
-                                    {"$gte": ["$completedAt", start]},
-                                    {"$lte": ["$completedAt", end]},
-                                    {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
-                                        ]
-                                    },
-                                    {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                                    ]
-                                                },
-                                                True,
-                                                False
-                                            ]
-                                        }
-                                    }
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    },
-                    # Check if task is due in this period
-                    "is_due_in_period": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$followup_date", None]},
-                                    {"$gte": ["$followup_date", start]},
-                                    {"$lte": ["$followup_date", end]}
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    }
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$assignedfor",
-                    "tasks": {
-                        "$push": {
-                            "_id": "$_id",
-                            "name": "$name",
-                            "taskType": "$taskType",
-                            "task_type_label": "$task_type_label",
-                            "followup_date": "$followup_date",
-                            "due_date": "$followup_date",
-                            "completedAt": "$completedAt",
-                            "createdAt": "$createdAt",
-                            "status": "$status",
-                            "assignedfor": "$assignedfor",
-                            "type": "$type",
-                            "contacted_person": "$contacted_person",
-                            "isRecurring": {
-                                "$cond": [{"$ifNull": ["$recurring_day", False]}, True, False]
-                            },
-                            "priority": "$priority",
-                            "is_completed": "$is_completed",
-                            "is_due_in_period": "$is_due_in_period",
-                            "completed_in_period": "$completed_in_period",
-                            "is_excluded_type": "$is_excluded_type",
-                            "description": "$description"
-                        }
-                    },
-                    # Count ALL tasks for this user
-                    "total_tasks": {"$sum": 1},
-                    # Count completed tasks (excluding "no answer" and "Awaiting Call")
-                    "completed_tasks": {
-                        "$sum": {
-                            "$cond": ["$is_completed", 1, 0]
-                        }
-                    },
-                    # Count tasks completed IN THIS PERIOD (excluding specific types)
-                    "completed_in_period": {
-                        "$sum": {
-                            "$cond": ["$completed_in_period", 1, 0]
-                        }
-                    },
-                    # Count tasks due in period
-                    "due_in_period": {
-                        "$sum": {
-                            "$cond": ["$is_due_in_period", 1, 0]
-                        }
-                    },
-                    # Group by task type for breakdown
-                    "task_type_counts": {
-                        "$push": {
-                            "task_type": "$task_type_label",
-                            "is_completed": "$is_completed",
-                            "completed_in_period": "$completed_in_period",
-                            "is_due_in_period": "$is_due_in_period",
-                            "is_excluded_type": "$is_excluded_type"
-                        }
-                    }
-                }
-            },
-            {"$match": {"total_tasks": {"$gt": 0}}},
-            {"$sort": {"_id": 1}}
-        ]
-
-        # -------- 4. FETCH DATA IN PARALLEL --------
-        overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
-        tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
-        users_cursor = users_collection.find(
-            {},
-            {"_id": 1, "email": 1, "name": 1, "surname": 1}
-        ).limit(limit)
-
-        overdue_cells, task_groups, users = await asyncio.gather(
-            overdue_cells_cursor.to_list(100),
-            tasks_cursor.to_list(None),
-            users_cursor.to_list(limit),
-        )
-
-        # -------- 5. FORMAT OVERDUE CELLS --------
-        formatted_overdue_cells = []
-        for cell in overdue_cells:
-            cell["_id"] = str(cell["_id"])
-            if isinstance(cell.get("date"), datetime):
-                cell["date"] = cell["date"].isoformat()
-            formatted_overdue_cells.append(cell)
-
-        # -------- 6. USER MAP --------
-        user_map = {}
-        for user in users:
-            uid = str(user["_id"])
-            email = user.get("email", "").lower()
-            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip() or email.split("@")[0]
-
-            user_map[email] = {"_id": uid, "email": email, "fullName": full_name}
-            user_map[uid] = user_map[email]
-
-        # -------- 7. GROUP TASKS - WITH EXCLUSIONS --------
-        grouped_tasks = []
-        all_tasks_list = []
-        
-        # Global totals
-        global_total_tasks = 0
-        global_completed_tasks = 0
-        global_completed_in_period = 0
-        global_due_in_period = 0
-        global_incomplete_due = 0
-        
-        # Task type statistics - dynamic based on actual task types found
-        task_type_stats = {}
-
-        for task_group in task_groups:
-            email = task_group["_id"]
-            if not email:
-                email = "unassigned@example.com"
-
-            user_info = user_map.get(email.lower(), {
-                "_id": f"unknown_{email}",
-                "email": email,
-                "fullName": email.split("@")[0]
-            })
-
-            tasks_list = task_group["tasks"]
-            
-            # DEBUG: Print task types found
-            task_types_in_group = set()
-            for task in tasks_list:
-                task_type = task.get("taskType")
-                if task_type:
-                    task_types_in_group.add(task_type)
-            
-            if task_types_in_group:
-                print(f"[DASHBOARD DEBUG] Task types for {email}: {task_types_in_group}")
-            
-            # Process and format each task
-            for task in tasks_list:
-                task["_id"] = str(task["_id"])
-                # Format dates
-                for date_field in ["followup_date", "due_date", "completedAt", "createdAt"]:
-                    if isinstance(task.get(date_field), datetime):
-                        task[date_field] = task[date_field].isoformat()
-                
-                # Track task type statistics
-                task_type = task.get("taskType") or "Uncategorized"
-                is_excluded = task.get("is_excluded_type", False)
-                
-                # Initialize task type in stats if not exists
-                if task_type not in task_type_stats:
-                    task_type_stats[task_type] = {
-                        "total": 0, 
-                        "completed": 0, 
-                        "completed_in_period": 0,
-                        "due_in_period": 0,
-                        "incomplete_due": 0,
-                        "is_excluded": is_excluded
-                    }
-                
-                # Update task type stats
-                task_type_stats[task_type]["total"] += 1
-                if task.get("is_completed"):
-                    task_type_stats[task_type]["completed"] += 1
-                if task.get("completed_in_period"):
-                    task_type_stats[task_type]["completed_in_period"] += 1
-                if task.get("is_due_in_period"):
-                    task_type_stats[task_type]["due_in_period"] += 1
-                if task.get("is_due_in_period") and not task.get("is_completed"):
-                    task_type_stats[task_type]["incomplete_due"] += 1
-
-            # User-specific counts
-            total_for_user = task_group["total_tasks"]
-            completed_all = task_group["completed_tasks"]
-            completed_in_period = task_group["completed_in_period"]
-            due_in_period = task_group["due_in_period"]
-            
-            # Calculate incomplete due tasks
-            incomplete_due = sum(
-                1 for t in tasks_list 
-                if t.get("is_due_in_period") and not t.get("is_completed")
-            )
-            
-            incomplete_all = total_for_user - completed_all
-
-            # Update global totals
-            global_total_tasks += total_for_user
-            global_completed_tasks += completed_all
-            global_completed_in_period += completed_in_period
-            global_due_in_period += due_in_period
-            global_incomplete_due += incomplete_due
-
-            grouped_tasks.append({
-                "user": user_info,
-                "tasks": tasks_list,
-                "totalCount": total_for_user,
-                "completedCount": completed_all,
-                "incompleteCount": incomplete_all,
-                "dueInPeriodCount": due_in_period,
-                "completedInPeriodCount": completed_in_period,
-                "incompleteDueInPeriodCount": incomplete_due,
-                "taskTypes": list(set([t.get("taskType") or "Uncategorized" for t in tasks_list]))
-            })
-
-            all_tasks_list.extend(tasks_list)
-
-        grouped_tasks.sort(key=lambda x: x["user"]["fullName"].lower())
-
-        # -------- 8. COMPREHENSIVE OVERVIEW WITH EXCLUSIONS --------
-        # Calculate completion rates (excluding specific task types)
-        completion_rate_due = (
-            round((global_completed_in_period / global_due_in_period * 100), 2)
-            if global_due_in_period > 0 else 0
-        )
-        
-        completion_rate_overall = (
-            round((global_completed_tasks / global_total_tasks * 100), 2)
-            if global_total_tasks > 0 else 0
-        )
-
-        # Get unique task types found
-        unique_task_types_found = list(task_type_stats.keys())
-        
-        # DEBUG: Print task type stats
-        print(f"[DASHBOARD DEBUG] Task type stats:")
-        for task_type, stats in task_type_stats.items():
-            print(f"  - {task_type}: total={stats['total']}, completed={stats['completed']}, is_excluded={stats.get('is_excluded', False)}")
-
-        overview = {
-            # Attendance & Cells
-            "total_attendance": sum(len(c.get("attendees", [])) for c in formatted_overdue_cells),
-            "outstanding_cells": len(formatted_overdue_cells),
-            
-            # Task metrics - WITH EXCLUSIONS
-            "outstanding_tasks": global_incomplete_due,
-            "tasks_due_in_period": global_due_in_period,
-            "tasks_completed_in_period": global_completed_in_period,  # Excludes "no answer" and "Awaiting Call"
-            "total_tasks_in_period": global_total_tasks,
-            "total_tasks_completed": global_completed_tasks,  # Excludes "no answer" and "Awaiting Call"
-            "total_tasks_incomplete": global_total_tasks - global_completed_tasks,
-            
-            # Special counts
-            "consolidation_tasks": task_type_stats.get("consolidation", {}).get("total", 0),
-            "consolidation_completed": task_type_stats.get("consolidation", {}).get("completed", 0),
-            "consolidation_completed_in_period": task_type_stats.get("consolidation", {}).get("completed_in_period", 0),
-            
-            # People metrics
-            "people_behind": len([g for g in grouped_tasks if g["incompleteDueInPeriodCount"] > 0]),
-            "total_users": len(users),
-            
-            # Completion rates (with exclusions)
-            "completion_rate_due_tasks": completion_rate_due,
-            "completion_rate_overall": completion_rate_overall,
-            "consolidation_completion_rate": (
-                round((task_type_stats.get("consolidation", {}).get("completed", 0) / 
-                      task_type_stats.get("consolidation", {}).get("total", 1) * 100), 2)
-                if task_type_stats.get("consolidation", {}).get("total", 0) > 0 else 0
-            ),
-            
-            # Task type breakdown - ALL types found
-            "task_type_breakdown": task_type_stats,
-            
-            # Count of users with tasks
-            "users_with_tasks": len(grouped_tasks),
-            "users_without_tasks": len(users) - len(grouped_tasks),
-            
-            # Task type info
-            "available_task_types": all_task_types,
-            "task_types_found": unique_task_types_found,
-            "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
-            "total_unique_task_types": len(unique_task_types_found),
-            "note": f"'no answer' and 'Awaiting Call' task types are excluded from completed counts"
-        }
-
-        return {
-            "overview": overview,
-            "overdueCells": formatted_overdue_cells,
-            "groupedTasks": grouped_tasks,
-            "allTasks": all_tasks_list,
-            "allUsers": [
-                {
-                    "_id": str(u["_id"]),
-                    "email": u.get("email", ""),
-                    "name": u.get("name", ""),
-                    "surname": u.get("surname", ""),
-                    "fullName": f"{u.get('name', '')} {u.get('surname', '')}".strip()
-                        or u.get("email", "").split("@")[0]
-                }
-                for u in users
-            ],
-            "period": period,
-            "date_range": {"start": start_date_str, "end": end_date_str},
-            "task_type_stats": task_type_stats,
-            "available_task_types": all_task_types,
-            "task_types_found": unique_task_types_found,
-            "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"Error fetching comprehensive stats: {str(e)}")
-
-
-@app.get("/stats/dashboard-quick")
-async def get_dashboard_quick_stats(
-    period: str = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    QUICK DASHBOARD SUMMARY - Counts completed tasks EXCLUDING "no answer" and "Awaiting Call"
-    """
-    try:
-        start, end = get_period_range(period)
-
-        start_str = start.date().isoformat()
-        end_str = end.date().isoformat()
-
-        print(f"[QUICK STATS] Excluding task types: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
-
-        # -------- 1. COUNT TASKS WITH EXCLUSIONS --------
-        # Total tasks in period
-        total_tasks_all = await tasks_collection.count_documents({
-            "$or": [
-                {"followup_date": {"$gte": start, "$lte": end}},
-                {"completedAt": {"$gte": start, "$lte": end}},
-                {"createdAt": {"$gte": start, "$lte": end}}
-            ]
-        })
-
-        # Tasks DUE in period
-        tasks_due_in_period = await tasks_collection.count_documents({
-            "followup_date": {"$gte": start, "$lte": end}
-        })
-
-        # Tasks COMPLETED in period (EXCLUDING "no answer" and "Awaiting Call")
-        tasks_completed_in_period = await tasks_collection.count_documents({
-            "completedAt": {"$gte": start, "$lte": end},
-            "status": {"$in": ["completed", "done", "closed", "finished"]},
-            "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
-        })
-
-        # All completed tasks (regardless of when, EXCLUDING specific types)
-        total_completed = await tasks_collection.count_documents({
-            "status": {"$in": ["completed", "done", "closed", "finished"]},
-            "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
-        })
-
-        # Consolidation-specific counts
-        consolidation_completed_in_period = await tasks_collection.count_documents({
-            "completedAt": {"$gte": start, "$lte": end},
-            "status": {"$in": ["completed", "done", "closed", "finished"]},
-            "taskType": "consolidation"
-        })
-
-        total_consolidation_tasks = await tasks_collection.count_documents({
-            "taskType": "consolidation"
-        })
-
-        total_consolidation_completed = await tasks_collection.count_documents({
-            "taskType": "consolidation",
-            "status": {"$in": ["completed", "done", "closed", "finished"]}
-        })
-
-        # DEBUG: Count excluded task types
-        no_answer_count = await tasks_collection.count_documents({
-            "taskType": "no answer",
-            "status": {"$in": ["completed", "done", "closed", "finished"]}
-        })
-        
-        awaiting_call_count = await tasks_collection.count_documents({
-            "taskType": "Awaiting Call",
-            "status": {"$in": ["completed", "done", "closed", "finished"]}
-        })
-        
-        print(f"[QUICK STATS DEBUG] Excluded task counts - no answer: {no_answer_count}, Awaiting Call: {awaiting_call_count}")
-
-        # -------- 2. GET TASK TYPE BREAKDOWN WITH EXCLUSIONS --------
-        pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"followup_date": {"$gte": start, "$lte": end}},
-                        {"completedAt": {"$gte": start, "$lte": end}},
-                        {"createdAt": {"$gte": start, "$lte": end}}
-                    ]
-                }
-            },
-            {
-                "$addFields": {
-                    # Use taskType or default to Uncategorized
-                    "task_type": {"$ifNull": ["$taskType", "Uncategorized"]},
-                    # Check if task type is excluded
-                    "is_excluded": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$taskType", None]},
-                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    },
-                    # Check if completed (considering exclusions)
-                    "is_completed": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
-                                        ]
-                                    },
-                                    {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                                    ]
-                                                },
-                                                True,
-                                                False
-                                            ]
-                                        }
-                                    }
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    },
-                    # Check if completed in period (considering exclusions)
-                    "completed_in_period": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$completedAt", None]},
-                                    {"$gte": ["$completedAt", start]},
-                                    {"$lte": ["$completedAt", end]},
-                                    {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
-                                        ]
-                                    },
-                                    {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                                    ]
-                                                },
-                                                True,
-                                                False
-                                            ]
-                                        }
-                                    }
-                                ]
-                            },
-                            True,
-                            False
-                        ]
-                    }
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$task_type",
-                    "total": {"$sum": 1},
-                    "completed": {
-                        "$sum": {
-                            "$cond": ["$is_completed", 1, 0]
-                        }
-                    },
-                    "completed_in_period": {
-                        "$sum": {
-                            "$cond": ["$completed_in_period", 1, 0]
-                        }
-                    },
-                    "due_in_period": {
-                        "$sum": {
-                            "$cond": [
-                                {
-                                    "$and": [
-                                        {"$ne": ["$followup_date", None]},
-                                        {"$gte": ["$followup_date", start]},
-                                        {"$lte": ["$followup_date", end]}
-                                    ]
-                                },
-                                1,
-                                0
-                            ]
-                        }
-                    },
-                    "is_excluded": {"$first": "$is_excluded"}
-                }
-            },
-            {"$sort": {"total": -1}}
-        ]
-        
-        task_type_cursor = tasks_collection.aggregate(pipeline)
-        task_type_stats_raw = await task_type_cursor.to_list(None)
-        
-        # Format task type stats
-        task_type_stats = {}
-        for stat in task_type_stats_raw:
-            task_type = stat["_id"] or "Uncategorized"
-            total = stat["total"]
-            completed = stat["completed"]
-            is_excluded = stat["is_excluded"]
-            
-            task_type_stats[task_type] = {
-                "total": total,
-                "completed": completed,
-                "completed_in_period": stat["completed_in_period"],
-                "due_in_period": stat["due_in_period"],
-                "is_excluded": is_excluded,
-                "completion_rate": round((completed / total * 100), 2) if total > 0 else 0,
-                "completion_rate_in_period": round((stat["completed_in_period"] / stat["due_in_period"] * 100), 2) if stat["due_in_period"] > 0 else 0
-            }
-
-        # -------- 3. OVERDUE CELLS COUNT --------
-        overdue_cells_count = await events_collection.count_documents({
-            "$or": [
-                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
-                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
-                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
-            ],
-            "date": {"$lte": end},
-            "$or": [
-                {"status": "incomplete"},
-                {"status": {"$exists": False}},
-                {"Status": "Incomplete"},
-                {"_is_overdue": True}
-            ]
-        })
-
-        return {
-            "period": period,
-            "date_range": {"start": start_str, "end": end_str},
-            
-            # Task counts - WITH EXCLUSIONS
-            "taskCount": total_tasks_all,
-            "tasksDueInPeriod": tasks_due_in_period,
-            "tasksCompletedInPeriod": tasks_completed_in_period,  # Excludes "no answer" and "Awaiting Call"
-            "totalCompletedTasks": total_completed,  # Excludes "no answer" and "Awaiting Call"
-            
-            # Consolidation-specific
-            "consolidationTasks": total_consolidation_tasks,
-            "consolidationCompleted": total_consolidation_completed,
-            "consolidationCompletedInPeriod": consolidation_completed_in_period,
-            "consolidationCompletionRate": (
-                round((total_consolidation_completed / total_consolidation_tasks * 100), 2)
-                if total_consolidation_tasks > 0 else 0
-            ),
-            
-            # Overdue cells
-            "overdueCells": overdue_cells_count,
-            
-            # Completion rates (with exclusions)
-            "completionRateDueTasks": (
-                round((tasks_completed_in_period / tasks_due_in_period * 100), 2)
-                if tasks_due_in_period > 0 else 0
-            ),
-            "overallCompletionRate": (
-                round((total_completed / total_tasks_all * 100), 2)
-                if total_tasks_all > 0 else 0
-            ),
-            
-            # Task type breakdown
-            "taskTypeBreakdown": task_type_stats,
-            "totalTaskTypesFound": len(task_type_stats),
-            "excludedTaskTypes": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
-            
-            "timestamp": datetime.utcnow().isoformat(),
-            "note": "'no answer' and 'Awaiting Call' task types are excluded from completed counts"
-        }
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"Error fetching quick stats: {str(e)}")
+   
