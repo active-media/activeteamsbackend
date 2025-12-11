@@ -4122,7 +4122,8 @@ async def get_registrant_cell_events_debug(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
-   
+
+
 @app.get("/events/global")
 async def get_global_events(
     current_user: dict = Depends(get_current_user),
@@ -4142,19 +4143,19 @@ async def get_global_events(
         today = datetime.now(timezone)
         today_date = today.date()
        
-        # Parse start_date filter
+        
         start_date_filter = start_date if start_date else '2025-10-20'
         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
        
         print(f"Fetching Global Events from {start_date_obj}")
        
-        # Build query for Global Events
+        
         query = {
             "isGlobal": True,
             "eventTypeName": "Global Events"
         }
        
-        # NEW: Filter by last_updated if provided (for real-time updates)
+        
         if last_updated:
             try:
                 last_updated_dt = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
@@ -4166,7 +4167,7 @@ async def get_global_events(
             except Exception as e:
                 print(f"Error parsing last_updated: {e}")
        
-        # Add search filter
+        
         if search and search.strip():
             search_regex = {"$regex": search.strip(), "$options": "i"}
             query["$or"] = [
@@ -4178,16 +4179,16 @@ async def get_global_events(
        
         print(f"Query for Global Events: {query}")
        
-        # Fetch events
+        
         cursor = events_collection.find(query).sort([("created_at", -1), ("date", -1)])
         all_events = await cursor.to_list(length=None)
        
         print(f"Found {len(all_events)} raw global events")
        
-        # Get the latest update timestamp for real-time polling
+        
         latest_timestamp = None
         if all_events:
-            # Find the most recently created or updated event
+            
             timestamps = []
             for event in all_events:
                 created = event.get("created_at")
@@ -4201,7 +4202,7 @@ async def get_global_events(
                 latest_timestamp = max(timestamps)
                 print(f" Latest event timestamp: {latest_timestamp}")
        
-        # Process events
+        
         processed_events = []
         new_events_count = 0
        
@@ -4209,7 +4210,7 @@ async def get_global_events(
             try:
                 print(f"Processing event {event.get('_id')}: {event.get('eventName', event.get('Event Name', 'Unknown'))}")
                
-                # Check if this is a new event (for real-time tracking)
+                
                 is_new_event = False
                 if last_updated:
                     event_created = event.get("created_at")
@@ -4225,7 +4226,7 @@ async def get_global_events(
                             is_new_event = True
                             new_events_count += 1
                
-                # Parse event date
+                
                 event_date_field = event.get("date")
                 if isinstance(event_date_field, datetime):
                     event_date = event_date_field.date()
@@ -4241,21 +4242,21 @@ async def get_global_events(
                
                 print(f"  Event date: {event_date}, Start date filter: {start_date_obj}")
                
-                # Filter by date range
+                
                 if event_date < start_date_obj:
                     print(f"   Skipped - before date range")
                     continue
                
-                # Get event details
+                
                 event_name = event.get("Event Name") or event.get("eventName", "")
                 leader_name = event.get("Leader") or event.get("eventLeader", "")
                 location = event.get("Location") or event.get("location", "")
                
-                # Determine status - FIXED: Use explicit status field from database, not inferred from attendees
-                # This prevents events from being automatically marked "complete" just because attendees were checked in
+                
+                
                 did_not_meet = event.get("did_not_meet", False)
                
-                # Check for explicit status field first (set via close/update API call)
+                
                 stored_status = event.get("status") or event.get("Status")
                
                 print(f"  Status determination: did_not_meet={did_not_meet}, stored_status={stored_status}")
@@ -4264,23 +4265,30 @@ async def get_global_events(
                     event_status = "did_not_meet"
                     status_display = "Did Not Meet"
                 elif stored_status:
-                    # Use the explicit status from the database
+                    
                     event_status = str(stored_status).lower()
                     status_display = str(stored_status).replace("_", " ").title()
                 else:
-                    # Default to "open" for events without an explicit status
-                    # (This ensures new events start as open, not derived from attendees)
+                    
+                    
                     event_status = "open"
                     status_display = "Open"
                
                 print(f"  ✓ Final status: {event_status}")
                
-                # Apply status filter
+                
                 if status and status != 'all' and status != event_status:
                     print(f"   Skipped - status filter: requested={status}, actual={event_status}")
                     continue
+                
+                
+                attendees_data = event.get("attendees", []) if isinstance(event.get("attendees", []), list) else []
+                new_people_data = event.get("new_people", []) if isinstance(event.get("new_people", []), list) else []
+                consolidations_data = event.get("consolidations", []) if isinstance(event.get("consolidations", []), list) else []
+                
+                print(f"  Data arrays - attendees: {len(attendees_data)}, new_people: {len(new_people_data)}, consolidations: {len(consolidations_data)}")
                
-                # Build event object
+                
                 final_event = {
                     "_id": str(event.get("_id", "")),
                     "eventName": event_name,
@@ -4292,7 +4300,11 @@ async def get_global_events(
                     "time": event.get("time", ""),
                     "location": location,
                     "description": event.get("description", ""),
-                    "attendees": event.get("attendees", []) if isinstance(event.get("attendees", []), list) else [],
+                    
+                    "attendees": attendees_data,
+                    "new_people": new_people_data,
+                    "consolidations": consolidations_data,
+                    
                     "did_not_meet": did_not_meet,
                     "status": event_status,
                     "Status": status_display,
@@ -4304,7 +4316,10 @@ async def get_global_events(
                     "UUID": event.get("UUID", ""),
                     "created_at": event.get("created_at"),
                     "updated_at": event.get("updated_at"),
-                    "_is_new": is_new_event  # NEW: Flag for new events in real-time updates
+                    "_is_new": is_new_event,  
+                    
+                    "closed_by": event.get("closed_by"),
+                    "closed_at": event.get("closed_at")
                 }
                
                 processed_events.append(final_event)
@@ -4319,20 +4334,21 @@ async def get_global_events(
         print(f"Processed {len(processed_events)} global events after filtering")
         print(f"🆕 New events since last update: {new_events_count}")
        
-        # Sort by date (most recent first)
+        
         processed_events.sort(key=lambda x: x['date'], reverse=True)
        
-        # Calculate status counts
+        
         status_counts = {
             "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
             "complete": sum(1 for e in processed_events if e["status"] == "complete"),
             "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet"),
-            "open": sum(1 for e in processed_events if e["status"] == "open")
+            "open": sum(1 for e in processed_events if e["status"] == "open"),
+            "closed": sum(1 for e in processed_events if e["status"] == "closed")  
         }
        
-        print(f"Global Events Status - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}, Open: {status_counts['open']}")
+        print(f"Global Events Status - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}, Open: {status_counts['open']}, Closed: {status_counts['closed']}")
        
-        # Pagination
+        
         total = len(processed_events)
         total_pages = (total + limit - 1) // limit if total > 0 else 1
         start_idx = (page - 1) * limit
@@ -4352,7 +4368,7 @@ async def get_global_events(
                 "start_date": start_date_filter,
                 "end_date": today_date.isoformat()
             },
-            # NEW: Real-time update fields
+            
             "latest_timestamp": latest_timestamp.isoformat() if latest_timestamp else None,
             "has_new_events": new_events_count > 0,
             "new_events_count": new_events_count,
@@ -4377,17 +4393,17 @@ async def get_global_events_status_counts(
         today = datetime.now(timezone)
         today_date = today.date()
        
-        # Parse start_date filter
+        
         start_date_filter = start_date if start_date else '2025-10-20'
         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
        
-        # Build query
+        
         query = {
             "isGlobal": True,
             "eventType": "Global Events"
         }
        
-        # Add search filter
+        
         if search and search.strip():
             search_regex = {"$regex": search.strip(), "$options": "i"}
             query["$or"] = [
@@ -4397,18 +4413,18 @@ async def get_global_events_status_counts(
                 {"Location": search_regex}
             ]
        
-        # Fetch events
+        
         cursor = events_collection.find(query)
         all_events = await cursor.to_list(length=None)
        
-        # Calculate counts
+        
         incomplete_count = 0
         complete_count = 0
         did_not_meet_count = 0
        
         for event in all_events:
             try:
-                # Parse event date
+                
                 event_date_field = event.get("date")
                 if isinstance(event_date_field, datetime):
                     event_date = event_date_field.date()
@@ -4422,11 +4438,11 @@ async def get_global_events_status_counts(
                 else:
                     event_date = today_date
                
-                # Filter by date range
+                
                 if event_date < start_date_obj:
                     continue
                
-                # Determine status
+                
                 did_not_meet = event.get("did_not_meet", False)
                 attendees = event.get("attendees", [])
                 has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
@@ -4455,6 +4471,7 @@ async def get_global_events_status_counts(
     except Exception as e:
         print(f"ERROR in global events status counts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
     
 @app.post("/admin/migrate-persistent-attendees")
 async def migrate_persistent_attendees(current_user: dict = Depends(get_current_user)):
@@ -9523,7 +9540,7 @@ async def update_service_checkin_person(
     try:
         event_id = update_data.get("event_id")
         person_id = update_data.get("person_id")
-        data_type = update_data.get("type")  # attendees, new_people, consolidations
+        data_type = update_data.get("type")  
         update_fields = update_data.get("update_fields", {})
 
         print(f"✏️ Updating service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
@@ -9538,7 +9555,7 @@ async def update_service_checkin_person(
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
 
-        # Build the update query
+        
         set_fields = {}
         for field, value in update_fields.items():
             set_fields[f"{data_type}.$.{field}"] = value
@@ -9588,7 +9605,7 @@ async def initialize_event_structure(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        # Check if structure already exists
+        
         if "new_people" in event and "consolidations" in event:
             return {
                 "success": True,
@@ -9596,7 +9613,7 @@ async def initialize_event_structure(
                 "already_initialized": True
             }
 
-        # Initialize the three arrays if they don't exist
+        
         update_data = {
             "attendees": event.get("attendees", []),
             "new_people": event.get("new_people", []),
@@ -9604,7 +9621,7 @@ async def initialize_event_structure(
             "updated_at": datetime.utcnow().isoformat()
         }
 
-        # Ensure total_attendance exists
+        
         if "total_attendance" not in event:
             update_data["total_attendance"] = len(update_data["attendees"])
 
@@ -9640,7 +9657,7 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
     try:
         print("Starting migration of all events to new structure...")
        
-        # Get all events
+        
         all_events = await events_collection.find({}).to_list(length=None)
         migrated_count = 0
         results = []
@@ -9649,11 +9666,11 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
             try:
                 event_id = event["_id"]
                
-                # Skip events that already have the new structure
+                
                 if "new_people" in event and "consolidations" in event:
                     continue
 
-                # Transform existing data
+                
                 old_attendees = event.get("attendees", [])
                 new_attendees = []
                 new_people = []
@@ -9661,7 +9678,7 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
 
                 for attendee in old_attendees:
                     if isinstance(attendee, dict):
-                        # Check if this is a consolidation (has decision field)
+                        
                         if attendee.get("decision") or attendee.get("is_consolidation"):
                             consolidation_record = {
                                 "id": attendee.get("id", f"consolidation_{secrets.token_urlsafe(8)}"),
@@ -9680,7 +9697,7 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
                             }
                             consolidations.append(consolidation_record)
                         else:
-                            # Regular attendee
+                            
                             attendee_record = {
                                 "id": attendee.get("id", f"attendee_{secrets.token_urlsafe(8)}"),
                                 "name": attendee.get("name", ""),
@@ -9737,7 +9754,6 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
         print(f"Error in bulk migration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
 
-
 def get_period_range(period: str):
     """
     Accurate date range calculator matching frontend's DailyTasks filter:
@@ -9751,19 +9767,19 @@ def get_period_range(period: str):
     now = datetime.utcnow()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # TODAY
+    
     if period == "today":
         start = today
         end = today.replace(hour=23, minute=59, second=59, microsecond=999999)
         return start, end
     
-    # THIS WEEK (Monday to Sunday)
+    
     if period == "thisWeek":
-        start = today - timedelta(days=today.weekday())  # Monday
+        start = today - timedelta(days=today.weekday())  
         end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
         return start, end
     
-    # THIS MONTH
+    
     if period == "thisMonth":
         start = today.replace(day=1)
         if today.month == 12:
@@ -9772,22 +9788,22 @@ def get_period_range(period: str):
             end = datetime(today.year, today.month + 1, 1) - timedelta(microseconds=1)
         return start, end
     
-    # PREVIOUS 7 DAYS
+    
     if period == "previous7":
-        end = today - timedelta(days=1)  # Yesterday
+        end = today - timedelta(days=1)  
         end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start = end - timedelta(days=6)  # 7 days ago (inclusive)
+        start = end - timedelta(days=6)  
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
         return start, end
     
-    # PREVIOUS WEEK (complete last week, Monday to Sunday)
+    
     if period == "previousWeek":
         last_week = today - timedelta(weeks=1)
-        start = last_week - timedelta(days=last_week.weekday())  # Monday of last week
+        start = last_week - timedelta(days=last_week.weekday())  
         end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
         return start, end
     
-    # PREVIOUS MONTH (complete last month)
+    
     if period == "previousMonth":
         year = today.year
         month = today.month - 1
@@ -9804,7 +9820,7 @@ def get_period_range(period: str):
     
     raise ValueError(f"Invalid period '{period}'")
 
-# Define task types to exclude from completed counts - USING EXACT VALUES FROM DATABASE
+
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
 
 @app.get("/stats/dashboard-comprehensive")
@@ -9821,19 +9837,19 @@ async def get_dashboard_comprehensive(
         print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, User: {current_user.get('email')}")
         print(f"[DASHBOARD] Excluding task types from completed count: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
 
-        # DATE RANGE
+        
         start, end = get_period_range(period)
         start_date_str = start.date().isoformat()
         end_date_str = end.date().isoformat()
         print(f"[DASHBOARD] Date range: {start_date_str} → {end_date_str}")
 
-        # -------- 1. GET ALL TASK TYPES FROM DATABASE (for reference only) --------
+        
         task_types_cursor = tasktypes_collection.find({}, {"name": 1})
         task_types_list = await task_types_cursor.to_list(length=None)
         all_task_types = [tt.get("name") for tt in task_types_list if tt.get("name")]
         print(f"[DASHBOARD] Found {len(all_task_types)} task types in database: {all_task_types}")
 
-        # -------- 2. OVERDUE CELLS PIPELINE --------
+        
         overdue_cells_pipeline = [
             {
                 "$match": {
@@ -9889,7 +9905,7 @@ async def get_dashboard_comprehensive(
             }
         ]
 
-        # -------- 3. TASKS PIPELINE - COUNT TASKS WITH EXCLUSIONS --------
+        
         tasks_pipeline = [
             {
                 "$match": {
@@ -9902,11 +9918,11 @@ async def get_dashboard_comprehensive(
             },
             {
                 "$addFields": {
-                    # Get task type or default - use case-sensitive exact matching
+                    
                     "task_type_label": {
                         "$ifNull": ["$taskType", "Uncategorized"]
                     },
-                    # Check if task is excluded from completed count (EXACT MATCH)
+                    
                     "is_excluded_type": {
                         "$cond": [
                             {
@@ -9919,7 +9935,7 @@ async def get_dashboard_comprehensive(
                             False
                         ]
                     },
-                    # Check if task is completed (considering exclusions)
+                    
                     "is_completed": {
                         "$cond": [
                             {
@@ -9950,7 +9966,7 @@ async def get_dashboard_comprehensive(
                             False
                         ]
                     },
-                    # Check if task is completed in this period (considering exclusions)
+                    
                     "completed_in_period": {
                         "$cond": [
                             {
@@ -9984,7 +10000,7 @@ async def get_dashboard_comprehensive(
                             False
                         ]
                     },
-                    # Check if task is due in this period
+                    
                     "is_due_in_period": {
                         "$cond": [
                             {
@@ -10028,27 +10044,27 @@ async def get_dashboard_comprehensive(
                             "description": "$description"
                         }
                     },
-                    # Count ALL tasks for this user
+                    
                     "total_tasks": {"$sum": 1},
-                    # Count completed tasks (excluding "no answer" and "Awaiting Call")
+                    
                     "completed_tasks": {
                         "$sum": {
                             "$cond": ["$is_completed", 1, 0]
                         }
                     },
-                    # Count tasks completed IN THIS PERIOD (excluding specific types)
+                    
                     "completed_in_period": {
                         "$sum": {
                             "$cond": ["$completed_in_period", 1, 0]
                         }
                     },
-                    # Count tasks due in period
+                    
                     "due_in_period": {
                         "$sum": {
                             "$cond": ["$is_due_in_period", 1, 0]
                         }
                     },
-                    # Group by task type for breakdown
+                    
                     "task_type_counts": {
                         "$push": {
                             "task_type": "$task_type_label",
@@ -10064,7 +10080,7 @@ async def get_dashboard_comprehensive(
             {"$sort": {"_id": 1}}
         ]
 
-        # -------- 4. FETCH DATA IN PARALLEL --------
+        
         overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
         tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
         users_cursor = users_collection.find(
@@ -10078,7 +10094,7 @@ async def get_dashboard_comprehensive(
             users_cursor.to_list(limit),
         )
 
-        # -------- 5. FORMAT OVERDUE CELLS --------
+        
         formatted_overdue_cells = []
         for cell in overdue_cells:
             cell["_id"] = str(cell["_id"])
@@ -10086,7 +10102,7 @@ async def get_dashboard_comprehensive(
                 cell["date"] = cell["date"].isoformat()
             formatted_overdue_cells.append(cell)
 
-        # -------- 6. USER MAP --------
+        
         user_map = {}
         for user in users:
             uid = str(user["_id"])
@@ -10096,18 +10112,18 @@ async def get_dashboard_comprehensive(
             user_map[email] = {"_id": uid, "email": email, "fullName": full_name}
             user_map[uid] = user_map[email]
 
-        # -------- 7. GROUP TASKS - WITH EXCLUSIONS --------
+        
         grouped_tasks = []
         all_tasks_list = []
         
-        # Global totals
+        
         global_total_tasks = 0
         global_completed_tasks = 0
         global_completed_in_period = 0
         global_due_in_period = 0
         global_incomplete_due = 0
         
-        # Task type statistics - dynamic based on actual task types found
+        
         task_type_stats = {}
 
         for task_group in task_groups:
@@ -10123,7 +10139,7 @@ async def get_dashboard_comprehensive(
 
             tasks_list = task_group["tasks"]
             
-            # DEBUG: Print task types found
+            
             task_types_in_group = set()
             for task in tasks_list:
                 task_type = task.get("taskType")
@@ -10133,19 +10149,19 @@ async def get_dashboard_comprehensive(
             if task_types_in_group:
                 print(f"[DASHBOARD DEBUG] Task types for {email}: {task_types_in_group}")
             
-            # Process and format each task
+            
             for task in tasks_list:
                 task["_id"] = str(task["_id"])
-                # Format dates
+                
                 for date_field in ["followup_date", "due_date", "completedAt", "createdAt"]:
                     if isinstance(task.get(date_field), datetime):
                         task[date_field] = task[date_field].isoformat()
                 
-                # Track task type statistics
+                
                 task_type = task.get("taskType") or "Uncategorized"
                 is_excluded = task.get("is_excluded_type", False)
                 
-                # Initialize task type in stats if not exists
+                
                 if task_type not in task_type_stats:
                     task_type_stats[task_type] = {
                         "total": 0, 
@@ -10156,7 +10172,7 @@ async def get_dashboard_comprehensive(
                         "is_excluded": is_excluded
                     }
                 
-                # Update task type stats
+                
                 task_type_stats[task_type]["total"] += 1
                 if task.get("is_completed"):
                     task_type_stats[task_type]["completed"] += 1
@@ -10167,13 +10183,13 @@ async def get_dashboard_comprehensive(
                 if task.get("is_due_in_period") and not task.get("is_completed"):
                     task_type_stats[task_type]["incomplete_due"] += 1
 
-            # User-specific counts
+            
             total_for_user = task_group["total_tasks"]
             completed_all = task_group["completed_tasks"]
             completed_in_period = task_group["completed_in_period"]
             due_in_period = task_group["due_in_period"]
             
-            # Calculate incomplete due tasks
+            
             incomplete_due = sum(
                 1 for t in tasks_list 
                 if t.get("is_due_in_period") and not t.get("is_completed")
@@ -10181,7 +10197,7 @@ async def get_dashboard_comprehensive(
             
             incomplete_all = total_for_user - completed_all
 
-            # Update global totals
+            
             global_total_tasks += total_for_user
             global_completed_tasks += completed_all
             global_completed_in_period += completed_in_period
@@ -10204,8 +10220,8 @@ async def get_dashboard_comprehensive(
 
         grouped_tasks.sort(key=lambda x: x["user"]["fullName"].lower())
 
-        # -------- 8. COMPREHENSIVE OVERVIEW WITH EXCLUSIONS --------
-        # Calculate completion rates (excluding specific task types)
+        
+        
         completion_rate_due = (
             round((global_completed_in_period / global_due_in_period * 100), 2)
             if global_due_in_period > 0 else 0
@@ -10216,37 +10232,37 @@ async def get_dashboard_comprehensive(
             if global_total_tasks > 0 else 0
         )
 
-        # Get unique task types found
+        
         unique_task_types_found = list(task_type_stats.keys())
         
-        # DEBUG: Print task type stats
+        
         print(f"[DASHBOARD DEBUG] Task type stats:")
         for task_type, stats in task_type_stats.items():
             print(f"  - {task_type}: total={stats['total']}, completed={stats['completed']}, is_excluded={stats.get('is_excluded', False)}")
 
         overview = {
-            # Attendance & Cells
+            
             "total_attendance": sum(len(c.get("attendees", [])) for c in formatted_overdue_cells),
             "outstanding_cells": len(formatted_overdue_cells),
             
-            # Task metrics - WITH EXCLUSIONS
+            
             "outstanding_tasks": global_incomplete_due,
             "tasks_due_in_period": global_due_in_period,
-            "tasks_completed_in_period": global_completed_in_period,  # Excludes "no answer" and "Awaiting Call"
+            "tasks_completed_in_period": global_completed_in_period,  
             "total_tasks_in_period": global_total_tasks,
-            "total_tasks_completed": global_completed_tasks,  # Excludes "no answer" and "Awaiting Call"
+            "total_tasks_completed": global_completed_tasks,  
             "total_tasks_incomplete": global_total_tasks - global_completed_tasks,
             
-            # Special counts
+            
             "consolidation_tasks": task_type_stats.get("consolidation", {}).get("total", 0),
             "consolidation_completed": task_type_stats.get("consolidation", {}).get("completed", 0),
             "consolidation_completed_in_period": task_type_stats.get("consolidation", {}).get("completed_in_period", 0),
             
-            # People metrics
+            
             "people_behind": len([g for g in grouped_tasks if g["incompleteDueInPeriodCount"] > 0]),
             "total_users": len(users),
             
-            # Completion rates (with exclusions)
+            
             "completion_rate_due_tasks": completion_rate_due,
             "completion_rate_overall": completion_rate_overall,
             "consolidation_completion_rate": (
@@ -10255,14 +10271,14 @@ async def get_dashboard_comprehensive(
                 if task_type_stats.get("consolidation", {}).get("total", 0) > 0 else 0
             ),
             
-            # Task type breakdown - ALL types found
+            
             "task_type_breakdown": task_type_stats,
             
-            # Count of users with tasks
+            
             "users_with_tasks": len(grouped_tasks),
             "users_without_tasks": len(users) - len(grouped_tasks),
             
-            # Task type info
+            
             "available_task_types": all_task_types,
             "task_types_found": unique_task_types_found,
             "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
@@ -10317,8 +10333,8 @@ async def get_dashboard_quick_stats(
 
         print(f"[QUICK STATS] Excluding task types: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
 
-        # -------- 1. COUNT TASKS WITH EXCLUSIONS --------
-        # Total tasks in period
+        
+        
         total_tasks_all = await tasks_collection.count_documents({
             "$or": [
                 {"followup_date": {"$gte": start, "$lte": end}},
@@ -10327,25 +10343,25 @@ async def get_dashboard_quick_stats(
             ]
         })
 
-        # Tasks DUE in period
+        
         tasks_due_in_period = await tasks_collection.count_documents({
             "followup_date": {"$gte": start, "$lte": end}
         })
 
-        # Tasks COMPLETED in period (EXCLUDING "no answer" and "Awaiting Call")
+        
         tasks_completed_in_period = await tasks_collection.count_documents({
             "completedAt": {"$gte": start, "$lte": end},
             "status": {"$in": ["completed", "done", "closed", "finished"]},
             "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
         })
 
-        # All completed tasks (regardless of when, EXCLUDING specific types)
+        
         total_completed = await tasks_collection.count_documents({
             "status": {"$in": ["completed", "done", "closed", "finished"]},
             "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
         })
 
-        # Consolidation-specific counts
+        
         consolidation_completed_in_period = await tasks_collection.count_documents({
             "completedAt": {"$gte": start, "$lte": end},
             "status": {"$in": ["completed", "done", "closed", "finished"]},
@@ -10361,7 +10377,7 @@ async def get_dashboard_quick_stats(
             "status": {"$in": ["completed", "done", "closed", "finished"]}
         })
 
-        # DEBUG: Count excluded task types
+        
         no_answer_count = await tasks_collection.count_documents({
             "taskType": "no answer",
             "status": {"$in": ["completed", "done", "closed", "finished"]}
@@ -10374,7 +10390,7 @@ async def get_dashboard_quick_stats(
         
         print(f"[QUICK STATS DEBUG] Excluded task counts - no answer: {no_answer_count}, Awaiting Call: {awaiting_call_count}")
 
-        # -------- 2. GET TASK TYPE BREAKDOWN WITH EXCLUSIONS --------
+        
         pipeline = [
             {
                 "$match": {
@@ -10387,9 +10403,9 @@ async def get_dashboard_quick_stats(
             },
             {
                 "$addFields": {
-                    # Use taskType or default to Uncategorized
+                    
                     "task_type": {"$ifNull": ["$taskType", "Uncategorized"]},
-                    # Check if task type is excluded
+                    
                     "is_excluded": {
                         "$cond": [
                             {
@@ -10402,7 +10418,7 @@ async def get_dashboard_quick_stats(
                             False
                         ]
                     },
-                    # Check if completed (considering exclusions)
+                    
                     "is_completed": {
                         "$cond": [
                             {
@@ -10433,7 +10449,7 @@ async def get_dashboard_quick_stats(
                             False
                         ]
                     },
-                    # Check if completed in period (considering exclusions)
+                    
                     "completed_in_period": {
                         "$cond": [
                             {
@@ -10507,7 +10523,7 @@ async def get_dashboard_quick_stats(
         task_type_cursor = tasks_collection.aggregate(pipeline)
         task_type_stats_raw = await task_type_cursor.to_list(None)
         
-        # Format task type stats
+        
         task_type_stats = {}
         for stat in task_type_stats_raw:
             task_type = stat["_id"] or "Uncategorized"
@@ -10525,7 +10541,7 @@ async def get_dashboard_quick_stats(
                 "completion_rate_in_period": round((stat["completed_in_period"] / stat["due_in_period"] * 100), 2) if stat["due_in_period"] > 0 else 0
             }
 
-        # -------- 3. OVERDUE CELLS COUNT --------
+        
         overdue_cells_count = await events_collection.count_documents({
             "$or": [
                 {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
@@ -10545,13 +10561,13 @@ async def get_dashboard_quick_stats(
             "period": period,
             "date_range": {"start": start_str, "end": end_str},
             
-            # Task counts - WITH EXCLUSIONS
+            
             "taskCount": total_tasks_all,
             "tasksDueInPeriod": tasks_due_in_period,
-            "tasksCompletedInPeriod": tasks_completed_in_period,  # Excludes "no answer" and "Awaiting Call"
-            "totalCompletedTasks": total_completed,  # Excludes "no answer" and "Awaiting Call"
+            "tasksCompletedInPeriod": tasks_completed_in_period,  
+            "totalCompletedTasks": total_completed,  
             
-            # Consolidation-specific
+            
             "consolidationTasks": total_consolidation_tasks,
             "consolidationCompleted": total_consolidation_completed,
             "consolidationCompletedInPeriod": consolidation_completed_in_period,
@@ -10560,10 +10576,10 @@ async def get_dashboard_quick_stats(
                 if total_consolidation_tasks > 0 else 0
             ),
             
-            # Overdue cells
+            
             "overdueCells": overdue_cells_count,
             
-            # Completion rates (with exclusions)
+            
             "completionRateDueTasks": (
                 round((tasks_completed_in_period / tasks_due_in_period * 100), 2)
                 if tasks_due_in_period > 0 else 0
@@ -10573,7 +10589,7 @@ async def get_dashboard_quick_stats(
                 if total_tasks_all > 0 else 0
             ),
             
-            # Task type breakdown
+            
             "taskTypeBreakdown": task_type_stats,
             "totalTaskTypesFound": len(task_type_stats),
             "excludedTaskTypes": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
@@ -10586,3 +10602,75 @@ async def get_dashboard_quick_stats(
         import traceback
         traceback.print_exc()
         raise HTTPException(500, f"Error fetching quick stats: {str(e)}")
+    
+@app.patch("/events/{event_id}/close")
+async def close_event(
+    event_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Close/Complete an event - Update status to "complete"
+    """
+    try:
+        print(f"🔒 Closing event: {event_id}")
+        
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        
+        current_status = event.get("status", "").lower()
+        if current_status in ["complete", "closed"]:
+            return {
+                "message": f"Event '{event.get('eventName', 'Unknown')}' is already closed",
+                "status": current_status,
+                "already_closed": True
+            }
+
+        
+        update_data = {
+            "status": "complete",
+            "updated_at": datetime.utcnow().isoformat(),
+            "closed_by": current_user.get("email", ""),
+            "closed_at": datetime.utcnow().isoformat()
+        }
+
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to update event status")
+
+        
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
+        
+        await log_activity(
+            user_id=current_user.get("_id"),
+            action="EVENT_CLOSED",
+            details=f"Closed event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
+        )
+
+        print(f"✅ Event {event.get('eventName')} closed successfully")
+
+        return {
+            "success": True,
+            "message": f"Event '{event.get('eventName', 'Unknown')}' closed successfully",
+            "event_id": event_id,
+            "event_name": event.get("eventName", "Unknown"),
+            "new_status": "complete",
+            "closed_by": current_user.get("email", ""),
+            "closed_at": update_data["closed_at"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error closing event: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
