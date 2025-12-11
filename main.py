@@ -662,7 +662,8 @@ async def login(user: UserLogin):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     person = await people_collection.find_one({"Email":user.email}) or {}
-
+    if not person:
+        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
 
     full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
     print("FULL NAME",full_name)
