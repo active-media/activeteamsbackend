@@ -668,6 +668,8 @@ async def login(user: UserLogin):
     print("FULL NAME",full_name)
     is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
     is_Leader = bool(is_Leader)
+    if not person:
+        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
    
 
     access_token = create_access_token(
@@ -847,10 +849,11 @@ def get_current_week_identifier():
         return f"{year}-W{week:02d}"
     except Exception as e:
         print(f"Error getting week identifier: {e}")
-        # Fallback to UTC
         now = datetime.utcnow()
         year, week, _ = now.isocalendar()
         return f"{year}-W{week:02d}"
+    
+
 # POST ----------------------------------------------
 @app.post("/events")
 async def create_event(event: EventCreate):
@@ -1032,9 +1035,6 @@ async def get_cell_events(
     firstName: Optional[str] = Query(None),
     userSurname: Optional[str] = Query(None)
 ):
-    """
-    Get cell events with proper separation between personal and disciples' cells
-    """
     try:
         print("=" * 100)
         print("GET /events/cells REQUEST")
@@ -1043,7 +1043,6 @@ async def get_cell_events(
         role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "")
 
-        # Get user name from people collection
         person = await people_collection.find_one({"Email": user_email})
         if person:
             first_name = person.get('Name', '').strip() or firstName
@@ -1068,7 +1067,6 @@ async def get_cell_events(
         is_actual_leader_at_12 = isLeaderAt12
         print(f"Is Leader at 12: {is_actual_leader_at_12}")
 
-        # BASE QUERY
         query = {
             "$and": [
                 {
@@ -1086,7 +1084,6 @@ async def get_cell_events(
         safe_user_email = re.escape(user_email)
         safe_user_name = re.escape(user_name)
 
-        # SEARCH FILTER
         if search and search.strip():
             search_term = search.strip()
             print(f"SEARCH: '{search_term}'")
@@ -1109,9 +1106,6 @@ async def get_cell_events(
                 ]
             })
 
-        # ROLE-BASED FILTERING
-        
-        # ADMIN MODE
         if role == "admin":
             print(f"ADMIN MODE")
             
@@ -1130,18 +1124,15 @@ async def get_cell_events(
             else:
                 print("   VIEW ALL: ALL cells")
 
-        # LEADER AT 12 MODE - CASE INSENSITIVE FIELD NAMES
         elif is_actual_leader_at_12 and leader_at_12_view:
             print(f"LEADER AT 12 MODE")
             
-            # Check what view we want
             want_personal_view = (show_personal_cells or personal)
             want_disciples_view = show_all_authorized
             
             print(f"   View preferences - Personal: {want_personal_view}, Disciples: {want_disciples_view}")
             
             if want_personal_view:
-                # PERSONAL: Only their own cells
                 print("   PERSONAL MODE: Leader's own cells only")
                 query["$and"].append({
                     "$or": [
@@ -1154,16 +1145,11 @@ async def get_cell_events(
                     ]
                 })
             elif want_disciples_view:
-                # VIEW ALL: Only disciples' cells (where they are Leader at 12)
                 print("   VIEW ALL MODE: Disciples' cells only (where user is Leader at 12)")
                 
-                # DYNAMIC SOLUTION: Build comprehensive name variations for ANY Leader at 12
                 name_variations = []
-                
-                # 1. Current user's full name from profile
                 name_variations.append(user_name)
                 
-                # 2. Try different name format combinations
                 name_variations.extend([
                     f"{first_name} {surname}", 
                     first_name, 
@@ -1171,10 +1157,8 @@ async def get_cell_events(
                     user_name.replace(" ", "-"),  
                 ])
                 
-                # 3. Handle hyphenated names dynamically
                 if "-" in first_name:
                     hyphen_parts = first_name.split("-")
-                    # Try different combinations
                     name_variations.extend([
                         f"{hyphen_parts[0]} {surname}", 
                         f"{hyphen_parts[0]}-{surname}",  
@@ -1184,66 +1168,37 @@ async def get_cell_events(
                         if part and part.strip():
                             name_variations.append(f"{part} {surname}")
                 
-                # 4. Handle multiple names (e.g., "Nash Bobo Mbankumuna")
                 name_parts = user_name.split()
                 if len(name_parts) > 2:
-                    # Try first + last name
                     name_variations.append(f"{name_parts[0]} {name_parts[-1]}")
-                    # Try first name only
                     name_variations.append(name_parts[0])
-                    # Try all combinations for names with middle names
                     for i in range(1, len(name_parts)):
                         combined_name = " ".join(name_parts[:i+1])
                         name_variations.append(combined_name)
                 
-                # 5. Remove duplicates and empty values
                 name_variations = list(set([name for name in name_variations if name and name.strip()]))
                 
                 print(f"   Leader '{user_name}' - Trying to match Leader at 12 with variations: {name_variations}")
                 
-                # Build OR conditions for all name variations
                 or_conditions = []
                 
                 for name_variant in name_variations:
                     safe_name = re.escape(name_variant)
                     
-                    # CRITICAL FIX: Try ALL possible field name variations with different cases
-                    # Lowercase field names
                     or_conditions.extend([
                         {"leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
                         {"leader @12": {"$regex": f"^{safe_name}$", "$options": "i"}},
                         {"leader12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                    ])
-                    
-                    # Uppercase field names  
-                    or_conditions.extend([
                         {"Leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
                         {"Leader @12": {"$regex": f"^{safe_name}$", "$options": "i"}},
                         {"Leader12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                    ])
-                    
-                    # CamelCase field names
-                    or_conditions.extend([
                         {"LeaderAt12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                    ])
-                    
-                    # Also try partial matches for flexibility
-                    # Lowercase
-                    or_conditions.extend([
                         {"leader at 12": {"$regex": safe_name, "$options": "i"}},
                         {"leader @12": {"$regex": safe_name, "$options": "i"}},
                         {"leader12": {"$regex": safe_name, "$options": "i"}},
-                    ])
-                    
-                    # Uppercase
-                    or_conditions.extend([
                         {"Leader at 12": {"$regex": safe_name, "$options": "i"}},
                         {"Leader @12": {"$regex": safe_name, "$options": "i"}},
                         {"Leader12": {"$regex": safe_name, "$options": "i"}},
-                    ])
-                    
-                    # CamelCase
-                    or_conditions.extend([
                         {"LeaderAt12": {"$regex": safe_name, "$options": "i"}},
                     ])
                 
@@ -1252,7 +1207,6 @@ async def get_cell_events(
                     print(f"   Searching for cells where Leader at 12 matches any of: {name_variations}")
                     print(f"   Total OR conditions: {len(or_conditions)}")
                     
-                    # DEBUG: Check what cells we're actually finding
                     debug_query = {
                         "$and": [
                             {"$or": [
@@ -1268,7 +1222,6 @@ async def get_cell_events(
                     debug_cells = await events_collection.find(debug_query).to_list(length=50)
                     print(f"   DEBUG: Found {len(debug_cells)} potential disciple cells for {user_name}")
                     for i, cell in enumerate(debug_cells):
-                        # Check ALL possible field names for Leader at 12
                         leader_at_12 = (
                             cell.get('Leader at 12') or
                             cell.get('Leader @12') or
@@ -1291,7 +1244,6 @@ async def get_cell_events(
                 else:
                     print("   WARNING: No matching conditions created")
             else:
-                # Default fallback - show personal cells
                 print("   FALLBACK: Defaulting to personal cells")
                 query["$and"].append({
                     "$or": [
@@ -1304,7 +1256,6 @@ async def get_cell_events(
                     ]
                 })
 
-        # REGULAR USERS
         elif role in ["user", "registrant", "leader"]:
             print(f"REGULAR USER MODE")
             query["$and"].append({
@@ -1322,7 +1273,6 @@ async def get_cell_events(
             print(f"NO ACCESS")
             query["$and"].append({"_id": "nonexistent_id"})
 
-        # EXECUTE QUERY
         print(f"Executing query...")
         print(f"Query structure: {json.dumps(query, indent=2, default=str)}")
         
@@ -1368,8 +1318,8 @@ async def get_cell_events(
                 print(f"   {i+1}. {event.get('Event Name', 'N/A')}")
                 print(f"      Leader: {cell_leader}")
                 print(f"      Leader@12: {leader_at_12}")
+                print(f"      Status from DB: {event.get('Status')}")
         
-        # ========== FIXED: Generate instances with correct dates ==========
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone).date()
         
@@ -1398,58 +1348,52 @@ async def get_cell_events(
                 print(f"\nProcessing cell: {event.get('Event Name', 'Unknown')}")
                 print(f"  Day: {day_name.capitalize()} (weekday number: {target_weekday})")
                 print(f"  Today is: {today} (weekday: {today.weekday()})")
+                print(f"  MongoDB Status: {event.get('Status')}")
+                print(f"  MongoDB ID: {event.get('_id')}")
                 
-                # Generate instances for the last 4 weeks
-                for week_offset in range(4):  # Last 4 weeks including current
-                    # Calculate date for this occurrence
+                for week_offset in range(4):
                     days_since_target = (today.weekday() - target_weekday) % 7
                     instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
                     
-                    # Skip if before start date
                     if instance_date < start_date_obj:
                         continue
                     
-                    # Generate week identifier
                     year, week, _ = instance_date.isocalendar()
                     week_id = f"{year}-W{week:02d}"
                     
-                    # Get attendance for THIS specific week
                     attendance = event.get("attendance", {}).get(week_id, {})
                     
-                    # Determine status for THIS week ONLY
                     did_not_meet = attendance.get("status") == "did_not_meet"
                     attendees = attendance.get("attendees", [])
                     has_checked_in = any(a.get("checked_in", False) for a in attendees)
                     
-                    # CRITICAL FIX: Each week's status is independent
+                    db_status = str(event.get("Status", "")).strip().lower()
+                    
                     if did_not_meet:
                         event_status = "did_not_meet"
+                    elif db_status == "complete":
+                        event_status = "complete"
                     elif has_checked_in:
-                        # This specific week has attendees checked in
                         event_status = "complete"
                     else:
-                        # No attendance data for this specific week
                         event_status = "incomplete"
                     
-                    # Apply status filter if specified
                     if status and status != 'all' and event_status != status:
                         print(f"  Skipping {instance_date}: status '{event_status}' doesn't match filter '{status}'")
                         continue
                     
-                    # Check if this is overdue
                     is_overdue = instance_date < today and event_status == "incomplete"
                     
                     print(f"  Instance: {instance_date} (Week {week_id})")
                     print(f"    Status: {event_status}")
+                    print(f"    DB Status: {db_status}")
                     print(f"    Did not meet: {did_not_meet}")
                     print(f"    Has checked in: {has_checked_in}")
                     print(f"    Attendees count: {len(attendees)}")
                     print(f"    Is overdue: {is_overdue}")
                     
-                    # Get leader at 1
                     leaderAt1 = event.get("leader1") or event.get("Leader @1") or event.get("Leader at 1", "")
                     
-                    # If leader at one field does not exist, look it up
                     if not leaderAt1:
                         leaderPipeline = [
                             {'$project': {'Gender': 1, 'fullName': { '$concat': ["$Name", " ", "$Surname"] }}},
@@ -1468,8 +1412,10 @@ async def get_cell_events(
                                 elif gender.upper() == "FEMALE":
                                     leaderAt1 = "Vicky Enslin"
                     
+                    unique_id = f"{event.get('_id')}_{instance_date.isoformat()}"
+                    
                     instance = {
-                        "_id": f"{event.get('_id')}_{instance_date.isoformat()}",
+                        "_id": unique_id,
                         "UUID": event.get("UUID", ""),
                         "eventName": event.get("Event Name") or event.get("eventName") or event.get("EventName", ""),
                         "eventType": "Cells",
@@ -1488,6 +1434,7 @@ async def get_cell_events(
                         ),
                         "day": day_name.capitalize(),
                         "date": instance_date.isoformat(),
+                        "display_date": instance_date.strftime("%d - %m - %Y"),
                         "location": event.get("Location") or event.get("location", ""),
                         "attendees": attendees,
                         "persistent_attendees": event.get("persistent_attendees", []),
@@ -1508,10 +1455,8 @@ async def get_cell_events(
                 traceback.print_exc()
                 continue
         
-        # Sort by date (most recent first)
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
         
-        # Apply pagination
         total_count = len(cell_instances)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
         skip = (page - 1) * limit
@@ -1523,7 +1468,6 @@ async def get_cell_events(
         print(f"  Page size: {limit}")
         print(f"  Showing: {len(paginated)} instances")
         
-        # Count by status for debugging
         status_counts = {}
         for inst in cell_instances:
             status_counts[inst['status']] = status_counts.get(inst['status'], 0) + 1
@@ -1533,9 +1477,10 @@ async def get_cell_events(
         print("\nSample instances in response:")
         for i, inst in enumerate(paginated[:5]):
             print(f"  {i+1}. {inst['eventName']}")
-            print(f"     Date: {inst['date']} ({inst['day']})")
+            print(f"     Date: {inst['date']} ({inst['display_date']})")
             print(f"     Status: {inst['status']}")
             print(f"     Leader: {inst['eventLeaderName']}")
+            print(f"     _id: {inst['_id']}")
         
         print("=" * 100)
 
@@ -1561,7 +1506,6 @@ async def get_cell_events(
     
 async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
     try:
-        # Check user role first
         user = await users_collection.find_one({"email": user_email})
         if user:
             role = user.get("role", "").lower()
@@ -1569,7 +1513,6 @@ async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
                 print(f"   User {user_name} has Leader at 12 role: {role}")
                 return True
        
-        # Build dynamic name variations for ANY user
         name_variations = []
        
         if user_name:
@@ -1577,7 +1520,6 @@ async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
             first_name = parts[0] if parts else ""
             surname = parts[-1] if len(parts) > 1 else ""
            
-            # Basic variations
             name_variations.append(user_name)
             name_variations.append(f"{first_name} {surname}")
             name_variations.append(first_name)
@@ -1610,7 +1552,6 @@ async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
         for name_variant in name_variations:
             safe_name = re.escape(name_variant)
            
-            # Try ALL possible field name variations with different cases
             # Lowercase field names
             or_conditions.extend([
                 {"leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
@@ -1668,7 +1609,6 @@ async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
             cells_count = await events_collection.count_documents(full_query)
             print(f"   User {user_name} has {cells_count} cells where they are Leader at 12")
            
-            # DEBUG: Show which cells were found
             if cells_count > 0:
                 found_cells = await events_collection.find(full_query).to_list(length=5)
                 print(f"   Sample cells where {user_name} is Leader at 12:")
@@ -1936,11 +1876,9 @@ async def get_other_events(
                 event_name = event.get("Event Name") or event.get("eventName", "")
                 event_type_value = event.get("Event Type") or event.get("eventType", "Event")
                
-                # Get the day value from multiple possible fields
                 day_name_raw = event.get("Day") or event.get("day") or event.get("eventDay") or ""
                 day_name = str(day_name_raw).strip()
 
-                # Get event date for date range filtering
                 event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
                 if isinstance(event_date_field, datetime):
                     event_date = event_date_field.date()
@@ -1968,7 +1906,6 @@ async def get_other_events(
 
                 actual_day_value = day_name.capitalize() if day_name else "One-time"
 
-                # For other events, use the wider date range to include historical events
                 if event_date < start_date_obj or event_date > end_date_obj:
                     continue
 
@@ -2220,15 +2157,12 @@ async def update_cell_event_working(identifier: str, event_data: dict):
         print(f"[WORKING UPDATE] Identifier: {identifier}")
         print(f"[WORKING UPDATE] Collection: {events_collection.name}")
         
-        # Try multiple search methods IN ORDER
-        
-        # 1. First try ObjectId (most reliable)
+
         event = None
         if ObjectId.is_valid(identifier):
             print(f"[WORKING UPDATE] Trying as ObjectId...")
             event = await events_collection.find_one({"_id": ObjectId(identifier)})
         
-        # 2. Try Email (uppercase E as shown in your data)
         if not event:
             print(f"[WORKING UPDATE] Trying as Email (uppercase)...")
             event = await events_collection.find_one({"Email": identifier})
@@ -2243,7 +2177,6 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             print(f"[WORKING UPDATE] Trying as Leader...")
             event = await events_collection.find_one({"Leader": identifier})
         
-        # 5. Try Event Name (partial match)
         if not event:
             print(f"[WORKING UPDATE] Trying Event Name partial match...")
             event = await events_collection.find_one({
@@ -2251,15 +2184,12 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             })
         
         if not event:
-            # Debug: Count total documents
             count = await events_collection.count_documents({})
             print(f"[WORKING UPDATE] Total docs in collection: {count}")
             
-            # Debug: Check if ANY document has Email field
             email_count = await events_collection.count_documents({"Email": {"$exists": True}})
             print(f"[WORKING UPDATE] Docs with Email field: {email_count}")
             
-            # Get sample to see field names
             sample = await events_collection.find_one({})
             if sample:
                 print(f"[WORKING UPDATE] Sample fields: {list(sample.keys())}")
@@ -2322,7 +2252,7 @@ async def update_person_cells_improved(person_name: str, update_data: dict):
         # Find cells by person name - check BOTH old and new field names
         query = {
             "$or": [
-                {"Leader": decoded_person_name},  # Old format
+                {"Leader": decoded_person_name},  
                 {"eventLeader": decoded_person_name},  # New format
                 {"eventLeaderName": decoded_person_name}  # Also check this
             ]
@@ -2363,15 +2293,13 @@ async def update_person_cells_improved(person_name: str, update_data: dict):
                 # Also unset mapped fields
                 if field in field_mapping:
                     for mapped_field in field_mapping[field]:
-                        if mapped_field != field:  # Don't duplicate the original field
+                        if mapped_field != field: 
                             unset_operations[mapped_field] = ""
             else:
-                # Add to set operations
                 set_operations[field] = value
-                # Also set mapped fields
                 if field in field_mapping:
                     for mapped_field in field_mapping[field]:
-                        if mapped_field != field:  # Don't duplicate the original field
+                        if mapped_field != field:  
                             # Handle type conversions
                             if field == "Day" and mapped_field == "recurring_day":
                                 # Convert string Day to array recurring_day
