@@ -91,8 +91,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth")
 
-
-
 oauth2_scheme = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
