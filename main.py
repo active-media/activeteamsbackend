@@ -3398,77 +3398,77 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/test/hierarchy-for/{email}")
-async def test_hierarchy_for_email(email: str):
-    """Test hierarchy logic for any email without authentication"""
-    try:
-        user_cell = await events_collection.find_one({
-            "$or": [
-                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-            ]
-        })
+# @app.get("/test/hierarchy-for/{email}")
+# async def test_hierarchy_for_email(email: str):
+#     """Test hierarchy logic for any email without authentication"""
+#     try:
+#         user_cell = await events_collection.find_one({
+#             "$or": [
+#                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+#             ]
+#         })
        
-        if not user_cell:
-            return {
-                "user_email": email,
-                "message": "No cells found for this user",
-                "status": "not_found"
-            }
-        user_name_in_cells = user_cell.get("Leader", "").strip()
+#         if not user_cell:
+#             return {
+#                 "user_email": email,
+#                 "message": "No cells found for this user",
+#                 "status": "not_found"
+#             }
+#         user_name_in_cells = user_cell.get("Leader", "").strip()
        
-        if not user_name_in_cells:
-            return {
-                "user_email": email,
-                "message": "Could not determine user name from cells",
-                "status": "error"
-            }
-        all_related_cells = await events_collection.find({
-            "Event Type": "Cells",
-            "Status": {"$ne": "closed"},
-            "$or": [
-                {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                {"Leader": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
-                {"Leader at 12": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
-                {"Leader at 144": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}}
-            ]
-        }).to_list(None)
+#         if not user_name_in_cells:
+#             return {
+#                 "user_email": email,
+#                 "message": "Could not determine user name from cells",
+#                 "status": "error"
+#             }
+#         all_related_cells = await events_collection.find({
+#             "Event Type": "Cells",
+#             "Status": {"$ne": "closed"},
+#             "$or": [
+#                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+#                 {"Leader": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
+#                 {"Leader at 12": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}},
+#                 {"Leader at 144": {"$regex": f"^{user_name_in_cells}$", "$options": "i"}}
+#             ]
+#         }).to_list(None)
        
-        # Categorize the cells
-        own_cells = []
-        supervised_cells = []
+#         # Categorize the cells
+#         own_cells = []
+#         supervised_cells = []
        
-        for cell in all_related_cells:
-            cell_info = {
-                "event_name": cell.get("Event Name"),
-                "leader": cell.get("Leader"),
-                "leader_email": cell.get("Email"),
-                "leader_at_12": cell.get("Leader at 12"),
-                "leader_at_144": cell.get("Leader at 144"),
-                "day": cell.get("Day"),
-                "time": cell.get("Time")
-            }
+#         for cell in all_related_cells:
+#             cell_info = {
+#                 "event_name": cell.get("Event Name"),
+#                 "leader": cell.get("Leader"),
+#                 "leader_email": cell.get("Email"),
+#                 "leader_at_12": cell.get("Leader at 12"),
+#                 "leader_at_144": cell.get("Leader at 144"),
+#                 "day": cell.get("Day"),
+#                 "time": cell.get("Time")
+#             }
            
-            # Check if it's their own cell or supervised cell
-            is_own = (cell.get("Email", "").lower() == email.lower() or
-                     cell.get("Leader", "").lower() == user_name_in_cells.lower())
+#             # Check if it's their own cell or supervised cell
+#             is_own = (cell.get("Email", "").lower() == email.lower() or
+#                      cell.get("Leader", "").lower() == user_name_in_cells.lower())
            
-            if is_own:
-                own_cells.append(cell_info)
-            else:
-                supervised_cells.append(cell_info)
+#             if is_own:
+#                 own_cells.append(cell_info)
+#             else:
+#                 supervised_cells.append(cell_info)
        
-        return {
-            "user_email": email,
-            "user_name_in_cells": user_name_in_cells,
-            "own_cells_count": len(own_cells),
-            "supervised_cells_count": len(supervised_cells),
-            "own_cells": own_cells,
-            "supervised_cells": supervised_cells,
-            "status": "success"
-        }
+#         return {
+#             "user_email": email,
+#             "user_name_in_cells": user_name_in_cells,
+#             "own_cells_count": len(own_cells),
+#             "supervised_cells_count": len(supervised_cells),
+#             "own_cells": own_cells,
+#             "supervised_cells": supervised_cells,
+#             "status": "success"
+#         }
        
-    except Exception as e:
-        return {"error": str(e)}
+#     except Exception as e:
+#         return {"error": str(e)}
    
 @app.get("/debug-leader-at-12/{user_email}")
 async def debug_leader_at_12(user_email: str):
