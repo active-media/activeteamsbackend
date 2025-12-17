@@ -97,7 +97,7 @@ logger = logging.getLogger("auth")
 oauth2_scheme = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "4"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
 # Enhanced cache storage with background loading
@@ -1057,6 +1057,7 @@ async def get_cell_events(
         
         print(f"User: {user_name} ({user_email})")
         print(f"Role: {role}")
+        print(f"Status Filter: {status}")
         print(f"Parameters:")
         print(f"   personal: {personal}")
         print(f"   show_personal_cells: {show_personal_cells}")
@@ -1206,41 +1207,6 @@ async def get_cell_events(
                     query["$and"].append({"$or": or_conditions})
                     print(f"   Searching for cells where Leader at 12 matches any of: {name_variations}")
                     print(f"   Total OR conditions: {len(or_conditions)}")
-                    
-                    debug_query = {
-                        "$and": [
-                            {"$or": [
-                                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
-                                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
-                                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}},
-                                {"EventType": {"$regex": "^Cells$", "$options": "i"}}
-                            ]},
-                            {"$or": or_conditions}
-                        ]
-                    }
-                    
-                    debug_cells = await events_collection.find(debug_query).to_list(length=50)
-                    print(f"   DEBUG: Found {len(debug_cells)} potential disciple cells for {user_name}")
-                    for i, cell in enumerate(debug_cells):
-                        leader_at_12 = (
-                            cell.get('Leader at 12') or
-                            cell.get('Leader @12') or
-                            cell.get('leader12') or
-                            cell.get('Leader12') or
-                            cell.get('LeaderAt12') or
-                            cell.get('leader at 12') or
-                            cell.get('leader @12') or
-                            'N/A'
-                        )
-                        cell_leader = (
-                            cell.get('Leader') or
-                            cell.get('eventLeaderName') or
-                            cell.get('EventLeaderName') or
-                            'N/A'
-                        )
-                        print(f"      {i+1}. {cell.get('Event Name', 'N/A')}")
-                        print(f"         Cell Leader: {cell_leader}")
-                        print(f"         Leader@12: {leader_at_12}")
                 else:
                     print("   WARNING: No matching conditions created")
             else:
@@ -1367,29 +1333,49 @@ async def get_cell_events(
                     attendees = attendance.get("attendees", [])
                     has_checked_in = any(a.get("checked_in", False) for a in attendees)
                     
+                    # Get the database status
                     db_status = str(event.get("Status", "")).strip().lower()
                     
+                    print(f"  Week {week_id} - Raw data:")
+                    print(f"    attendance.status: {attendance.get('status')}")
+                    print(f"    did_not_meet: {did_not_meet}")
+                    print(f"    attendees count: {len(attendees)}")
+                    print(f"    has_checked_in: {has_checked_in}")
+                    print(f"    db_status: {db_status}")
+                    
+                    # CRITICAL FIX: Determine status with correct priority
                     if did_not_meet:
                         event_status = "did_not_meet"
+                        print(f"    → Status: did_not_meet (from attendance flag)")
+                    elif len(attendees) > 0:
+                        # If there are ANY attendees captured, it's complete
+                        event_status = "complete"
+                        print(f"    → Status: complete (has {len(attendees)} attendees)")
                     elif db_status == "complete":
+                        # Respect DB complete status
                         event_status = "complete"
-                    elif has_checked_in:
-                        event_status = "complete"
+                        print(f"    → Status: complete (from DB)")
+                    elif db_status == "did_not_meet":
+                        # Respect DB did_not_meet status
+                        event_status = "did_not_meet"
+                        print(f"    → Status: did_not_meet (from DB)")
                     else:
+                        # Default to incomplete
                         event_status = "incomplete"
+                        print(f"    → Status: incomplete (default)")
                     
-                    if status and status != 'all' and event_status != status:
-                        print(f"  Skipping {instance_date}: status '{event_status}' doesn't match filter '{status}'")
-                        continue
+                    # Apply the status filter - THIS IS THE KEY FILTERING LINE
+                    if status and status != 'all':
+                        if event_status != status:
+                            print(f"  ❌ SKIPPING {instance_date}: status '{event_status}' doesn't match filter '{status}'")
+                            continue
+                        else:
+                            print(f"  ✅ INCLUDING {instance_date}: status '{event_status}' matches filter '{status}'")
                     
                     is_overdue = instance_date < today and event_status == "incomplete"
                     
                     print(f"  Instance: {instance_date} (Week {week_id})")
-                    print(f"    Status: {event_status}")
-                    print(f"    DB Status: {db_status}")
-                    print(f"    Did not meet: {did_not_meet}")
-                    print(f"    Has checked in: {has_checked_in}")
-                    print(f"    Attendees count: {len(attendees)}")
+                    print(f"    Final Status: {event_status}")
                     print(f"    Is overdue: {is_overdue}")
                     
                     leaderAt1 = event.get("leader1") or event.get("Leader @1") or event.get("Leader at 1", "")
@@ -1441,6 +1427,7 @@ async def get_cell_events(
                         "hasPersonSteps": True,
                         "status": event_status,
                         "Status": event_status.replace("_", " ").title(),
+                        "did_not_meet": did_not_meet,
                         "_is_overdue": is_overdue,
                         "is_recurring": True,
                         "week_identifier": week_id,
@@ -1473,6 +1460,7 @@ async def get_cell_events(
             status_counts[inst['status']] = status_counts.get(inst['status'], 0) + 1
         
         print(f"  Status breakdown: {status_counts}")
+        print(f"  Status filter applied: {status or 'None (showing all)'}")
         
         print("\nSample instances in response:")
         for i, inst in enumerate(paginated[:5]):
@@ -1499,11 +1487,11 @@ async def get_cell_events(
         }
 
     except Exception as e:
-        print(f" ERROR: {str(e)}")
+        print(f"❌ ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
     try:
         user = await users_collection.find_one({"email": user_email})
@@ -2092,7 +2080,18 @@ async def create_event_type(event_type: EventTypeCreate):
             raise HTTPException(status_code=400, detail="Name and description are required.")
 
         name = event_type.name.strip().title()
-
+        name_lower = name.lower()
+        
+        # PREVENT CREATION OF EVENT TYPES WITH "CELL" IN THE NAME
+        forbidden_keywords = ["cell", "cells", "all cells"]
+        for keyword in forbidden_keywords:
+            if keyword in name_lower:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Event type name cannot contain '{keyword}'. 'CELLS' is a reserved built-in event type that cannot be created or modified."
+                )
+        
+        # Check if event type already exists
         exists = await events_collection.find_one({"isEventType": True, "name": name})
         if exists:
             raise HTTPException(status_code=400, detail="Event type already exists.")
@@ -2102,13 +2101,13 @@ async def create_event_type(event_type: EventTypeCreate):
         event_type_data["isEventType"] = True
         event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
        
-        name_lower = name.lower()
-       
+        # Set isGlobal based on name
         if event_type_data.get("isGlobal") is None:
             event_type_data["isGlobal"] = "global" in name_lower
            
+        # Don't automatically set hasPersonSteps based on keywords
         if event_type_data.get("hasPersonSteps") is None:
-            event_type_data["hasPersonSteps"] = any(keyword in name_lower for keyword in ["cell", "person", "individual"])
+            event_type_data["hasPersonSteps"] = False
        
         if not event_type_data.get("UUID"):
             event_type_data["UUID"] = str(uuid.uuid4())
@@ -2496,11 +2495,30 @@ async def update_event_type(
             if not existing_event_type:
                 raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
-        new_name = updated_data.name.strip().title()
+        # PREVENT UPDATING "CELLS" EVENT TYPE (BUILT-IN)
         current_name = existing_event_type["name"]
-        name_changed = new_name.lower() != current_name.lower()
+        current_name_lower = current_name.lower()
+        
+        if any(keyword in current_name_lower for keyword in ["cell", "cells"]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{current_name}' is a reserved built-in event type and cannot be modified or deleted."
+            )
+
+        new_name = updated_data.name.strip().title()
+        new_name_lower = new_name.lower()
+        name_changed = new_name_lower != current_name_lower
        
         print(f"[EVENT-TYPE UPDATE] Name change: '{current_name}' -> '{new_name}' (changed: {name_changed})")
+       
+        # PREVENT NEW NAME FROM CONTAINING "CELL"
+        forbidden_keywords = ["cell", "cells", "all cells"]
+        for keyword in forbidden_keywords:
+            if keyword in new_name_lower:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Event type name cannot contain '{keyword}'. 'CELLS' is a reserved built-in event type."
+                )
        
         if name_changed:
             duplicate = await events_collection.find_one({
@@ -2546,12 +2564,11 @@ async def update_event_type(
                 events_updated_count = events_update_result.modified_count
                 print(f"[EVENT-TYPE UPDATE] Updated {events_updated_count} events")
 
-        # Prepare update data for the event type itself
+
         update_data = updated_data.dict()
         update_data["name"] = new_name
         update_data["updatedAt"] = datetime.utcnow()
        
-        # Remove None values and protect immutable fields
         update_data = {k: v for k, v in update_data.items() if v is not None}
        
         # Protect these fields from being overwritten
@@ -2569,7 +2586,6 @@ async def update_event_type(
 
         if result.modified_count == 0:
             print(f"[EVENT-TYPE UPDATE] No changes made to '{current_name}'")
-            # Still return the existing event type
             existing_event_type["_id"] = str(existing_event_type["_id"])
             return existing_event_type
 
@@ -2589,6 +2605,134 @@ async def update_event_type(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
+    
+@app.delete("/event-types/{event_type_name}")
+async def delete_event_type(
+    event_type_name: str,
+    force: bool = Query(False, description="Force delete even if events exist")
+):
+    try:
+        decoded_event_type_name = unquote(event_type_name)
+       
+        print(f" DELETE EVENT TYPE: {decoded_event_type_name}, force={force}")
+       
+        existing_event_type = await events_collection.find_one({
+            "$or": [
+                {"name": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
+            ],
+            "isEventType": True
+        })
+       
+        if not existing_event_type:
+            print(f" Event type '{decoded_event_type_name}' not found")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Event type '{decoded_event_type_name}' not found"
+            )
+       
+        actual_identifier = (
+            existing_event_type.get("name") or
+            existing_event_type.get("eventType") or
+            existing_event_type.get("eventTypeName")
+        )
+        
+        # PREVENT DELETION OF "CELLS" EVENT TYPE (BUILT-IN)
+        actual_identifier_lower = actual_identifier.lower()
+        if any(keyword in actual_identifier_lower for keyword in ["cell", "cells"]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{actual_identifier}' is a reserved built-in event type and cannot be modified or deleted."
+            )
+       
+        print(f" Found event type: {actual_identifier}")
+       
+        events_query = {
+            "$and": [
+                {
+                    "$or": [
+                        {"eventType": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                        {"Event Type": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
+                        {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
+                        {"Event Type": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
+                    ]
+                },
+                {"isEventType": {"$ne": True}},
+                {"$or": [
+                    {"eventName": {"$exists": True}},
+                    {"Event Name": {"$exists": True}},
+                    {"date": {"$exists": True}},
+                    {"Date Of Event": {"$exists": True}}
+                ]}
+            ]
+        }
+       
+        print(f" Searching for events with query: {events_query}")
+       
+        events_using_type = await events_collection.find(events_query).to_list(length=None)
+        events_count = len(events_using_type)
+       
+        print(f" Found {events_count} events using '{actual_identifier}'")
+       
+        if events_count > 0:
+            event_details = []
+            for event in events_using_type[:20]: 
+                detail = {
+                    "id": str(event["_id"]),
+                    "name": event.get("eventName") or event.get("Event Name", "Unnamed"),
+                    "type": event.get("eventType") or event.get("Event Type"),
+                    "typeName": event.get("eventTypeName"),
+                    "date": str(event.get("date") or event.get("Date Of Event", "")),
+                    "leader": event.get("eventLeaderName") or event.get("Leader", ""),
+                    "status": event.get("status", "unknown")
+                }
+                event_details.append(detail)
+                print(f"  Event: {detail['name']} (ID: {detail['id']}, Status: {detail['status']})")
+           
+            if not force:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": f"Cannot delete event type '{actual_identifier}': {events_count} event(s) are using it.",
+                        "events_count": events_count,
+                        "event_samples": event_details,
+                        "suggestion": "Please delete these events first, or use force=true to delete everything"
+                    }
+                )
+            else:
+                print(f" FORCE DELETE: Deleting {events_count} events...")
+               
+                delete_result = await events_collection.delete_many(events_query)
+                print(f" Deleted {delete_result.deleted_count} events")
+       
+        result = await events_collection.delete_one({"_id": existing_event_type["_id"]})
+       
+        if result.deleted_count == 1:
+            print(f" Event type '{actual_identifier}' deleted successfully")
+            return {
+                "success": True,
+                "message": f"Event type '{actual_identifier}' deleted successfully",
+                "events_deleted": events_count if force else 0
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to delete event type from database"
+            )
+           
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f" Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting event type: {str(e)}"
+        )
    
 @app.delete("/event-types/{event_type_name}")
 async def delete_event_type(
