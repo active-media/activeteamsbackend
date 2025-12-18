@@ -83,7 +83,7 @@ def send_reset_email_resend(to_email: str, reset_link: str) -> bool:
         }
         
         email = resend.Emails.send(params)
-        print(f" Password reset email sent via Resend to {to_email}")
+        print(f"✅ Password reset email sent via Resend to {to_email}")
         print(f"📧 Email ID: {email['id']}")
         print(f"🔗 Reset link sent: {reset_link}")
         return True
@@ -144,7 +144,7 @@ def send_welcome_email_resend(to_email: str, user_name: str) -> bool:
         }
         
         email = resend.Emails.send(params)
-        print(f" Welcome email sent via Resend to {to_email}: {email['id']}")
+        print(f"✅ Welcome email sent via Resend to {to_email}: {email['id']}")
         return True
         
     except Exception as e:
