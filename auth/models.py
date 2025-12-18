@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from enum import Enum
 from typing import Optional, List, Literal
-from datetime import datetime
+from datetime import datetime, date
 from bson import ObjectId
 import uuid
 from urllib.parse import unquote
@@ -67,7 +67,7 @@ class AttendanceSubmission(BaseModel):
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
         if info.data.get("did_not_meet") and v:
-            print(f"⚠️ Warning: did_not_meet is True but attendees list is not empty: {len(v)} attendees")
+            print(f" Warning: did_not_meet is True but attendees list is not empty: {len(v)} attendees")
         return v
 
 # Adding new Person in the Event screen
@@ -309,18 +309,18 @@ class LeaderStatusResponse(BaseModel):
 class UserCreater(BaseModel):
     name: str
     surname: str
-    email: EmailStr
+    email: str
     password: str
-    phone_number: str
-    date_of_birth: str
-    address: str
-    gender: str
-    invitedBy: Optional[str] = ""
-    leader12: Optional[str] = ""
-    leader144: Optional[str] = ""
-    leader1728: Optional[str] = ""
+    phone_number: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    address: Optional[str] = None
+    gender: Optional[str] = None
+    invitedBy: Optional[str] = None
+    leader12: Optional[str] = None
+    leader144: Optional[str] = None
+    leader1728: Optional[str] = None
     stage: Optional[str] = "Win"
-    role: str
+    role: str = "user"
 
 class DecisionType(str, Enum):
     FIRST_TIME = "first_time"
