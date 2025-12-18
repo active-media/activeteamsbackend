@@ -3,10 +3,11 @@
 from bson import ObjectId
 from datetime import datetime
 from typing import Optional, Dict, Any
-from database import events_collection
 from fastapi import HTTPException, Query, Depends
 from auth.utils import get_current_user  
 import secrets
+from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
+from database import events_collection, people_collection
 
 async def get_service_checkin_real_time_data(
     event_id: str = Query(..., description="Event ID to get real-time data for"),
@@ -52,7 +53,8 @@ async def get_service_checkin_real_time_data(
             "total_attendance": len(attendees),
             "refreshed_at": datetime.utcnow().isoformat()
         }
-
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error getting real-time data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
