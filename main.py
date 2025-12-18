@@ -2027,7 +2027,11 @@ async def debug_leader_disciples(user_email: str):
 @app.get("/events/other")
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    status: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query('2025-10-10'),
     end_date: Optional[str] = Query(None)
