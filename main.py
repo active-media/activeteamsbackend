@@ -2324,7 +2324,7 @@ async def create_event_type(event_type: EventTypeCreate):
         # PREVENT CREATION OF EVENT TYPES WITH "CELL" IN THE NAME
         forbidden_keywords = ["cell", "cells", "all cells"]
         for keyword in forbidden_keywords:
-        event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
+            event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
        
         # Set isGlobal based on name
         if event_type_data.get("isGlobal") is None:
