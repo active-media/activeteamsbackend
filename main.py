@@ -2142,7 +2142,17 @@ async def create_event_type(event_type: EventTypeCreate):
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
 
-        name = event_type.name.strip().title()
+        name = event_type.name.strip()
+        
+        # Check for ANY occurrence of "cell" in ANY case
+        if "cell" in name.lower():
+            raise HTTPException(
+                status_code=400, 
+                detail="Event type name cannot contain 'cell' in any form. Please choose a different name."
+            )
+
+        # Standardize to title case for storage
+        name = name.title()
 
         exists = await events_collection.find_one({"isEventType": True, "name": name})
         if exists:
@@ -2159,8 +2169,8 @@ async def create_event_type(event_type: EventTypeCreate):
             event_type_data["isGlobal"] = "global" in name_lower
            
         if event_type_data.get("hasPersonSteps") is None:
-            event_type_data["hasPersonSteps"] = any(keyword in name_lower for keyword in ["cell", "person", "individual"])
-       
+            event_type_data["hasPersonSteps"] = any(keyword in name_lower for keyword in ["person", "individual"])
+
         if not event_type_data.get("UUID"):
             event_type_data["UUID"] = str(uuid.uuid4())
 
@@ -2174,7 +2184,7 @@ async def create_event_type(event_type: EventTypeCreate):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
-   
+  
 @app.get("/event-types")
 async def get_event_types():
     try:
@@ -2515,13 +2525,14 @@ async def update_person_cells_improved(person_name: str, update_data: dict):
    
 from urllib.parse import unquote
 
+
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
     event_type_name: str,
     updated_data: EventTypeCreate = Body(...)
 ):
     try:
-        # Decode the URL-encoded event type name
+
         decoded_event_type_name = unquote(event_type_name)
        
         print(f"[EVENT-TYPE UPDATE] Looking for: '{decoded_event_type_name}'")
@@ -2535,7 +2546,7 @@ async def update_event_type(
        
         if not existing_event_type:
             print(f"[EVENT-TYPE UPDATE] Event type '{decoded_event_type_name}' not found")
-            # Try to find by ID as well
+
             try:
                 existing_event_type = await events_collection.find_one({
                     "_id": ObjectId(decoded_event_type_name),
@@ -2547,11 +2558,26 @@ async def update_event_type(
             if not existing_event_type:
                 raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
-        new_name = updated_data.name.strip().title()
         current_name = existing_event_type["name"]
+        
+        new_name = updated_data.name.strip().title()
         name_changed = new_name.lower() != current_name.lower()
        
         print(f"[EVENT-TYPE UPDATE] Name change: '{current_name}' -> '{new_name}' (changed: {name_changed})")
+       
+
+        if "cell" in new_name.lower():
+            raise HTTPException(
+                status_code=400, 
+                detail="Event type name cannot contain 'cell' in any form. Please choose a different name."
+            )
+       
+        #  UPDATING EXISTING EVENT TYPES THAT ALREADY HAVE "cell" IN THEIR NAME( users will not update cell)
+        if "cell" in current_name.lower():
+            raise HTTPException(
+                status_code=403,
+                detail=f"Event type '{current_name}' contains 'cell' and cannot be modified. It is a system-protected event type."
+            )
        
         if name_changed:
             duplicate = await events_collection.find_one({
@@ -2597,22 +2623,19 @@ async def update_event_type(
                 events_updated_count = events_update_result.modified_count
                 print(f"[EVENT-TYPE UPDATE] Updated {events_updated_count} events")
 
-        # Prepare update data for the event type itself
         update_data = updated_data.dict()
         update_data["name"] = new_name
         update_data["updatedAt"] = datetime.utcnow()
        
-        # Remove None values and protect immutable fields
         update_data = {k: v for k, v in update_data.items() if v is not None}
        
-        # Protect these fields from being overwritten
         immutable_fields = ["_id", "UUID", "createdAt", "isEventType"]
         for field in immutable_fields:
             update_data.pop(field, None)
 
         print(f"[EVENT-TYPE UPDATE] Final update data: {update_data}")
 
-        # Update the event type document
+        # Update the event type name
         result = await events_collection.update_one(
             {"_id": existing_event_type["_id"]},
             {"$set": update_data}
@@ -2620,11 +2643,11 @@ async def update_event_type(
 
         if result.modified_count == 0:
             print(f"[EVENT-TYPE UPDATE] No changes made to '{current_name}'")
-            # Still return the existing event type
+
             existing_event_type["_id"] = str(existing_event_type["_id"])
             return existing_event_type
 
-        # Fetch and return the updated event type
+
         updated_event_type = await events_collection.find_one({"_id": existing_event_type["_id"]})
         updated_event_type["_id"] = str(updated_event_type["_id"])
        
@@ -2641,6 +2664,7 @@ async def update_event_type(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
    
+
 @app.delete("/event-types/{event_type_name}")
 async def delete_event_type(
     event_type_name: str,
@@ -2651,7 +2675,7 @@ async def delete_event_type(
        
         print(f" DELETE EVENT TYPE: {decoded_event_type_name}, force={force}")
        
-        # Find the event type document
+        # Find the event type name
         existing_event_type = await events_collection.find_one({
             "$or": [
                 {"name": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
@@ -2673,6 +2697,13 @@ async def delete_event_type(
             existing_event_type.get("eventType") or
             existing_event_type.get("eventTypeName")
         )
+       
+        # PREVENT DELETING ANY EVENT TYPE WITH "cell" IN THE NAME
+        if "cell" in actual_identifier.lower():
+            raise HTTPException(
+                status_code=403,
+                detail=f"Event type '{actual_identifier}' contains 'cell' and cannot be deleted. It is a system-protected event type."
+            )
        
         print(f" Found event type: {actual_identifier}")
        
@@ -2763,7 +2794,7 @@ async def delete_event_type(
             status_code=500,
             detail=f"Error deleting event type: {str(e)}"
         )
-
+    
 @app.get("/diagnostic/event-type-usage/{event_type_name}")
 async def check_event_type_usage(
     event_type_name: str,
@@ -2871,88 +2902,88 @@ async def check_event_type_usage(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Diagnostic error: {str(e)}")
 
-@app.get("/debug/emails")
-async def debug_emails():
-    try:
-        # Fetch sample documents
-        sample_docs = []
-        cursor = events_collection.find({}).limit(5)
-        async for doc in cursor:
-            doc_info = {key: value for key, value in doc.items() if key != "_id"}
-            sample_docs.append(doc_info)
+# @app.get("/debug/emails")
+# async def debug_emails():
+#     try:
+#         # Fetch sample documents
+#         sample_docs = []
+#         cursor = events_collection.find({}).limit(5)
+#         async for doc in cursor:
+#             doc_info = {key: value for key, value in doc.items() if key != "_id"}
+#             sample_docs.append(doc_info)
 
-        # Check distinct email fields
-        email_fields_to_check = ["Email", "email", "EMAIL", "user_email", "userEmail"]
-        email_info = {}
+#         # Check distinct email fields
+#         email_fields_to_check = ["Email", "email", "EMAIL", "user_email", "userEmail"]
+#         email_info = {}
 
-        for field in email_fields_to_check:
-            try:
-                distinct_emails = await events_collection.distinct(field)
-                if distinct_emails:
-                    email_info[field] = {
-                        "distinct_emails": distinct_emails,
-                        "count": len(distinct_emails)
-                    }
-            except Exception:
-                continue  
+#         for field in email_fields_to_check:
+#             try:
+#                 distinct_emails = await events_collection.distinct(field)
+#                 if distinct_emails:
+#                     email_info[field] = {
+#                         "distinct_emails": distinct_emails,
+#                         "count": len(distinct_emails)
+#                     }
+#             except Exception:
+#                 continue  
 
-        return {
-            "database_name": events_collection.database.name,
-            "collection_name": events_collection.name,
-            "all_collections": await events_collection.database.list_collection_names(),
-            "total_documents": await events_collection.count_documents({}),
-            "sample_documents": sample_docs,
-            "email_fields_found": email_info,
-        }
+#         return {
+#             "database_name": events_collection.database.name,
+#             "collection_name": events_collection.name,
+#             "all_collections": await events_collection.database.list_collection_names(),
+#             "total_documents": await events_collection.count_documents({}),
+#             "sample_documents": sample_docs,
+#             "email_fields_found": email_info,
+#         }
 
-    except Exception as e:
-        return {"error": str(e)}
+#     except Exception as e:
+#         return {"error": str(e)}
 
 
 
-@app.get("/test/leader12-debug/{email}")
-async def test_leader12_debug(email: str):
-    try:
-        # Get person record from People collection
-        person = await people_collection.find_one({
-            "Email": {"$regex": f"^{email}$", "$options": "i"}
-        })
+# @app.get("/test/leader12-debug/{email}")
+# async def test_leader12_debug(email: str):
+#     try:
+#         # Get person record from People collection
+#         person = await people_collection.find_one({
+#             "Email": {"$regex": f"^{email}$", "$options": "i"}
+#         })
 
-        if not person:
-            return {"error": f"No person found with email {email}"}
+#         if not person:
+#             return {"error": f"No person found with email {email}"}
 
-        # Get Leader @12 from person record
-        leader_at_12_name = person.get("Leader @12", "").strip()
+#         # Get Leader @12 from person record
+#         leader_at_12_name = person.get("Leader @12", "").strip()
        
-        if not leader_at_12_name:
-            return {"error": f"Leader @12 not found for user with email {email}"}
+#         if not leader_at_12_name:
+#             return {"error": f"Leader @12 not found for user with email {email}"}
 
-        # Find events where this person is Leader at 12
-        matching_events = await events_collection.find({
-            "Leader at 12": {"$regex": f".*{leader_at_12_name}.*", "$options": "i"},
-            "Event Type": "Cells"
-        }).to_list(length=100)
+#         # Find events where this person is Leader at 12
+#         matching_events = await events_collection.find({
+#             "Leader at 12": {"$regex": f".*{leader_at_12_name}.*", "$options": "i"},
+#             "Event Type": "Cells"
+#         }).to_list(length=100)
 
-        return {
-            "person_email": email,
-            "person_name": f"{person.get('Name')} {person.get('Surname')}",
-            "leader_at_12_name": leader_at_12_name,
-            "total_matching_events": len(matching_events),
-            "matching_events": [
-                {
-                    "event_name": e.get("Event Name"),
-                    "leader": e.get("Leader"),
-                    "leader_at_12": e.get("Leader at 12"),
-                    "day": e.get("Day"),
-                    "date": str(e.get("Date Of Event")),
-                    "status": e.get("Status")
-                }
-                for e in matching_events[:10]  
-            ]
-        }
+#         return {
+#             "person_email": email,
+#             "person_name": f"{person.get('Name')} {person.get('Surname')}",
+#             "leader_at_12_name": leader_at_12_name,
+#             "total_matching_events": len(matching_events),
+#             "matching_events": [
+#                 {
+#                     "event_name": e.get("Event Name"),
+#                     "leader": e.get("Leader"),
+#                     "leader_at_12": e.get("Leader at 12"),
+#                     "day": e.get("Day"),
+#                     "date": str(e.get("Date Of Event")),
+#                     "status": e.get("Status")
+#                 }
+#                 for e in matching_events[:10]  
+#             ]
+#         }
 
-    except Exception as e:
-        return {"error": str(e)}
+#     except Exception as e:
+#         return {"error": str(e)}
 
 @app.get("/leaders")
 async def get_all_leaders():
