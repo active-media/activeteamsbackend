@@ -8,9 +8,15 @@ import logging
 import base64
 from database import users_collection, people_collection, events_collection, db
 from services.utils import hash_password, verify_password
-from services.people_service import get_people_cache
-from auth.utils import create_access_token
+from services.people_service import get_people_cache, people_cache  
+from auth.utils import create_access_token, decode_access_token 
 from auth.email_utils import send_reset_email
+from auth.models import UserCreate, UserLogin, ForgotPasswordRequest, ResetPasswordRequest, RefreshTokenRequest, UserProfile
+from fastapi import Body, Request
+from fastapi import Depends, Query, HTTPException, File, UploadFile, BackgroundTasks
+from fastapi.security import HTTPBearer
+from auth.utils import get_current_user
+import json
 
 logger = logging.getLogger("auth")
 
@@ -67,7 +73,7 @@ async def signup(user: UserCreate):
        
         # Search in background-loaded cache (contains ALL people)
         cached_inviter = None
-        for person in people_cache["data"]:
+        for person in get_people_cache["data"]:
             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
             if (full_name.lower() == inviter_full_name.lower() or
                 person.get('Name', '').lower() == inviter_full_name.lower()):
