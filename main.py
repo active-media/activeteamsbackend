@@ -1,6 +1,7 @@
 
 import os
-from datetime import datetime, timedelta, time, date
+from datetime import datetime, timedelta, date
+import time
 from bson import ObjectId
 import re
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
@@ -113,11 +114,11 @@ people_cache = {
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
 
-# @app.on_event("startup")
-# async def startup_event():
-#     """Start background loading of all people on startup"""
-#     print(" Starting background load of ALL people...")
-#     asyncio.create_task(background_load_all_people())
+@app.on_event("startup")
+async def startup_event():
+    """Start background loading of all people on startup"""
+    print(" Starting background load of ALL people...")
+    asyncio.create_task(background_load_all_people())
 
 async def background_load_all_people():
     """Background task to load ALL people from the database"""
