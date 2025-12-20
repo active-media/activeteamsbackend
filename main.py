@@ -986,7 +986,7 @@ def get_current_week_identifier():
         return f"{year}-W{week:02d}"
     
 
-# POST ----------------------------------------------
+# Events Section  ----------------------------------------------
 @app.post("/events")
 async def create_event(event: EventCreate):
     """Create a new event"""
@@ -1033,7 +1033,6 @@ async def create_event(event: EventCreate):
             event_data["eventTypeId"] = event_type["UUID"]
             event_data["eventTypeName"] = exact_event_type_name
             
-            # Set flags based on event type
             event_type_lower = exact_event_type_name.lower()
             
             if "global" in event_type_lower:
@@ -1046,55 +1045,56 @@ async def create_event(event: EventCreate):
             else:
                 event_data["hasPersonSteps"] = event_data.get("hasPersonSteps", False)
         
-        # Remove duplicate email field
         event_data.pop("eventType", None)
         if "userEmail" in event_data:
             del event_data["userEmail"]
         if "email" in event_data:
             del event_data["email"]
         
-        # Ensure date is properly saved
         if event_data.get("recurring_day"):
             recurring_days = event_data["recurring_day"]
             
-            # Ensure it's a list
             if isinstance(recurring_days, str):
                 recurring_days = [recurring_days]
             
-            # Clean up the list
             recurring_days = [day.strip() for day in recurring_days if day and day.strip()]
             
             event_data["recurring_day"] = recurring_days
             
             print(f"Saving event with recurring days: {recurring_days}")
             
-            # Set the day field based on recurring logic
             if len(recurring_days) == 0:
                 event_data["day"] = event_data.get("day", "One-time")
             elif len(recurring_days) == 1:
-                event_data["day"] = "One-time"
+                event_data["day"] = recurring_days[0]
             else:
                 event_data["day"] = "Recurring"
 
         print(f"Using day value from frontend: {event_data.get('day')}")
+        
+        if event_data.get("time"):
+            print(f"Time field received: {event_data.get('time')}")
 
-        # Ensure leader fields are properly saved
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
         event_data.setdefault("eventLeaderEmail", event_data.get("eventLeaderEmail", ""))
         
-        # Keep leader fields for CELLS events
         if event_data.get("hasPersonSteps"):
             event_data.setdefault("leader1", event_data.get("leader1", ""))
             event_data.setdefault("leader12", event_data.get("leader12", ""))
             event_data["persistent_attendees"] = event_data.get("persistent_attendees", [])
             print(f"Saved leader fields - Leader@1: {event_data.get('leader1')}, Leader@12: {event_data.get('leader12')}")
 
-        # Defaults
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data.get("attendees", []))
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
-        event_data["status"] = "open"
+        
+        if event_data.get("eventTypeName", "").upper() == "CELLS":
+            event_data["status"] = "incomplete"
+            print("Setting CELLS event status to 'incomplete'")
+        else:
+            event_data["status"] = "open"
+            print(f"Setting {event_data.get('eventTypeName')} event status to 'open'")
         
         event_data["isTicketed"] = event_data.get("isTicketed", False)
         
@@ -1112,7 +1112,6 @@ async def create_event(event: EventCreate):
         else:
             event_data["priceTiers"] = []
 
-        # Clean up fields for Global Events only
         if event_data.get("isGlobal", False):
             fields_to_remove = ["leader1", "leader12"]
             for field in fields_to_remove:
@@ -1126,6 +1125,7 @@ async def create_event(event: EventCreate):
         print(f"  - hasPersonSteps: {event_data.get('hasPersonSteps')}")
         print(f"  - leader1: {event_data.get('leader1')}")
         print(f"  - leader12: {event_data.get('leader12')}")
+        print(f"  - status: {event_data.get('status')}")
 
         result = await events_collection.insert_one(event_data)
         
@@ -1134,6 +1134,7 @@ async def create_event(event: EventCreate):
         print(f"Event created successfully: {result.inserted_id}")
         print(f"  Recurring days: {created_event.get('recurring_day')}")
         print(f"  Day value: {created_event.get('day')}")
+        print(f"  Status: {created_event.get('status')}")
 
         return {
             "success": True,
@@ -1154,7 +1155,7 @@ async def create_event(event: EventCreate):
                 "hasPersonSteps": created_event.get("hasPersonSteps"),
                 "leader1": created_event.get("leader1"),
                 "leader12": created_event.get("leader12"),
-                "status": created_event.get("status", "open")
+                "status": created_event.get("status")
             }
         }
 
@@ -2066,50 +2067,75 @@ async def create_event_type(event_type: EventTypeCreate):
     try:
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
-
-
+        
         name = event_type.name.strip()
         
         # Check for ANY occurrence of "cell" in ANY case
         if "cell" in name.lower():
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
+                detail="Event types containing 'cell' are reserved and cannot be created. Please use a different name."
             )
-
+        
         # Standardize to title case for storage
         name = name.title()
-
-
-        name = event_type.name.strip().title()
         name_lower = name.lower()
         
-        # PREVENT CREATION OF EVENT TYPES WITH "CELL" IN THE NAME
-        forbidden_keywords = ["cell", "cells", "all cells"]
-        for keyword in forbidden_keywords:
-            event_type_data["createdAt"] = event_type_data.get("createdAt") or datetime.utcnow()
-       
-        # Set isGlobal based on name
+        # Check if event type already exists
+        existing = await events_collection.find_one({
+            "$or": [
+                {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+                {"eventType": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+                {"eventTypeName": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
+            ],
+            "isEventType": True
+        })
+        
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Event type '{name}' already exists"
+            )
+        
+        # Create the event type data dictionary
+        event_type_data = {
+            "name": name,
+            "eventType": name,
+            "eventTypeName": name,
+            "description": event_type.description.strip(),
+            "isEventType": True,
+            "isTicketed": event_type.isTicketed if hasattr(event_type, 'isTicketed') else False,
+            "isGlobal": event_type.isGlobal if hasattr(event_type, 'isGlobal') else False,
+            "hasPersonSteps": event_type.hasPersonSteps if hasattr(event_type, 'hasPersonSteps') else False,
+            "createdAt": datetime.utcnow(),
+            "updatedAt": datetime.utcnow(),
+        }
+        
+        # Set isGlobal based on name if not explicitly set
         if event_type_data.get("isGlobal") is None:
             event_type_data["isGlobal"] = "global" in name_lower
-           
+        
         # Don't automatically set hasPersonSteps based on keywords
         if event_type_data.get("hasPersonSteps") is None:
             event_type_data["hasPersonSteps"] = any(keyword in name_lower for keyword in ["person", "individual"])
-
+        
         if not event_type_data.get("UUID"):
             event_type_data["UUID"] = str(uuid.uuid4())
-
+        
         result = await events_collection.insert_one(event_type_data)
         inserted = await events_collection.find_one({"_id": result.inserted_id})
         inserted["_id"] = str(inserted["_id"])
-       
+        
+        print(f" Created event type: {name}")
+        
         return inserted
-
+        
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error creating event type: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
-  
+
 @app.get("/event-types")
 async def get_event_types():
     try:
@@ -2133,6 +2159,133 @@ async def get_event_types():
     except Exception as e:
         print(f"Error fetching event types: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+@app.put("/event-types/{event_type_name}")
+async def update_event_type(
+    event_type_name: str,
+    updated_data: EventTypeCreate = Body(...)
+):
+    try:
+        # Decode the URL-encoded event type name
+        decoded_event_type_name = unquote(event_type_name)
+       
+        print(f"[EVENT-TYPE UPDATE] Looking for: '{decoded_event_type_name}'")
+        print(f"[EVENT-TYPE UPDATE] Update data: {updated_data.dict()}")
+       
+        # Check if event type exists - FIXED: Use case-insensitive search
+        existing_event_type = await events_collection.find_one({
+            "name": {"$regex": f"^{decoded_event_type_name}$", "$options": "i"},
+            "isEventType": True
+        })
+       
+        if not existing_event_type:
+            print(f"[EVENT-TYPE UPDATE] Event type '{decoded_event_type_name}' not found")
+            # Try to find by ID as well
+            try:
+                existing_event_type = await events_collection.find_one({
+                    "_id": ObjectId(decoded_event_type_name),
+                    "isEventType": True
+                })
+            except:
+                pass
+           
+            if not existing_event_type:
+                raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
+
+        new_name = updated_data.name.strip().title()
+        current_name = existing_event_type["name"]
+        name_changed = new_name.lower() != current_name.lower()
+       
+        print(f"[EVENT-TYPE UPDATE] Name change: '{current_name}' -> '{new_name}' (changed: {name_changed})")
+       
+        if name_changed:
+            duplicate = await events_collection.find_one({
+                "name": {"$regex": f"^{new_name}$", "$options": "i"},
+                "isEventType": True,
+                "_id": {"$ne": existing_event_type["_id"]}
+            })
+            if duplicate:
+                print(f"[EVENT-TYPE UPDATE] Duplicate: '{new_name}' already exists")
+                raise HTTPException(status_code=400, detail="Event type with this name already exists")
+
+        # Update events that reference this event type
+        events_updated_count = 0
+        if name_changed:
+            print(f"[EVENT-TYPE UPDATE] Updating events from '{current_name}' to '{new_name}'")
+           
+            # Count and update events
+            events_count = await events_collection.count_documents({
+                "$or": [
+                    {"eventType": current_name},
+                    {"eventTypeName": current_name}
+                ],
+                "isEventType": {"$ne": True}
+            })
+           
+            print(f"[EVENT-TYPE UPDATE] Found {events_count} events to update")
+           
+            if events_count > 0:
+                events_update_result = await events_collection.update_many(
+                    {
+                        "$or": [
+                            {"eventType": current_name},
+                            {"eventTypeName": current_name}
+                        ],
+                        "isEventType": {"$ne": True}
+                    },
+                    {"$set": {
+                        "eventType": new_name,
+                        "eventTypeName": new_name,
+                        "updatedAt": datetime.utcnow()
+                    }}
+                )
+                events_updated_count = events_update_result.modified_count
+                print(f"[EVENT-TYPE UPDATE] Updated {events_updated_count} events")
+
+        # Prepare update data for the event type itself
+        update_data = updated_data.dict()
+        update_data["name"] = new_name
+        update_data["updatedAt"] = datetime.utcnow()
+       
+        # Remove None values and protect immutable fields
+        update_data = {k: v for k, v in update_data.items() if v is not None}
+       
+        # Protect these fields from being overwritten
+        immutable_fields = ["_id", "UUID", "createdAt", "isEventType"]
+        for field in immutable_fields:
+            update_data.pop(field, None)
+
+        print(f"[EVENT-TYPE UPDATE] Final update data: {update_data}")
+
+        # Update the event type document
+        result = await events_collection.update_one(
+            {"_id": existing_event_type["_id"]},
+            {"$set": update_data}
+        )
+
+        if result.modified_count == 0:
+            print(f"[EVENT-TYPE UPDATE] No changes made to '{current_name}'")
+            # Still return the existing event type
+            existing_event_type["_id"] = str(existing_event_type["_id"])
+            return existing_event_type
+
+        # Fetch and return the updated event type
+        updated_event_type = await events_collection.find_one({"_id": existing_event_type["_id"]})
+        updated_event_type["_id"] = str(updated_event_type["_id"])
+       
+        print(f" [EVENT-TYPE UPDATE] Successfully updated to: {updated_event_type['name']}")
+        print(f"[EVENT-TYPE UPDATE] Summary - Events updated: {events_updated_count}")
+       
+        return updated_event_type
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[EVENT-TYPE UPDATE] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
+   
 
 @app.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
