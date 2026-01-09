@@ -3205,7 +3205,6 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
             event.pop("_event_date", None)
             event.pop("_day_order", None)
 
-        logging.info(f"========================================")
         logging.info(f"Returning {len(events)} cells for {today_day_name}")
         logging.info(f"========================================")
 
@@ -4350,7 +4349,130 @@ async def update_event(event_id: str, event_data: dict):
             status_code=500,
             detail=f"Error updating event: {str(e)}"
         )
-    
+
+@app.put("/events/{event_id}/toggle-active")
+async def toggle_event_active_status(
+    event_id: str,
+    is_active: bool = Query(...),
+    reason: Optional[str] = Query(None),
+    weeks: Optional[int] = Query(2),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Toggle active status of an event
+    """
+    try:
+        # Check if event exists
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        update_data = {
+            "is_active": is_active,
+            "updated_at": datetime.utcnow()
+        }
+        
+        if is_active:
+            # Reactivating - clear deactivation fields
+            update_data.update({
+                "deactivation_start": None,
+                "deactivation_end": None,
+                "deactivation_reason": None
+            })
+        else:
+            # Deactivating - set deactivation period
+            deactivation_start = datetime.utcnow()
+            deactivation_end = deactivation_start + timedelta(weeks=weeks)
+            
+            update_data.update({
+                "deactivation_start": deactivation_start,
+                "deactivation_end": deactivation_end,
+                "deactivation_reason": reason or "Manually deactivated"
+            })
+        
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to update event status")
+        
+        status_text = "activated" if is_active else f"deactivated for {weeks} weeks"
+        return {
+            "success": True,
+            "message": f"Event {status_text} successfully",
+            "is_active": is_active,
+            "deactivation_end": update_data.get("deactivation_end")
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/events/person/{leader_name}/toggle-active-all")
+async def toggle_all_person_events_active_status(
+    leader_name: str,
+    is_active: bool = Query(...),
+    reason: Optional[str] = Query(None),
+    weeks: Optional[int] = Query(2),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Toggle active status for all events of a person
+    """
+    try:
+        # Find all events for this leader
+        events = await events_collection.find({
+            "$or": [
+                {"eventLeader": leader_name},
+                {"eventLeaderName": leader_name},
+                {"Leader": leader_name}
+            ]
+        }).to_list(None)
+        
+        if not events:
+            raise HTTPException(status_code=404, detail=f"No events found for {leader_name}")
+        
+        update_count = 0
+        for event in events:
+            update_data = {
+                "is_active": is_active,
+                "updated_at": datetime.utcnow()
+            }
+            
+            if is_active:
+                update_data.update({
+                    "deactivation_start": None,
+                    "deactivation_end": None,
+                    "deactivation_reason": None
+                })
+            else:
+                deactivation_start = datetime.utcnow()
+                deactivation_end = deactivation_start + timedelta(weeks=weeks)
+                
+                update_data.update({
+                    "deactivation_start": deactivation_start,
+                    "deactivation_end": deactivation_end,
+                    "deactivation_reason": reason or f"All events deactivated for {leader_name}"
+                })
+            
+            result = await events_collection.update_one(
+                {"_id": event["_id"]},
+                {"$set": update_data}
+            )
+            update_count += result.modified_count
+        
+        status_text = "activated" if is_active else f"deactivated for {weeks} weeks"
+        return {
+            "success": True,
+            "message": f"{update_count} events {status_text} successfully",
+            "count": update_count,
+            "is_active": is_active
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),

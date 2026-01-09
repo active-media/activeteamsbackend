@@ -129,6 +129,11 @@ class EventBase(BaseModel):
     eventLeaderEmail: Optional[str] = None  
     leader1: Optional[str] = None
     leader12: Optional[str] = None
+    # NEW FIELDS
+    is_active: bool = True
+    deactivation_start: Optional[datetime] = None
+    deactivation_end: Optional[datetime] = None
+    deactivation_reason: Optional[str] = None
 
 class EventCreate(EventBase):
     pass
@@ -155,7 +160,11 @@ class EventUpdate(BaseModel):
     leader1: Optional[str] = None
     leader12: Optional[str] = None
     price: Optional[float] = None
-
+    # NEW FIELDS
+    is_active: Optional[bool] = None
+    deactivation_start: Optional[datetime] = None
+    deactivation_end: Optional[datetime] = None
+    deactivation_reason: Optional[str] = None
 class EventInDB(EventBase):
     _id: str
     attendees: List[dict] = []
