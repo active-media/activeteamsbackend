@@ -134,6 +134,7 @@ class EventCreate(EventBase):
     pass
 
 class EventUpdate(BaseModel):
+    active: Optional[bool] = None
     eventType: Optional[str] = None
     eventName: Optional[str] = None
     date: Optional[datetime] = None
