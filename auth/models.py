@@ -81,7 +81,7 @@ class PersonCreate(BaseModel):
     dob: str
     address: str
     leaders: list[str]
-    stage: Literal["Win"]
+    stage: Literal["Win", "Consolidate", "Disciple", "Send"] = "Win"
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
