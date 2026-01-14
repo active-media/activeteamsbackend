@@ -5812,286 +5812,103 @@ async def get_leader_at_1_for_leader_at_1728(leader_at_1728_name: str) -> str:
 
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
-    event_id: str = Path(...),
+    event_id: str,
     submission: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        print(f"SUBMIT ATTENDANCE STARTED")
-        print(f"Event ID: {event_id}")
-        print(f"Submission keys: {list(submission.keys())}")
-
-        actual_event_id = event_id
-        extracted_date = None
-        
-        if "_" in event_id:
-            parts = event_id.split("_")
-            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
-                actual_event_id = parts[0]
-                print(f"Extracted ObjectId: {actual_event_id}")
-                
-                if len(parts) >= 2:
-                    try:
-                        date_str = parts[1]
-                        if "T" in date_str:
-                            extracted_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                        else:
-                            extracted_date = datetime.strptime(date_str, "%Y-%m-%d")
-                        print(f"Extracted date from event_id: {extracted_date}")
-                    except Exception as e:
-                        print(f"Could not parse date from event_id: {e}")
-            else:
-                raise HTTPException(status_code=400, detail="Invalid event ID format")
-       
-        if not ObjectId.is_valid(actual_event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
-       
-        event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
-        if not event:
-            print(f"Event not found: {actual_event_id}")
-            raise HTTPException(status_code=404, detail="Event not found")
-       
-        event_name = event.get("Event Name", "Unknown")
-        print(f"Found event: {event_name}")
-
+        parts = event_id.split("_")
+        actual_id = parts[0] if ObjectId.is_valid(parts[0]) else event_id
         event_date = None
         
-        if extracted_date:
-            event_date = extracted_date
-            print(f"Using extracted date from event_id: {event_date}")
-        
-        if not event_date and submission.get('event_date'):
+        if len(parts) > 1:
             try:
-                event_date = datetime.fromisoformat(submission['event_date'].replace("Z", "+00:00"))
-                print(f"Using date from submission: {event_date}")
+                date_str = parts[1]
+                if "T" in date_str:
+                    event_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                else:
+                    event_date = datetime.strptime(date_str, "%Y-%m-%d")
             except:
                 pass
         
+        if not ObjectId.is_valid(actual_id):
+            raise HTTPException(400, "Invalid event ID")
+        
+        event = await events_collection.find_one({"_id": ObjectId(actual_id)})
+        if not event:
+            raise HTTPException(404, "Event not found")
+        
+        if not event_date and submission.get('event_date'):
+            event_date = datetime.fromisoformat(submission['event_date'].replace("Z", "+00:00"))
         if not event_date:
-            event_date = event.get("date") or event.get("Date Of Event")
-            if event_date:
-                print(f"Using date from event data: {event_date}")
-                if isinstance(event_date, str):
-                    try:
-                        event_date = datetime.fromisoformat(event_date.replace("Z", "+00:00"))
-                    except:
-                        try:
-                            event_date = datetime.strptime(event_date, "%Y-%m-%d")
-                        except:
-                            event_date = None
+            event_date = parse_date_str(event.get("date"))
+            if isinstance(event_date, date):
+                event_date = datetime.combine(event_date, datetime.min.time())
         
-        if not event_date:
-            day_name = str(event.get("Day") or event.get("day") or "").strip().lower()
-            day_mapping = {
-                'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-                'friday': 4, 'saturday': 5, 'sunday': 6
-            }
-            
-            if day_name in day_mapping:
-                target_weekday = day_mapping[day_name]
-                today = datetime.utcnow()
-                current_weekday = today.weekday()
-                
-                days_since = (current_weekday - target_weekday) % 7
-                event_date = today - timedelta(days=days_since)
-                event_date = event_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                print(f"Calculated date based on day '{day_name}': {event_date}")
-            else:
-                event_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-                print(f"Using today as fallback: {event_date}")
-        
-        sa_timezone = pytz.timezone("Africa/Johannesburg")
-        
+        sa_tz = pytz.timezone("Africa/Johannesburg")
         if event_date.tzinfo is None:
             event_date = pytz.utc.localize(event_date)
-        
-        event_date_sa = event_date.astimezone(sa_timezone)
+        event_date_sa = event_date.astimezone(sa_tz)
         year, week, _ = event_date_sa.isocalendar()
-        
         week_id = f"{year}-W{week:02d}"
         
-        print(f"FINAL DATE CALCULATION:")
-        print(f"  Event date: {event_date}")
-        print(f"  SA timezone date: {event_date_sa}")
-        print(f"  Week identifier: {week_id}")
-        print(f"  Day of week: {event_date_sa.strftime('%A')}")
-
-        attendees_data = submission.get('attendees', [])
-        if not attendees_data and 'payload' in submission:
-            attendees_data = submission['payload'].get('attendees', [])
-       
-        print(f"Attendees data length: {len(attendees_data)}")
-
-        persistent_attendees = submission.get('persistent_attendees', [])
-        if not persistent_attendees and 'payload' in submission:
-            persistent_attendees = submission['payload'].get('persistent_attendees', [])
-       
-        if not persistent_attendees:
-            persistent_attendees = submission.get('all_attendees', [])
-            if not persistent_attendees and 'payload' in submission:
-                persistent_attendees = submission['payload'].get('all_attendees', [])
-
-        print(f"Persistent attendees: {len(persistent_attendees)}")
-
-        persistent_attendees_dict = []
-        if persistent_attendees and isinstance(persistent_attendees, list):
-            for attendee in persistent_attendees:
-                if isinstance(attendee, dict):
-                    clean_attendee = {
-                        "id": attendee.get("id", ""),
-                        "name": attendee.get("name", ""),
-                        "fullName": attendee.get("fullName", attendee.get("name", "")),
-                        "email": attendee.get("email", ""),
-                        "phone": attendee.get("phone", ""),
-                        "leader12": attendee.get("leader12", ""),
-                        "leader144": attendee.get("leader144", ""),
-                        "isPersistent": True
-                    }
-                    persistent_attendees_dict.append(clean_attendee)
-        else:
-            print("No persistent attendees found or invalid format")
-
-        did_not_meet = submission.get('did_not_meet', False)
-        if not did_not_meet and 'payload' in submission:
-            did_not_meet = submission['payload'].get('did_not_meet', False)
-
-        print(f"Did not meet: {did_not_meet}")
-
-        checked_in_attendees = []
-        weekly_attendance_entry = {}
-        main_update_fields = {}
-
-        print(f"Processing attendees for check-in")
-        if attendees_data and isinstance(attendees_data, list):
-            for att in attendees_data:
-                if isinstance(att, dict):
-                    attendee_data = {
-                        "id": att.get("id", ""),
-                        "name": att.get("name", ""),
-                        "fullName": att.get("fullName", att.get("name", "")),
-                        "email": att.get("email", ""),
-                        "phone": att.get("phone", ""),
-                        "leader12": att.get("leader12", ""),
-                        "leader144": att.get("leader144", ""),
-                        "checked_in": True,
-                        "check_in_date": datetime.utcnow().isoformat(),
-                        "isPersistent": att.get("isPersistent", False)
-                    }
-                    checked_in_attendees.append(attendee_data)
-
+        payload = submission.get('payload', {})
+        attendees = submission.get('attendees', []) or payload.get('attendees', [])
+        persistent = submission.get('persistent_attendees', []) or payload.get('persistent_attendees', [])
+        did_not_meet = submission.get('did_not_meet', False) or payload.get('did_not_meet', False)
+        
+        current_attendance = event.get("attendance", {}).get(week_id, {})
+        current_status = current_attendance.get("status", "incomplete")
+        
         if did_not_meet:
-            print(f"Marking as 'Did Not Meet' for week {week_id}")
-            weekly_attendance_entry = {
-                "status": "did_not_meet",
-                "attendees": [],
-                "submitted_at": datetime.utcnow(),
-                "submitted_by": current_user.get('email', ''),
-                "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                "submitted_date": datetime.utcnow().isoformat(),
-                "event_date": event_date_sa.isoformat(),
-                "event_date_iso": event_date_sa.date().isoformat(),
-                "persistent_attendees_count": len(persistent_attendees_dict),
-                "week_identifier": week_id,
-                "is_did_not_meet": True
-            }
-           
-            main_update_fields = {
-                "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
-                "updated_at": datetime.utcnow(),
-            }
+            status = "did_not_meet"
+            checked_in = []
+        elif attendees:
+            status = "complete"
+            checked_in = [{
+                "id": a.get("id", ""),
+                "name": a.get("name", ""),
+                "email": a.get("email", ""),
+                "checked_in": True,
+                "check_in_date": datetime.utcnow().isoformat()
+            } for a in attendees if isinstance(a, dict)]
         else:
-            if len(checked_in_attendees) == 0:
-                print(f"No attendees checked in - marking as incomplete for week {week_id}")
-                weekly_attendance_entry = {
-                    "status": "incomplete",
-                    "attendees": [],
-                    "submitted_at": datetime.utcnow(),
-                    "submitted_by": current_user.get('email', ''),
-                    "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                    "submitted_date": datetime.utcnow().isoformat(),
-                    "event_date": event_date_sa.isoformat(),
-                    "event_date_iso": event_date_sa.date().isoformat(),
-                    "persistent_attendees_count": len(persistent_attendees_dict),
-                    "week_identifier": week_id,
-                    "is_did_not_meet": False
-                }
-               
-                main_update_fields = {
-                    "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
-                    "updated_at": datetime.utcnow(),
-                }
-            else:
-                weekly_attendance_entry = {
-                    "status": "complete",
-                    "attendees": checked_in_attendees,
-                    "submitted_at": datetime.utcnow(),
-                    "submitted_by": current_user.get('email', ''),
-                    "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                    "submitted_date": datetime.utcnow().isoformat(),
-                    "event_date": event_date_sa.isoformat(),
-                    "event_date_iso": event_date_sa.date().isoformat(),
-                    "persistent_attendees": persistent_attendees_dict,
-                    "week_identifier": week_id,
-                    "is_did_not_meet": False,
-                    "checked_in_count": len(checked_in_attendees)
-                }
-                print(f"MARKING AS COMPLETE for week {week_id} with {len(checked_in_attendees)} attendees")
-               
-                main_update_fields = {
-                    "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
-                    "updated_at": datetime.utcnow(),
-                }
-
-        if persistent_attendees_dict:
-            main_update_fields["persistent_attendees"] = persistent_attendees_dict
-
-        update_data = {
-            **main_update_fields,
-            f"attendance.{week_id}": weekly_attendance_entry
+            status = "incomplete"
+            checked_in = current_attendance.get("attendees", [])
+        
+        weekly_entry = {
+            "status": status,
+            "attendees": checked_in,
+            "submitted_at": datetime.utcnow(),
+            "submitted_by": current_user.get('email', ''),
+            "event_date": event_date_sa.isoformat(),
+            "week_identifier": week_id
         }
-
-        print(f"Saving to database:")
-        print(f"   - Event: {event_name}")
-        print(f"   - Event date: {event_date_sa.date()}")
-        print(f"   - Week: {week_id}")
-        print(f"   - Status: {weekly_attendance_entry.get('status', 'unknown')}")
-        print(f"   - Update fields: {list(update_data.keys())}")
-
-        result = await events_collection.update_one(
-            {"_id": ObjectId(actual_event_id)},
+        
+        update_data = {
+            f"attendance.{week_id}": weekly_entry,
+            "updated_at": datetime.utcnow()
+        }
+        
+        if persistent:
+            update_data["persistent_attendees"] = persistent
+        
+        await events_collection.update_one(
+            {"_id": ObjectId(actual_id)},
             {"$set": update_data}
         )
-       
-        print(f"Database result - matched: {result.matched_count}, modified: {result.modified_count}")
         
-        if result.matched_count != 1:
-            raise HTTPException(status_code=500, detail="Failed to update event")
-       
-        response_data = {
+        return {
             "message": "Attendance submitted successfully",
-            "event_id": actual_event_id,
-            "event_name": event_name,
-            "status": weekly_attendance_entry.get("status", "unknown"),
-            "did_not_meet": did_not_meet,
-            "checked_in_count": len(checked_in_attendees),
-            "persistent_attendees_count": len(persistent_attendees_dict),
-            "week": week_id,
-            "event_date": event_date_sa.date().isoformat(),
-            "event_day": event_date_sa.strftime("%A"),
-            "success": True,
-            "timestamp": datetime.utcnow().isoformat()
+            "status": status,
+            "checked_in_count": len(checked_in),
+            "week": week_id
         }
-
-        print(f"ATTENDANCE SUBMISSION SUCCESSFUL")
-        return response_data
-
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"ERROR in submit_attendance: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(500, str(e))
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
