@@ -1205,114 +1205,6 @@ async def migrate_event_types_uuids():
         raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
 
 
-@app.get("/global")
-async def get_global_events(
-    current_user: dict = Depends(get_current_user),
-    page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
-    status: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    start_date: Optional[str] = Query(None),
-    last_updated: Optional[str] = Query(None)
-):
-    """Get global events."""
-    try:
-        # Base query
-        query = {
-            "isGlobal": True,
-            "eventTypeName": "Global Events"
-        }
-        
-        # Real-time updates
-        if last_updated:
-            try:
-                last_dt = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
-                query["$or"] = [
-                    {"created_at": {"$gte": last_dt}},
-                    {"updated_at": {"$gte": last_dt}}
-                ]
-            except:
-                pass
-        
-        # Search filter
-        if search and search.strip():
-            search_re = {"$regex": search.strip(), "$options": "i"}
-            query["$or"] = [
-                {"Event Name": search_re},
-                {"eventName": search_re},
-                {"Leader": search_re},
-                {"Location": search_re}
-            ]
-        
-        # Get events
-        events = await events_collection.find(query).sort("created_at", -1).to_list(length=None)
-        
-        # Filter by date
-        start = parse_date_str(start_date) or date(2025, 10, 20)
-        
-        result_events = []
-        for event in events:
-            event_date = parse_date_str(event.get("date"))
-            
-            if event_date < start:
-                continue
-            
-            # Determine status
-            if event.get("did_not_meet"):
-                event_status = "did_not_meet"
-            elif event.get("status"):
-                event_status = str(event.get("status")).lower()
-            else:
-                event_status = "open"
-            
-            if status and status != 'all' and status != event_status:
-                continue
-            
-            # Create response
-            result = {
-                "_id": str(event.get("_id", "")),
-                "eventName": event.get("Event Name") or event.get("eventName", ""),
-                "eventType": "Global Events",
-                "eventLeaderName": event.get("Leader") or event.get("eventLeader", ""),
-                "eventLeaderEmail": event.get("Email") or event.get("userEmail", ""),
-                "day": event.get("Day", ""),
-                "date": event_date.isoformat(),
-                "time": event.get("time", ""),
-                "location": event.get("Location") or event.get("location", ""),
-                "description": event.get("description", ""),
-                "attendees": event.get("attendees", []),
-                "new_people": event.get("new_people", []),
-                "consolidations": event.get("consolidations", []),
-                "did_not_meet": event.get("did_not_meet", False),
-                "status": event_status,
-                "Status": event_status.replace("_", " ").title(),
-                "_is_overdue": event_date < date.today() and event_status == "incomplete",
-                "isGlobal": True,
-                "isTicketed": event.get("isTicketed", False),
-                "priceTiers": event.get("priceTiers", []),
-                "total_attendance": event.get("total_attendance", 0),
-                "UUID": event.get("UUID", "")
-            }
-            
-            result_events.append(result)
-        
-        # Paginate
-        result_events.sort(key=lambda x: x['date'], reverse=True)
-        total = len(result_events)
-        pages = (total + limit - 1) // limit if total > 0 else 1
-        skip = (page - 1) * limit
-        
-        return {
-            "events": result_events[skip:skip + limit],
-            "total_events": total,
-            "total_pages": pages,
-            "current_page": page,
-            "page_size": limit
-        }
-        
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
 @app.get("/cache/people")
 async def get_cached_people():
     """
@@ -1668,6 +1560,8 @@ async def get_event_by_id(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
+
+
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str,
@@ -1771,6 +1665,129 @@ async def submit_attendance(
         raise
     except Exception as e:
         raise HTTPException(500, str(e))
+
+@app.put("/events/{event_id}/toggle-active")
+async def toggle_event_active_status(
+    event_id: str,
+    is_active: bool = Query(...),
+    reason: Optional[str] = Query(None),
+    weeks: Optional[int] = Query(2),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Toggle active status of an event
+    """
+    try:
+        # Check if event exists
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        update_data = {
+            "is_active": is_active,
+            "updated_at": datetime.utcnow()
+        }
+        
+        if is_active:
+            # Reactivating - clear deactivation fields
+            update_data.update({
+                "deactivation_start": None,
+                "deactivation_end": None,
+                "deactivation_reason": None
+            })
+        else:
+            # Deactivating - set deactivation period
+            deactivation_start = datetime.utcnow()
+            deactivation_end = deactivation_start + timedelta(weeks=weeks)
+            
+            update_data.update({
+                "deactivation_start": deactivation_start,
+                "deactivation_end": deactivation_end,
+                "deactivation_reason": reason or "Manually deactivated"
+            })
+        
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to update event status")
+        
+        status_text = "activated" if is_active else f"deactivated for {weeks} weeks"
+        return {
+            "success": True,
+            "message": f"Event {status_text} successfully",
+            "is_active": is_active,
+            "deactivation_end": update_data.get("deactivation_end")
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/events/person/{leader_name}/toggle-active-all")
+async def toggle_all_person_events_active_status(
+    leader_name: str,
+    is_active: bool = Query(...),
+    reason: Optional[str] = Query(None),
+    weeks: Optional[int] = Query(2),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Toggle active status for all events of a person
+    """
+    try:
+        # Find all events for this leader
+        events = await events_collection.find({
+            "$or": [
+                {"eventLeader": leader_name},
+                {"eventLeaderName": leader_name},
+                {"Leader": leader_name}
+            ]
+        }).to_list(None)
+        
+        if not events:
+            raise HTTPException(status_code=404, detail=f"No events found for {leader_name}")
+        
+        update_count = 0
+        for event in events:
+            update_data = {
+                "is_active": is_active,
+                "updated_at": datetime.utcnow()
+            }
+            
+            if is_active:
+                update_data.update({
+                    "deactivation_start": None,
+                    "deactivation_end": None,
+                    "deactivation_reason": None
+                })
+            else:
+                deactivation_start = datetime.utcnow()
+                deactivation_end = deactivation_start + timedelta(weeks=weeks)
+                
+                update_data.update({
+                    "deactivation_start": deactivation_start,
+                    "deactivation_end": deactivation_end,
+                    "deactivation_reason": reason or f"All events deactivated for {leader_name}"
+                })
+            
+            result = await events_collection.update_one(
+                {"_id": event["_id"]},
+                {"$set": update_data}
+            )
+            update_count += result.modified_count
+        
+        status_text = "activated" if is_active else f"deactivated for {weeks} weeks"
+        return {
+            "success": True,
+            "message": f"{update_count} events {status_text} successfully",
+            "count": update_count,
+            "is_active": is_active
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/event-types")
