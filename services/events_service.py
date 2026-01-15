@@ -1561,7 +1561,6 @@ async def get_event_by_id(event_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=f"Error retrieving event: {str(e)}")
 
 
-
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str,
@@ -1665,6 +1664,8 @@ async def submit_attendance(
         raise
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
 
 @app.put("/events/{event_id}/toggle-active")
 async def toggle_event_active_status(
