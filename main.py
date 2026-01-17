@@ -2151,316 +2151,345 @@ async def get_event_types():
 @app.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
     """
-    WORKING VERSION: Update cell event
+    WORKING VERSION: Update cell event - COMPLETE FIX for day/date updates
     """
     try:
-        print(f"[WORKING UPDATE] Identifier: {identifier}")
-        print(f"[WORKING UPDATE] Collection: {events_collection.name}")
+        print(f"[UPDATE CELL] Identifier: {identifier}")
+        print(f"[UPDATE CELL] Update data: {event_data}")
         
-
+        # Find the event
         event = None
+        
+        # Try as ObjectId first
         if ObjectId.is_valid(identifier):
-            print(f"[WORKING UPDATE] Trying as ObjectId...")
             event = await events_collection.find_one({"_id": ObjectId(identifier)})
         
+        # If not found, try other methods
         if not event:
-            print(f"[WORKING UPDATE] Trying as Email (uppercase)...")
-            event = await events_collection.find_one({"Email": identifier})
-        
-        # 3. Try lowercase email
-        if not event:
-            print(f"[WORKING UPDATE] Trying as email (lowercase)...")
-            event = await events_collection.find_one({"email": identifier})
-        
-        # 4. Try Leader (uppercase L as shown in your data)
-        if not event:
-            print(f"[WORKING UPDATE] Trying as Leader...")
-            event = await events_collection.find_one({"Leader": identifier})
-        
-        if not event:
-            print(f"[WORKING UPDATE] Trying Event Name partial match...")
-            event = await events_collection.find_one({
-                "Event Name": {"$regex": identifier, "$options": "i"}
-            })
-        
-        if not event:
-            count = await events_collection.count_documents({})
-            print(f"[WORKING UPDATE] Total docs in collection: {count}")
+            # Check for composite ID (with underscore)
+            if '_' in identifier:
+                base_id = identifier.split('_')[0]
+                if ObjectId.is_valid(base_id):
+                    event = await events_collection.find_one({"_id": ObjectId(base_id)})
             
-            email_count = await events_collection.count_documents({"Email": {"$exists": True}})
-            print(f"[WORKING UPDATE] Docs with Email field: {email_count}")
-            
-            sample = await events_collection.find_one({})
-            if sample:
-                print(f"[WORKING UPDATE] Sample fields: {list(sample.keys())}")
-            
-            raise HTTPException(
-                status_code=404,
-                detail=f"Cell not found with identifier: {identifier}. Collection has {count} documents."
-            )
+        if not event:
+            raise HTTPException(status_code=404, detail=f"Cell not found: {identifier}")
         
-        print(f"[WORKING UPDATE]  Found: {event.get('Event Name')}")
-        print(f"[WORKING UPDATE] Event ID: {str(event.get('_id'))}")
+        print(f"[UPDATE CELL] Found event: {event.get('Event Name')}")
+        print(f"[UPDATE CELL] Current Day: {event.get('Day')}, Date: {event.get('Date Of Event')}")
+        
+        # Field mapping for automatic updates
+        field_mapping = {
+            "Day": ["Day", "recurring_day", "day"],
+            "recurring_day": ["recurring_day", "Day", "day"],
+            "day": ["day", "Day", "recurring_day"],
+            "Event Name": ["Event Name", "eventName"],
+            "eventName": ["eventName", "Event Name"],
+            "Date Of Event": ["Date Of Event", "date", "Date"],
+            "date": ["date", "Date Of Event", "Date"],
+            "Date": ["Date", "Date Of Event", "date"],
+            "Time": ["Time", "time"],
+            "time": ["time", "Time"]
+        }
         
         update_fields = {}
         
-        if "Day" in event_data:
-            update_fields["Day"] = event_data["Day"]
-        if "day" in event_data:
-            update_fields["day"] = event_data["day"]
-        
+        # Process all fields
         for key, value in event_data.items():
-            if key not in ["Day", "day"]:
-                update_fields[key] = value
+            if value is None:
+                continue
+                
+            update_fields[key] = value
+            
+            # Update mapped fields
+            if key in field_mapping:
+                for mapped_field in field_mapping[key]:
+                    if mapped_field != key:
+                        # Handle special conversions
+                        if key == "Day" and mapped_field == "recurring_day":
+                            update_fields[mapped_field] = [value] if value else []
+                        elif key == "recurring_day" and mapped_field == "Day":
+                            if isinstance(value, list) and len(value) > 0:
+                                update_fields[mapped_field] = value[0]
+                            elif isinstance(value, str):
+                                update_fields[mapped_field] = value
+                        else:
+                            update_fields[mapped_field] = value
+        
+        # CRITICAL: Handle Event Name update when Day changes
+        if "Day" in update_fields or "recurring_day" in update_fields:
+            new_day = None
+            if "Day" in update_fields:
+                new_day = update_fields["Day"]
+            elif "recurring_day" in update_fields:
+                rd = update_fields["recurring_day"]
+                if isinstance(rd, list) and len(rd) > 0:
+                    new_day = rd[0]
+                elif isinstance(rd, str):
+                    new_day = rd
+            
+            if new_day:
+                # Get current event name
+                current_event_name = event.get("Event Name") or event.get("eventName", "")
+                
+                if current_event_name and " - " in current_event_name:
+                    parts = current_event_name.split(" - ")
+                    if len(parts) >= 4:
+                        # Update the day part (usually the last part)
+                        parts[-1] = new_day
+                        new_event_name = " - ".join(parts)
+                        
+                        update_fields["Event Name"] = new_event_name
+                        update_fields["eventName"] = new_event_name
+                        print(f"[UPDATE CELL] Updated Event Name: {new_event_name}")
+        
+        # CRITICAL: Handle Date Of Event update
+        if "Date Of Event" in update_fields or "date" in update_fields or "Date" in update_fields:
+            new_date = None
+            if "Date Of Event" in update_fields:
+                new_date = update_fields["Date Of Event"]
+            elif "date" in update_fields:
+                new_date = update_fields["date"]
+            elif "Date" in update_fields:
+                new_date = update_fields["Date"]
+            
+            if new_date:
+                try:
+                    # Parse and normalize the date
+                    if isinstance(new_date, str):
+                        # Handle various date formats
+                        date_obj = None
+                        for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y", "%m/%d/%Y"]:
+                            try:
+                                date_obj = datetime.strptime(new_date.split('T')[0], fmt)
+                                break
+                            except:
+                                continue
+                        
+                        if date_obj:
+                            # Format as ISO string for consistency
+                            iso_date = date_obj.isoformat()
+                            update_fields["Date Of Event"] = iso_date
+                            update_fields["date"] = iso_date
+                            update_fields["Date"] = iso_date
+                            
+                            print(f"[UPDATE CELL] Updated date to: {iso_date}")
+                            
+                            # Also update Date Captured if it exists
+                            update_fields["Date Captured"] = date_obj.strftime("%d %B %Y")
+                except Exception as e:
+                    print(f"[UPDATE CELL] Error parsing date: {e}")
+        
+        # CRITICAL: Update status if date is in the future
+        if "Date Of Event" in update_fields:
+            try:
+                new_date_str = update_fields["Date Of Event"]
+                new_date = datetime.fromisoformat(new_date_str.replace('Z', '+00:00'))
+                now = datetime.utcnow()
+                
+                if new_date > now:
+                    # If new date is in the future, status should not be "overdue"
+                    current_status = event.get("status") or event.get("Status")
+                    if current_status in ["overdue", "incomplete", "did_not_meet"]:
+                        update_fields["status"] = "open"
+                        update_fields["Status"] = "open"
+                        print(f"[UPDATE CELL] Updated status to 'open' (future date)")
+            except Exception as e:
+                print(f"[UPDATE CELL] Error checking date for status update: {e}")
         
         update_fields["updated_at"] = datetime.utcnow()
         
-        print(f"[WORKING UPDATE] Updating with: {update_fields}")
+        print(f"[UPDATE CELL] Final update fields: {update_fields}")
         
-        # Perform update
+        # Perform the update
         result = await events_collection.update_one(
             {"_id": event["_id"]},
             {"$set": update_fields}
         )
         
-        print(f"[WORKING UPDATE] Modified: {result.modified_count}")
+        print(f"[UPDATE CELL] Modified count: {result.modified_count}")
         
-        # Return simple success response
+        # Return success response
         return {
             "success": True,
             "message": "Cell updated successfully",
-            "cell_name": event.get("Event Name"),
-            "old_day": event.get("Day"),
-            "new_day": event_data.get("Day") or event_data.get("day"),
-            "modified": result.modified_count > 0
+            "modified_count": result.modified_count,
+            "updated_fields": list(update_fields.keys()),
+            "new_day": update_fields.get("Day") or event.get("Day"),
+            "new_date": update_fields.get("Date Of Event") or event.get("Date Of Event")
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[WORKING UPDATE] Error: {str(e)}")
+        print(f"[UPDATE CELL] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-    @app.put("/events/update-person-cells/{person_name}")
-    async def update_person_cells_improved(person_name: str, update_data: dict):
-        """
-        Improved: Updates Event Name when Day changes for BOTH old and new formats
-        """
-        try:
-            decoded_person_name = unquote(person_name)
-            
-            # Find cells by person name - check BOTH old and new field names
-            query = {
-                "$or": [
-                    {"Leader": decoded_person_name},  
-                    {"eventLeader": decoded_person_name},  # New format
-                    {"eventLeaderName": decoded_person_name}  # Also check this
-                ]
-            }
-            
-            cursor = events_collection.find(query)
-            matching_cells = await cursor.to_list(length=None)
-            
-            if not matching_cells:
-                return {"message": f"No cells found for: {decoded_person_name}", "updated_count": 0}
-            
-            set_operations = {}
-            unset_operations = {}
-            
-            # Map field names between old and new formats
-            field_mapping = {
-                "Day": ["Day", "recurring_day"],  # When updating Day, update both fields
-                "recurring_day": ["recurring_day", "Day"],
-                "Event Name": ["Event Name", "eventName"],
-                "eventName": ["eventName", "Event Name"],
-                "Leader": ["Leader", "eventLeader", "eventLeaderName"],
-                "eventLeader": ["eventLeader", "Leader", "eventLeaderName"],
-                "Email": ["Email", "eventLeaderEmail"],
-                "eventLeaderEmail": ["eventLeaderEmail", "Email"],
-                "Address": ["Address", "location"],
-                "location": ["location", "Address"],
-                "Time": ["Time", "time"],
-                "time": ["time", "Time"],
-                "status": ["status", "Status"],
-                "Status": ["Status", "status"]
-            }
-            
-            # Process update data
-            for field, value in update_data.items():
-                if value is None:
-                    # Add to unset operations
-                    unset_operations[field] = ""
-                    # Also unset mapped fields
-                    if field in field_mapping:
-                        for mapped_field in field_mapping[field]:
-                            if mapped_field != field: 
-                                unset_operations[mapped_field] = ""
-                else:
-                    set_operations[field] = value
-                    if field in field_mapping:
-                        for mapped_field in field_mapping[field]:
-                            if mapped_field != field:  
-                                # Handle type conversions
-                                if field == "Day" and mapped_field == "recurring_day":
-                                    # Convert string Day to array recurring_day
-                                    set_operations[mapped_field] = [value] if value else []
-                                elif field == "recurring_day" and mapped_field == "Day":
-                                    # Convert array recurring_day to string Day
-                                    if isinstance(value, list) and len(value) > 0:
-                                        set_operations[mapped_field] = value[0]  # Take first day from array
-                                    elif isinstance(value, str):
-                                        set_operations[mapped_field] = value
-                                    else:
-                                        set_operations[mapped_field] = ""
-                                else:
-                                    set_operations[mapped_field] = value
-            
-            update_query = {}
-            if set_operations:
-                set_operations["updated_at"] = datetime.utcnow()
-                update_query["$set"] = set_operations
-            if unset_operations:
-                update_query["$unset"] = unset_operations
-            
-            if not update_query:
-                return {"message": "No operations to perform", "updated_count": 0}
-            
-            # First update all matching cells
-            result = await events_collection.update_many(
-                query,
-                update_query
-            )
-            
-            # Now update Event Names for OLD format cells when Day changes
-            event_names_updated = 0
-            day_updated = False
-            new_day = None
-            
-            # Check if Day was updated
-            if "Day" in update_data and update_data["Day"]:
-                day_updated = True
-                new_day = update_data["Day"]
-            elif "recurring_day" in update_data and update_data["recurring_day"]:
-                day_updated = True
-                # Get day from recurring_day array
-                if isinstance(update_data["recurring_day"], list) and len(update_data["recurring_day"]) > 0:
-                    new_day = update_data["recurring_day"][0]
-                elif isinstance(update_data["recurring_day"], str):
-                    new_day = update_data["recurring_day"]
-            
-            if day_updated and new_day:
-                for cell in matching_cells:
-                    cell_id = cell["_id"]
-                    
-                    # Get current event names
-                    old_event_name = cell.get("Event Name", "")
-                    old_event_name2 = cell.get("eventName", "")
-                    
-                    # Update OLD FORMAT Event Name (pattern: Name - Location - Type - Day)
-                    if old_event_name and " - " in old_event_name:
-                        parts = old_event_name.split(" - ")
-                        if len(parts) >= 4:
-                            # Keep first 3 parts, replace last part with new day
-                            new_event_name = " - ".join(parts[:-1]) + f" - {new_day}"
-                            
-                            await events_collection.update_one(
-                                {"_id": cell_id},
-                                {"$set": {"Event Name": new_event_name, "updated_at": datetime.utcnow()}}
-                            )
-                            event_names_updated += 1
-                            print(f"[UPDATE] Updated old format Event Name: {old_event_name} -> {new_event_name}")
-                    
-                    # Update NEW FORMAT eventName (if it follows the same pattern)
-                    if old_event_name2 and " - " in old_event_name2:
-                        parts = old_event_name2.split(" - ")
-                        if len(parts) >= 4:
-                            new_event_name2 = " - ".join(parts[:-1]) + f" - {new_day}"
-                            
-                            await events_collection.update_one(
-                                {"_id": cell_id},
-                                {"$set": {"eventName": new_event_name2, "updated_at": datetime.utcnow()}}
-                            )
-                            event_names_updated += 1
-                            print(f"[UPDATE] Updated new format eventName: {old_event_name2} -> {new_event_name2}")
-                    # Also update if the eventName is just a name (convert to full format)
-                    elif old_event_name2 and " - " not in old_event_name2:
-                        # Get location from cell
-                        location = cell.get("location") or cell.get("Address") or "Unknown Location"
-                        # Get event type from cell
-                        event_type = cell.get("Event Type") or cell.get("eventTypeName") or "Cell"
-                        
-                        new_event_name2 = f"{old_event_name2} - {location} - {event_type} - {new_day}"
-                        
-                        await events_collection.update_one(
-                            {"_id": cell_id},
-                            {"$set": {"eventName": new_event_name2, "updated_at": datetime.utcnow()}}
-                        )
-                        event_names_updated += 1
-                        print(f"[UPDATE] Converted simple eventName to full format: {old_event_name2} -> {new_event_name2}")
-            
-            # Also handle special case: if updating location/Address, update Event Name too
-            location_updated = False
-            new_location = None
-            
-            if "Address" in update_data and update_data["Address"]:
-                location_updated = True
-                new_location = update_data["Address"]
-            elif "location" in update_data and update_data["location"]:
-                location_updated = True
-                new_location = update_data["location"]
-            
-            if location_updated and new_location:
-                for cell in matching_cells:
-                    cell_id = cell["_id"]
-                    
-                    # Get current values
-                    old_event_name = cell.get("Event Name", "")
-                    old_event_name2 = cell.get("eventName", "")
-                    current_day = cell.get("Day") or (cell.get("recurring_day")[0] if cell.get("recurring_day") else "Unknown Day")
-                    
-                    # Update OLD FORMAT Event Name
-                    if old_event_name and " - " in old_event_name:
-                        parts = old_event_name.split(" - ")
-                        if len(parts) >= 4:
-                            # Replace location part (typically index 1)
-                            parts[1] = new_location
-                            new_event_name = " - ".join(parts)
-                            
-                            await events_collection.update_one(
-                                {"_id": cell_id},
-                                {"$set": {"Event Name": new_event_name, "updated_at": datetime.utcnow()}}
-                            )
-                            event_names_updated += 1
-                    
-                    # Update NEW FORMAT eventName
-                    if old_event_name2 and " - " in old_event_name2:
-                        parts = old_event_name2.split(" - ")
-                        if len(parts) >= 4:
-                            # Replace location part (typically index 1)
-                            parts[1] = new_location
-                            new_event_name2 = " - ".join(parts)
-                            
-                            await events_collection.update_one(
-                                {"_id": cell_id},
-                                {"$set": {"eventName": new_event_name2, "updated_at": datetime.utcnow()}}
-                            )
-                            event_names_updated += 1
-            
+@app.put("/events/update-person-cells-by-eventname/{person_name}/{event_name}")
+async def update_person_cells_by_eventname(person_name: str, event_name: str, update_data: dict):
+    """
+    Update only events for a person that match a specific event name
+    """
+    try:
+        decoded_person_name = unquote(person_name)
+        decoded_event_name = unquote(event_name)
+        
+        print(f"[UPDATE BY EVENTNAME] Person: {decoded_person_name}")
+        print(f"[UPDATE BY EVENTNAME] Event name filter: {decoded_event_name}")
+        print(f"[UPDATE BY EVENTNAME] Update data: {update_data}")
+        
+        # Find cells by person name AND event name
+        query = {
+            "$and": [
+                {
+                    "$or": [
+                        {"Leader": decoded_person_name},
+                        {"eventLeader": decoded_person_name},
+                        {"eventLeaderName": decoded_person_name}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"Event Name": decoded_event_name},
+                        {"eventName": decoded_event_name},
+                        {"Event Name": {"$regex": f".*{decoded_event_name}.*", "$options": "i"}},
+                        {"eventName": {"$regex": f".*{decoded_event_name}.*", "$options": "i"}}
+                    ]
+                }
+            ]
+        }
+        
+        cursor = events_collection.find(query)
+        matching_cells = await cursor.to_list(length=None)
+        
+        if not matching_cells:
             return {
-                "success": True,
-                "message": f"Updated {result.modified_count} cells, {event_names_updated} Event Names",
-                "matched_count": len(matching_cells),
-                "modified_count": result.modified_count,
-                "event_names_updated": event_names_updated,
-                "set_operations": list(set_operations.keys()) if set_operations else None,
-                "unset_operations": list(unset_operations.keys()) if unset_operations else None
+                "message": f"No cells found for {decoded_person_name} with event name: {decoded_event_name}",
+                "updated_count": 0,
+                "matched_count": 0
             }
+        
+        print(f"[UPDATE BY EVENTNAME] Found {len(matching_cells)} matching cells")
+        
+        field_mapping = {
+            "Day": ["Day", "recurring_day", "day"],
+            "recurring_day": ["recurring_day", "Day", "day"],
+            "day": ["day", "Day", "recurring_day"],
+            "Event Name": ["Event Name", "eventName"],
+            "eventName": ["eventName", "Event Name"],
+            "Date Of Event": ["Date Of Event", "date", "Date"],
+            "date": ["date", "Date Of Event", "Date"],
+            "Date": ["Date", "Date Of Event", "date"],
+            "Time": ["Time", "time"],
+            "time": ["time", "Time"]
+        }
+        
+        update_query = {"$set": {}, "$unset": {}}
+        set_operations = {}
+        unset_operations = {}
+        
+        # Process update data
+        for key, value in update_data.items():
+            if value is None or value == "":
+                unset_operations[key] = ""
+                if key in field_mapping:
+                    for mapped_field in field_mapping[key]:
+                        if mapped_field != key:
+                            unset_operations[mapped_field] = ""
+            else:
+                set_operations[key] = value
+                if key in field_mapping:
+                    for mapped_field in field_mapping[key]:
+                        if mapped_field != key:
+                            # Handle special conversions
+                            if key == "Day" and mapped_field == "recurring_day":
+                                set_operations[mapped_field] = [value] if value else []
+                            elif key == "recurring_day" and mapped_field == "Day":
+                                if isinstance(value, list) and len(value) > 0:
+                                    set_operations[mapped_field] = value[0]
+                                elif isinstance(value, str):
+                                    set_operations[mapped_field] = value
+                            else:
+                                set_operations[mapped_field] = value
+        
+        # Handle Event Name update when Day changes
+        if "Day" in set_operations or "recurring_day" in set_operations:
+            new_day = None
+            if "Day" in set_operations:
+                new_day = set_operations["Day"]
+            elif "recurring_day" in set_operations:
+                rd = set_operations["recurring_day"]
+                if isinstance(rd, list) and len(rd) > 0:
+                    new_day = rd[0]
+                elif isinstance(rd, str):
+                    new_day = rd
             
-        except Exception as e:
-            print(f"[UPDATE ERROR] {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+            if new_day:
+                for cell in matching_cells:
+                    cell_id = cell["_id"]
+                    
+                    # Update Event Name with new day
+                    old_event_name = cell.get("Event Name", "")
+                    old_event_name2 = cell.get("eventName", "")
+                    
+                    if old_event_name and " - " in old_event_name:
+                        parts = old_event_name.split(" - ")
+                        if len(parts) >= 4:
+                            parts[-1] = new_day
+                            new_event_name = " - ".join(parts)
+                            set_operations["Event Name"] = new_event_name
+                    
+                    if old_event_name2 and " - " in old_event_name2:
+                        parts = old_event_name2.split(" - ")
+                        if len(parts) >= 4:
+                            parts[-1] = new_day
+                            new_event_name2 = " - ".join(parts)
+                            set_operations["eventName"] = new_event_name2
+        
+        # Handle date updates and status changes
+        if "Date Of Event" in set_operations or "date" in set_operations or "Date" in set_operations:
+            new_date_str = set_operations.get("Date Of Event") or set_operations.get("date") or set_operations.get("Date")
+            if new_date_str:
+                try:
+                    new_date = datetime.fromisoformat(new_date_str.replace('Z', '+00:00'))
+                    now = datetime.utcnow()
+                    
+                    if new_date > now:
+                        # Update status for future dates
+                        set_operations["status"] = "open"
+                        set_operations["Status"] = "open"
+                        print(f"[UPDATE BY EVENTNAME] Setting status to 'open' for future date")
+                except Exception as e:
+                    print(f"[UPDATE BY EVENTNAME] Error processing date: {e}")
+        
+        # Build final update query
+        if set_operations:
+            set_operations["updated_at"] = datetime.utcnow()
+            update_query["$set"] = set_operations
+        
+        if unset_operations:
+            update_query["$unset"] = unset_operations
+        
+        # Perform the update
+        result = await events_collection.update_many(
+            query,
+            update_query
+        )
+        
+        return {
+            "success": True,
+            "message": f"Updated {result.modified_count} cells with event name: {decoded_event_name}",
+            "matched_count": len(matching_cells),
+            "modified_count": result.modified_count,
+            "updated_fields": list(set_operations.keys()) if set_operations else []
+        }
+        
+    except Exception as e:
+        print(f"[UPDATE BY EVENTNAME ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     
 from urllib.parse import unquote
 
@@ -2470,13 +2499,11 @@ async def update_event_type(
     updated_data: EventTypeCreate = Body(...)
 ):
     try:
-        # Decode the URL-encoded event type name
         decoded_event_type_name = unquote(event_type_name)
        
         print(f"[EVENT-TYPE UPDATE] Looking for: '{decoded_event_type_name}'")
         print(f"[EVENT-TYPE UPDATE] Update data: {updated_data.dict()}")
        
-        # Check if event type exists - FIXED: Use case-insensitive search
         existing_event_type = await events_collection.find_one({
             "name": {"$regex": f"^{decoded_event_type_name}$", "$options": "i"},
             "isEventType": True
