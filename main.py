@@ -86,11 +86,8 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
-# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth")
-
-
 
 oauth2_scheme = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -1223,7 +1220,9 @@ async def get_cell_events(
                         {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
                         {"eventType": {"$regex": "^Cells$", "$options": "i"}},
                         {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}},
-                        {"EventType": {"$regex": "^Cells$", "$options": "i"}}
+                        {"EventType": {"$regex": "^Cells$", "$options": "i"}},
+                        {"eventTypeId": "CELLS_BUILT_IN"},
+                        {"hasPersonSteps": True}
                     ]
                 },
                 {"isEventType": {"$ne": True}}
@@ -1241,56 +1240,41 @@ async def get_cell_events(
                     {"eventLeaderName": {"$regex": search_term, "$options": "i"}},
                     {"EventLeaderName": {"$regex": search_term, "$options": "i"}},
                     {"Email": {"$regex": search_term, "$options": "i"}},
+                    {"eventLeaderEmail": {"$regex": search_term, "$options": "i"}},
+                    {"EventLeaderEmail": {"$regex": search_term, "$options": "i"}},
                     {"Leader at 12": {"$regex": search_term, "$options": "i"}},
                     {"Leader @12": {"$regex": search_term, "$options": "i"}},
                 ]
             })
         
-        def create_name_conditions(target_name, fields, exact_match=False):
+        def create_name_conditions(target_name, fields):
             conditions = []
-            
             if not target_name:
                 return conditions
             
             clean_name = target_name.strip()
             
             for field in fields:
-                if exact_match:
-                    conditions.append({field: {"$regex": f"^{re.escape(clean_name)}$", "$options": "i"}})
-                else:
-                    conditions.append({field: {"$regex": f"^{re.escape(clean_name)}$", "$options": "i"}})
-                    conditions.append({field: {"$regex": re.escape(clean_name), "$options": "i"}})
-                    
-                    title_name = clean_name.title()
-                    conditions.append({field: {"$regex": f"^{re.escape(title_name)}$", "$options": "i"}})
-                    
-                    if " van " in clean_name.lower():
-                        variations = [
-                            clean_name,
-                            clean_name.title(),
-                            clean_name.lower(),
-                            clean_name.replace(" van ", " Van "),
-                            clean_name.replace(" van ", " van "),
-                        ]
-                        for variation in variations:
-                            if variation != clean_name:
-                                conditions.append({field: {"$regex": f"^{re.escape(variation)}$", "$options": "i"}})
-                    
-                    name_parts = clean_name.split()
-                    if len(name_parts) > 0:
-                        first_name = name_parts[0].strip()
-                        conditions.append({field: {"$regex": f"^{re.escape(first_name)}", "$options": "i"}})
+                conditions.append({field: {"$regex": f"^{re.escape(clean_name)}$", "$options": "i"}})
+                conditions.append({field: {"$regex": re.escape(clean_name), "$options": "i"}})
+                
+                title_name = clean_name.title()
+                conditions.append({field: {"$regex": f"^{re.escape(title_name)}$", "$options": "i"}})
+                
+                name_parts = clean_name.split()
+                if len(name_parts) > 0:
+                    first_name = name_parts[0].strip()
+                    conditions.append({field: {"$regex": f"^{re.escape(first_name)}$", "$options": "i"}})
+                    conditions.append({field: {"$regex": re.escape(first_name), "$options": "i"}})
             
             return conditions
         
         if role == "admin":
             if personal or show_personal_cells:
-                name_conditions = create_name_conditions(user_name, ["Leader", "eventLeaderName", "EventLeaderName"])
-                email_conditions = [
-                    {"eventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"EventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                ]
+                name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName"]
+                name_conditions = create_name_conditions(user_name, name_fields)
+                email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
+                email_conditions = create_name_conditions(user_email, email_fields)
                 query["$and"].append({"$or": name_conditions + email_conditions})
                 
         elif is_actual_leader_at_12 and leader_at_12_view:
@@ -1298,12 +1282,10 @@ async def get_cell_events(
             want_disciples_view = (show_all_authorized or include_subordinate_cells)
             
             if want_personal_view and not want_disciples_view:
-                name_conditions = create_name_conditions(user_name, ["Leader", "eventLeaderName", "EventLeaderName"])
-                email_conditions = [
-                    {"eventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"EventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                ]
+                name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName"]
+                name_conditions = create_name_conditions(user_name, name_fields)
+                email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
+                email_conditions = create_name_conditions(user_email, email_fields)
                 query["$and"].append({"$or": name_conditions + email_conditions})
                 
             elif want_disciples_view and not want_personal_view:
@@ -1332,21 +1314,26 @@ async def get_cell_events(
                     query["$and"].append({"_id": "nonexistent_id"})
                     
             else:
-                name_conditions = create_name_conditions(user_name, ["Leader", "eventLeaderName", "EventLeaderName"])
-                email_conditions = [
-                    {"eventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"EventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                ]
+                name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName"]
+                name_conditions = create_name_conditions(user_name, name_fields)
+                email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
+                email_conditions = create_name_conditions(user_email, email_fields)
                 query["$and"].append({"$or": name_conditions + email_conditions})
                 
+        elif role == "leader144":
+            name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName", 
+                          "leader144", "Leader at 144", "Leader @144"]
+            name_conditions = create_name_conditions(user_name, name_fields)
+            email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
+            email_conditions = create_name_conditions(user_email, email_fields)
+            query["$and"].append({"$or": name_conditions + email_conditions})
+            
         elif role in ["user", "registrant", "leader"]:
-            name_conditions = create_name_conditions(user_name, ["Leader", "eventLeaderName", "EventLeaderName"])
-            email_conditions = [
-                {"eventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                {"EventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-            ]
+            name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName", 
+                          "leader144", "Leader at 144", "Leader @144"]
+            name_conditions = create_name_conditions(user_name, name_fields)
+            email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
+            email_conditions = create_name_conditions(user_email, email_fields)
             query["$and"].append({"$or": name_conditions + email_conditions})
             
         else:
@@ -1519,7 +1506,6 @@ async def get_cell_events(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/events/cells/optimized")
 async def get_cell_events_optimized(
     current_user: dict = Depends(get_current_user),
@@ -4279,13 +4265,15 @@ async def create_indexes_on_startup():
    
 
 @app.put("/events/{event_id}")
-async def update_event(event_id: str, event_data: dict):
+async def update_event(event_id: str, event_data: dict, current_user: dict = Depends(get_current_user)):
     """
     FIXED: Update event by _id or UUID
+    Now properly updates status for ALL users (bidirectional fix)
     """
     try:
         print(f"Attempting to update event with ID: {event_id}")
         print(f" Received data: {event_data}")
+        print(f" Updated by user: {current_user.get('email')} with role: {current_user.get('role')}")
        
         # Try to find event by _id first (MongoDB ObjectId)
         event = None
@@ -4313,6 +4301,21 @@ async def update_event(event_id: str, event_data: dict):
                 detail=f"Event not found with identifier: {event_id}"
             )
        
+        # =========== FIX: Check if status is being updated ===========
+        is_status_update = False
+        new_status = None
+        old_status = event.get('status') or event.get('Status')
+        
+        # Check both 'status' and 'Status' fields
+        if 'status' in event_data and event_data['status'] is not None:
+            new_status = event_data['status']
+            is_status_update = True
+            print(f"Status update detected: {old_status} -> {new_status}")
+        elif 'Status' in event_data and event_data['Status'] is not None:
+            new_status = event_data['Status']
+            is_status_update = True
+            print(f"Status update detected: {old_status} -> {new_status}")
+       
         # Prepare update data
         update_data = {}
        
@@ -4327,6 +4330,50 @@ async def update_event(event_id: str, event_data: dict):
             if field in event_data and event_data[field] is not None:
                 update_data[field] = event_data[field]
        
+        # =========== FIX: Ensure status updates BOTH fields for ALL users ===========
+        if is_status_update and new_status:
+            # Update BOTH status fields for consistency
+            update_data['status'] = new_status
+            update_data['Status'] = new_status
+            
+            # Track who made the change (for admin/leader synchronization)
+            update_data['last_updated_by'] = {
+                "email": current_user.get('email'),
+                "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+                "role": current_user.get('role'),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            print(f"Updated status fields for ALL users: {new_status}")
+            print(f"Updated by: {current_user.get('email')} ({current_user.get('role')})")
+            
+            # If status is 'complete' or 'did_not_meet', also update weekly attendance
+            if new_status in ['complete', 'did_not_meet']:
+                try:
+                    # Determine current week
+                    sa_timezone = pytz.timezone("Africa/Johannesburg")
+                    event_date = datetime.utcnow()
+                    
+                    if event_date.tzinfo is None:
+                        event_date = pytz.utc.localize(event_date)
+                    
+                    event_date_sa = event_date.astimezone(sa_timezone)
+                    year, week, _ = event_date_sa.isocalendar()
+                    week_id = f"{year}-W{week:02d}"
+                    
+                    # Update weekly attendance status too
+                    attendance_field = f"attendance.{week_id}.status"
+                    update_data[attendance_field] = new_status
+                    update_data[f"attendance.{week_id}.updated_by_external"] = {
+                        "email": current_user.get('email'),
+                        "role": current_user.get('role'),
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    
+                    print(f"Also updated weekly attendance ({week_id}) to: {new_status}")
+                except Exception as e:
+                    print(f"Note: Could not update weekly attendance: {e}")
+        
         # Add update timestamp
         update_data['updated_at'] = datetime.utcnow()
        
@@ -4342,12 +4389,33 @@ async def update_event(event_id: str, event_data: dict):
             print(f"No changes made to event {event_id}")
         else:
             print(f"Event {event_id} updated successfully")
+            
+            # =========== FIX: Log the synchronization ===========
+            if is_status_update:
+                print(f"STATUS SYNCHRONIZED: Event {event_id} status changed to {new_status}")
+                print(f"  - Changed by: {current_user.get('email')} ({current_user.get('role')})")
+                print(f"  - Old status: {old_status}")
+                print(f"  - New status: {new_status}")
+                print(f"  - Will be visible to ALL users immediately")
        
         # Fetch and return the updated event
         updated_event = await events_collection.find_one({"_id": event["_id"]})
         updated_event["_id"] = str(updated_event["_id"])
+        
+        # =========== FIX: Return synchronization info ===========
+        response_data = {
+            **updated_event,
+            "sync_info": {
+                "status_updated": is_status_update,
+                "new_status": new_status,
+                "updated_by": current_user.get('email'),
+                "updated_by_role": current_user.get('role'),
+                "timestamp": datetime.utcnow().isoformat(),
+                "message": "Status synchronized for ALL users" if is_status_update else "Event updated"
+            }
+        }
        
-        return updated_event
+        return response_data
        
     except HTTPException:
         raise
@@ -4358,8 +4426,8 @@ async def update_event(event_id: str, event_data: dict):
         raise HTTPException(
             status_code=500,
             detail=f"Error updating event: {str(e)}"
-        )
-    
+        )    
+
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),
@@ -5694,7 +5762,34 @@ async def get_leader_at_1_for_leader_at_1728(leader_at_1728_name: str) -> str:
         leader_at_144_name = person.get("Leader @144")
         return await get_leader_at_1_for_leader_at_144(leader_at_144_name)
    
+
     return ""
+
+
+# Add this helper function at the top of your backend file
+async def update_event_status(event_id: str, new_status: str, updated_by: dict):
+    """Centralized function to update event status for ALL users"""
+    if new_status not in ['complete', 'incomplete', 'did_not_meet', 'cancelled']:
+        raise ValueError(f"Invalid status: {new_status}")
+    
+    update_data = {
+        "status": new_status,
+        "Status": new_status,
+        "updated_at": datetime.utcnow(),
+        "last_updated_by": {
+            "email": updated_by.get('email'),
+            "name": f"{updated_by.get('name', '')} {updated_by.get('surname', '')}".strip(),
+            "role": updated_by.get('role'),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    }
+    
+    result = await events_collection.update_one(
+        {"_id": ObjectId(event_id)},
+        {"$set": update_data}
+    )
+    
+    return result
 
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
@@ -5865,8 +5960,12 @@ async def submit_attendance(
                     }
                     checked_in_attendees.append(attendee_data)
 
+        # =========== FIX 1: Determine main status for ALL users ===========
+        main_status = None
+        
         if did_not_meet:
             print(f"Marking as 'Did Not Meet' for week {week_id}")
+            main_status = "did_not_meet"
             weekly_attendance_entry = {
                 "status": "did_not_meet",
                 "attendees": [],
@@ -5888,6 +5987,7 @@ async def submit_attendance(
         else:
             if len(checked_in_attendees) == 0:
                 print(f"No attendees checked in - marking as incomplete for week {week_id}")
+                main_status = "incomplete"
                 weekly_attendance_entry = {
                     "status": "incomplete",
                     "attendees": [],
@@ -5907,6 +6007,7 @@ async def submit_attendance(
                     "updated_at": datetime.utcnow(),
                 }
             else:
+                main_status = "complete"
                 weekly_attendance_entry = {
                     "status": "complete",
                     "attendees": checked_in_attendees,
@@ -5928,6 +6029,19 @@ async def submit_attendance(
                     "updated_at": datetime.utcnow(),
                 }
 
+        # =========== FIX 2: Update BOTH status fields for ALL users ===========
+        # This ensures filters work for everyone (admin and all leaders)
+        main_update_fields["status"] = main_status
+        main_update_fields["Status"] = main_status
+        
+        # Also track who made the change for audit
+        main_update_fields["last_updated_by"] = {
+            "email": current_user.get('email'),
+            "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+            "role": current_user.get('role'),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
         if persistent_attendees_dict:
             main_update_fields["persistent_attendees"] = persistent_attendees_dict
 
@@ -5940,7 +6054,8 @@ async def submit_attendance(
         print(f"   - Event: {event_name}")
         print(f"   - Event date: {event_date_sa.date()}")
         print(f"   - Week: {week_id}")
-        print(f"   - Status: {weekly_attendance_entry.get('status', 'unknown')}")
+        print(f"   - Main status (for ALL users): {main_status}")
+        print(f"   - Updated by: {current_user.get('email')} ({current_user.get('role')})")
         print(f"   - Update fields: {list(update_data.keys())}")
 
         result = await events_collection.update_one(
@@ -5958,17 +6073,20 @@ async def submit_attendance(
             "event_id": actual_event_id,
             "event_name": event_name,
             "status": weekly_attendance_entry.get("status", "unknown"),
+            "main_status": main_status,
             "did_not_meet": did_not_meet,
             "checked_in_count": len(checked_in_attendees),
             "persistent_attendees_count": len(persistent_attendees_dict),
             "week": week_id,
             "event_date": event_date_sa.date().isoformat(),
             "event_day": event_date_sa.strftime("%A"),
+            "updated_by": current_user.get('email'),
+            "updated_by_role": current_user.get('role'),
             "success": True,
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        print(f"ATTENDANCE SUBMISSION SUCCESSFUL")
+        print(f"ATTENDANCE SUBMISSION SUCCESSFUL - Main status updated to: {main_status}")
         return response_data
 
     except HTTPException:
