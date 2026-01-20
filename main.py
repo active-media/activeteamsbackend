@@ -2360,54 +2360,84 @@ async def deactivate_cell(
             "last_status_change": current_time
         }
         
-        query = {
-            "$and": [
-                {
-                    "$or": [
-                        {"eventType": "cells"},
-                        {"Event Type": "cells"},
-                        {"eventTypeName": "cells"},
-                        {"eventTypeName": "Cells"}
-                    ]
-                }
-            ]
-        }
+        # SIMPLIFIED QUERY - No regex for better performance
+        query = {"$or": []}
         
+        # Add cell type conditions
+        cell_type_conditions = [
+            {"Event Type": "Cells"},
+            {"eventTypeName": "Cell  Testing"},  # Your specific cell type name
+            {"eventTypeName": "cells"},
+            {"eventTypeName": "Cells"}
+        ]
+        
+        # Add identifier conditions based on parameters
         if person_name:
-            query["$and"].append({
-                "$or": [
-                    {"eventName": cell_identifier},
-                    {"Event Name": cell_identifier}
-                ]
-            })
-            query["$and"].append({
-                "$or": [
-                    {"eventLeader": person_name},
-                    {"Leader": person_name},
-                    {"eventLeaderName": person_name}
-                ]
-            })
+            # If person_name is provided, cell_identifier is the cell name
+            for cell_type in cell_type_conditions:
+                query["$or"].append({
+                    "$and": [
+                        cell_type,
+                        {"$or": [
+                            {"eventName": cell_identifier},
+                            {"Event Name": cell_identifier}
+                        ]},
+                        {"$or": [
+                            {"eventLeader": person_name},
+                            {"Leader": person_name},
+                            {"eventLeaderName": person_name}
+                        ]}
+                    ]
+                })
         else:
-            query["$and"].append({
+            # If no person_name, cell_identifier is the person name
+            for cell_type in cell_type_conditions:
+                query["$or"].append({
+                    "$and": [
+                        cell_type,
+                        {"$or": [
+                            {"eventLeader": cell_identifier},
+                            {"Leader": cell_identifier},
+                            {"eventLeaderName": cell_identifier}
+                        ]}
+                    ]
+                })
+        
+        # Add day filter if specified
+        if day_of_week:
+            if "$or" in query and len(query["$or"]) > 0:
+                for i in range(len(query["$or"])):
+                    if "$and" in query["$or"][i]:
+                        query["$or"][i]["$and"].append(
+                            {"$or": [
+                                {"Day": day_of_week},
+                                {"recurring_day": day_of_week}
+                            ]}
+                        )
+        
+        print(f"DEBUG: Query length: {len(str(query))}")  # Debug log
+        
+        # Use bulk operations for better performance
+        result = await events_collection.update_many(query, {"$set": updates})
+        
+        if result.modified_count == 0:
+            # Try a simpler search as fallback
+            simple_query = {
                 "$or": [
                     {"eventLeader": cell_identifier},
                     {"Leader": cell_identifier},
                     {"eventLeaderName": cell_identifier}
                 ]
-            })
-        
-        if day_of_week:
-            query["$and"].append({
-                "$or": [
-                    {"Day": day_of_week},
-                    {"recurring_day": day_of_week}
-                ]
-            })
-        
-        result = await events_collection.update_many(query, {"$set": updates})
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="No cells found")
+            }
+            
+            if day_of_week:
+                simple_query["$or"].append({"Day": day_of_week})
+                simple_query["$or"].append({"recurring_day": day_of_week})
+            
+            result = await events_collection.update_many(simple_query, {"$set": updates})
+            
+            if result.modified_count == 0:
+                raise HTTPException(status_code=404, detail="No cells found")
         
         return {
             "success": True,
@@ -2531,7 +2561,6 @@ def setup_cell_auto_reactivation():
             print(f"Auto-reactivation error: {e}")
     
     scheduler.start()
-
 #------------------ MIGRATION ENDPOINTS ----------
 @app.post("/migrate-event-types-uuids")
 async def migrate_event_types_uuids():
