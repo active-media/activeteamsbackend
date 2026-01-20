@@ -15,3 +15,5 @@ tasks_collection = db["tasks"]
 events_collection = db["Events"]  
 tasktypes_collection = db["TaskTypes"]
 
+def get_database():
+    return db
