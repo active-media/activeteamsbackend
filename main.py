@@ -7163,10 +7163,13 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
 
 @app.post("/people")
 async def create_person(person_data: PersonCreate):
+    """
+    Create a new person and automatically update the cache
+    """
     try:
-        # Normalize email
+        # Normalize and validate email
         email = person_data.email.lower().strip()
-
+        
         # Check if email already exists
         if email:
             existing_person = await people_collection.find_one({"Email": email})
@@ -7175,14 +7178,14 @@ async def create_person(person_data: PersonCreate):
                     status_code=400,
                     detail=f"A person with email '{email}' already exists"
                 )
-
+        
         # Extract leader fields from the list
         leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
         leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
         leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
         leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
-
-        # Prepare the document
+        
+        # Prepare the document for MongoDB
         person_doc = {
             "Name": person_data.name.strip(),
             "Surname": person_data.surname.strip(),
@@ -7200,13 +7203,43 @@ async def create_person(person_data: PersonCreate):
             "Date Created": datetime.utcnow().isoformat(),
             "UpdatedAt": datetime.utcnow().isoformat()
         }
-
+        
         # Insert into MongoDB
         result = await people_collection.insert_one(person_doc)
-
-        # Return the created person object
+        inserted_id = str(result.inserted_id)
+        
+        # Update cache immediately with new person
+        if people_cache["data"] is not None:
+            try:
+                new_cache_entry = {
+                    "_id": inserted_id,
+                    "FullName": f"{person_doc['Name']} {person_doc['Surname']}".strip(),
+                    "Name": person_doc["Name"],
+                    "Surname": person_doc["Surname"],
+                    "Email": person_doc["Email"],
+                    "Number": person_doc["Number"],
+                    "Gender": person_doc["Gender"],
+                    "Birthday": person_doc["Birthday"],
+                    "Address": person_doc["Address"],
+                    "InvitedBy": person_doc["InvitedBy"],
+                    "Leader @1": person_doc["Leader @1"],
+                    "Leader @12": person_doc["Leader @12"],
+                    "Leader @144": person_doc["Leader @144"],
+                    "Leader @1728": person_doc["Leader @1728"],
+                    "Stage": person_doc["Stage"],
+                    "Date Created": person_doc["Date Created"],
+                    "UpdatedAt": person_doc["UpdatedAt"]
+                }
+                people_cache["data"].append(new_cache_entry)
+                print(f" Added new person to cache: {new_cache_entry['FullName']}")
+            except Exception as cache_error:
+                print(f" Warning: Failed to add person to cache: {cache_error}")
+        else:
+            print(" Warning: Cache is not initialized, person not added to cache")
+        
+        # Prepare response object
         created_person = {
-            "_id": str(result.inserted_id),
+            "_id": inserted_id,
             "Name": person_doc["Name"],
             "Surname": person_doc["Surname"],
             "Email": person_doc["Email"],
@@ -7223,20 +7256,24 @@ async def create_person(person_data: PersonCreate):
             "Date Created": person_doc["Date Created"],
             "UpdatedAt": person_doc["UpdatedAt"]
         }
-
+        
         return {
+            "success": True,
             "message": "Person created successfully",
-            "id": str(result.inserted_id),
-            "_id": str(result.inserted_id),
+            "id": inserted_id,
+            "_id": inserted_id,
             "person": created_person
         }
-
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error creating person: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
+        print(f" Error creating person: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal Server Error: {str(e)}"
+        )
+    
 @app.delete("/people/{person_id}")
 async def delete_person(person_id: str = Path(...)):
     try:
