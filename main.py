@@ -845,9 +845,8 @@ def is_recurring_event(event: dict) -> bool:
     if isinstance(recurring_days, str):
         recurring_days = [recurring_days] if recurring_days else []
     
-    return len(recurring_days) > 1  # More than 1 day means recurring
+    return len(recurring_days) > 1  
 
-# Helper function to generate recurring instances
 def generate_current_week_instances(event: dict) -> list:
     """
     Generate instances ONLY for the current week, up to today
@@ -983,8 +982,7 @@ def get_current_week_identifier():
         print(f"Error getting week identifier: {e}")
         now = datetime.utcnow()
         year, week, _ = now.isocalendar()
-        return f"{year}-W{week:02d}"
-    
+        return f"{year}-W{week:02d}"   
 
 # Events Section  ----------------------------------------------
 @app.post("/events")
@@ -1086,6 +1084,9 @@ async def create_event(event: EventCreate):
 
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data.get("attendees", []))
+        
+        # Mark this as a new event for instance generation
+        event_data["is_new_event"] = True
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
         
@@ -1126,6 +1127,7 @@ async def create_event(event: EventCreate):
         print(f"  - leader1: {event_data.get('leader1')}")
         print(f"  - leader12: {event_data.get('leader12')}")
         print(f"  - status: {event_data.get('status')}")
+        print(f"  - is_new_event: {event_data.get('is_new_event')}")
 
         result = await events_collection.insert_one(event_data)
         
@@ -1155,7 +1157,8 @@ async def create_event(event: EventCreate):
                 "hasPersonSteps": created_event.get("hasPersonSteps"),
                 "leader1": created_event.get("leader1"),
                 "leader12": created_event.get("leader12"),
-                "status": created_event.get("status")
+                "status": created_event.get("status"),
+                "is_new_event": True
             }
         }
 
@@ -1164,6 +1167,7 @@ async def create_event(event: EventCreate):
     except Exception as e:
         print(f" Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+
 
 @app.get("/events/cells")
 async def get_cell_events(
@@ -1508,6 +1512,7 @@ async def get_cell_events(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/events/cells/optimized")
 async def get_cell_events_optimized(
     current_user: dict = Depends(get_current_user),
@@ -1524,7 +1529,7 @@ async def get_cell_events_optimized(
         user_email = current_user.get("email", "")
         role = current_user.get("role", "user").lower()
         
-        print(f" Optimized fetch for {user_email}")
+        print(f"🔍 Optimized fetch for {user_email}")
         
         # Simple query - just get user's cells
         query = {
@@ -1543,7 +1548,7 @@ async def get_cell_events_optimized(
         cursor = events_collection.find(query)
         all_cells = await cursor.to_list(length=None)
         
-        print(f" Found {len(all_cells)} cell templates")
+        print(f"📋 Found {len(all_cells)} cell templates")
         
         # Generate recurring instances
         timezone = pytz.timezone("Africa/Johannesburg")
@@ -1562,74 +1567,113 @@ async def get_cell_events_optimized(
                 day_name = str(cell.get("Day", "")).strip().lower()
                 
                 if day_name not in day_mapping:
-                    print(f" Skipping cell with invalid day: {day_name}")
+                    print(f"⚠️ Skipping cell with invalid day: {day_name}")
                     continue
                 
                 target_weekday = day_mapping[day_name]
                 
-                # Generate last 4 weeks of instances
-                for week_offset in range(4):
-                    # Calculate the date for this instance
-                    days_since_target = (today.weekday() - target_weekday) % 7
-                    instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
-                    
-                    # Skip if before start_date
-                    if instance_date < start_date_obj:
-                        continue
-                    
-                    # Calculate week identifier
-                    year, week, _ = instance_date.isocalendar()
-                    week_id = f"{year}-W{week:02d}"
-                    
-                    # Get attendance for this week
-                    attendance = cell.get("attendance", {}).get(week_id, {})
-                    did_not_meet = attendance.get("status") == "did_not_meet"
-                    attendees = attendance.get("attendees", [])
-                    has_checked_in = any(a.get("checked_in", False) for a in attendees)
-                    
-                    # Determine status
-                    if did_not_meet:
-                        cell_status = "did_not_meet"
-                    elif has_checked_in or len(attendees) > 0:
-                        cell_status = "complete"
+                # ✅ SMART LOGIC: Check if this is a new event
+                created_at = cell.get("created_at")
+                
+                # Parse created_at date
+                if created_at:
+                    if isinstance(created_at, datetime):
+                        created_date = created_at.date()
                     else:
-                        cell_status = "incomplete"
+                        try:
+                            created_date = datetime.fromisoformat(str(created_at).replace('Z', '+00:00')).date()
+                        except:
+                            created_date = None
+                else:
+                    created_date = None
+                
+                print(f"🔍 Cell: {cell.get('Event Name')}, Created: {created_date}")
+                
+                # SMART DETERMINATION: If created_date exists AND it's after start_date_obj,
+                # then start from created_date (this is a new cell)
+                if created_date and created_date > start_date_obj:
+                    event_start_date = created_date
+                    print(f"   ✨ NEW CELL - Starting from creation date: {event_start_date}")
+                else:
+                    # Old cell or no created_date - use start_date_obj
+                    event_start_date = start_date_obj
+                    print(f"   📅 OLD CELL - Starting from: {event_start_date}")
+                
+                # Generate instances from event_start_date to today
+                current_date = event_start_date
+                
+                while current_date <= today:
+                    # Only generate instances for the target weekday
+                    if current_date.weekday() == target_weekday:
+                        # Calculate week identifier
+                        year, week, _ = current_date.isocalendar()
+                        week_id = f"{year}-W{week:02d}"
+                        
+                        # Get attendance for this specific date (using ISO date as key)
+                        attendance_data = cell.get("attendance", {})
+                        instance_date_iso = current_date.isoformat()
+                        instance_attendance = attendance_data.get(instance_date_iso, {})
+                        
+                        # Also check week_id format (for backward compatibility)
+                        if not instance_attendance:
+                            instance_attendance = attendance_data.get(week_id, {})
+                        
+                        did_not_meet = instance_attendance.get("status") == "did_not_meet"
+                        attendees = instance_attendance.get("attendees", [])
+                        has_checked_in = any(a.get("checked_in", False) for a in attendees)
+                        
+                        # Determine status
+                        if did_not_meet:
+                            cell_status = "did_not_meet"
+                        elif has_checked_in or len(attendees) > 0:
+                            cell_status = "complete"
+                        else:
+                            cell_status = "incomplete"
+                        
+                        # Apply status filter
+                        if status and status != 'all' and status != cell_status:
+                            current_date += timedelta(days=7)  # Move to next week
+                            continue
+                        
+                        # Create instance
+                        instance = {
+                            "_id": f"{cell['_id']}_{instance_date_iso}",
+                            "UUID": cell.get("UUID", ""),
+                            "eventName": cell.get("Event Name", ""),
+                            "eventType": "Cells",
+                            "eventLeaderName": cell.get("Leader", ""),
+                            "eventLeaderEmail": cell.get("Email", ""),
+                            "leader1": cell.get("leader1", ""),
+                            "leader12": cell.get("Leader @12", ""),
+                            "day": day_name.capitalize(),
+                            "date": instance_date_iso,
+                            "display_date": current_date.strftime("%d - %m - %Y"),
+                            "location": cell.get("Location", ""),
+                            "status": cell_status,
+                            "attendees": attendees,
+                            "persistent_attendees": cell.get("persistent_attendees", []),
+                            "_is_overdue": current_date < today and cell_status == "incomplete",
+                            "week_identifier": week_id,
+                            "original_event_id": str(cell["_id"]),
+                            "is_recurring": True
+                        }
+                        
+                        cell_instances.append(instance)
+                        print(f"   📌 {current_date} ({day_name.capitalize()}) - Status: {cell_status}")
                     
-                    # Apply status filter
-                    if status and status != 'all' and status != cell_status:
-                        continue
-                    
-                    # Create instance
-                    instance = {
-                        "_id": f"{cell['_id']}_{instance_date.isoformat()}",
-                        "UUID": cell.get("UUID", ""),
-                        "eventName": cell.get("Event Name", ""),
-                        "eventType": "Cells",
-                        "eventLeaderName": cell.get("Leader", ""),
-                        "eventLeaderEmail": cell.get("Email", ""),
-                        "leader1": cell.get("leader1", ""),
-                        "leader12": cell.get("Leader @12", ""),
-                        "day": day_name.capitalize(),
-                        "date": instance_date.isoformat(),
-                        "location": cell.get("Location", ""),
-                        "status": cell_status,
-                        "attendees": attendees,
-                        "persistent_attendees": cell.get("persistent_attendees", []),
-                        "_is_overdue": instance_date < today and cell_status == "incomplete",
-                        "week_identifier": week_id,
-                        "original_event_id": str(cell["_id"])
-                    }
-                    
-                    cell_instances.append(instance)
+                    # Move to next week
+                    current_date += timedelta(days=7)
                     
             except Exception as e:
-                print(f" Error processing cell: {str(e)}")
+                print(f"❌ Error processing cell: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # Sort by date (most recent first)
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
         
-        print(f" Generated {len(cell_instances)} instances")
+        print(f"✅ Generated {len(cell_instances)} instances total")
         
         # Now paginate
         total = len(cell_instances)
@@ -1637,7 +1681,7 @@ async def get_cell_events_optimized(
         skip = (page - 1) * limit
         paginated = cell_instances[skip:skip + limit]
         
-        print(f" Page {page}/{total_pages}: returning {len(paginated)} instances")
+        print(f"📄 Page {page}/{total_pages}: returning {len(paginated)} instances")
         
         return {
             "events": paginated,
@@ -1648,11 +1692,13 @@ async def get_cell_events_optimized(
         }
         
     except Exception as e:
-        print(f" Error: {str(e)}")
+        print(f"💥 Error: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
- 
+        raise HTTPException(status_code=500, detail=str(e))   
+
+
+
 async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
     try:
         user = await users_collection.find_one({"email": user_email})
@@ -2601,18 +2647,16 @@ async def create_event_type(event_type: EventTypeCreate):
         
         name = event_type.name.strip()
         
-        # Check for ANY occurrence of "cell" in ANY case
-        if "cell" in name.lower():
-            raise HTTPException(
-                status_code=400,
-                detail="Event types containing 'cell' are reserved and cannot be created. Please use a different name."
-            )
-        
-        # Standardize to title case for storage
-        name = name.title()
         name_lower = name.lower()
         
-        # Check if event type already exists
+        if re.search(r'\bcell[s]?\b', name_lower) or 'cell' in name_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="Event types containing 'cell' or 'cells' (in any case or variation) are reserved and cannot be created. Please use a different name."
+            )
+        
+        name = name.title()
+        
         existing = await events_collection.find_one({
             "$or": [
                 {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
@@ -2664,9 +2708,9 @@ async def create_event_type(event_type: EventTypeCreate):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error creating event type: {str(e)}")
+        print(f" Error creating event type: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
-
+    
 @app.get("/event-types")
 async def get_event_types():
     try:
@@ -10362,7 +10406,7 @@ async def close_event(
     Close/Complete an event - Update status to "complete"
     """
     try:
-        print(f"🔒 Closing event: {event_id}")
+        print(f" Closing event: {event_id}")
         
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
