@@ -1168,7 +1168,6 @@ async def create_event(event: EventCreate):
         print(f" Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
-  
 @app.get("/events/cells")
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
@@ -1386,15 +1385,17 @@ async def get_cell_events(
                 
                 target_weekday = day_mapping[day_name]
                 
-                for week_offset in range(4):
+                # Show only this week if status is "incomplete", otherwise show all
+                max_weeks = 1 if status == "incomplete" else 4
+                for week_offset in range(max_weeks):
                     days_since_target = (today.weekday() - target_weekday) % 7
                     instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
                     
                     if instance_date < start_date_obj:
                         continue
                     
-                    # === FIXED SECTION: Use EXACT DATE lookup instead of week format ===
-                    exact_date = instance_date.isoformat()  # "YYYY-MM-DD"
+                    # Use EXACT DATE for lookup (YYYY-MM-DD format)
+                    exact_date = instance_date.isoformat()
                     attendance_data = event.get("attendance", {})
                     
                     # Look for attendance by exact date
@@ -1469,44 +1470,46 @@ async def get_cell_events(
                         ""
                     )
                     
-                    total_associated = event.get("total_associated_count", len(event.get("persistent_attendees", [])))
+                    # total_associated = event.get("total_associated_count", len(event.get("persistent_attendees", [])))
                     
-                    weekly_stats = attendance.get("statistics", {})
-                    if not weekly_stats:
-                        weekly_stats = {
-                            "total_associated": total_associated,
-                            "weekly_attendance": 0,
-                            "decisions": {
-                                "first_time": 0,
-                                "recommitment": 0,
-                                "total": 0
-                            }
-                        }
+                    # weekly_stats = attendance.get("statistics", {})
+                    # if not weekly_stats:
+                    #     weekly_stats = {
+                    #         "total_associated": total_associated,
+                    #         "weekly_attendance": 0,
+                    #         "decisions": {
+                    #             "first_time": 0,
+                    #             "recommitment": 0,
+                    #             "total": 0
+                    #         }
+                    #     }
                     
                     instance = {
-                        "_id": f"{event.get('_id')}_{exact_date}",
-                        "UUID": event.get("UUID", ""),
-                        "eventName": event.get("Event Name") or event.get("eventName") or event.get("EventName", ""),
-                        "eventType": "Cells",
-                        "eventLeaderName": event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", ""),
-                        "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("EventLeaderEmail") or event.get("Email", ""),
-                        "leader1": leaderAt1,
-                        "leader12": leaderAt12,
-                        "day": day_name.capitalize(),
-                        "date": exact_date,
-                        "display_date": instance_date.strftime("%d - %m - %Y"),
-                        "location": event.get("Location") or event.get("location", ""),
-                        "attendees": attendees,
-                        "persistent_attendees": event.get("persistent_attendees", []),
-                        "hasPersonSteps": True,
-                        "status": event_status,
-                        "Status": event_status.replace("_", " ").title(),
-                        "did_not_meet": did_not_meet,
-                        "_is_overdue": is_overdue,
-                        "is_recurring": True,
-                        "original_event_id": str(event.get("_id")),
-                        
-                    }
+                            "_id": f"{event.get('_id')}_{exact_date}",
+                            "UUID": event.get("UUID", ""),
+                            "eventName": event.get("Event Name") or event.get("eventName") or event.get("EventName", ""),
+                            "eventType": "Cells",
+                            "eventLeaderName": event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", ""),
+                            "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("EventLeaderEmail") or event.get("Email", ""),
+                            "leader1": leaderAt1,
+                            "leader12": leaderAt12,
+                            "day": day_name.capitalize(),
+                            "date": exact_date,
+                            "display_date": instance_date.strftime("%d - %m - %Y"),
+                            "location": event.get("Location") or event.get("location", ""),
+                            "attendees": attendees,  
+                            "persistent_attendees": event.get("persistent_attendees", []),
+                            "hasPersonSteps": True,
+                            "status": event_status,
+                            "Status": event_status.replace("_", " ").title(),
+                            "did_not_meet": did_not_meet,
+                            "_is_overdue": is_overdue,
+                            "is_recurring": True,
+                            "original_event_id": str(event.get("_id")),
+                            "attendance": attendance,  
+                            # "statistics": weekly_stats,  
+                            # "total_associated_count": total_associated,
+                        }
                     
                     cell_instances.append(instance)
                     
@@ -1536,7 +1539,7 @@ async def get_cell_events(
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))  
 
 @app.get("/events/cells/optimized")
 async def get_cell_events_optimized(
@@ -1553,8 +1556,6 @@ async def get_cell_events_optimized(
     try:
         user_email = current_user.get("email", "")
         role = current_user.get("role", "user").lower()
-        
-        print(f"🔍 Optimized fetch for {user_email}")
         
         # Simple query - just get user's cells
         query = {
@@ -1573,8 +1574,6 @@ async def get_cell_events_optimized(
         cursor = events_collection.find(query)
         all_cells = await cursor.to_list(length=None)
         
-        print(f"📋 Found {len(all_cells)} cell templates")
-        
         # Generate recurring instances
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone).date()
@@ -1592,10 +1591,31 @@ async def get_cell_events_optimized(
                 day_name = str(cell.get("Day", "")).strip().lower()
                 
                 if day_name not in day_mapping:
-                    print(f" Skipping cell with invalid day: {day_name}")
                     continue
                 
                 target_weekday = day_mapping[day_name]
+                
+                # Check if cell is permanently on hold or completed
+                if cell.get("is_permanent_hold") == True:
+                    continue
+                
+                if cell.get("is_completed") == True:
+                    continue
+                
+                # Check if event has fixed duration and has ended
+                if cell.get("has_fixed_duration") == True:
+                    start_date_cell = cell.get("start_date")
+                    duration_weeks = cell.get("duration_weeks", 0)
+                    
+                    if start_date_cell and duration_weeks > 0:
+                        if isinstance(start_date_cell, str):
+                            start_date_cell = datetime.fromisoformat(start_date_cell.replace("Z", "+00:00"))
+                        
+                        end_date = start_date_cell + timedelta(weeks=duration_weeks)
+                        
+                        # If today is after the end date, skip this event
+                        if today > end_date.date():
+                            continue
                 
                 created_at = cell.get("created_at")
                 
@@ -1611,28 +1631,38 @@ async def get_cell_events_optimized(
                 else:
                     created_date = None
                 
-                print(f" Cell: {cell.get('Event Name')}, Created: {created_date}")
-                
                 # SMART DETERMINATION: If created_date exists AND it's after start_date_obj,
                 # then start from created_date (this is a new cell)
                 if created_date and created_date > start_date_obj:
                     event_start_date = created_date
-                    print(f"  NEW CELL - Starting from creation date: {event_start_date}")
                 else:
                     # Old cell or no created_date - use start_date_obj
                     event_start_date = start_date_obj
-                    print(f"  OLD CELL - Starting from: {event_start_date}")
                 
-                # Generate instances from event_start_date to today
-                current_date = event_start_date
+                # Show only this week if status is "incomplete", otherwise show all
+                if status == "incomplete":
+                    # For Incomplete tab: only check this week
+                    weeks_to_check = 1
+                else:
+                    # For other tabs: check from start date to today
+                    weeks_between = ((today - event_start_date).days // 7) + 1
+                    weeks_to_check = min(weeks_between, 4)  # Max 4 weeks for consistency
                 
-                while current_date <= today:
+                # Generate instances
+                for week_offset in range(weeks_to_check):
+                    days_since_target = (today.weekday() - target_weekday) % 7
+                    instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
+                    
+                    # Skip if before event start date or after today
+                    if instance_date < event_start_date or instance_date > today:
+                        continue
+                    
                     # Only generate instances for the target weekday
-                    if current_date.weekday() == target_weekday:
+                    if instance_date.weekday() == target_weekday:
                         # Get exact date string
-                        instance_date_iso = current_date.isoformat()  # "YYYY-MM-DD"
+                        instance_date_iso = instance_date.isoformat()  # "YYYY-MM-DD"
                         
-                        # === FIXED SECTION: Use EXACT DATE lookup instead of week format ===
+                        # Use EXACT DATE lookup
                         attendance_data = cell.get("attendance", {})
                         instance_attendance = attendance_data.get(instance_date_iso, {})
                         
@@ -1664,7 +1694,6 @@ async def get_cell_events_optimized(
                         
                         # Apply status filter
                         if status and status != 'all' and status != cell_status:
-                            current_date += timedelta(days=7)  # Move to next week
                             continue
                         
                         # Create instance
@@ -1679,40 +1708,38 @@ async def get_cell_events_optimized(
                             "leader12": cell.get("Leader @12", ""),
                             "day": day_name.capitalize(),
                             "date": instance_date_iso,
-                            "display_date": current_date.strftime("%d - %m - %Y"),
+                            "display_date": instance_date.strftime("%d - %m - %Y"),
                             "location": cell.get("Location", ""),
                             "status": cell_status,
                             "attendees": attendees,
                             "persistent_attendees": cell.get("persistent_attendees", []),
-                            "_is_overdue": current_date < today and cell_status == "incomplete",
+                            "_is_overdue": instance_date < today and cell_status == "incomplete",
                             "original_event_id": str(cell["_id"]),
                             "is_recurring": True,
                         }
                         
                         cell_instances.append(instance)
-                        print(f" {current_date} ({day_name.capitalize()}) - Status: {cell_status}")
-                    
-                    # Move to next week
-                    current_date += timedelta(days=7)
                     
             except Exception as e:
-                print(f" Error processing cell: {str(e)}")
-                import traceback
-                traceback.print_exc()
                 continue
         
         # Sort by date (most recent first)
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
         
-        print(f" Generated {len(cell_instances)} instances total")
+        # Remove duplicates (in case of any overlap)
+        unique_instances = {}
+        for instance in cell_instances:
+            key = f"{instance['original_event_id']}_{instance['date']}"
+            if key not in unique_instances:
+                unique_instances[key] = instance
+        
+        cell_instances = list(unique_instances.values())
         
         # Now paginate
         total = len(cell_instances)
         total_pages = (total + limit - 1) // limit if total > 0 else 1
         skip = (page - 1) * limit
         paginated = cell_instances[skip:skip + limit]
-        
-        print(f"Page {page}/{total_pages}: returning {len(paginated)} instances")
         
         return {
             "events": paginated,
@@ -1723,11 +1750,7 @@ async def get_cell_events_optimized(
         }
         
     except Exception as e:
-        print(f" Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/events/{event_id}/attendance/{week}")
 async def get_weekly_attendance(
