@@ -1168,8 +1168,7 @@ async def create_event(event: EventCreate):
         print(f" Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
 
-
-
+  
 @app.get("/events/cells")
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
@@ -1394,37 +1393,45 @@ async def get_cell_events(
                     if instance_date < start_date_obj:
                         continue
                     
-                    year, week, _ = instance_date.isocalendar()
-                    week_id = f"{year}-W{week:02d}"
+                    # === FIXED SECTION: Use EXACT DATE lookup instead of week format ===
+                    exact_date = instance_date.isoformat()  # "YYYY-MM-DD"
+                    attendance_data = event.get("attendance", {})
                     
-                    attendance = event.get("attendance", {}).get(week_id, {})
+                    # Look for attendance by exact date
+                    attendance = attendance_data.get(exact_date, {})
                     
+                    # If not found by exact date, check for backward compatibility
                     if not attendance:
-                        alt_formats = [
-                            f"{year}-W{week}",
-                            f"{year}W{week:02d}",
-                            f"{year}W{week}",
-                            f"{year}-{week:02d}",
-                            f"{year}-{week}"
-                        ]
-                        
-                        for alt_format in alt_formats:
-                            if alt_format in event.get("attendance", {}):
-                                attendance = event.get("attendance", {}).get(alt_format, {})
-                                break
+                        for key, value in attendance_data.items():
+                            if isinstance(value, dict):
+                                # Check event_date_exact field
+                                if value.get("event_date_exact") == exact_date:
+                                    attendance = value
+                                    break
+                                # Check event_date_iso field
+                                event_date_iso = value.get("event_date_iso")
+                                if event_date_iso and exact_date in event_date_iso:
+                                    attendance = value
+                                    break
                     
-                    did_not_meet = attendance.get("status") == "did_not_meet"
-                    attendees = attendance.get("attendees", [])
-                    
+                    # Determine status
                     if not attendance:
                         event_status = "incomplete"
                         attendees = []
-                    elif did_not_meet:
-                        event_status = "did_not_meet"
-                    elif len(attendees) > 0:
-                        event_status = "complete"
+                        did_not_meet = False
                     else:
-                        event_status = "incomplete"
+                        att_status = attendance.get("status", "").lower()
+                        attendees = attendance.get("attendees", [])
+                        
+                        if att_status == "did_not_meet":
+                            event_status = "did_not_meet"
+                            did_not_meet = True
+                        elif att_status == "complete" or len(attendees) > 0:
+                            event_status = "complete"
+                            did_not_meet = False
+                        else:
+                            event_status = "incomplete"
+                            did_not_meet = False
                     
                     if status and status != 'all' and event_status != status:
                         continue
@@ -1477,7 +1484,7 @@ async def get_cell_events(
                         }
                     
                     instance = {
-                        "_id": f"{event.get('_id')}_{instance_date.isoformat()}",
+                        "_id": f"{event.get('_id')}_{exact_date}",
                         "UUID": event.get("UUID", ""),
                         "eventName": event.get("Event Name") or event.get("eventName") or event.get("EventName", ""),
                         "eventType": "Cells",
@@ -1486,7 +1493,7 @@ async def get_cell_events(
                         "leader1": leaderAt1,
                         "leader12": leaderAt12,
                         "day": day_name.capitalize(),
-                        "date": instance_date.isoformat(),
+                        "date": exact_date,
                         "display_date": instance_date.strftime("%d - %m - %Y"),
                         "location": event.get("Location") or event.get("location", ""),
                         "attendees": attendees,
@@ -1497,12 +1504,8 @@ async def get_cell_events(
                         "did_not_meet": did_not_meet,
                         "_is_overdue": is_overdue,
                         "is_recurring": True,
-                        "week_identifier": week_id,
                         "original_event_id": str(event.get("_id")),
-                        # "statistics": weekly_stats,
-                        # "total_associated_count": total_associated,
-                        # "last_attendance_count": event.get("last_attendance_count", 0),
-                        # "last_decisions_count": event.get("last_decisions_count", 0)
+                        "lookup_method": "exact_date"
                     }
                     
                     cell_instances.append(instance)
@@ -1534,7 +1537,6 @@ async def get_cell_events(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/events/cells/optimized")
 async def get_cell_events_optimized(
@@ -1590,12 +1592,11 @@ async def get_cell_events_optimized(
                 day_name = str(cell.get("Day", "")).strip().lower()
                 
                 if day_name not in day_mapping:
-                    print(f"⚠️ Skipping cell with invalid day: {day_name}")
+                    print(f" Skipping cell with invalid day: {day_name}")
                     continue
                 
                 target_weekday = day_mapping[day_name]
                 
-                # ✅ SMART LOGIC: Check if this is a new event
                 created_at = cell.get("created_at")
                 
                 # Parse created_at date
@@ -1610,17 +1611,17 @@ async def get_cell_events_optimized(
                 else:
                     created_date = None
                 
-                print(f"🔍 Cell: {cell.get('Event Name')}, Created: {created_date}")
+                print(f" Cell: {cell.get('Event Name')}, Created: {created_date}")
                 
                 # SMART DETERMINATION: If created_date exists AND it's after start_date_obj,
                 # then start from created_date (this is a new cell)
                 if created_date and created_date > start_date_obj:
                     event_start_date = created_date
-                    print(f"   ✨ NEW CELL - Starting from creation date: {event_start_date}")
+                    print(f"  NEW CELL - Starting from creation date: {event_start_date}")
                 else:
                     # Old cell or no created_date - use start_date_obj
                     event_start_date = start_date_obj
-                    print(f"   📅 OLD CELL - Starting from: {event_start_date}")
+                    print(f"  OLD CELL - Starting from: {event_start_date}")
                 
                 # Generate instances from event_start_date to today
                 current_date = event_start_date
@@ -1628,18 +1629,26 @@ async def get_cell_events_optimized(
                 while current_date <= today:
                     # Only generate instances for the target weekday
                     if current_date.weekday() == target_weekday:
-                        # Calculate week identifier
-                        year, week, _ = current_date.isocalendar()
-                        week_id = f"{year}-W{week:02d}"
+                        # Get exact date string
+                        instance_date_iso = current_date.isoformat()  # "YYYY-MM-DD"
                         
-                        # Get attendance for this specific date (using ISO date as key)
+                        # === FIXED SECTION: Use EXACT DATE lookup instead of week format ===
                         attendance_data = cell.get("attendance", {})
-                        instance_date_iso = current_date.isoformat()
                         instance_attendance = attendance_data.get(instance_date_iso, {})
                         
-                        # Also check week_id format (for backward compatibility)
+                        # If not found by exact date, check for backward compatibility
                         if not instance_attendance:
-                            instance_attendance = attendance_data.get(week_id, {})
+                            for key, value in attendance_data.items():
+                                if isinstance(value, dict):
+                                    # Check event_date_exact field
+                                    if value.get("event_date_exact") == instance_date_iso:
+                                        instance_attendance = value
+                                        break
+                                    # Check event_date_iso field
+                                    event_date_iso = value.get("event_date_iso")
+                                    if event_date_iso and instance_date_iso in event_date_iso:
+                                        instance_attendance = value
+                                        break
                         
                         did_not_meet = instance_attendance.get("status") == "did_not_meet"
                         attendees = instance_attendance.get("attendees", [])
@@ -1676,19 +1685,19 @@ async def get_cell_events_optimized(
                             "attendees": attendees,
                             "persistent_attendees": cell.get("persistent_attendees", []),
                             "_is_overdue": current_date < today and cell_status == "incomplete",
-                            "week_identifier": week_id,
                             "original_event_id": str(cell["_id"]),
-                            "is_recurring": True
+                            "is_recurring": True,
+                            "lookup_method": "exact_date"
                         }
                         
                         cell_instances.append(instance)
-                        print(f"   📌 {current_date} ({day_name.capitalize()}) - Status: {cell_status}")
+                        print(f" {current_date} ({day_name.capitalize()}) - Status: {cell_status}")
                     
                     # Move to next week
                     current_date += timedelta(days=7)
                     
             except Exception as e:
-                print(f"❌ Error processing cell: {str(e)}")
+                print(f" Error processing cell: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -1696,7 +1705,7 @@ async def get_cell_events_optimized(
         # Sort by date (most recent first)
         cell_instances.sort(key=lambda x: x['date'], reverse=True)
         
-        print(f"✅ Generated {len(cell_instances)} instances total")
+        print(f" Generated {len(cell_instances)} instances total")
         
         # Now paginate
         total = len(cell_instances)
@@ -1704,7 +1713,7 @@ async def get_cell_events_optimized(
         skip = (page - 1) * limit
         paginated = cell_instances[skip:skip + limit]
         
-        print(f"📄 Page {page}/{total_pages}: returning {len(paginated)} instances")
+        print(f"Page {page}/{total_pages}: returning {len(paginated)} instances")
         
         return {
             "events": paginated,
@@ -1715,142 +1724,10 @@ async def get_cell_events_optimized(
         }
         
     except Exception as e:
-        print(f"💥 Error: {str(e)}")
+        print(f" Error: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))   
-
-
-
-async def is_user_leader_at_12(user_email: str, user_name: str) -> bool:
-    try:
-        user = await users_collection.find_one({"email": user_email})
-        if user:
-            role = user.get("role", "").lower()
-            if "leader at 12" in role or "leader@12" in role or "leader @12" in role:
-                print(f"   User {user_name} has Leader at 12 role: {role}")
-                return True
-       
-        name_variations = []
-       
-        if user_name:
-            parts = user_name.split()
-            first_name = parts[0] if parts else ""
-            surname = parts[-1] if len(parts) > 1 else ""
-           
-            name_variations.append(user_name)
-            name_variations.append(f"{first_name} {surname}")
-            name_variations.append(first_name)
-           
-            # Handle hyphenated first names
-            if "-" in first_name:
-                hyphen_parts = first_name.split("-")
-                name_variations.extend([
-                    f"{hyphen_parts[0]} {surname}",
-                    f"{first_name} {surname}",
-                ])
-                for part in hyphen_parts:
-                    if part and part.strip():
-                        name_variations.append(f"{part} {surname}")
-           
-            # Handle multiple names (e.g., "Nash Bobo Mbankumuna")
-            if len(parts) > 2:
-                name_variations.append(f"{parts[0]} {parts[-1]}")
-                for i in range(1, len(parts)):
-                    combined_name = " ".join(parts[:i+1])
-                    name_variations.append(combined_name)
-       
-        # Remove duplicates and empty values
-        name_variations = list(set([name for name in name_variations if name and name.strip()]))
-       
-        print(f"   Checking if {user_name} is Leader at 12 with name variations: {name_variations}")
-       
-        # Check if user is listed as Leader at 12 in any cell - CASE INSENSITIVE FIELDS
-        or_conditions = []
-        for name_variant in name_variations:
-            safe_name = re.escape(name_variant)
-           
-            # Lowercase field names
-            or_conditions.extend([
-                {"leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                {"leader @12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                {"leader12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-            ])
-           
-            # Uppercase field names  
-            or_conditions.extend([
-                {"Leader at 12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                {"Leader @12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                {"Leader12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-            ])
-           
-            # CamelCase field names
-            or_conditions.extend([
-                {"LeaderAt12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-                {"LeaderAt12": {"$regex": f"^{safe_name}$", "$options": "i"}},
-            ])
-           
-            # Also try partial matches for flexibility
-            # Lowercase
-            or_conditions.extend([
-                {"leader at 12": {"$regex": safe_name, "$options": "i"}},
-                {"leader @12": {"$regex": safe_name, "$options": "i"}},
-                {"leader12": {"$regex": safe_name, "$options": "i"}},
-            ])
-           
-            # Uppercase
-            or_conditions.extend([
-                {"Leader at 12": {"$regex": safe_name, "$options": "i"}},
-                {"Leader @12": {"$regex": safe_name, "$options": "i"}},
-                {"Leader12": {"$regex": safe_name, "$options": "i"}},
-            ])
-           
-            # CamelCase
-            or_conditions.extend([
-                {"LeaderAt12": {"$regex": safe_name, "$options": "i"}},
-                {"LeaderAt12": {"$regex": safe_name, "$options": "i"}},
-            ])
-       
-        if or_conditions:
-            full_query = {
-                "$and": [
-                    {"$or": [
-                        {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
-                        {"eventType": {"$regex": "^Cells$", "$options": "i"}},
-                        {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}},
-                        {"EventType": {"$regex": "^Cells$", "$options": "i"}}
-                    ]},
-                    {"$or": or_conditions}
-                ]
-            }
-           
-            cells_count = await events_collection.count_documents(full_query)
-            print(f"   User {user_name} has {cells_count} cells where they are Leader at 12")
-           
-            if cells_count > 0:
-                found_cells = await events_collection.find(full_query).to_list(length=5)
-                print(f"   Sample cells where {user_name} is Leader at 12:")
-                for i, cell in enumerate(found_cells):
-                    leader_at_12 = (
-                        cell.get('Leader at 12') or
-                        cell.get('Leader @12') or
-                        cell.get('leader12') or
-                        cell.get('Leader12') or
-                        cell.get('LeaderAt12') or
-                        cell.get('leader at 12') or
-                        cell.get('leader @12') or
-                        'N/A'
-                    )
-                    print(f"      {i+1}. {cell.get('Event Name', 'N/A')} - Leader@12: {leader_at_12}")
-           
-            return cells_count > 0
-        else:
-            print(f"   User {user_name} is NOT a Leader at 12 (no name variations generated)")
-            return False
-       
-    except Exception as e:
-        print(f"Error checking if user is leader at 12: {str(e)}")
-        return False
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/events/{event_id}/attendance/{week}")
@@ -5981,7 +5858,9 @@ async def submit_attendance(
     submission: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
+    """Submit attendance for a cell event - Stores by EXACT DATE only (YYYY-MM-DD)"""
     try:
+        # Extract event ID and date
         actual_event_id = event_id
         extracted_date = None
         
@@ -5999,38 +5878,38 @@ async def submit_attendance(
                     except Exception:
                         pass
         
+        # Validate event ID
         if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-       
+        
+        # Get event
         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-       
+        
+        # Determine event date
         event_date = None
         if extracted_date:
             event_date = extracted_date
-        if not event_date and submission.get('event_date'):
+        elif submission.get('event_date'):
             try:
                 event_date = datetime.fromisoformat(submission['event_date'].replace("Z", "+00:00"))
             except:
                 pass
-        if not event_date:
-            event_date = event.get("date") or event.get("Date Of Event")
-            if event_date and isinstance(event_date, str):
-                try:
-                    event_date = datetime.fromisoformat(event_date.replace("Z", "+00:00"))
-                except:
-                    try:
-                        event_date = datetime.strptime(event_date, "%Y-%m-%d")
-                    except:
-                        event_date = None
+        elif event.get("Date Of Event"):
+            try:
+                event_date = datetime.fromisoformat(event.get("Date Of Event").replace("Z", "+00:00"))
+            except:
+                pass
         
+        # If still no date, calculate based on cell day
         if not event_date:
-            day_name = str(event.get("Day") or event.get("day") or "").strip().lower()
+            day_name = str(event.get("Day") or "").strip().lower()
             day_mapping = {
                 'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
                 'friday': 4, 'saturday': 5, 'sunday': 6
             }
+            
             if day_name in day_mapping:
                 target_weekday = day_mapping[day_name]
                 today = datetime.utcnow()
@@ -6041,45 +5920,26 @@ async def submit_attendance(
             else:
                 event_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         
+        # Get exact date string in SA timezone
         sa_timezone = pytz.timezone("Africa/Johannesburg")
         if event_date.tzinfo is None:
             event_date = pytz.utc.localize(event_date)
         event_date_sa = event_date.astimezone(sa_timezone)
-        year, week, _ = event_date_sa.isocalendar()
-        week_id = f"{year}-W{week:02d}"
-
+        exact_date_str = event_date_sa.date().isoformat()  # "YYYY-MM-DD"
+        
+        # Extract data from submission
         attendees_data = submission.get('attendees', [])
         if not attendees_data and 'payload' in submission:
             attendees_data = submission['payload'].get('attendees', [])
-
+        
         persistent_attendees = submission.get('persistent_attendees', [])
         if not persistent_attendees and 'payload' in submission:
             persistent_attendees = submission['payload'].get('persistent_attendees', [])
-        if not persistent_attendees:
-            persistent_attendees = submission.get('all_attendees', [])
-            if not persistent_attendees and 'payload' in submission:
-                persistent_attendees = submission['payload'].get('all_attendees', [])
-
-        persistent_attendees_dict = []
-        if persistent_attendees and isinstance(persistent_attendees, list):
-            for attendee in persistent_attendees:
-                if isinstance(attendee, dict):
-                    clean_attendee = {
-                        "id": attendee.get("id", ""),
-                        "name": attendee.get("name", ""),
-                        "fullName": attendee.get("fullName", attendee.get("name", "")),
-                        "email": attendee.get("email", ""),
-                        "phone": attendee.get("phone", ""),
-                        "leader12": attendee.get("leader12", ""),
-                        "leader144": attendee.get("leader144", ""),
-                        "isPersistent": True
-                    }
-                    persistent_attendees_dict.append(clean_attendee)
-
+        
         did_not_meet = submission.get('did_not_meet', False)
         if not did_not_meet and 'payload' in submission:
             did_not_meet = submission['payload'].get('did_not_meet', False)
-
+        
         manual_headcount = submission.get('headcount', 0)
         if not manual_headcount and 'payload' in submission:
             manual_headcount = submission['payload'].get('headcount', 0)
@@ -6088,242 +5948,160 @@ async def submit_attendance(
             manual_headcount = int(manual_headcount) if manual_headcount else 0
         except:
             manual_headcount = 0
-
+        
+        # Process persistent attendees
+        persistent_attendees_dict = []
+        for attendee in persistent_attendees:
+            if isinstance(attendee, dict):
+                persistent_attendees_dict.append({
+                    "id": attendee.get("id", ""),
+                    "name": attendee.get("name", ""),
+                    "fullName": attendee.get("fullName", attendee.get("name", "")),
+                    "email": attendee.get("email", ""),
+                    "phone": attendee.get("phone", ""),
+                    "leader12": attendee.get("leader12", ""),
+                    "leader144": attendee.get("leader144", ""),
+                    "isPersistent": True
+                })
+        
+        # Process checked-in attendees
         checked_in_attendees = []
-        weekly_attendance_entry = {}
-        main_update_fields = {}
-
         first_time_count = 0
         recommitment_count = 0
-
-        if attendees_data and isinstance(attendees_data, list):
-            for att in attendees_data:
-                if isinstance(att, dict):
-                    attendee_data = {
-                        "id": att.get("id", ""),
-                        "name": att.get("name", ""),
-                        "fullName": att.get("fullName", att.get("name", "")),
-                        "email": att.get("email", ""),
-                        "phone": att.get("phone", ""),
-                        "leader12": att.get("leader12", ""),
-                        "leader144": att.get("leader144", ""),
-                        "checked_in": True,
-                        "check_in_date": datetime.utcnow().isoformat(),
-                        "isPersistent": att.get("isPersistent", False)
-                    }
-                    
-                    decision = att.get("decision", "")
-                    if decision:
-                        attendee_data["decision"] = decision
-                        decision_lower = decision.lower()
-                        if "first" in decision_lower:
-                            first_time_count += 1
-                        elif "re-commitment" in decision_lower or "recommitment" in decision_lower:
-                            recommitment_count += 1
-                    
-                    checked_in_attendees.append(attendee_data)
-
+        
+        for att in attendees_data:
+            if isinstance(att, dict):
+                attendee_data = {
+                    "id": att.get("id", ""),
+                    "name": att.get("name", ""),
+                    "fullName": att.get("fullName", att.get("name", "")),
+                    "email": att.get("email", ""),
+                    "phone": att.get("phone", ""),
+                    "leader12": att.get("leader12", ""),
+                    "leader144": att.get("leader144", ""),
+                    "checked_in": True,
+                    "check_in_date": datetime.utcnow().isoformat(),
+                    "isPersistent": att.get("isPersistent", False)
+                }
+                
+                decision = att.get("decision", "")
+                if decision:
+                    attendee_data["decision"] = decision
+                    decision_lower = decision.lower()
+                    if "first" in decision_lower:
+                        first_time_count += 1
+                    elif "re-commitment" in decision_lower or "recommitment" in decision_lower:
+                        recommitment_count += 1
+                
+                checked_in_attendees.append(attendee_data)
+        
+        # Calculate statistics
         total_associated = len(persistent_attendees_dict)
         weekly_attendance = len(checked_in_attendees)
         total_decisions = first_time_count + recommitment_count
-
-        print(f"=== ATTENDANCE SUBMISSION DEBUG ===")
-        print(f"Event: {event.get('Event Name', 'Unknown')}")
-        print(f"Week ID: {week_id}")
-        print(f"Did Not Meet flag from request: {did_not_meet}")
-        print(f"Checked in attendees: {weekly_attendance}")
-        print(f"Manual headcount: {manual_headcount}")
-        print(f"First time decisions: {first_time_count}")
-        print(f"Re-commitment decisions: {recommitment_count}")
-
-        main_status = None
         
-        # FIX: Only mark as "Did Not Meet" if NO attendees AND NO headcount
-        should_mark_as_did_not_meet = (
-            did_not_meet and 
-            weekly_attendance == 0 and 
-            manual_headcount == 0
-        )
-        
-        print(f"Should mark as 'Did Not Meet'? {should_mark_as_did_not_meet}")
+        # Determine main status
+        should_mark_as_did_not_meet = (did_not_meet and weekly_attendance == 0 and manual_headcount == 0)
         
         if should_mark_as_did_not_meet:
-            print(f"Marking as 'Did Not Meet' for week {week_id}")
             main_status = "did_not_meet"
-            weekly_attendance_entry = {
-                "status": "did_not_meet",
-                "attendees": [],
-                "submitted_at": datetime.utcnow(),
-                "submitted_by": current_user.get('email', ''),
-                "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                "submitted_date": datetime.utcnow().isoformat(),
-                "event_date": event_date_sa.isoformat(),
-                "event_date_iso": event_date_sa.date().isoformat(),
-                "persistent_attendees_count": total_associated,
-                "week_identifier": week_id,
-                "is_did_not_meet": True,
-                "statistics": {
-                    "total_associated": total_associated,
-                    "weekly_attendance": 0,
-                    "total_headcounts": 0,
-                    "decisions": {
-                        "first_time": 0,
-                        "recommitment": 0,
-                        "total": 0
-                    }
-                }
-            }
-           
-            main_update_fields = {
-                "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
-                "updated_at": datetime.utcnow(),
-                "total_associated_count": total_associated,
-                "last_attendance_count": 0,
-                "last_headcount": 0,
-                "last_decisions_count": 0,
-            }
+            has_attendance = False
+        elif weekly_attendance == 0 and manual_headcount == 0:
+            main_status = "incomplete"
+            has_attendance = False
         else:
-            print(f"NOT marking as 'Did Not Meet' - we have data to save")
-            if weekly_attendance == 0 and manual_headcount == 0:
-                main_status = "incomplete"
-                weekly_attendance_entry = {
-                    "status": "incomplete",
-                    "attendees": [],
-                    "submitted_at": datetime.utcnow(),
-                    "submitted_by": current_user.get('email', ''),
-                    "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                    "submitted_date": datetime.utcnow().isoformat(),
-                    "event_date": event_date_sa.isoformat(),
-                    "event_date_iso": event_date_sa.date().isoformat(),
-                    "persistent_attendees_count": total_associated,
-                    "week_identifier": week_id,
-                    "is_did_not_meet": False,
-                    "statistics": {
-                        "total_associated": total_associated,
-                        "weekly_attendance": 0,
-                        "total_headcounts": 0,
-                        "decisions": {
-                            "first_time": 0,
-                            "recommitment": 0,
-                            "total": 0
-                        }
-                    }
-                }
-               
-                main_update_fields = {
-                    "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
-                    "updated_at": datetime.utcnow(),
-                    "total_associated_count": total_associated,
-                    "last_attendance_count": 0,
-                    "last_headcount": 0,
-                    "last_decisions_count": 0,
-                }
-            else:
-                main_status = "complete"
-                weekly_attendance_entry = {
-                    "status": "complete",
-                    "attendees": checked_in_attendees,
-                    "submitted_at": datetime.utcnow(),
-                    "submitted_by": current_user.get('email', ''),
-                    "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                    "submitted_date": datetime.utcnow().isoformat(),
-                    "event_date": event_date_sa.isoformat(),
-                    "event_date_iso": event_date_sa.date().isoformat(),
-                    "persistent_attendees": persistent_attendees_dict,
-                    "week_identifier": week_id,
-                    "is_did_not_meet": False,
-                    "checked_in_count": weekly_attendance,
-                    "total_headcounts": manual_headcount,
-                    "statistics": {
-                        "total_associated": total_associated,
-                        "weekly_attendance": weekly_attendance,
-                        "total_headcounts": manual_headcount,
-                        "decisions": {
-                            "first_time": first_time_count,
-                            "recommitment": recommitment_count,
-                            "total": total_decisions
-                        }
-                    }
-                }
-               
-                main_update_fields = {
-                    "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
-                    "updated_at": datetime.utcnow(),
-                    "total_associated_count": total_associated,
-                    "last_attendance_count": weekly_attendance,
-                    "last_headcount": manual_headcount,
-                    "last_decisions_count": total_decisions,
-                    "last_attendance_breakdown": {
-                        "first_time": first_time_count,
-                        "recommitment": recommitment_count,
-                        "date": event_date_sa.date().isoformat(),
-                        "week": week_id
-                    }
-                }
-
-        main_update_fields["status"] = main_status
-        main_update_fields["Status"] = main_status
+            main_status = "complete"
+            has_attendance = True
         
-        main_update_fields["last_updated_by"] = {
-            "email": current_user.get('email'),
-            "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-            "role": current_user.get('role'),
-            "timestamp": datetime.utcnow().isoformat()
+        # Build attendance entry
+        weekly_attendance_entry = {
+            "status": main_status,
+            "attendees": checked_in_attendees if has_attendance else [],
+            "submitted_at": datetime.utcnow(),
+            "submitted_by": current_user.get('email', ''),
+            "submitted_by_name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+            "submitted_date": datetime.utcnow().isoformat(),
+            "event_date": event_date_sa.isoformat(),
+            "event_date_iso": event_date_sa.date().isoformat(),
+            "event_date_exact": exact_date_str,  # Store exact date
+            "persistent_attendees": persistent_attendees_dict if has_attendance else [],
+            "is_did_not_meet": (main_status == "did_not_meet"),
+            "checked_in_count": weekly_attendance,
+            "total_headcounts": manual_headcount,
+            "statistics": {
+                "total_associated": total_associated,
+                "weekly_attendance": weekly_attendance,
+                "total_headcounts": manual_headcount,
+                "decisions": {
+                    "first_time": first_time_count,
+                    "recommitment": recommitment_count,
+                    "total": total_decisions
+                }
+            }
         }
-
-        if persistent_attendees_dict:
+        
+        # Build main update fields
+        main_update_fields = {
+            "status": main_status,
+            "Status": main_status,
+            "Date Captured": datetime.utcnow().strftime("%d %B %Y"),
+            "updated_at": datetime.utcnow(),
+            "total_associated_count": total_associated,
+            "last_attendance_count": weekly_attendance,
+            "last_headcount": manual_headcount,
+            "last_decisions_count": total_decisions,
+            "last_updated_by": {
+                "email": current_user.get('email'),
+                "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+                "role": current_user.get('role'),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+        
+        if main_status == "complete":
+            main_update_fields["last_attendance_breakdown"] = {
+                "first_time": first_time_count,
+                "recommitment": recommitment_count,
+                "date": event_date_sa.date().isoformat(),
+                "exact_date": exact_date_str
+            }
+        
+        if persistent_attendees_dict and has_attendance:
             main_update_fields["persistent_attendees"] = persistent_attendees_dict
-
+        
+        # Store attendance by EXACT DATE only (not week format)
         update_data = {
             **main_update_fields,
-            f"attendance.{week_id}": weekly_attendance_entry
+            f"attendance.{exact_date_str}": weekly_attendance_entry
         }
-
-        print(f"Final update data:")
-        print(f"  - Status: {main_status}")
-        print(f"  - Did not meet: {weekly_attendance_entry.get('is_did_not_meet', False)}")
-        print(f"  - Attendees count: {len(weekly_attendance_entry.get('attendees', []))}")
-        print(f"  - Headcount: {weekly_attendance_entry.get('total_headcounts', 0)}")
-        print(f"  - Decisions: {total_decisions}")
-
+        
+        # Update database
         result = await events_collection.update_one(
             {"_id": ObjectId(actual_event_id)},
             {"$set": update_data}
         )
-       
+        
         if result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event")
-       
-        response_data = {
+        
+        return {
             "message": "Attendance submitted successfully",
             "event_id": actual_event_id,
             "event_name": event.get("Event Name", "Unknown"),
-            "status": weekly_attendance_entry.get("status", "unknown"),
-            "main_status": main_status,
-            "did_not_meet": weekly_attendance_entry.get("is_did_not_meet", False),
-            "checked_in_count": len(checked_in_attendees),
+            "status": main_status,
+            "exact_date": exact_date_str,
+            "checked_in_count": weekly_attendance,
             "total_headcounts": manual_headcount,
-            "persistent_attendees_count": len(persistent_attendees_dict),
-            "week": week_id,
-            "event_date": event_date_sa.date().isoformat(),
-            "event_day": event_date_sa.strftime("%A"),
-            "updated_by": current_user.get('email'), 
-             "updated_by_role": current_user.get('role'),
-            "statistics": weekly_attendance_entry.get("statistics", {}),
+            "storage_method": "exact_date_only",
             "success": True,
             "timestamp": datetime.utcnow().isoformat()
         }
-
-        return response_data
-
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"ERROR in submit_attendance: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
+    
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),
