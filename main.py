@@ -1505,7 +1505,7 @@ async def get_cell_events(
                         "_is_overdue": is_overdue,
                         "is_recurring": True,
                         "original_event_id": str(event.get("_id")),
-                        "lookup_method": "exact_date"
+                        
                     }
                     
                     cell_instances.append(instance)
@@ -1687,7 +1687,6 @@ async def get_cell_events_optimized(
                             "_is_overdue": current_date < today and cell_status == "incomplete",
                             "original_event_id": str(cell["_id"]),
                             "is_recurring": True,
-                            "lookup_method": "exact_date"
                         }
                         
                         cell_instances.append(instance)
