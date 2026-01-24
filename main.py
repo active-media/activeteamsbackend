@@ -4,19 +4,17 @@ from datetime import datetime, timedelta, date
 import time
 from bson import ObjectId
 import re
-from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks
+from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer
+from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile, AttendanceSubmission
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection
 from auth.email_utils import send_reset_email
-from typing import Optional, Literal, List, Any, Dict, Optional
+from typing import Optional, List,  Optional,  Dict
 from collections import Counter
-from auth.utils import get_current_user  
-from auth.models import UserProfile, AttendanceSubmission
 import logging
 import pytz
 import base64
@@ -26,9 +24,7 @@ oauth2_scheme = HTTPBearer()
 from passlib.context import CryptContext
 import json
 from urllib.parse import unquote
-from fastapi import Depends, Query, HTTPException, File, UploadFile, Request
 import traceback
-from typing import Dict, List, Optional
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -1469,20 +1465,6 @@ async def get_cell_events(
                         event.get("leader @12") or
                         ""
                     )
-                    
-                    # total_associated = event.get("total_associated_count", len(event.get("persistent_attendees", [])))
-                    
-                    # weekly_stats = attendance.get("statistics", {})
-                    # if not weekly_stats:
-                    #     weekly_stats = {
-                    #         "total_associated": total_associated,
-                    #         "weekly_attendance": 0,
-                    #         "decisions": {
-                    #             "first_time": 0,
-                    #             "recommitment": 0,
-                    #             "total": 0
-                    #         }
-                    #     }
                     
                     instance = {
                             "_id": f"{event.get('_id')}_{exact_date}",
