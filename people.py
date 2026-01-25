@@ -30,21 +30,27 @@ def normalize_person_data(data: dict) -> dict:
 @router.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
-    perPage: int = Query(100, ge=0),  # Allow 0 to fetch all
+    perPage: int = Query(100, ge=0),  
     name: Optional[str] = None,
     gender: Optional[str] = None,
     dob: Optional[str] = None,
     location: Optional[str] = None,
     leader: Optional[str] = None,
-    stage: Optional[str] = None
+    stage: Optional[str] = None,
+    email: Optional[str] = None  
 ):
     """Get people with optional filtering and pagination"""
     try:
         query = {}
 
-        # Construct the query based on provided parameters
         if name:
-            query["Name"] = {"$regex": name, "$options": "i"}
+            query["$or"] = [
+                {"Name": {"$regex": name, "$options": "i"}},
+                {"Surname": {"$regex": name, "$options": "i"}},
+                {"Email": {"$regex": name, "$options": "i"}}
+            ]
+        if email:
+            query["Email"] = {"$regex": email, "$options": "i"}
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
@@ -106,7 +112,6 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-
 # ========== SEARCH & AUTOCOMPLETE ENDPOINTS - MUST COME BEFORE {person_id} ==========
 
 @router.get("/people/search-fast")

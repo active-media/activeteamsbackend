@@ -81,7 +81,7 @@ class PersonCreate(BaseModel):
     dob: str
     address: str
     leaders: list[str]
-    stage: Literal["Win", "Consolidate", "Disciple", "Send"] = "Win"
+    stage: Literal["Win"]
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
@@ -129,6 +129,10 @@ class EventBase(BaseModel):
     eventLeaderEmail: Optional[str] = None  
     leader1: Optional[str] = None
     leader12: Optional[str] = None
+    is_active: bool = True
+    deactivation_start: Optional[datetime] = None
+    deactivation_end: Optional[datetime] = None
+    deactivation_reason: Optional[str] = None
 
 class EventCreate(EventBase):
     pass
@@ -155,7 +159,23 @@ class EventUpdate(BaseModel):
     leader1: Optional[str] = None
     leader12: Optional[str] = None
     price: Optional[float] = None
+    
+    is_active: Optional[bool] = None
+    deactivation_start: Optional[datetime] = None
+    deactivation_end: Optional[datetime] = None
+    deactivation_reason: Optional[str] = None
 
+class CellDeactivateRequest(BaseModel):
+    weeks: int = Field(1, ge=1, le=12, description="Number of weeks to deactivate (1-12)")
+    reason: Optional[str] = Field(None, max_length=200, description="Reason for deactivation")
+
+class CellDeactivateResponse(BaseModel):
+    success: bool
+    message: str
+    weeks: int
+    deactivation_end: datetime
+    cell_count: int
+    
 class EventInDB(EventBase):
     _id: str
     attendees: List[dict] = []
