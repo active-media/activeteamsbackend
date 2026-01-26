@@ -8327,7 +8327,7 @@ async def create_consolidation(
         leader_user_id = None
        
         if not leader_email:
-            print(f"🔍 Searching for leader email: {consolidation.assigned_to}")
+            print(f"Searching for leader email: {consolidation.assigned_to}")
             
             # Parse leader name
             leader_parts = consolidation.assigned_to.strip().split()
