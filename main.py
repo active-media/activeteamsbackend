@@ -1488,7 +1488,8 @@ async def get_cell_events(
                             "_is_overdue": is_overdue,
                             "is_recurring": True,
                             "original_event_id": str(event.get("_id")),
-                            "attendance": attendance,  
+                            "attendance": attendance, 
+                            "is_active":event.get("is_active","") 
                             # "statistics": weekly_stats,  
                             # "total_associated_count": total_associated,
                         }
@@ -1755,7 +1756,9 @@ async def get_other_events(
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
                     "is_recurring": False,
+                    "is_active":event.get("is_active",""),
                     "original_event_id": str(event.get("_id"))
+                    
                 }
                
                 if "persistent_attendees" in event:
@@ -2125,20 +2128,25 @@ async def deactivate_cell(
     weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
     reason: Optional[str] = Query(None, description="Reason for deactivation"),
     person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')")
+    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
+    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation")
 ):
     try:
-        current_time = datetime.utcnow()
-        deactivation_end = current_time + timedelta(weeks=weeks)
         
+        current_time = datetime.utcnow()
+        #calc date of deactivation end
+        deactivation_end = current_time + timedelta(weeks=weeks)
+        print("PERMANENT",is_permanent_deact)
+        #updates events of selected cell with this object
         updates = {
             "is_active": False,
             "deactivation_start": current_time,
             "deactivation_end": deactivation_end,
             "deactivation_reason": reason,
-            "last_status_change": current_time
+            "last_status_change": current_time,
+            "is_permanent_deact": is_permanent_deact
         }
-        
+         
         query = {"$or": []}
         
         cell_type_conditions = [
@@ -2312,6 +2320,7 @@ def setup_cell_auto_reactivation():
                 "$and": [
                     {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}]},
                     {"is_active": False},
+                    {"is_permanent_deact":False},
                     {"deactivation_end": {"$lte": current_time, "$ne": None}}
                 ]
             }
