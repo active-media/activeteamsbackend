@@ -7383,11 +7383,9 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
     try:
         # Convert Pydantic model to dict
         new_task_dict = task.dict()
+        # Attach the creator's email for backward compatibility
         new_task_dict["assignedfor"] = current_user["email"]
-        new_task_dict["followup_date"] = datetime.utcnow().isoformat()
-        new_task_dict["createdAt"] = datetime.utcnow().isoformat()
-        new_task_dict["updated_at"] = datetime.utcnow().isoformat()
-        
+
         # Insert into MongoDB
         result = await db["tasks"].insert_one(new_task_dict)
 
