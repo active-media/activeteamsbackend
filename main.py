@@ -8386,7 +8386,7 @@ async def create_consolidation(
        
         # Get consolidation source
         consolidation_source = getattr(consolidation, 'source', 'manual')
-        source_display = "Service" if consolidation_source == "service_consolidation" else "Cell" if consolidation_source == "cell_consolidation" else "Manual"
+        source_display = "Service" if consolidation_source == "service_consolidation" else "Event" if consolidation_source == "event_consolidation" else "Manual"
        
         # CRITICAL: Prefer email over name for assignedfor
         assigned_for = leader_email if leader_email else consolidation.assigned_to

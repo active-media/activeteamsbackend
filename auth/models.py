@@ -350,7 +350,7 @@ class DecisionType(str, Enum):
 class ConsolidationSource(str, Enum):
     MANUAL = "manual"
     SERVICE = "service_consolidation"
-    CELL = "cell_consolidation"
+    EVENT = "event_consolidation"
 
 class ConsolidationCreate(BaseModel):
     person_name: str
