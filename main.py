@@ -26,10 +26,10 @@ import json
 from urllib.parse import unquote
 import traceback
 import asyncio
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
+from time import sleep
 app = FastAPI()
 
 app.add_middleware(
@@ -2098,7 +2098,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
-        
+        update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         print(f"Updating with: {update_fields}")
         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
         
@@ -2140,20 +2140,20 @@ async def deactivate_cell(
     is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation")
 ):
     try:
-        
         current_time = datetime.utcnow()
         #calc date of deactivation end
         deactivation_end = current_time + timedelta(weeks=weeks)
-        print("PERMANENT",is_permanent_deact)
         #updates events of selected cell with this object
+        print("BOOL",is_permanent_deact)
         updates = {
             "is_active": False,
             "deactivation_start": current_time,
-            "deactivation_end": deactivation_end,
+            "deactivation_end": {"$date":deactivation_end},
             "deactivation_reason": reason,
             "last_status_change": current_time,
-            "is_permanent_deact": is_permanent_deact
+            "is_permanent_deact":is_permanent_deact
         }
+        print(updates)
          
         query = {"$or": []}
         
@@ -2316,40 +2316,48 @@ async def reactivate_cell(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def setup_cell_auto_reactivation():
-    scheduler = BackgroundScheduler()
-    
-    @scheduler.scheduled_job('cron', hour=0, minute=0)
-    async def auto_reactivate_expired_cells():
-        try:
-            current_time = datetime.utcnow()
+
+
+
+# @scheduler.scheduled_job('cron', hour=0, minute=0)
+async def auto_reactivate_expired_cells():
+    try:
+        current_time = datetime.utcnow()
+        print(current_time)
+        
+        query = {
+            "$and": [
+                # {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}, {"eventTypeName":"CELLS"}]},
+                {"is_active": False},
+                {"deactivation_end": {"$lte": current_time, "$ne": None}},
+                {"isPermanent":{"$ne":True}}
+            ]
+        }
+        
+        updates = {
+            "is_active": True,
+            "deactivation_end": None,
+            "deactivation_start": None,
+            "deactivation_reason": None,
+            "last_status_change": current_time
+        }
+        
+        result = await events_collection.update_many(query, {"$set": updates})
+        print(result)
+        if result.modified_count > 0:
+            print(f"Auto-reactivated {result.modified_count} cells")
             
-            query = {
-                "$and": [
-                    {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}]},
-                    {"is_active": False},
-                    {"deactivation_end": {"$lte": current_time, "$ne": None}}
-                ]
-            }
-            
-            updates = {
-                "is_active": True,
-                "deactivation_end": None,
-                "deactivation_start": None,
-                "deactivation_reason": None,
-                "last_status_change": current_time
-            }
-            
-            result = await events_collection.update_many(query, {"$set": updates})
-            
-            if result.modified_count > 0:
-                print(f"Auto-reactivated {result.modified_count} cells")
-                
-        except Exception as e:
-            print(f"Auto-reactivation error: {e}")
-    
-    scheduler.start()
-#------------------ MIGRATION ENDPOINTS ----------
+    except Exception as e:
+        print(f"Auto-reactivation error: {e}")
+
+
+scheduler = AsyncIOScheduler()    
+scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=0,minute=0) 
+scheduler.start()
+sleep(10)
+      
+#------------------ MIGRATION ENDPOINTS ---------- 
+
 @app.post("/migrate-event-types-uuids")
 async def migrate_event_types_uuids():
     """ ONE-TIME: Add UUIDs to event types that don't have them"""
