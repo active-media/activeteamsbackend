@@ -7477,6 +7477,8 @@ async def get_user_tasks(
                 "contacted_person": task.get("contacted_person", {}),
                 "isRecurring": bool(task.get("recurring_day")),
                 "is_consolidation_task": bool(task.get("is_consolidation_task")),
+                "consolidation_source": task.get("consolidation_source", "manual"),
+                "source_display": task.get("source_display", "Manual")
             })
 
         # Sort newest first
@@ -8203,7 +8205,7 @@ async def get_event_summary_stats(event_id: str):
     except Exception as e:
         print(f"Error calculating event stats: {e}")
         return {}
-   
+
 @app.post("/consolidations")
 async def create_consolidation(
     consolidation: ConsolidationCreate,
@@ -8217,6 +8219,7 @@ async def create_consolidation(
        
         print(f"Creating consolidation for: {consolidation.person_name} {consolidation.person_surname}")
         print(f"Assigned to leader: {consolidation.assigned_to} (email: {consolidation.assigned_to_email})")
+        print(f"Source: {getattr(consolidation, 'source', 'manual')}")
        
         # 1. Create or find the person
         person_email = consolidation.person_email
@@ -8246,7 +8249,8 @@ async def create_consolidation(
                 existing_history.append({
                     "type": "recommitment",
                     "date": consolidation.decision_date,
-                    "consolidation_id": consolidation_id
+                    "consolidation_id": consolidation_id,
+                    "source": getattr(consolidation, 'source', 'manual')
                 })
                 update_data["DecisionHistory"] = existing_history
                 update_data["TotalRecommitments"] = existing_person.get("TotalRecommitments", 0) + 1
@@ -8255,7 +8259,8 @@ async def create_consolidation(
                 existing_history.append({
                     "type": "first_time",
                     "date": consolidation.decision_date,
-                    "consolidation_id": consolidation_id
+                    "consolidation_id": consolidation_id,
+                    "source": getattr(consolidation, 'source', 'manual')
                 })
                 update_data["DecisionHistory"] = existing_history
                 update_data["FirstDecisionDate"] = consolidation.decision_date
@@ -8284,12 +8289,14 @@ async def create_consolidation(
                 "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
                 "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
                 "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
+                "ConsolidationSource": getattr(consolidation, 'source', 'manual')
             }
            
             decision_history = [{
                 "type": consolidation.decision_type.value,
                 "date": consolidation.decision_date,
-                "consolidation_id": consolidation_id
+                "consolidation_id": consolidation_id,
+                "source": getattr(consolidation, 'source', 'manual')
             }]
            
             person_doc["DecisionHistory"] = decision_history
@@ -8315,7 +8322,8 @@ async def create_consolidation(
                 "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
                 "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
                 "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
-                "FullName": f"{consolidation.person_name.strip()} {consolidation.person_surname.strip()}".strip()
+                "FullName": f"{consolidation.person_name.strip()} {consolidation.person_surname.strip()}".strip(),
+                "ConsolidationSource": getattr(consolidation, 'source', 'manual')
             }
             people_cache["data"].append(new_person_cache_entry)
             print(f"Added to cache: {new_person_cache_entry['FullName']}")
@@ -8376,6 +8384,10 @@ async def create_consolidation(
         # 3. Create task - CRITICAL: Use email if found, otherwise name
         decision_display_name = "First Time Decision" if consolidation.decision_type == DecisionType.FIRST_TIME else "Recommitment"
        
+        # Get consolidation source
+        consolidation_source = getattr(consolidation, 'source', 'manual')
+        source_display = "Service" if consolidation_source == "service_consolidation" else "Cell" if consolidation_source == "cell_consolidation" else "Manual"
+       
         # CRITICAL: Prefer email over name for assignedfor
         assigned_for = leader_email if leader_email else consolidation.assigned_to
        
@@ -8383,7 +8395,7 @@ async def create_consolidation(
             "memberID": leader_user_id if leader_user_id else None,
             "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
             "taskType": "consolidation",
-            "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date}",
+            "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date} ({source_display} Consolidation)",
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
             "assignedfor": assigned_for,
@@ -8399,6 +8411,8 @@ async def create_consolidation(
             "person_surname": consolidation.person_surname,
             "decision_type": consolidation.decision_type.value,
             "decision_display_name": decision_display_name,
+            "consolidation_source": consolidation_source,
+            "source_display": source_display,
             "contacted_person": {
                 "name": f"{consolidation.person_name} {consolidation.person_surname}",
                 "email": person_email,
@@ -8428,7 +8442,9 @@ async def create_consolidation(
                 "created_at": datetime.utcnow().isoformat(),
                 "type": "consolidation",
                 "status": "active",
-                "notes": consolidation.notes
+                "notes": consolidation.notes,
+                "source": consolidation_source,
+                "source_display": source_display
             }
 
             await events_collection.update_one(
@@ -8459,7 +8475,9 @@ async def create_consolidation(
             "created_by": current_user.get("email", ""),
             "created_at": datetime.utcnow().isoformat(),
             "status": "active",
-            "task_id": task_id
+            "task_id": task_id,
+            "source": consolidation_source,
+            "source_display": source_display
         }
 
         consolidations_collection = db["consolidations"]
@@ -8486,7 +8504,6 @@ async def create_consolidation(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
-
 
 # === ADD THIS AT THE END OF main.py (no import needed) ===
 
