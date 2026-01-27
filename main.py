@@ -28,6 +28,7 @@ import traceback
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 app = FastAPI()
 
@@ -1223,10 +1224,17 @@ async def get_cell_events(
                         {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}},
                         {"EventType": {"$regex": "^Cells$", "$options": "i"}},
                         {"eventTypeId": "CELLS_BUILT_IN"},
-                        {"hasPersonSteps": True}
+                        {"hasPersonSteps": True},
+                        {"is_active": True}
                     ]
                 },
-                {"isEventType": {"$ne": True}}
+                {"isEventType": {"$ne": True}},
+                {
+      "$or": [
+        { "is_active": True },
+        { "is_active": { "$exists": False } }
+      ]
+    },
             ]
         }
         
@@ -2320,7 +2328,6 @@ def setup_cell_auto_reactivation():
                 "$and": [
                     {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}]},
                     {"is_active": False},
-                    {"is_permanent_deact":False},
                     {"deactivation_end": {"$lte": current_time, "$ne": None}}
                 ]
             }
