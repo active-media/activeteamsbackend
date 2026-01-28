@@ -1737,6 +1737,10 @@ async def get_other_events(
                 if status and status != event_status:
                     continue
 
+                recurring_days = event.get("recurring_day", [])
+
+                is_recurring = bool(recurring_days) and len(recurring_days) > 0
+
                 instance = {
                     "_id": str(event.get("_id")),
                     "UUID": event.get("UUID", ""),
@@ -1754,10 +1758,11 @@ async def get_other_events(
                     "status": event_status,
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
-                    "is_recurring": False,
+                    "is_recurring": is_recurring,
+                    "recurring_days": recurring_days,
                     "original_event_id": str(event.get("_id"))
                 }
-               
+
                 if "persistent_attendees" in event:
                     print(f"Removing persistent_attendees from non-cell event: {event_name}")
                
