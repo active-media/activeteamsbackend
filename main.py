@@ -26,9 +26,10 @@ import json
 from urllib.parse import unquote
 import traceback
 import asyncio
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
 
-
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from time import sleep
 app = FastAPI()
 
 app.add_middleware(
@@ -1223,10 +1224,17 @@ async def get_cell_events(
                         {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}},
                         {"EventType": {"$regex": "^Cells$", "$options": "i"}},
                         {"eventTypeId": "CELLS_BUILT_IN"},
-                        {"hasPersonSteps": True}
+                        {"hasPersonSteps": True},
+                        {"is_active": True}
                     ]
                 },
-                {"isEventType": {"$ne": True}}
+                {"isEventType": {"$ne": True}},
+                {
+      "$or": [
+        { "is_active": True },
+        { "is_active": { "$exists": False } }
+      ]
+    },
             ]
         }
         
@@ -1488,7 +1496,8 @@ async def get_cell_events(
                             "_is_overdue": is_overdue,
                             "is_recurring": True,
                             "original_event_id": str(event.get("_id")),
-                            "attendance": attendance,  
+                            "attendance": attendance, 
+                            "is_active":event.get("is_active","") 
                             # "statistics": weekly_stats,  
                             # "total_associated_count": total_associated,
                         }
@@ -1755,7 +1764,9 @@ async def get_other_events(
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
                     "is_recurring": False,
+                    "is_active":event.get("is_active",""),
                     "original_event_id": str(event.get("_id"))
+                    
                 }
                
                 if "persistent_attendees" in event:
@@ -2087,7 +2098,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
-        
+        update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         print(f"Updating with: {update_fields}")
         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
         
@@ -2125,20 +2136,25 @@ async def deactivate_cell(
     weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
     reason: Optional[str] = Query(None, description="Reason for deactivation"),
     person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')")
+    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
+    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation")
 ):
     try:
         current_time = datetime.utcnow()
+        #calc date of deactivation end
         deactivation_end = current_time + timedelta(weeks=weeks)
-        
+        #updates events of selected cell with this object
+        print("BOOL",is_permanent_deact)
         updates = {
             "is_active": False,
             "deactivation_start": current_time,
-            "deactivation_end": deactivation_end,
+            "deactivation_end": {"$date":deactivation_end},
             "deactivation_reason": reason,
-            "last_status_change": current_time
+            "last_status_change": current_time,
+            "is_permanent_deact":is_permanent_deact
         }
-        
+        print(updates)
+         
         query = {"$or": []}
         
         cell_type_conditions = [
@@ -2300,40 +2316,48 @@ async def reactivate_cell(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def setup_cell_auto_reactivation():
-    scheduler = BackgroundScheduler()
-    
-    @scheduler.scheduled_job('cron', hour=0, minute=0)
-    async def auto_reactivate_expired_cells():
-        try:
-            current_time = datetime.utcnow()
+
+
+
+# @scheduler.scheduled_job('cron', hour=0, minute=0)
+async def auto_reactivate_expired_cells():
+    try:
+        current_time = datetime.utcnow()
+        
+        
+        query = {
+            "$and": [
+                {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}, {"eventTypeName":"CELLS"}, {"Event Type": "Cells"}]},
+                {"is_active": False},
+                {"deactivation_end": {"$lte": current_time, "$ne": None}},
+                {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
+            ]
+        }
+        
+        updates = {
+            "is_active": True,
+            "deactivation_end": None,
+            "deactivation_start": None,
+            "deactivation_reason": None,
+            "last_status_change": current_time
+        }
+        
+        result = await events_collection.update_many(query, {"$set": updates})
+        print(result)
+        if result.modified_count > 0:
+            print(f"Auto-reactivated {result.modified_count} cells")
             
-            query = {
-                "$and": [
-                    {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}]},
-                    {"is_active": False},
-                    {"deactivation_end": {"$lte": current_time, "$ne": None}}
-                ]
-            }
-            
-            updates = {
-                "is_active": True,
-                "deactivation_end": None,
-                "deactivation_start": None,
-                "deactivation_reason": None,
-                "last_status_change": current_time
-            }
-            
-            result = await events_collection.update_many(query, {"$set": updates})
-            
-            if result.modified_count > 0:
-                print(f"Auto-reactivated {result.modified_count} cells")
-                
-        except Exception as e:
-            print(f"Auto-reactivation error: {e}")
-    
-    scheduler.start()
-#------------------ MIGRATION ENDPOINTS ----------
+    except Exception as e:
+        print(f"Auto-reactivation error: {e}")
+
+
+scheduler = AsyncIOScheduler()    
+scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=0,minute=0) 
+scheduler.start()
+sleep(10)
+      
+#------------------ MIGRATION ENDPOINTS ---------- 
+
 @app.post("/migrate-event-types-uuids")
 async def migrate_event_types_uuids():
     """ ONE-TIME: Add UUIDs to event types that don't have them"""
