@@ -346,18 +346,27 @@ class DecisionType(str, Enum):
     FIRST_TIME = "first_time"
     RECOMMITMENT = "recommitment"
 
+
+class ConsolidationSource(str, Enum):
+    MANUAL = "manual"
+    SERVICE = "service_consolidation"
+    EVENT = "event_consolidation"
+
 class ConsolidationCreate(BaseModel):
     person_name: str
     person_surname: str
-    person_email: Optional[str] = None
-    person_phone: Optional[str] = None
+    person_email: Optional[str] = ""
+    person_phone: Optional[str] = ""
     decision_type: DecisionType
     decision_date: str
     assigned_to: str
-    assigned_to_email: str
-    notes: Optional[str] = None
+    assigned_to_email: Optional[str] = None
+    leaders: list = Field(default_factory=list)
     event_id: Optional[str] = None
-    leaders: List[str] = []
+    is_check_in: bool = False
+    attendance_status: str = "checked_in"
+    notes: Optional[str] = ""
+    source: ConsolidationSource = ConsolidationSource.MANUAL
 
 class ConsolidationTask(TaskModel):
     consolidation_id: str

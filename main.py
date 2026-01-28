@@ -7406,16 +7406,16 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 async def get_user_tasks(
     email: str = Query(None),
     userId: str = Query(None),
-    view_all: bool = Query(False),  # Add explicit parameter for viewing all tasks
+    view_all: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Check if current user is a leader
+        # Role check
         is_leader = current_user.get("role") in ["admin", "leader", "manager"]
-       
-        # Determine user email based on parameters or current user
+
+        # Resolve user email
         user_email = None
-       
+
         if email:
             user_email = email
         elif userId:
@@ -7423,42 +7423,47 @@ async def get_user_tasks(
             if user:
                 user_email = user.get("email")
         else:
-            # No parameters provided - use current user's email
             user_email = current_user.get("email")
-       
-        if not user_email:
+
+        if not user_email and not (is_leader and view_all):
             return {"error": "User email not found", "status": "failed"}
-       
+
+        # Build leader full name (used in task matching)
+        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+
         timezone = pytz.timezone("Africa/Johannesburg")
-       
-        # Build query based on permissions
-        # Only show all tasks if user is a leader AND explicitly requests it with view_all=true
+
+        # Query logic
         if is_leader and view_all:
             query = {}
         else:
-            # Always filter by specific user email (current user or specified user)
-            query = {"assignedfor": user_email}
-       
-        # Fetch tasks
+            query = {
+                "$or": [
+                    {"assignedfor": user_email},
+                    {"assigned_to_email": user_email},
+                    {"assignedfor": user_name},
+                    {"leader_assigned": user_name},
+                    {"leader_name": user_name},
+                ]
+            }
+
         cursor = tasks_collection.find(query)
         all_tasks = []
-       
+
         async for task in cursor:
             task_date_str = task.get("followup_date")
             task_datetime = None
-           
-            # Parse followup_date
+
             if task_date_str:
                 if isinstance(task_date_str, datetime):
-                    task_datetime = task_date_str
+                    task_datetime = task_date_str.astimezone(timezone)
                 else:
                     try:
-                        task_datetime = datetime.fromisoformat(task_date_str)
-                        task_datetime = task_datetime.astimezone(timezone)
+                        task_datetime = datetime.fromisoformat(task_date_str).astimezone(timezone)
                     except ValueError:
                         logging.warning(f"Invalid date format: {task_date_str}")
                         continue
-           
+
             all_tasks.append({
                 "_id": str(task["_id"]),
                 "name": task.get("name", "Unnamed Task"),
@@ -7466,25 +7471,30 @@ async def get_user_tasks(
                 "followup_date": task_datetime.isoformat() if task_datetime else None,
                 "status": task.get("status", "Open"),
                 "assignedfor": task.get("assignedfor", ""),
+                "assigned_to_email": task.get("assigned_to_email", ""),
+                "leader_name": task.get("leader_name", ""),
                 "type": task.get("type", "call"),
                 "contacted_person": task.get("contacted_person", {}),
                 "isRecurring": bool(task.get("recurring_day")),
+                "is_consolidation_task": bool(task.get("is_consolidation_task")),
+                "consolidation_source": task.get("consolidation_source", "manual"),
+                "source_display": task.get("source_display", "Manual")
             })
-       
-        # Sort by date (newest first)
+
+        # Sort newest first
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
-       
+
         return {
-            "user_email": user_email if not view_all else "all_users",
+            "user_email": "all_users" if (is_leader and view_all) else user_email,
             "total_tasks": len(all_tasks),
             "tasks": all_tasks,
             "status": "success",
             "is_leader_view": is_leader and view_all
         }
-       
+
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
-        return {"error": str(e), "status": "failed"}  
+        return {"error": str(e), "status": "failed"}
      
 # --- GET all task types ---
 @app.get("/tasktypes", response_model=List[TaskTypeOut])
@@ -8154,8 +8164,6 @@ async def get_activity_logs(
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
    
 
-#consolidation
-
 async def get_event_summary_stats(event_id: str):
     """Get consolidation and new people statistics for an event"""
     try:
@@ -8197,7 +8205,7 @@ async def get_event_summary_stats(event_id: str):
     except Exception as e:
         print(f"Error calculating event stats: {e}")
         return {}
-   
+
 @app.post("/consolidations")
 async def create_consolidation(
     consolidation: ConsolidationCreate,
@@ -8210,7 +8218,8 @@ async def create_consolidation(
         consolidation_id = str(ObjectId())
        
         print(f"Creating consolidation for: {consolidation.person_name} {consolidation.person_surname}")
-        print(f"👥 Assigned to leader: {consolidation.assigned_to} (email: {consolidation.assigned_to_email})")
+        print(f"Assigned to leader: {consolidation.assigned_to} (email: {consolidation.assigned_to_email})")
+        print(f"Source: {getattr(consolidation, 'source', 'manual')}")
        
         # 1. Create or find the person
         person_email = consolidation.person_email
@@ -8228,7 +8237,6 @@ async def create_consolidation(
         if existing_person:
             person_id = str(existing_person["_id"])
             print(f"Found existing person: {person_id}")
-            # Update existing person
             update_data = {
                 "Stage": "Consolidate",
                 "UpdatedAt": datetime.utcnow().isoformat(),
@@ -8236,13 +8244,13 @@ async def create_consolidation(
                 "DecisionDate": consolidation.decision_date,
             }
            
-            # Safely handle decision history
             existing_history = existing_person.get("DecisionHistory", [])
             if consolidation.decision_type == DecisionType.RECOMMITMENT:
                 existing_history.append({
                     "type": "recommitment",
                     "date": consolidation.decision_date,
-                    "consolidation_id": consolidation_id
+                    "consolidation_id": consolidation_id,
+                    "source": getattr(consolidation, 'source', 'manual')
                 })
                 update_data["DecisionHistory"] = existing_history
                 update_data["TotalRecommitments"] = existing_person.get("TotalRecommitments", 0) + 1
@@ -8251,7 +8259,8 @@ async def create_consolidation(
                 existing_history.append({
                     "type": "first_time",
                     "date": consolidation.decision_date,
-                    "consolidation_id": consolidation_id
+                    "consolidation_id": consolidation_id,
+                    "source": getattr(consolidation, 'source', 'manual')
                 })
                 update_data["DecisionHistory"] = existing_history
                 update_data["FirstDecisionDate"] = consolidation.decision_date
@@ -8262,15 +8271,14 @@ async def create_consolidation(
                 {"$set": update_data}
             )
         else:
-            #  FIX: Create new person with ALL required fields
             person_doc = {
                 "Name": consolidation.person_name.strip(),
                 "Surname": consolidation.person_surname.strip(),
                 "Email": person_email,
                 "Number": consolidation.person_phone or "",
-                "Gender": "",  # Add default gender
-                "Address": "",  # Add default address
-                "Birthday": "",  # Add default birthday
+                "Gender": "",
+                "Address": "",
+                "Birthday": "",
                 "Stage": "Consolidate",
                 "DecisionType": consolidation.decision_type.value,
                 "DecisionDate": consolidation.decision_date,
@@ -8281,13 +8289,14 @@ async def create_consolidation(
                 "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
                 "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
                 "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
+                "ConsolidationSource": getattr(consolidation, 'source', 'manual')
             }
            
-            # Add consolidation-specific fields
             decision_history = [{
                 "type": consolidation.decision_type.value,
                 "date": consolidation.decision_date,
-                "consolidation_id": consolidation_id
+                "consolidation_id": consolidation_id,
+                "source": getattr(consolidation, 'source', 'manual')
             }]
            
             person_doc["DecisionHistory"] = decision_history
@@ -8300,8 +8309,8 @@ async def create_consolidation(
            
             result = await people_collection.insert_one(person_doc)
             person_id = str(result.inserted_id)
+            print(f"Created new person: {person_id}")
            
-            #  CRITICAL: Add the new person to the background cache
             new_person_cache_entry = {
                 "_id": person_id,
                 "Name": consolidation.person_name.strip(),
@@ -8313,53 +8322,87 @@ async def create_consolidation(
                 "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
                 "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
                 "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
-                "FullName": f"{consolidation.person_name.strip()} {consolidation.person_surname.strip()}".strip()
+                "FullName": f"{consolidation.person_name.strip()} {consolidation.person_surname.strip()}".strip(),
+                "ConsolidationSource": getattr(consolidation, 'source', 'manual')
             }
             people_cache["data"].append(new_person_cache_entry)
-            print(f"Added new person to background cache: {new_person_cache_entry['FullName']}")
+            print(f"Added to cache: {new_person_cache_entry['FullName']}")
 
-        # 2. FIND OR CREATE LEADER'S USER ACCOUNT
+        # 2. IMPROVED LEADER EMAIL RESOLUTION
         leader_email = consolidation.assigned_to_email
         leader_user_id = None
        
         if not leader_email:
-            # Try to find leader's email from people collection
+            print(f"Searching for leader email: {consolidation.assigned_to}")
+            
+            # Parse leader name
+            leader_parts = consolidation.assigned_to.strip().split()
+            first_name = leader_parts[0] if leader_parts else ""
+            surname = " ".join(leader_parts[1:]) if len(leader_parts) > 1 else ""
+            
+            # Try people collection with multiple variations
             leader_person = await people_collection.find_one({
                 "$or": [
-                    {"Name": consolidation.assigned_to},
-                    {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, consolidation.assigned_to]}}
+                    {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, consolidation.assigned_to]}},
+                    {"Name": first_name, "Surname": surname},
+                    {"$expr": {"$eq": [
+                        {"$toLower": {"$concat": ["$Name", " ", "$Surname"]}}, 
+                        consolidation.assigned_to.lower()
+                    ]}}
                 ]
             })
+            
             if leader_person:
                 leader_email = leader_person.get("Email")
-                print(f"Found leader email from people collection: {leader_email}")
-       
+                print(f"Found leader email from people: {leader_email}")
+            
+            # Try users collection if not found
+            if not leader_email and first_name:
+                leader_user = await users_collection.find_one({
+                    "$or": [
+                        {"name": first_name, "surname": surname},
+                        {"$expr": {"$eq": [
+                            {"$toLower": {"$concat": ["$name", " ", "$surname"]}}, 
+                            consolidation.assigned_to.lower()
+                        ]}}
+                    ]
+                })
+                if leader_user:
+                    leader_email = leader_user.get("email")
+                    print(f"Found leader email from users: {leader_email}")
+
         if leader_email:
-            # Find leader's user account
             leader_user = await users_collection.find_one({"email": leader_email})
             if leader_user:
                 leader_user_id = str(leader_user["_id"])
-                print(f"Found leader user account: {leader_email} (ID: {leader_user_id})")
+                print(f"Leader user account: {leader_email} (ID: {leader_user_id})")
             else:
-                print(f"Leader {consolidation.assigned_to} has no user account with email: {leader_email}")
+                print(f"Leader has email {leader_email} but no user account")
         else:
             print(f"Could not find email for leader: {consolidation.assigned_to}")
 
-        # 3. Create task assigned to the leader
+        # 3. Create task - CRITICAL: Use email if found, otherwise name
         decision_display_name = "First Time Decision" if consolidation.decision_type == DecisionType.FIRST_TIME else "Recommitment"
        
-        # Use leader's email for assignment, fallback to leader's name
+        # Get consolidation source
+        consolidation_source = getattr(consolidation, 'source', 'manual')
+        source_display = "Service" if consolidation_source == "service_consolidation" else "Event" if consolidation_source == "event_consolidation" else "Manual"
+       
+        # CRITICAL: Prefer email over name for assignedfor
         assigned_for = leader_email if leader_email else consolidation.assigned_to
        
         task_doc = {
+            "memberID": leader_user_id if leader_user_id else None,
             "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
             "taskType": "consolidation",
-            "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date}",
+            "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date} ({source_display} Consolidation)",
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
-            "assignedfor": assigned_for,  # Assign to leader's email or name
+            "assignedfor": assigned_for,
             "assigned_to_email": leader_email,
             "assigned_to_user_id": leader_user_id,
+            "leader_assigned": consolidation.assigned_to,
+            "leader_name": consolidation.assigned_to,
             "type": "followup",
             "priority": "high",
             "consolidation_id": consolidation_id,
@@ -8368,6 +8411,8 @@ async def create_consolidation(
             "person_surname": consolidation.person_surname,
             "decision_type": consolidation.decision_type.value,
             "decision_display_name": decision_display_name,
+            "consolidation_source": consolidation_source,
+            "source_display": source_display,
             "contacted_person": {
                 "name": f"{consolidation.person_name} {consolidation.person_surname}",
                 "email": person_email,
@@ -8375,15 +8420,13 @@ async def create_consolidation(
             },
             "created_at": datetime.utcnow().isoformat(),
             "created_by": current_user.get("email", ""),
-            "is_consolidation_task": True,
-            "leader_assigned": consolidation.assigned_to
+            "is_consolidation_task": True
         }
 
         task_result = await tasks_collection.insert_one(task_doc)
         task_id = str(task_result.inserted_id)
-        print(f"Created consolidation task: {task_id} assigned to {assigned_for}")
 
-        # 4.  CRITICAL FIX: Add to event consolidations array ONLY, NOT attendees
+        # 4. Add to event consolidations
         if consolidation.event_id and ObjectId.is_valid(consolidation.event_id):
             consolidation_record = {
                 "id": consolidation_id,
@@ -8399,10 +8442,11 @@ async def create_consolidation(
                 "created_at": datetime.utcnow().isoformat(),
                 "type": "consolidation",
                 "status": "active",
-                "notes": consolidation.notes
+                "notes": consolidation.notes,
+                "source": consolidation_source,
+                "source_display": source_display
             }
 
-            #  FIX: Only add to consolidations array, NOT attendees
             await events_collection.update_one(
                 {"_id": ObjectId(consolidation.event_id)},
                 {
@@ -8431,7 +8475,9 @@ async def create_consolidation(
             "created_by": current_user.get("email", ""),
             "created_at": datetime.utcnow().isoformat(),
             "status": "active",
-            "task_id": task_id
+            "task_id": task_id,
+            "source": consolidation_source,
+            "source_display": source_display
         }
 
         consolidations_collection = db["consolidations"]
@@ -8439,7 +8485,6 @@ async def create_consolidation(
         print(f"Created consolidation record: {consolidation_id}")
 
         total_people_count = await people_collection.count_documents({})
-        print(f"Updated total people count: {total_people_count}")
 
         return {
             "message": f"{decision_display_name} recorded successfully and assigned to {consolidation.assigned_to}",
@@ -8459,7 +8504,6 @@ async def create_consolidation(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
-
 
 # === ADD THIS AT THE END OF main.py (no import needed) ===
 
