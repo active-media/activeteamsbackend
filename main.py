@@ -2436,30 +2436,50 @@ async def create_event_type(event_type: EventTypeCreate):
     except Exception as e:
         print(f" Error creating event type: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
+
+        
     
+
+def normalize_role(role: str) -> str:
+    # "Leader @12" -> "leader12", "leaderAt12" -> "leaderat12"
+    role = (role or "").strip().lower()
+    return re.sub(r"[\s@]", "", role)
+
+def can_view_event_type(role: str, is_global: bool) -> bool:
+    role_norm = normalize_role(role)
+
+    # Define who counts as "leader" broadly
+    is_any_leader = (
+        role_norm.startswith("leader")  # leader, leaderat12, leader144, etc.
+        or role_norm in {"leader144", "leaderat144", "leaderat12"}
+    )
+
+    if is_global:
+        return role_norm in {"admin", "registrant"} or is_any_leader
+
+    # non-global: only these three
+    return role_norm in {"admin", "registrant", "leaderat12"}
+
 @app.get("/event-types")
-async def get_event_types():
+async def get_event_types(current_user: dict = Depends(get_current_user)):
     try:
-        cursor = events_collection.find({
-            "isEventType": True
-        }).sort("createdAt", 1)
-       
+        user_role = current_user.get("role", "user")
+
+        cursor = events_collection.find({"isEventType": True}).sort("createdAt", 1)
+
         event_types = []
         async for et in cursor:
-           
             et["_id"] = str(et["_id"])
-            event_types.append(et)
-       
-        print(f" Found {len(event_types)} event types (isEventType=True)")
-       
-        for et in event_types:
-            print(f"   - {et.get('name')} (ID: {et.get('_id')})")
-       
+            is_global = bool(et.get("isGlobal", False))
+
+            if can_view_event_type(user_role, is_global):
+                event_types.append(et)
+
         return event_types
-       
+
     except Exception as e:
         print(f"Error fetching event types: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching event types: {str(e)}")
 
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
