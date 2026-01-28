@@ -2323,14 +2323,14 @@ async def reactivate_cell(
 async def auto_reactivate_expired_cells():
     try:
         current_time = datetime.utcnow()
-        print(current_time)
+        
         
         query = {
             "$and": [
-                # {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}, {"eventTypeName":"CELLS"}]},
+                {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}, {"eventTypeName":"CELLS"}, {"Event Type": "Cells"}]},
                 {"is_active": False},
                 {"deactivation_end": {"$lte": current_time, "$ne": None}},
-                {"isPermanent":{"$ne":True}}
+                {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
             ]
         }
         
