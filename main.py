@@ -1336,18 +1336,28 @@ async def get_cell_events(
             email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
             email_conditions = create_name_conditions(user_email, email_fields)
             query["$and"].append({"$or": name_conditions + email_conditions})
-            
+
         elif role in ["user", "registrant", "leader"]:
-            name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName", 
-                          "leader144", "Leader at 144", "Leader @144"]
-            name_conditions = create_name_conditions(user_name, name_fields)
-            email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
-            email_conditions = create_name_conditions(user_email, email_fields)
-            query["$and"].append({"$or": name_conditions + email_conditions})
-            
-        else:
-            query["$and"].append({"_id": "nonexistent_id"})
-        
+                conditions = []
+
+                if user_name:
+                    clean_name = user_name.strip()
+                    # Match exact name in any name field
+                    for field in ["Leader", "eventLeaderName", "EventLeaderName"]:
+                        conditions.append({field: {"$regex": f"^{re.escape(clean_name)}$", "$options": "i"}})
+
+                if user_email:
+                    clean_email = user_email.strip().lower()
+                    for field in ["eventLeaderEmail", "EventLeaderEmail", "Email"]:
+                        conditions.append({field: {"$regex": f"^{re.escape(clean_email)}$", "$options": "i"}})
+
+                if conditions:
+                    query["$and"].append({"$or": conditions})
+                else:
+                    # No matches = return nothing
+                    query["$and"].append({"_id": "nonexistent_id"})
+
+
         pipeline = [
             {"$match": query},
             {
