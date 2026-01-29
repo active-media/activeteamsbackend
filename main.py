@@ -2148,7 +2148,7 @@ async def deactivate_cell(
         updates = {
             "is_active": False,
             "deactivation_start": current_time,
-            "deactivation_end": {"$date":deactivation_end},
+            "deactivation_end": datetime.strptime(str(deactivation_end),"%Y-%m-%d %H:%M:%S.%f"),
             "deactivation_reason": reason,
             "last_status_change": current_time,
             "is_permanent_deact":is_permanent_deact
@@ -2352,7 +2352,7 @@ async def auto_reactivate_expired_cells():
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=0,minute=0) 
+scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=10,minute=15) 
 scheduler.start()
 sleep(10)
       
