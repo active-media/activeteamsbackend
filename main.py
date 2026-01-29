@@ -2536,30 +2536,33 @@ async def update_event_type(
            
             # Count and update events
             events_count = await events_collection.count_documents({
-                "$or": [
-                    {"eventType": current_name},
-                    {"eventTypeName": current_name}
-                ],
-                "isEventType": {"$ne": True}
+            "$or": [
+                {"Event Type": current_name},
+                {"eventType": current_name},
+                {"eventTypeName": current_name},
+            ],
+            "isEventType": {"$ne": True}
             })
            
             print(f"[EVENT-TYPE UPDATE] Found {events_count} events to update")
            
             if events_count > 0:
                 events_update_result = await events_collection.update_many(
-                    {
-                        "$or": [
-                            {"eventType": current_name},
-                            {"eventTypeName": current_name}
-                        ],
-                        "isEventType": {"$ne": True}
-                    },
-                    {"$set": {
-                        "eventType": new_name,
-                        "eventTypeName": new_name,
-                        "updatedAt": datetime.utcnow()
-                    }}
-                )
+            {
+                "$or": [
+                {"Event Type": current_name},
+                {"eventType": current_name},
+                {"eventTypeName": current_name},
+                ],
+                "isEventType": {"$ne": True}
+            },
+            {"$set": {
+                "Event Type": new_name,
+                "eventType": new_name,
+                "eventTypeName": new_name,
+                "updatedAt": datetime.utcnow()
+            }}
+            )
                 events_updated_count = events_update_result.modified_count
                 print(f"[EVENT-TYPE UPDATE] Updated {events_updated_count} events")
 
