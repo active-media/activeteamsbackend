@@ -1,22 +1,19 @@
+npm start
+# people_annotated.py - line-by-line explanatory comments added
 from datetime import datetime
-# Optional typing helper
 from typing import Optional
-# BSON ObjectId for MongoDB ids
 from bson import ObjectId
-# FastAPI routing and request helpers
 from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends
-# Import Pydantic model for creating a person
 from auth.models import PersonCreate
-# Dependency to get current user from auth token (not used on all routes)
 from auth.utils import get_current_user
-# Database references (people_collection) imported from database module
 from database import db, people_collection
 
-# Create an APIRouter instance to group people-related endpoints
+# Create an APIRouter to group people-related routes
 router = APIRouter()
 
+# Helper to normalize incoming person dicts to the DB field names
 def normalize_person_data(data: dict) -> dict:
-    # Normalize incoming dict keys to the canonical DB field names
+    """Normalize person data for database operations"""
     return {
         "Name": data.get("Name") or data.get("name", ""),
         "Surname": data.get("Surname") or data.get("surname", ""),
@@ -46,30 +43,25 @@ async def get_people(
     stage: Optional[str] = None,
     email: Optional[str] = None  
 ):
-    # Retrieve people with optional filters and pagination
+    """Get people with optional filtering and pagination"""
     try:
         query = {}
 
-        # If a name search was provided, build an OR regex across Name/Surname/Email
+        # If a name filter provided, build an OR regex search across common fields
         if name:
             query["$or"] = [
                 {"Name": {"$regex": name, "$options": "i"}},
                 {"Surname": {"$regex": name, "$options": "i"}},
                 {"Email": {"$regex": name, "$options": "i"}}
             ]
-        # Filter by exact or regex email
         if email:
             query["Email"] = {"$regex": email, "$options": "i"}
-        # Filter by gender using regex
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
-        # Filter by birthday exact match
         if dob:
             query["Birthday"] = dob
-        # Filter by address/location regex
         if location:
             query["Address"] = {"$regex": location, "$options": "i"}
-        # If leader filter provided, search in multiple leader fields
         if leader:
             query["$or"] = [
                 {"Leader @1": {"$regex": leader, "$options": "i"}},
@@ -77,11 +69,10 @@ async def get_people(
                 {"Leader @144": {"$regex": leader, "$options": "i"}},
                 {"Leader @1728": {"$regex": leader, "$options": "i"}}
             ]
-        # Stage filter (e.g., Win, Consolidate)
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
-        # Handle pagination: perPage == 0 means return all matching documents
+        # Handle pagination or fetch all
         if perPage == 0:
             cursor = people_collection.find(query)
         else:
@@ -90,10 +81,9 @@ async def get_people(
 
         people_list = []
         async for person in cursor:
-            # Convert MongoDB ObjectId to string for JSON serialization
             person["_id"] = str(person["_id"])
             
-            # Map database fields to a consistent output shape
+            # Map to consistent field names
             mapped = {
                 "_id": person["_id"],
                 "Name": person.get("Name", ""),
@@ -114,7 +104,7 @@ async def get_people(
             }
             people_list.append(mapped)
 
-        # Count total matching documents for pagination metadata
+        # Get total count for pagination metadata
         total_count = await people_collection.count_documents(query)
 
         return {
@@ -125,7 +115,6 @@ async def get_people(
         }
         
     except Exception as e:
-        # Log and return a 500 on unexpected errors
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 # ========== SEARCH & AUTOCOMPLETE ENDPOINTS - MUST COME BEFORE {person_id} ==========
@@ -140,14 +129,13 @@ async def search_people_fast(
     Uses simple regex matching and returns minimal fields
     """
     try:
-        # Validate query length
         if not query or len(query) < 2:
             return {"results": []}
         
-        # Build a case-insensitive regex for the search
+        # Simple regex search on name fields
         search_regex = {"$regex": query.strip(), "$options": "i"}
         
-        # Minimal projection to reduce payload size
+        # Only fetch essential fields for autocomplete
         projection = {
             "_id": 1,
             "Name": 1,
@@ -160,7 +148,6 @@ async def search_people_fast(
             "Leader @1728": 1
         }
         
-        # Query searches Name, Surname, Email and concatenated full name
         cursor = people_collection.find({
             "$or": [
                 {"Name": search_regex},
@@ -193,7 +180,6 @@ async def search_people_fast(
         return {"results": results}
         
     except Exception as e:
-        # On failure return empty results and log the error
         print(f"Error in fast search: {e}")
         return {"results": []}
 
@@ -237,7 +223,7 @@ async def get_leaders_only():
     Optimized for signup form where we mostly need leaders
     """
     try:
-        # Find people who appear as leaders across any leader field
+        # Find people who appear as leaders
         pipeline = [
             {
                 "$match": {
@@ -327,10 +313,10 @@ async def get_person_by_id(person_id: str = Path(...)):
 async def create_person(person_data: PersonCreate):
     """Create a new person"""
     try:
-        # Normalize email to lowercase
+        # Normalize email
         email = person_data.email.lower().strip()
 
-        # If an email was provided, check for duplicates
+        # Check if email already exists
         if email:
             existing_person = await people_collection.find_one({"Email": email})
             if existing_person:
@@ -339,13 +325,13 @@ async def create_person(person_data: PersonCreate):
                     detail=f"A person with email '{email}' already exists"
                 )
 
-        # Unpack leader hierarchy from provided list safely
+        # Extract leader fields from the list
         leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
         leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
         leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
         leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
 
-        # Prepare document to insert into MongoDB
+        # Prepare the document
         person_doc = {
             "Name": person_data.name.strip(),
             "Surname": person_data.surname.strip(),
@@ -364,10 +350,10 @@ async def create_person(person_data: PersonCreate):
             "UpdatedAt": datetime.utcnow().isoformat()
         }
 
-        # Insert the new person and capture the result
+        # Insert into MongoDB
         result = await people_collection.insert_one(person_doc)
 
-        # Build the response payload reflecting the created person
+        # Return the created person object
         created_person = {
             "_id": str(result.inserted_id),
             "Name": person_doc["Name"],
@@ -417,44 +403,3 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
         updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
         if not updated_person:
             raise HTTPException(status_code=404, detail="Person not found after update")
-
-        # Return the updated person in the same format as GET
-        updated_person["_id"] = str(updated_person["_id"])
-        mapped = {
-            "_id": updated_person["_id"],
-            "Name": updated_person.get("Name", ""),
-            "Surname": updated_person.get("Surname", ""),
-            "Number": updated_person.get("Number", ""),
-            "Email": updated_person.get("Email", ""),
-            "Address": updated_person.get("Address", ""),
-            "Gender": updated_person.get("Gender", ""),
-            "Birthday": updated_person.get("Birthday", ""),
-            "InvitedBy": updated_person.get("InvitedBy", ""),
-            "Leader @1": updated_person.get("Leader @1", ""),
-            "Leader @12": updated_person.get("Leader @12", ""),
-            "Leader @144": updated_person.get("Leader @144", ""),
-            "Leader @1728": updated_person.get("Leader @1728", ""),
-            "Stage": updated_person.get("Stage", "Win"),
-            "UpdatedAt": updated_person.get("UpdatedAt"),
-        }
-        return mapped
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating person: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/people/{person_id}")
-async def delete_person(person_id: str = Path(...)):
-    """Delete a person"""
-    try:
-        result = await people_collection.delete_one({"_id": ObjectId(person_id)})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found")
-        return {"message": "Person deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error deleting person: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
