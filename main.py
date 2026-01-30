@@ -104,17 +104,189 @@ people_cache = {
     "load_progress": 0,
     "total_loaded": 0,
     "last_error": None,
-    "total_in_database": 0
+    "total_in_database": 0,
+    "version": 1, 
+    "is_valid": True,
+    "pending_refresh": False,
+    "refresh_queue": []
 }
 
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
+
+async def invalidate_people_cache(operation_type: str, details: dict = None):
+    """
+    Invalidate the people cache and trigger background rehydration
+    Operation types: 'create', 'update', 'delete'
+    """
+    try:
+        print(f"CACHE INVALIDATION: {operation_type.upper()} operation detected on people collection")
+        
+        # Mark cache as stale immediately
+        people_cache["is_valid"] = False
+        people_cache["pending_refresh"] = True
+        
+        # Track the operation that triggered invalidation
+        if details:
+            people_cache["refresh_queue"].append({
+                "operation": operation_type,
+                "details": details,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        
+        # Keep existing data available while refreshing
+        stale_data = people_cache["data"].copy() if people_cache["data"] else []
+        
+        # Start background refresh if not already running
+        if not people_cache["is_loading"]:
+            print(f"Triggering background cache refresh after {operation_type} operation...")
+            
+            # Create background task with delay to avoid immediate DB load
+            people_cache["background_task"] = asyncio.create_task(
+                background_refresh_people_cache(stale_data)
+            )
+        
+        # Return current state for API responses
+        return {
+            "cache_invalidated": True,
+            "operation": operation_type,
+            "current_data_size": len(stale_data),
+            "refresh_triggered": not people_cache["is_loading"],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"Cache invalidation error: {str(e)}")
+        return {"error": str(e)}
+    
+async def background_refresh_people_cache(stale_data: list = None):
+    """
+    Background task to refresh all people data from MongoDB
+    Maintains stale data while loading fresh data
+    """
+    try:
+        people_cache["is_loading"] = True
+        people_cache["last_error"] = None
+        people_cache["load_progress"] = 0
+        people_cache["total_loaded"] = 0
+        
+        start_time = time.time()
+        print(f"BACKGROUND REFRESH: Starting cache rehydration...")
+        
+        # Keep stale data available during refresh
+        if stale_data:
+            print(f"Using {len(stale_data)} stale records while refreshing")
+        
+        # Get fresh data from MongoDB
+        total_count = await people_collection.count_documents({})
+        people_cache["total_in_database"] = total_count
+        
+        all_people_data = []
+        batch_size = 1000  # Smaller batches for faster incremental updates
+        page = 1
+        total_loaded = 0
+        
+        while True:
+            try:
+                skip = (page - 1) * batch_size
+                
+                projection = {
+                    "_id": 1,
+                    "Name": 1,
+                    "Surname": 1,
+                    "Email": 1,
+                    "Number": 1,
+                    "Gender": 1,
+                    "Leader @1": 1,
+                    "Leader @12": 1,
+                    "Leader @144": 1,
+                    "Leader @1728": 1
+                }
+                
+                cursor = people_collection.find({}, projection).skip(skip).limit(batch_size)
+                batch_data = await cursor.to_list(length=batch_size)
+                
+                if not batch_data:
+                    break
+                
+                # Transform batch data
+                transformed_batch = []
+                for person in batch_data:
+                    transformed_batch.append({
+                        "_id": str(person["_id"]),
+                        "Name": person.get("Name", ""),
+                        "Surname": person.get("Surname", ""),
+                        "Email": person.get("Email", ""),
+                        "Number": person.get("Number", ""),
+                        "Gender": person.get("Gender", ""),
+                        "Leader @1": person.get("Leader @1", ""),
+                        "Leader @12": person.get("Leader @12", ""),
+                        "Leader @144": person.get("Leader @144", ""),
+                        "Leader @1728": person.get("Leader @1728", ""),
+                        "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+                    })
+                
+                all_people_data.extend(transformed_batch)
+                total_loaded += len(transformed_batch)
+                
+                # Update progress incrementally
+                progress = (total_loaded / total_count) * 100 if total_count > 0 else 100
+                people_cache["load_progress"] = round(progress, 1)
+                people_cache["total_loaded"] = total_loaded
+                
+                # Update cache with partial data for immediate availability
+                if page % 5 == 0:  # Update cache every 5 batches
+                    people_cache["data"] = all_people_data.copy()
+                    print(f"Batch {page}: Updated cache with {len(all_people_data)} records ({progress:.1f}% complete)")
+                
+                page += 1
+                
+                # Small delay to prevent overwhelming the database
+                await asyncio.sleep(0.05)
+                
+            except Exception as batch_error:
+                print(f"BACKGROUND: Error in batch {page}: {str(batch_error)}")
+                break
+        
+        # Final cache update with complete dataset
+        people_cache["data"] = all_people_data
+        people_cache["last_updated"] = datetime.utcnow().isoformat()
+        people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        people_cache["is_loading"] = False
+        people_cache["load_progress"] = 100
+        people_cache["is_valid"] = True
+        people_cache["pending_refresh"] = False
+        people_cache["version"] += 1  # Increment cache version
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        print(f"BACKGROUND REFRESH COMPLETE: Successfully loaded {len(all_people_data)} people in {duration:.2f} seconds")
+        print(f"Cache version updated to {people_cache['version']}")
+        
+        # Clear refresh queue
+        people_cache["refresh_queue"] = []
+        
+        return {
+            "success": True,
+            "loaded_count": len(all_people_data),
+            "duration": duration,
+            "cache_version": people_cache["version"]
+        }
+        
+    except Exception as e:
+        people_cache["is_loading"] = False
+        people_cache["last_error"] = str(e)
+        people_cache["pending_refresh"] = False
+        print(f"BACKGROUND REFRESH failed: {str(e)}")
+        return {"error": str(e)}
 
 @app.on_event("startup")
 async def startup_event():
     """Start background loading of all people on startup"""
     print(" Starting background load of ALL people...")
     asyncio.create_task(background_load_all_people())
+    asyncio.create_task(background_refresh_people_cache())
 
 async def background_load_all_people():
     """Background task to load ALL people from the database"""
@@ -152,7 +324,7 @@ async def background_load_all_people():
                     "Surname": 1,
                     "Email": 1,
                     "Number": 1,
-                    "Gender":1, #getting gender as well
+                    "Gender":1,
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
@@ -174,7 +346,7 @@ async def background_load_all_people():
                         "Surname": person.get("Surname", ""),
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
-                        "Gender": person.get("Gender",""), #getting gender
+                        "Gender": person.get("Gender",""),
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
@@ -230,6 +402,7 @@ async def get_cached_people():
        
         # If we have data and it's not expired, return it
         if (people_cache["data"] and
+            people_cache["is_valid"] and
             people_cache["expires_at"] and
             current_time < datetime.fromisoformat(people_cache["expires_at"])):
            
@@ -242,7 +415,9 @@ async def get_cached_people():
                 "source": "cache",
                 "total_count": len(people_cache["data"]),
                 "is_complete": True,
-                "load_progress": 100
+                "load_progress": 100,
+                "cache_version": people_cache["version"],
+                "is_valid": True
             }
        
         # If we're still loading in background, return progress
@@ -257,13 +432,39 @@ async def get_cached_people():
                 "load_progress": people_cache["load_progress"],
                 "loaded_so_far": people_cache["total_loaded"],
                 "total_in_database": people_cache["total_in_database"],
-                "message": f"Loading in background... {people_cache['load_progress']}% complete"
+                "message": f"Loading in background... {people_cache['load_progress']}% complete",
+                "cache_version": people_cache["version"],
+                "is_valid": people_cache["is_valid"]
+
+            }
+
+        # If cache is stale (invalidated by CRUD), return stale data while refreshing
+        if people_cache["data"] and not people_cache["is_valid"]:
+            print("Cache is stale, returning stale data while refreshing...")
+            
+            # Trigger refresh if not already in progress
+            if not people_cache["is_loading"] and people_cache["pending_refresh"]:
+                print("Starting background refresh from stale cache state...")
+                asyncio.create_task(background_refresh_people_cache(people_cache["data"].copy()))
+            
+            return {
+                "success": True,
+                "cached_data": people_cache["data"],
+                "cached_at": people_cache["last_updated"],
+                "expires_at": people_cache["expires_at"],
+                "source": "stale_cache",
+                "total_count": len(people_cache["data"]),
+                "is_complete": True,
+                "message": "Using stale data (cache invalidated, refresh in progress)",
+                "cache_version": people_cache["version"],
+                "is_valid": False,
+                "refresh_queued": people_cache["pending_refresh"]
             }
        
         # If cache is empty/expired and not loading, trigger background load
         if not people_cache["data"] and not people_cache["is_loading"]:
             print("Cache empty, triggering background load...")
-            asyncio.create_task(background_load_all_people())
+            asyncio.create_task(background_refresh_people_cache())
            
             # Return empty but indicate loading will start
             return {
@@ -274,35 +475,50 @@ async def get_cached_people():
                 "total_count": 0,
                 "is_complete": False,
                 "message": "Background loading started...",
-                "load_progress": 0
+                "load_progress": 0,
+                "cache_version": people_cache["version"]
             }
            
         # If we have some data but it's expired, return it anyway while refreshing
-        if people_cache["data"]:
-            print("Cache expired, returning stale data while refreshing...")
-            # Trigger refresh in background
-            if not people_cache["is_loading"]:
-                asyncio.create_task(background_load_all_people())
+        # if people_cache["data"]:
+        #     print("Cache expired, returning stale data while refreshing...")
+        #     # Trigger refresh in background
+        #     if not people_cache["is_loading"]:
+        #         asyncio.create_task(background_load_all_people())
            
-            return {
-                "success": True,
-                "cached_data": people_cache["data"],
-                "cached_at": people_cache["last_updated"],
-                "expires_at": people_cache["expires_at"],
-                "source": "stale_cache",
-                "total_count": len(people_cache["data"]),
-                "is_complete": True,
-                "message": "Using stale data (refresh in progress)"
-            }
+        #     return {
+        #         "success": True,
+        #         "cached_data": people_cache["data"],
+        #         "cached_at": people_cache["last_updated"],
+        #         "expires_at": people_cache["expires_at"],
+        #         "source": "stale_cache",
+        #         "total_count": len(people_cache["data"]),
+        #         "is_complete": True,
+        #         "message": "Using stale data (refresh in progress)"
+        #     }
        
-        # Fallback - return empty
+        # Return empty but indicate loading will start
         return {
             "success": True,
             "cached_data": [],
             "cached_at": None,
-            "source": "empty",
+            "source": "triggered_load",
             "total_count": 0,
-            "is_complete": False
+            "is_complete": False,
+            "message": "Background loading started...",
+            "load_progress": 0,
+            "cache_version": people_cache["version"]
+        }
+        
+        # Fallback - return whatever we have
+        return {
+            "success": True,
+            "cached_data": people_cache["data"] if people_cache["data"] else [],
+            "cached_at": people_cache["last_updated"],
+            "source": "fallback",
+            "total_count": len(people_cache["data"]) if people_cache["data"] else 0,
+            "is_complete": bool(people_cache["data"]),
+            "cache_version": people_cache["version"]
         }
        
     except Exception as e:
@@ -343,7 +559,7 @@ async def get_people_simple(
             "Surname": 1,
             "Email": 1,
             "Number": 1,
-            "Gender": 1, #getting gender is
+            "Gender": 1,
             "Leader @1": 1,
             "Leader @12": 1,
             "Leader @144": 1
@@ -387,6 +603,29 @@ async def get_people_simple(
             "results": []
         }
        
+# @app.post("/cache/people/refresh")
+# async def refresh_people_cache():
+#     """
+#     Manually refresh the people cache
+#     """
+#     try:
+#         if not people_cache["is_loading"]:
+#             print("Manual cache refresh triggered")
+#             asyncio.create_task(background_load_all_people())
+           
+#         return {
+#             "success": True,
+#             "message": "Cache refresh triggered",
+#             "is_loading": people_cache["is_loading"],
+#             "current_progress": people_cache["load_progress"]
+#         }
+       
+#     except Exception as e:
+#         print(f"Error refreshing cache: {str(e)}")
+#         return {
+#             "success": False,
+#             "error": str(e)
+#         }
 @app.post("/cache/people/refresh")
 async def refresh_people_cache():
     """
@@ -395,21 +634,31 @@ async def refresh_people_cache():
     try:
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
-            asyncio.create_task(background_load_all_people())
-           
-        return {
-            "success": True,
-            "message": "Cache refresh triggered",
-            "is_loading": people_cache["is_loading"],
-            "current_progress": people_cache["load_progress"]
-        }
-       
+            current_data = people_cache["data"].copy() if people_cache["data"] else None
+            asyncio.create_task(background_refresh_people_cache(current_data))
+            
+            return {
+                "success": True,
+                "message": "Cache refresh triggered",
+                "is_loading": True,
+                "current_progress": people_cache["load_progress"],
+                "current_cache_size": len(people_cache["data"]) if people_cache["data"] else 0
+            }
+        else:
+            return {
+                "success": True,
+                "message": "Cache refresh already in progress",
+                "is_loading": True,
+                "current_progress": people_cache["load_progress"]
+            }
+        
     except Exception as e:
         print(f"Error refreshing cache: {str(e)}")
         return {
             "success": False,
             "error": str(e)
         }
+
 
 @app.get("/cache/people/status")
 async def get_cache_status():
@@ -427,7 +676,11 @@ async def get_cache_status():
             "is_loading": people_cache["is_loading"],
             "load_progress": people_cache["load_progress"],
             "total_loaded": people_cache["total_loaded"],
-            "last_error": people_cache["last_error"]
+            "last_error": people_cache["last_error"],
+            "is_valid": people_cache["is_valid"],
+            "pending_refresh": people_cache["pending_refresh"],
+            "version": people_cache["version"],
+            "refresh_queue_size": len(people_cache["refresh_queue"])
         },
         "database": {
             "total_people": total_in_db,
@@ -3499,197 +3752,6 @@ async def get_registrant_events(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-# @app.get("/registrant/events/cells-debug")
-# async def get_registrant_cell_events_debug(
-#     current_user: dict = Depends(get_current_user),
-#     status: Optional[str] = Query(None),
-#     page: int = Query(1, ge=1),
-#     limit: int = Query(25, ge=1, le=100),
-#     search: Optional[str] = Query(None),
-#     event_type: Optional[str] = Query(None),
-#     personal: Optional[bool] = Query(False),
-#     start_date: Optional[str] = Query(None)
-# ):
-#     """Registrant cells endpoint with pagination and deduplication"""
-#     try:
-#         email = current_user.get("email")
-#         if not email:
-#             raise HTTPException(status_code=400, detail="User email not found")
-
-#         timezone = pytz.timezone("Africa/Johannesburg")
-#         today = datetime.now(timezone)
-#         today_date = today.date()
-       
-#         start_date_filter = start_date if start_date else '2025-11-30'
-#         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
-       
-#         print(f"Registrant - Cells from {start_date_obj} to {today_date}, Page {page}")
-#         print(f"Search: '{search}', Status: '{status}', Personal: {personal}, Event Type: '{event_type}', Start Date: '{start_date_filter}'")
-
-#         query = {
-#             "Event Type": "Cells",
-#             "$or": [
-#                 {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-#                 {"email": {"$regex": f"^{email}$", "$options": "i"}},
-#             ]
-#         }
-       
-#         # Add event type filter if provided
-#         if event_type and event_type != 'all':
-#             query["eventType"] = event_type
-       
-#         # Add search filter if provided
-#         if search and search.strip():
-#             search_regex = {"$regex": search.strip(), "$options": "i"}
-#             query["$or"].extend([
-#                 {"Event Name": search_regex},
-#                 {"Leader": search_regex},
-#                 {"Leader at 12": search_regex}
-#             ])
-       
-#         cursor = events_collection.find(query)
-#         all_cells_raw = await cursor.to_list(length=None)
-       
-#         print(f"Found {len(all_cells_raw)} cells before deduplication and date filtering")
-       
-#         seen_cells = set()
-#         all_cells = []
-       
-#         for cell in all_cells_raw:
-#             event_name = (cell.get("Event Name") or "").strip().lower()
-#             email = (cell.get("Email") or "").strip().lower()
-#             day = (cell.get("Day") or "").strip().lower()
-           
-#             if not event_name:
-#                 continue
-           
-#             cell_key = f"{event_name}|{email}|{day}"
-           
-#             if cell_key not in seen_cells:
-#                 seen_cells.add(cell_key)
-#                 all_cells.append(cell)
-       
-#         print(f"After deduplication: {len(all_cells)} unique cells")
-       
-#         # Day mapping
-#         day_mapping = {
-#             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-#             'friday': 4, 'saturday': 5, 'sunday': 6
-#         }
-       
-#         # Process events
-#         processed_events = []
-       
-#         for event in all_cells:
-#             try:
-#                 event_name = str(event.get("Event Name", "")).strip()
-#                 day = str(event.get("Day", "")).strip().lower()
-               
-#                 if day not in day_mapping:
-#                     continue
-               
-#                 # Calculate most recent occurrence
-#                 target_weekday = day_mapping[day]
-#                 current_weekday = today_date.weekday()
-#                 days_diff = (current_weekday - target_weekday) % 7
-               
-#                 most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
-               
-#                 if most_recent_occurrence < start_date_obj or most_recent_occurrence > today_date:
-#                     continue
-               
-#                 # Get leader info
-#                 leader_name = event.get("Leader", "").strip()
-#                 leader_at_12 = event.get("Leader @12", event.get("Leader at 12", "")).strip()
-#                 leader_at_144 = event.get("Leader @144", event.get("Leader at 144", ""))
-               
-#                 # Determine status
-#                 did_not_meet = event.get("did_not_meet", False)
-#                 attendees = event.get("attendees", [])
-#                 has_attendees = len(attendees) > 0 if isinstance(attendees, list) else False
-               
-#                 if did_not_meet:
-#                     cell_status = "did_not_meet"
-#                     status_display = "Did Not Meet"
-#                 elif has_attendees:
-#                     cell_status = "complete"
-#                     status_display = "Complete"
-#                 else:
-#                     cell_status = "incomplete"
-#                     status_display = "Incomplete"
-               
-#                 # Build event object
-#                 final_event = {
-#                     "_id": str(event.get("_id", "")),
-#                     "eventName": event_name,
-#                     "eventType": event.get("eventType", "Cells"),
-#                     "eventLeaderName": leader_name,
-#                     "eventLeaderEmail": str(event.get("Email", "")).strip(),
-#                     "leader1": "",
-#                     "leader12": leader_at_12,
-#                     "leader144": leader_at_144,
-#                     "day": day.capitalize(),
-#                     "date": most_recent_occurrence.isoformat(),
-#                     "location": event.get("Location", ""),
-#                     "attendees": attendees if isinstance(attendees, list) else [],
-#                     "did_not_meet": did_not_meet,
-#                     "status": cell_status,
-#                     "Status": status_display,
-#                     "_is_overdue": most_recent_occurrence < today_date
-#                 }
-               
-#                 processed_events.append(final_event)
-               
-#             except Exception as e:
-#                 print(f"Error processing event {event.get('_id')}: {str(e)}")
-#                 continue
-       
-#         print(f"Processed {len(processed_events)} events after date filtering")
-       
-#         status_counts = {
-#             "incomplete": sum(1 for e in processed_events if e["status"] == "incomplete"),
-#             "complete": sum(1 for e in processed_events if e["status"] == "complete"),
-#             "did_not_meet": sum(1 for e in processed_events if e["status"] == "did_not_meet")
-#         }
-       
-#         print(f"Status counts - Incomplete: {status_counts['incomplete']}, Complete: {status_counts['complete']}, Did Not Meet: {status_counts['did_not_meet']}")
-       
-#         if status and status != 'all':
-#             processed_events = [e for e in processed_events if e["status"] == status]
-#             print(f" Filtered to {len(processed_events)} events with status '{status}'")
-       
-#         # Sort by date
-#         processed_events.sort(key=lambda x: (x['date'], x['eventLeaderName'].lower()))
-       
-#         # Pagination
-#         total = len(processed_events)
-#         total_pages = (total + limit - 1) // limit if total > 0 else 1
-#         start_idx = (page - 1) * limit
-#         end_idx = start_idx + limit
-#         paginated_events = processed_events[start_idx:end_idx]
-       
-#         print(f"Returning page {page}/{total_pages}: {len(paginated_events)} events")
-       
-#         return {
-#             "events": paginated_events,
-#             "total_events": total,
-#             "total_pages": total_pages,
-#             "current_page": page,
-#             "page_size": limit,
-#             "status_counts": status_counts,
-#             "date_range": {
-#                 "start_date": start_date_filter,
-#                 "end_date": today_date.isoformat()
-#             }
-#         }
-       
-#     except Exception as e:
-#         print(f"ERROR in get_registrant_cell_events_debug: {str(e)}")
-#         import traceback
-#         traceback.print_exc()
-#         raise HTTPException(status_code=500, detail=f"Error fetching events: {str(e)}")
-
-
 @app.get("/events/global")
 async def get_global_events(
     current_user: dict = Depends(get_current_user),
@@ -3774,9 +3836,6 @@ async def get_global_events(
        
         for event in all_events:
             try:
-                print(f"Processing event {event.get('_id')}: {event.get('eventName', event.get('Event Name', 'Unknown'))}")
-               
-                
                 is_new_event = False
                 if last_updated:
                     event_created = event.get("created_at")
@@ -7032,35 +7091,244 @@ async def get_people(
 
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
+    """
+    Get complete person data by ID - ENHANCED to include ALL fields
+    """
     try:
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+        
+        # Fetch the person with NO projection to get ALL fields
         person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
-       
+        
+        # Convert ObjectId to string
         person["_id"] = str(person["_id"])
-        mapped = {
+        
+        # Build comprehensive response with ALL fields
+        # Handle both capitalized and lowercase field names
+        complete_person = {
+            # Core identification
             "_id": person["_id"],
             "Name": person.get("Name", ""),
             "Surname": person.get("Surname", ""),
-            "Number": person.get("Number", ""),
             "Email": person.get("Email", ""),
-            "Address": person.get("Address", ""),
-            "Gender": person.get("Gender", ""),
+            "Number": person.get("Number", ""),
+            
+            # Personal information - CRITICAL: Include Birthday/DOB
             "Birthday": person.get("Birthday", ""),
+            "dob": person.get("Birthday", ""),  # Alias for frontend compatibility
+            "Gender": person.get("Gender", ""),
+            "Address": person.get("Address", ""),
+            
+            # Invitation and leadership
             "InvitedBy": person.get("InvitedBy", ""),
             "Leader @1": person.get("Leader @1", ""),
             "Leader @12": person.get("Leader @12", ""),
             "Leader @144": person.get("Leader @144", ""),
             "Leader @1728": person.get("Leader @1728", ""),
+            
+            # Stage and status
             "Stage": person.get("Stage", "Win"),
+            
+            # Timestamps
             "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
             "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+            
+            # Additional fields that might exist
+            "user_id": person.get("user_id", ""),
+            "DecisionType": person.get("DecisionType", ""),
+            "DecisionDate": person.get("DecisionDate", ""),
+            "DecisionHistory": person.get("DecisionHistory", []),
+            "FirstDecisionDate": person.get("FirstDecisionDate", ""),
+            "LastDecisionDate": person.get("LastDecisionDate", ""),
+            "TotalRecommitments": person.get("TotalRecommitments", 0),
+            
+            # Lowercase aliases for frontend compatibility
+            "name": person.get("Name", ""),
+            "surname": person.get("Surname", ""),
+            "email": person.get("Email", ""),
+            "number": person.get("Number", ""),
+            "gender": person.get("Gender", ""),
+            "address": person.get("Address", ""),
+            "invitedBy": person.get("InvitedBy", ""),
+            "leader1": person.get("Leader @1", ""),
+            "leader12": person.get("Leader @12", ""),
+            "leader144": person.get("Leader @144", ""),
+            "leader1728": person.get("Leader @1728", ""),
+            "stage": person.get("Stage", "Win"),
         }
-        return mapped
+        return complete_person
+        
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error fetching person by ID: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching person: {str(e)}")
 
+
+@app.patch("/people/{person_id}")
+async def update_person_with_cache_invalidation_enhanced(
+    person_id: str = Path(...), 
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update person with automatic cache invalidation - ENHANCED for Birthday handling
+    """
+    try:
+        print(f"Updating person {person_id}")
+        print(f"   Update data received: {update_data}")
+        
+        # Get current person data for comparison
+        current_person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not current_person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        
+        # Prepare normalized update data
+        normalized_data = {}
+        
+        # Handle name fields
+        if "Name" in update_data or "name" in update_data:
+            normalized_data["Name"] = (update_data.get("Name") or update_data.get("name", "")).strip()
+        
+        if "Surname" in update_data or "surname" in update_data:
+            normalized_data["Surname"] = (update_data.get("Surname") or update_data.get("surname", "")).strip()
+        
+        # Handle email
+        if "Email" in update_data or "email" in update_data:
+            normalized_data["Email"] = (update_data.get("Email") or update_data.get("email", "")).strip()
+        
+        # Handle phone
+        if "Number" in update_data or "number" in update_data:
+            normalized_data["Number"] = (update_data.get("Number") or update_data.get("number", "")).strip()
+        
+        # ⭐ CRITICAL: Handle Birthday/DOB properly
+        if "Birthday" in update_data or "dob" in update_data:
+            birthday_value = update_data.get("Birthday") or update_data.get("dob", "")
+            if birthday_value:
+                # Normalize date format if needed (handle both DD/MM/YYYY and YYYY-MM-DD)
+                normalized_data["Birthday"] = birthday_value.strip()
+                print(f"Birthday being updated to: {normalized_data['Birthday']}")
+        
+        # Handle gender
+        if "Gender" in update_data or "gender" in update_data:
+            normalized_data["Gender"] = (update_data.get("Gender") or update_data.get("gender", "")).strip()
+        
+        # Handle address
+        if "Address" in update_data or "address" in update_data:
+            normalized_data["Address"] = (update_data.get("Address") or update_data.get("address", "")).strip()
+        
+        # Handle InvitedBy
+        if "InvitedBy" in update_data or "invitedBy" in update_data:
+            normalized_data["InvitedBy"] = (update_data.get("InvitedBy") or update_data.get("invitedBy", "")).strip()
+        
+        # Handle leader fields
+        if "Leader @1" in update_data or "leader1" in update_data:
+            normalized_data["Leader @1"] = (update_data.get("Leader @1") or update_data.get("leader1", "")).strip()
+        
+        if "Leader @12" in update_data or "leader12" in update_data:
+            normalized_data["Leader @12"] = (update_data.get("Leader @12") or update_data.get("leader12", "")).strip()
+        
+        if "Leader @144" in update_data or "leader144" in update_data:
+            normalized_data["Leader @144"] = (update_data.get("Leader @144") or update_data.get("leader144", "")).strip()
+        
+        if "Leader @1728" in update_data or "leader1728" in update_data:
+            normalized_data["Leader @1728"] = (update_data.get("Leader @1728") or update_data.get("leader1728", "")).strip()
+        
+        # Handle stage
+        if "Stage" in update_data or "stage" in update_data:
+            normalized_data["Stage"] = (update_data.get("Stage") or update_data.get("stage", "Win")).strip()
+        
+        # Add update timestamp
+        normalized_data["UpdatedAt"] = datetime.utcnow().isoformat()
+        
+        print(f"Normalized update data: {normalized_data}")
+        
+        # Perform the update
+        result = await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": normalized_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="No changes made to person")
+        
+        # TRIGGER CACHE INVALIDATION
+        await invalidate_people_cache("update", {
+            "person_id": person_id,
+            "updated_fields": list(update_data.keys()),
+            "previous_data": {
+                "name": current_person.get("Name"),
+                "surname": current_person.get("Surname"),
+                "email": current_person.get("Email")
+            }
+        })
+        
+        # Update cache entry if it exists
+        if people_cache["data"]:
+            for i, person in enumerate(people_cache["data"]):
+                if person["_id"] == person_id:
+                    people_cache["data"][i].update({
+                        "Name": normalized_data.get("Name", person.get("Name", "")),
+                        "Surname": normalized_data.get("Surname", person.get("Surname", "")),
+                        "Email": normalized_data.get("Email", person.get("Email", "")),
+                        "Number": normalized_data.get("Number", person.get("Number", "")),
+                        "Gender": normalized_data.get("Gender", person.get("Gender", "")),
+                        "FullName": f"{normalized_data.get('Name', person.get('Name', ''))} {normalized_data.get('Surname', person.get('Surname', ''))}".strip(),
+                        "UpdatedAt": datetime.utcnow().isoformat()
+                    })
+                    print(f"Updated cached entry for person ID: {person_id}")
+                    break
+        
+        # Fetch and return updated person in the expected format
+        updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not updated_person:
+            raise HTTPException(status_code=404, detail="Person not found after update")
+        
+        # Return comprehensive response
+        updated_person["_id"] = str(updated_person["_id"])
+        mapped_response = {
+            "_id": updated_person["_id"],
+            "Name": updated_person.get("Name", ""),
+            "Surname": updated_person.get("Surname", ""),
+            "Number": updated_person.get("Number", ""),
+            "Email": updated_person.get("Email", ""),
+            "Address": updated_person.get("Address", ""),
+            "Gender": updated_person.get("Gender", ""),
+            "Birthday": updated_person.get("Birthday", ""),
+            "dob": updated_person.get("Birthday", ""),
+            "InvitedBy": updated_person.get("InvitedBy", ""),
+            "Leader @1": updated_person.get("Leader @1", ""),
+            "Leader @12": updated_person.get("Leader @12", ""),
+            "Leader @144": updated_person.get("Leader @144", ""),
+            "Leader @1728": updated_person.get("Leader @1728", ""),
+            "Stage": updated_person.get("Stage", "Win"),
+            "UpdatedAt": updated_person.get("UpdatedAt"),
+        }
+        
+        print(f"Person updated successfully")
+        print(f"Birthday: {mapped_response['Birthday']}")
+        
+        return {
+            "success": True,
+            "message": "Person updated successfully",
+            "person": mapped_response,
+            "cache_invalidated": True,
+            "cache_refresh_triggered": people_cache["pending_refresh"]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating person: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 def normalize_person_data(data: dict) -> dict:
     """Normalize person data for database operations"""
@@ -7082,25 +7350,73 @@ def normalize_person_data(data: dict) -> dict:
     }
 
 @app.patch("/people/{person_id}")
-async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
+async def update_person_with_cache_invalidation(
+    person_id: str = Path(...), 
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update person with automatic cache invalidation"""
     try:
         normalized_data = normalize_person_data(update_data)
-       
+        
+        # Get current person data for comparison
+        current_person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not current_person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        
+        # Perform the update
         result = await people_collection.update_one(
             {"_id": ObjectId(person_id)},
             {"$set": normalized_data}
         )
-        if result.matched_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found")
-
-        # Fetch the updated person document
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="No changes made to person")
+        
+        # TRIGGER CACHE INVALIDATION
+        await invalidate_people_cache("update", {
+            "person_id": person_id,
+            "updated_fields": list(update_data.keys()),
+            "previous_data": {
+                "name": current_person.get("Name"),
+                "surname": current_person.get("Surname"),
+                "email": current_person.get("Email")
+            }
+        })
+        
+        # Update cache entry if it exists
+        if people_cache["data"]:
+            for i, person in enumerate(people_cache["data"]):
+                if person["_id"] == person_id:
+                    # Update the cached entry with all fields
+                    people_cache["data"][i].update({
+                        "Name": normalized_data.get("Name", person.get("Name", "")),
+                        "Surname": normalized_data.get("Surname", person.get("Surname", "")),
+                        "Email": normalized_data.get("Email", person.get("Email", "")),
+                        "Number": normalized_data.get("Number", person.get("Number", "")),
+                        "Gender": normalized_data.get("Gender", person.get("Gender", "")),
+                        "Address": normalized_data.get("Address", person.get("Address", "")),
+                        "Birthday": normalized_data.get("Birthday", person.get("Birthday", "")),
+                        "InvitedBy": normalized_data.get("InvitedBy", person.get("InvitedBy", "")),
+                        "Leader @1": normalized_data.get("Leader @1", person.get("Leader @1", "")),
+                        "Leader @12": normalized_data.get("Leader @12", person.get("Leader @12", "")),
+                        "Leader @144": normalized_data.get("Leader @144", person.get("Leader @144", "")),
+                        "Leader @1728": normalized_data.get("Leader @1728", person.get("Leader @1728", "")),
+                        "Stage": normalized_data.get("Stage", person.get("Stage", "Win")),
+                        "FullName": f"{normalized_data.get('Name', person.get('Name', ''))} {normalized_data.get('Surname', person.get('Surname', ''))}".strip(),
+                        "UpdatedAt": datetime.utcnow().isoformat()
+                    })
+                    print(f"Updated cached entry for person ID: {person_id}")
+                    break
+        
+        # Fetch and return updated person in the expected format
         updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
         if not updated_person:
             raise HTTPException(status_code=404, detail="Person not found after update")
-
-        # Return the updated person in the same format as GET
+        
+        # Return the updated person in the same format as the GET endpoint
         updated_person["_id"] = str(updated_person["_id"])
-        mapped = {
+        mapped_response = {
             "_id": updated_person["_id"],
             "Name": updated_person.get("Name", ""),
             "Surname": updated_person.get("Surname", ""),
@@ -7117,17 +7433,29 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
             "Stage": updated_person.get("Stage", "Win"),
             "UpdatedAt": updated_person.get("UpdatedAt"),
         }
-        return mapped
-
+        
+        return {
+            "success": True,
+            "message": "Person updated successfully",
+            "person": mapped_response,
+            "cache_invalidated": True,
+            "cache_refresh_triggered": people_cache["pending_refresh"]
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error updating person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 
 @app.post("/people")
-async def create_person(person_data: PersonCreate):
+async def create_person_with_cache_invalidation(
+    person_data: PersonCreate,
+    current_user: dict = Depends(get_current_user)
+):
     """
-    Create a new person and automatically update the cache
+    Create a new person with automatic cache invalidation
     """
     try:
         # Normalize and validate email
@@ -7194,11 +7522,18 @@ async def create_person(person_data: PersonCreate):
                     "UpdatedAt": person_doc["UpdatedAt"]
                 }
                 people_cache["data"].append(new_cache_entry)
-                print(f" Added new person to cache: {new_cache_entry['FullName']}")
+                print(f"Added new person to cache: {new_cache_entry['FullName']}")
             except Exception as cache_error:
-                print(f" Warning: Failed to add person to cache: {cache_error}")
+                print(f"Warning: Failed to add person to cache: {cache_error}")
         else:
-            print(" Warning: Cache is not initialized, person not added to cache")
+            print("Warning: Cache is not initialized, person not added to cache")
+        
+        # TRIGGER CACHE INVALIDATION
+        await invalidate_people_cache("create", {
+            "person_id": inserted_id,
+            "email": person_doc["Email"],
+            "full_name": f"{person_doc['Name']} {person_doc['Surname']}".strip()
+        })
         
         # Prepare response object
         created_person = {
@@ -7225,29 +7560,63 @@ async def create_person(person_data: PersonCreate):
             "message": "Person created successfully",
             "id": inserted_id,
             "_id": inserted_id,
-            "person": created_person
+            "person": created_person,
+            "cache_invalidated": True,
+            "cache_refresh_triggered": people_cache["pending_refresh"]
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error creating person: {e}")
+        print(f"Error creating person: {e}")
         raise HTTPException(
             status_code=500, 
             detail=f"Internal Server Error: {str(e)}"
         )
     
 @app.delete("/people/{person_id}")
-async def delete_person(person_id: str = Path(...)):
+async def delete_person_with_cache_invalidation(
+    person_id: str = Path(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete person with automatic cache invalidation"""
     try:
+        # Get person before deletion for cache invalidation
+        person = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        
+        # Perform deletion
         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Person not found")
-        return {"message": "Person deleted successfully"}
+        
+        # TRIGGER CACHE INVALIDATION
+        await invalidate_people_cache("delete", {
+            "person_id": person_id,
+            "person_name": f"{person.get('Name', '')} {person.get('Surname', '')}".strip(),
+            "person_email": person.get("Email", "")
+        })
+        
+        # Remove from cache immediately
+        if people_cache["data"]:
+            initial_count = len(people_cache["data"])
+            people_cache["data"] = [p for p in people_cache["data"] if p["_id"] != person_id]
+            if len(people_cache["data"]) < initial_count:
+                print(f"Removed person {person_id} from cache")
+        
+        return {
+            "success": True,
+            "message": "Person deleted successfully",
+            "cache_invalidated": True,
+            "cache_refresh_triggered": people_cache["pending_refresh"]
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/people/search-fast")
 async def search_people_fast(
@@ -8995,8 +9364,6 @@ async def get_service_checkin_real_time_data(
     - FIXED: Returns ACTUAL counts from database
     """
     try:
-        print(f"Getting real-time data for event: {event_id}")
-       
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
@@ -9014,8 +9381,6 @@ async def get_service_checkin_real_time_data(
         present_count = len([a for a in attendees if a.get("checked_in", False) or a.get("is_checked_in", False)])
         new_people_count = len(new_people)
         consolidation_count = len(consolidations)
-
-        print(f"Real-time stats - Present: {present_count}, New: {new_people_count}, Consolidations: {consolidation_count}")
 
         return {
             "success": True,
@@ -9041,7 +9406,9 @@ async def service_checkin_person(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Service Check-in - FIXED: Returns ACTUAL counts after operation
+    Service Check-in
+    - Atomic attendee check-in (no duplicates possible)
+    - Returns ACTUAL counts after operation
     """
     try:
         event_id = checkin_data.get("event_id")
@@ -9051,13 +9418,11 @@ async def service_checkin_person(
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        # Get event FRESH from database
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
         now = datetime.utcnow().isoformat()
-
 
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
@@ -9067,23 +9432,13 @@ async def service_checkin_person(
                     detail="Valid person ID is required for attendee check-in"
                 )
 
-            # Find person
-            existing = await people_collection.find_one({"_id": ObjectId(person_id)})
+            existing = await people_collection.find_one(
+                {"_id": ObjectId(person_id)}
+            )
             if not existing:
                 raise HTTPException(
                     status_code=404,
                     detail="Person does not exist — add them first using /people"
-                )
-
-            # Prevent duplicate check-in
-            already_checked = await events_collection.find_one({
-                "_id": ObjectId(event_id),
-                "attendees.id": str(existing["_id"])
-            })
-            if already_checked:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{existing.get('Name')} is already checked in"
                 )
 
             attendee_record = {
@@ -9093,13 +9448,15 @@ async def service_checkin_person(
                 "email": existing.get("Email", ""),
                 "phone": existing.get("Number", ""),
                 "time": now,
-                "checked_in": True,  # IMPORTANT: Mark as checked in
+                "checked_in": True,
                 "type": "attendee"
             }
 
-            # Update the event
-            await events_collection.update_one(
-                {"_id": ObjectId(event_id)},
+            result = await events_collection.update_one(
+                {
+                    "_id": ObjectId(event_id),
+                    "attendees.id": {"$ne": attendee_record["id"]}
+                },
                 {
                     "$push": {"attendees": attendee_record},
                     "$inc": {"total_attendance": 1},
@@ -9107,22 +9464,27 @@ async def service_checkin_person(
                 }
             )
 
-            # Get UPDATED event to return ACTUAL counts
-            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-            updated_attendees = updated_event.get("attendees", [])
-            present_count = len([a for a in updated_attendees if a.get("checked_in", False)])
+            if result.modified_count == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{existing.get('Name')} is already checked in"
+                )
+
+            updated_event = await events_collection.find_one(
+                {"_id": ObjectId(event_id)}
+            )
+            present_count = len(
+                [a for a in updated_event.get("attendees", []) if a.get("checked_in")]
+            )
 
             return {
                 "message": f"{existing.get('Name')} checked in",
                 "type": "attendee",
                 "attendee": attendee_record,
-                "present_count": present_count,  # ACTUAL COUNT FROM DB
+                "present_count": present_count,
                 "success": True
             }
 
-        # ============================================================
-        # 2️⃣ NEW PERSON — Visitors NOT in database
-        # ============================================================
         elif checkin_type == "new_person":
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
 
@@ -9141,7 +9503,6 @@ async def service_checkin_person(
                 "notes": "Visitor - add to database later if needed"
             }
 
-            # Update the event
             await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -9150,20 +9511,20 @@ async def service_checkin_person(
                 }
             )
 
-            # Get UPDATED event to return ACTUAL counts
-            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-            new_people_count = len(updated_event.get("new_people", []))
+            updated_event = await events_collection.find_one(
+                {"_id": ObjectId(event_id)}
+            )
 
             return {
                 "message": "Visitor added to event",
                 "type": "new_person",
                 "new_person": new_person_record,
-                "new_people_count": new_people_count,  # ACTUAL COUNT FROM DB
+                "new_people_count": len(updated_event.get("new_people", [])),
                 "success": True
             }
 
         # ============================================================
-        #  CONSOLIDATION — Follow-up decisions
+        # 3️⃣ CONSOLIDATION
         # ============================================================
         elif checkin_type == "consolidation":
             consolidation_id = f"con_{secrets.token_urlsafe(8)}"
@@ -9183,7 +9544,6 @@ async def service_checkin_person(
                 "status": "active"
             }
 
-            # Update the event
             await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -9192,15 +9552,15 @@ async def service_checkin_person(
                 }
             )
 
-            # Get UPDATED event to return ACTUAL counts
-            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-            consolidation_count = len(updated_event.get("consolidations", []))
+            updated_event = await events_collection.find_one(
+                {"_id": ObjectId(event_id)}
+            )
 
             return {
                 "message": "Decision recorded",
                 "type": "consolidation",
                 "consolidation": consolidation_record,
-                "consolidation_count": consolidation_count,  
+                "consolidation_count": len(updated_event.get("consolidations", [])),
                 "success": True
             }
 
