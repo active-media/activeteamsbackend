@@ -2153,7 +2153,6 @@ async def deactivate_cell(
             "last_status_change": current_time,
             "is_permanent_deact":is_permanent_deact
         }
-        print(updates)
          
         query = {"$or": []}
         
