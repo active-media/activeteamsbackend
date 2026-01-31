@@ -2070,7 +2070,9 @@ async def get_other_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-#------------ Edit cells and events  ------------#
+#
+# 
+# ------------ Edit cells and events  ------------#
 @app.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
     """
@@ -5808,7 +5810,6 @@ async def get_cell_events_optimized(
         }
         
         cell_instances = []
-        
         for cell in all_cells:
             try:
                 day_name = str(cell.get("Day", "")).strip().lower()
