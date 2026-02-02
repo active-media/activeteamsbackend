@@ -4912,11 +4912,11 @@ async def get_admin_cell_events_debug(
             print(f"Applying search filter for: '{search_term}'")
            
             match_filter["$or"] = [
-                {"Event Name": {"$regex": search_term, "$options": "i"}},
-                {"Leader": {"$regex": search_term, "$options": "i"}},
-                {"Email": {"$regex": search_term, "$options": "i"}},
-                {"Leader at 12": {"$regex": search_term, "$options": "i"}},
-                {"Leader @12": {"$regex": search_term, "$options": "i"}},
+                {"Event Name": {"$regex": f"^{search_term}", "$options": "i"}},
+                {"Leader": {"$regex": f"^{search_term}", "$options": "i"}},
+                {"Email": {"$regex": f"^{search_term}", "$options": "i"}},
+                {"Leader at 12": {"$regex": f"^{search_term}", "$options": "i"}},
+                {"Leader @12": {"$regex": f"^{search_term}", "$options": "i"}}
             ]
        
         #  FETCH ALL CELLS AND DEDUPLICATE IN PYTHON
