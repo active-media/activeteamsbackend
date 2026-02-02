@@ -2614,7 +2614,7 @@ async def auto_reactivate_expired_cells():
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=10,minute=15) 
+scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=0,minute=0) 
 scheduler.start()
 sleep(10)
       
