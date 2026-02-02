@@ -2361,7 +2361,8 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
-        update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
+        if update_fields.get("deactivation_end",""):
+            update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         print(f"Updating with: {update_fields}")
         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
         
