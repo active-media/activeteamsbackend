@@ -856,49 +856,6 @@ async def signup(user: UserCreate):
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
    
-    # Create corresponding person record in People collection
-    person_doc = {
-        "Name": user.name.strip(),
-        "Surname": user.surname.strip(),
-        "Email": email,
-        "Number": user.phone_number.strip(),
-        "Address": user.home_address.strip(),
-        "Gender": user.gender.strip(),
-        "Birthday": user.date_of_birth,
-        "InvitedBy": inviter_full_name,
-        "Leader @1": leader1,
-        "Leader @12": leader12,
-        "Leader @144": leader144,
-        "Leader @1728": leader1728,
-        "Stage": "Win",
-        "Date Created": datetime.utcnow().isoformat(),
-        "UpdatedAt": datetime.utcnow().isoformat(),
-        "user_id": str(user_result.inserted_id)
-    }
-   
-    try:
-        person_result = await people_collection.insert_one(person_doc)
-        logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
-       
-        # ADD THE NEW PERSON TO BACKGROUND CACHE
-        new_person_cache_entry = {
-            "_id": str(person_result.inserted_id),
-            "Name": user.name.strip(),
-            "Surname": user.surname.strip(),
-            "Email": email,
-            "Number": user.phone_number.strip(),
-            "Leader @1": leader1,
-            "Leader @12": leader12,
-            "Leader @144": leader144,
-            "Leader @1728": leader1728,
-            "FullName": f"{user.name.strip()} {user.surname.strip()}".strip()
-        }
-        people_cache["data"].append(new_person_cache_entry)
-        print(f"Added new person to background cache: {new_person_cache_entry['FullName']}")
-       
-    except Exception as e:
-        logger.error(f"Failed to create person record for {email}: {e}")
-   
     return {"message": "User created successfully"}
 
 # ---------------- Login ----------------
