@@ -2735,7 +2735,7 @@ async def create_event_type(event_type: EventTypeCreate):
                 detail="Event types containing 'cell' or 'cells' (in any case or variation) are reserved and cannot be created. Please use a different name."
             )
         
-        name = name.title()
+        name = name.lower()
         
         existing = await events_collection.find_one({
             "$or": [
