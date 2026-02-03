@@ -2196,9 +2196,7 @@ async def deactivate_cell(
 ):
     try:
         current_time = datetime.utcnow()
-        #calc date of deactivation end
         deactivation_end = current_time + timedelta(weeks=weeks)
-        #updates events of selected cell with this object
         print("BOOL",is_permanent_deact)
         updates = {
             "is_active": False,
