@@ -2064,8 +2064,10 @@ async def get_other_events(
                
                 if "persistent_attendees" in event:
                     print(f"Removing persistent_attendees from non-cell event: {event_name}")
-               
-                other_events.append(instance)
+                
+                if instance.get("is_active","") == True:
+                    other_events.append(instance)
+
                 print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status})")
 
             except Exception as e:
@@ -2073,6 +2075,7 @@ async def get_other_events(
                 continue
 
         other_events.sort(key=lambda x: x['date'], reverse=True)
+        
        
         total_count = len(other_events)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
@@ -2218,6 +2221,10 @@ async def update_cell_event_working(identifier: str, event_data: dict):
         for key, value in event_data.items():
             if key not in protected_fields:
                 update_fields[key] = value
+         
+        if update_fields.get("deactivation_end"):
+            print("yay events!")
+            update_fields["deactivation_end"] = datetime.strptime(update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         
         update_fields["updated_at"] = datetime.utcnow()
         
@@ -2391,7 +2398,9 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
-        update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
+        if update_fields.get("deactivation_end",""):
+            print("yay!")
+            update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         print(f"Updating with: {update_fields}")
         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
         
@@ -2423,69 +2432,61 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
 
 
 #----------------Deactivate cells Endpoints------------
-@app.put("/cells/deactivate")
-async def deactivate_cell(
+@app.put("/events/deactivate")
+async def deactivate_event(
     cell_identifier: str = Query(..., description="Cell name or Person name"),
     weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
     reason: Optional[str] = Query(None, description="Reason for deactivation"),
     person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
     day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
-    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation")
+    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
 ):
     try:
         current_time = datetime.utcnow()
         #calc date of deactivation end
         deactivation_end = current_time + timedelta(weeks=weeks)
-        #updates events of selected cell with this object
         print("BOOL",is_permanent_deact)
         updates = {
             "is_active": False,
             "deactivation_start": current_time,
-            "deactivation_end": {"$date":deactivation_end},
+            "deactivation_end": datetime.strptime(str(deactivation_end),"%Y-%m-%d %H:%M:%S.%f"),
             "deactivation_reason": reason,
             "last_status_change": current_time,
             "is_permanent_deact":is_permanent_deact
         }
-        print(updates)
          
         query = {"$or": []}
-        
-        cell_type_conditions = [
-            {"Event Type": "Cells"},
-            {"eventTypeName": "Cell  Testing"}, 
-            {"eventTypeName": "cells"},
-            {"eventTypeName": "Cells"}
-        ]
+        print(cell_identifier, person_name)
         
         if person_name:
-            for cell_type in cell_type_conditions:
-                query["$or"].append({
-                    "$and": [
-                        cell_type,
-                        {"$or": [
-                            {"eventName": cell_identifier},
-                            {"Event Name": cell_identifier}
-                        ]},
-                        {"$or": [
-                            {"eventLeader": person_name},
-                            {"Leader": person_name},
-                            {"eventLeaderName": person_name}
-                        ]}
-                    ]
-                })
+            query["$or"].append({
+                "$and": [
+                    {"$or": [
+                        {"eventName": cell_identifier},
+                        {"Event Name": cell_identifier}
+                    ]},
+                    {"$or": [
+                        {"eventLeader": person_name},
+                        {"Leader": person_name},
+                        {"eventLeaderName": person_name}
+                    ]}
+                ]
+            })
         else:
-            for cell_type in cell_type_conditions:
-                query["$or"].append({
-                    "$and": [
-                        cell_type,
-                        {"$or": [
-                            {"eventLeader": cell_identifier},
-                            {"Leader": cell_identifier},
-                            {"eventLeaderName": cell_identifier}
-                        ]}
-                    ]
-                })
-        
+            query["$or"].append({
+                "$and": [
+                     {"$or": [
+                        {"eventName": cell_identifier},
+                        {"Event Name": cell_identifier}
+                    ]},
+                    {"$or": [
+                        {"eventLeader": cell_identifier},
+                        {"Leader": cell_identifier},
+                        {"eventLeaderName": cell_identifier}
+                    ]}
+                ]
+            })
+        print("QUERY", query)
         # Add day filter if specified
         if day_of_week:
             if "$or" in query and len(query["$or"]) > 0:
@@ -2609,18 +2610,14 @@ async def reactivate_cell(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
 # @scheduler.scheduled_job('cron', hour=0, minute=0)
-async def auto_reactivate_expired_cells():
+async def auto_reactivate_expired_events():
     try:
         current_time = datetime.utcnow()
         
         
         query = {
             "$and": [
-                {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}, {"eventTypeName":"CELLS"}, {"Event Type": "Cells"}]},
                 {"is_active": False},
                 {"deactivation_end": {"$lte": current_time, "$ne": None}},
                 {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
@@ -2645,7 +2642,7 @@ async def auto_reactivate_expired_cells():
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=0,minute=0) 
+scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
 scheduler.start()
 sleep(10)
       
