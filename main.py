@@ -1232,7 +1232,22 @@ def get_current_week_identifier():
         print(f"Error getting week identifier: {e}")
         now = datetime.utcnow()
         year, week, _ = now.isocalendar()
-        return f"{year}-W{week:02d}"   
+        return f"{year}-W{week:02d}"
+
+DAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+def get_monday(date_obj: datetime) -> datetime:
+    # Monday = 0
+    return date_obj - timedelta(days=date_obj.weekday())
+   
 
 # Events Section  ----------------------------------------------
 @app.post("/events")
@@ -1299,24 +1314,82 @@ async def create_event(event: EventCreate):
         if "email" in event_data:
             del event_data["email"]
         
-        if event_data.get("recurring_day"):
-            recurring_days = event_data["recurring_day"]
-            
-            if isinstance(recurring_days, str):
-                recurring_days = [recurring_days]
-            
-            recurring_days = [day.strip() for day in recurring_days if day and day.strip()]
-            
-            event_data["recurring_day"] = recurring_days
-            
-            print(f"Saving event with recurring days: {recurring_days}")
-            
-            if len(recurring_days) == 0:
-                event_data["day"] = event_data.get("day", "One-time")
-            elif len(recurring_days) == 1:
-                event_data["day"] = recurring_days[0]
-            else:
-                event_data["day"] = "Recurring"
+        created_events = []
+
+        recurring_days = event_data.get("recurring_day", [])
+
+        if isinstance(recurring_days, str):
+            recurring_days = [recurring_days]
+
+        recurring_days = [d.strip().lower() for d in recurring_days if d.strip()]
+
+        # Use date sent from frontend
+        reference_date = event_data.get("date")
+
+        if isinstance(reference_date, datetime):
+            pass  # already correct
+        elif isinstance(reference_date, str):
+            reference_date = datetime.strptime(reference_date, "%Y-%m-%d")
+        else:
+            reference_date = datetime.utcnow()
+
+
+        monday = get_monday(reference_date)
+
+        # NO recurring days → create single event (safe fallback)
+        if not recurring_days:
+            # NO recurring days
+            event_data["day"] = event_data.get("day", "One-time")
+            event_data["date"] = reference_date.date().isoformat()
+            event_data["created_at"] = datetime.utcnow()
+            event_data["updated_at"] = datetime.utcnow()
+            event_data["is_new_event"] = True
+
+            result = await events_collection.insert_one(event_data)
+            created_event = await events_collection.find_one({"_id": result.inserted_id})
+
+            return {
+                "success": True,
+                "message": "Event created successfully",
+                "id": str(result.inserted_id),
+                "event": {
+                    "_id": str(created_event["_id"]),
+                    "day": created_event.get("day"),
+                    "date": created_event.get("date"),
+                    "recurring_day": created_event.get("recurring_day"),
+                }
+            }
+
+
+        else:
+            # ONE EVENT PER DAY
+            if recurring_days:
+                for day in recurring_days:
+                    if day not in DAY_INDEX:
+                        continue
+
+                    event_date = monday + timedelta(days=DAY_INDEX[day])
+
+                    new_event = event_data.copy()
+                    new_event["_id"] = ObjectId()
+                    new_event["UUID"] = str(uuid.uuid4())
+                    new_event["day"] = day.capitalize()
+                    new_event["date"] = event_date.date().isoformat()
+                    new_event["recurring_day"] = [day.capitalize()]
+                    new_event["created_at"] = datetime.utcnow()
+                    new_event["updated_at"] = datetime.utcnow()
+                    new_event["is_new_event"] = True
+
+                    result = await events_collection.insert_one(new_event)
+                    created_events.append(str(result.inserted_id))
+
+                return {
+                    "success": True,
+                    "message": "Recurring events created successfully",
+                    "created_event_ids": created_events,
+                    "count": len(created_events)
+                }
+
 
         print(f"Using day value from frontend: {event_data.get('day')}")
         
@@ -1379,18 +1452,21 @@ async def create_event(event: EventCreate):
         print(f"  - status: {event_data.get('status')}")
         print(f"  - is_new_event: {event_data.get('is_new_event')}")
 
-        result = await events_collection.insert_one(event_data)
-        
-        created_event = await events_collection.find_one({"_id": result.inserted_id})
         
         print(f"Event created successfully: {result.inserted_id}")
         print(f"  Recurring days: {created_event.get('recurring_day')}")
         print(f"  Day value: {created_event.get('day')}")
         print(f"  Status: {created_event.get('status')}")
 
+        result = await events_collection.insert_one(event_data)
+        
+        created_event = await events_collection.find_one({"_id": result.inserted_id})
+        
         return {
             "success": True,
-            "message": "Event created successfully", 
+            "message": "Event created successfully",
+            "created_event_ids": created_events,
+            "count": len(created_events),
             "id": str(result.inserted_id),
             "event": {
                 "_id": str(created_event["_id"]),
