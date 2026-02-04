@@ -1087,6 +1087,90 @@ async def logout(user_id: str = Body(..., embed=True)):
     return {"message": "Logged out successfully"}
 
 # EVENTS ENDPOINTS-----------------------------------------------------------------
+SAST_TZ = pytz.timezone('Africa/Johannesburg')
+
+def convert_time_to_sast(time_str: str) -> str:
+    """Convert UTC time string (HH:MM) to SAST (UTC+2)"""
+    if not time_str:
+        return time_str
+    
+    try:
+        time_str = str(time_str).strip()
+        
+        # If it's already a datetime object, handle it
+        if isinstance(time_str, datetime):
+            if time_str.tzinfo is None:
+                time_str = pytz.UTC.localize(time_str)
+            sast_time = time_str.astimezone(SAST_TZ)
+            result = sast_time.strftime('%H:%M')
+            print(f"✅ Converted datetime to SAST: {result}")
+            return result
+        
+        # Parse HH:MM format
+        if ':' in time_str:
+            parts = time_str.split(':')
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            
+            # Create UTC time
+            now = datetime.now(pytz.UTC)
+            utc_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+            
+            # Convert to SAST (add 2 hours)
+            sast_time = utc_time.astimezone(SAST_TZ)
+            
+            result = sast_time.strftime('%H:%M')
+            print(f"✅ Converted time: {time_str} UTC → {result} SAST")
+            return result
+        
+        print(f"⚠️ Time format not recognized: {time_str}")
+        return time_str
+        
+    except Exception as e:
+        print(f"❌ Error converting time to SAST: {e}, input: {time_str}")
+        return time_str
+
+def convert_time_to_utc(time_str: str) -> str:
+    """Convert SAST time string (HH:MM) to UTC (subtract 2 hours)"""
+    if not time_str:
+        return time_str
+    
+    try:
+        time_str = str(time_str).strip()
+        
+        # If it's already a datetime object, handle it
+        if isinstance(time_str, datetime):
+            if time_str.tzinfo is None:
+                time_str = SAST_TZ.localize(time_str)
+            utc_time = time_str.astimezone(pytz.UTC)
+            result = utc_time.strftime('%H:%M')
+            print(f"✅ Converted datetime to UTC: {result}")
+            return result
+        
+        # Parse HH:MM format
+        if ':' in time_str:
+            parts = time_str.split(':')
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            
+            # Create SAST time
+            now = datetime.now(SAST_TZ)
+            sast_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+            
+            # Convert to UTC (subtract 2 hours)
+            utc_time = sast_time.astimezone(pytz.UTC)
+            
+            result = utc_time.strftime('%H:%M')
+            print(f"✅ Converted time: {time_str} SAST → {result} UTC")
+            return result
+        
+        print(f"⚠️ Time format not recognized: {time_str}")
+        return time_str
+        
+    except Exception as e:
+        print(f"❌ Error converting time to UTC: {e}, input: {time_str}")
+        return time_str
+    
 def is_recurring_event(event: dict) -> bool:
     """Check if event has recurring days configured"""
     recurring_days = event.get("recurring_day") or event.get("recurring_days") or []
@@ -1764,13 +1848,25 @@ async def get_cell_events(
                             # "statistics": weekly_stats,  
                             # "total_associated_count": total_associated,
                         }
+                    if event.get('time'):
+                        instance['time'] = convert_time_to_sast(event.get('time'))
+                    if event.get('Time'):
+                        instance['Time'] = convert_time_to_sast(event.get('Time'))
                     
                     cell_instances.append(instance)
                     
             except Exception as e:
                 continue
-        
-        cell_instances.sort(key=lambda x: x['date'], reverse=True)
+            raw_time = event.get('time') or event.get('Time')
+        print(f"📤 Raw time from DB: {raw_time} (UTC)")
+    
+        # Convert to SAST for display
+        if raw_time:
+            sast_time = convert_time_to_sast(raw_time)
+            print(f"📤 Sending to frontend: {sast_time} (SAST)")
+            instance['time'] = sast_time
+            instance['Time'] = sast_time
+            cell_instances.sort(key=lambda x: x['date'], reverse=True)
         
         total_count = len(cell_instances)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
@@ -2031,6 +2127,10 @@ async def get_other_events(
                     "original_event_id": str(event.get("_id"))
                     
                 }
+                if event.get('time'):
+                    instance['time'] = convert_time_to_sast(event.get('time'))
+                if event.get('Time'):
+                    instance['Time'] = convert_time_to_sast(event.get('Time'))
                
                 if "persistent_attendees" in event:
                     print(f"Removing persistent_attendees from non-cell event: {event_name}")
@@ -2114,8 +2214,14 @@ async def update_cell_event_working(identifier: str, event_data: dict):
         # Time mapping
         if 'Time' in event_data or 'time' in event_data:
             time_value = event_data.get('Time') or event_data.get('time')
-            update_fields['Time'] = time_value
-            update_fields['time'] = time_value
+            print(f"📥 Received time from frontend: {time_value} (SAST)")
+            
+            # Convert SAST to UTC for database storage
+            time_value_utc = convert_time_to_utc(time_value)
+            print(f"💾 Storing in database as: {time_value_utc} (UTC)")
+            
+            update_fields['Time'] = time_value_utc
+            update_fields['time'] = time_value_utc
         
         # Date mapping - Handle both formats AND display_date
         if 'date' in event_data or 'Date Of Event' in event_data:
@@ -2319,10 +2425,16 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         
         # Time mapping
         if 'Time' in update_data or 'time' in update_data:
-            time_value = update_data.get('Time') or update_data.get('time')
-            update_fields['Time'] = time_value
-            update_fields['time'] = time_value
-        
+            time_value_sast = update_data.get('Time') or update_data.get('time')
+            print(f"📥 Received time from frontend: {time_value_sast} (assuming SAST)")
+            
+            # ALWAYS convert SAST to UTC for storage
+            time_value_utc = convert_time_to_utc(time_value_sast)
+            print(f"💾 Converting to UTC for storage: {time_value_sast} SAST → {time_value_utc} UTC")
+            
+            update_fields['Time'] = time_value_utc
+            update_fields['time'] = time_value_utc
+                
         # Address/Location mapping
         if 'Address' in update_data or 'location' in update_data:
             location_value = update_data.get('Address') or update_data.get('location')
@@ -3946,6 +4058,11 @@ async def get_global_events(
                     "closed_by": event.get("closed_by"),
                     "closed_at": event.get("closed_at")
                 }
+                
+                if event.get('time'):
+                    final_event['time'] = convert_time_to_sast(event.get('time'))
+                if event.get('Time'):
+                    final_event['Time'] = convert_time_to_sast(event.get('Time'))
                
                 processed_events.append(final_event)
                 print(f"  Event added to processed list")
@@ -5303,6 +5420,11 @@ async def get_user_cell_events_fixed_future(
                 print(f"Error processing event {event.get('_id')}: {str(e)}")
                 continue
 
+        if event.get('time'):
+            final_event['time'] = convert_time_to_sast(event.get('time'))
+        if event.get('Time'):
+            final_event['Time'] = convert_time_to_sast(event.get('Time'))        
+            
         # Sort by date
         processed_events.sort(key=lambda x: x['date'])
 
@@ -5891,6 +6013,11 @@ async def get_cell_events_optimized(
                         "attendance": week_attendance,
                         "did_not_meet": did_not_meet,
                     }
+                     
+                    if cell.get('time'):
+                        instance['time'] = convert_time_to_sast(cell.get('time'))
+                    if cell.get('Time'):
+                        instance['Time'] = convert_time_to_sast(cell.get('Time'))
                     
                     cell_instances.append(instance)
                     
@@ -6488,6 +6615,11 @@ async def get_event_by_id(event_id: str = Path(...)):
         event["_id"] = str(event["_id"])
         event = convert_datetime_to_iso(event)
         event = sanitize_document(event)
+        
+        if event.get('time'):
+            event['time'] = convert_time_to_sast(event['time'])
+        if event.get('Time'):
+            event['Time'] = convert_time_to_sast(event['Time'])
        
         #  ENSURE NEW FIELDS ARE RETURNED
         event.setdefault("isTicketed", False)
