@@ -1103,7 +1103,6 @@ def convert_time_to_sast(time_str: str) -> str:
                 time_str = pytz.UTC.localize(time_str)
             sast_time = time_str.astimezone(SAST_TZ)
             result = sast_time.strftime('%H:%M')
-            print(f"✅ Converted datetime to SAST: {result}")
             return result
         
         # Parse HH:MM format
@@ -1120,10 +1119,8 @@ def convert_time_to_sast(time_str: str) -> str:
             sast_time = utc_time.astimezone(SAST_TZ)
             
             result = sast_time.strftime('%H:%M')
-            print(f"✅ Converted time: {time_str} UTC → {result} SAST")
             return result
         
-        print(f"⚠️ Time format not recognized: {time_str}")
         return time_str
         
     except Exception as e:
@@ -1144,7 +1141,6 @@ def convert_time_to_utc(time_str: str) -> str:
                 time_str = SAST_TZ.localize(time_str)
             utc_time = time_str.astimezone(pytz.UTC)
             result = utc_time.strftime('%H:%M')
-            print(f"✅ Converted datetime to UTC: {result}")
             return result
         
         # Parse HH:MM format
@@ -1161,10 +1157,8 @@ def convert_time_to_utc(time_str: str) -> str:
             utc_time = sast_time.astimezone(pytz.UTC)
             
             result = utc_time.strftime('%H:%M')
-            print(f"✅ Converted time: {time_str} SAST → {result} UTC")
             return result
         
-        print(f"⚠️ Time format not recognized: {time_str}")
         return time_str
         
     except Exception as e:
@@ -1858,12 +1852,10 @@ async def get_cell_events(
             except Exception as e:
                 continue
             raw_time = event.get('time') or event.get('Time')
-        print(f"📤 Raw time from DB: {raw_time} (UTC)")
     
         # Convert to SAST for display
         if raw_time:
             sast_time = convert_time_to_sast(raw_time)
-            print(f"📤 Sending to frontend: {sast_time} (SAST)")
             instance['time'] = sast_time
             instance['Time'] = sast_time
             cell_instances.sort(key=lambda x: x['date'], reverse=True)
@@ -2214,7 +2206,6 @@ async def update_cell_event_working(identifier: str, event_data: dict):
         # Time mapping
         if 'Time' in event_data or 'time' in event_data:
             time_value = event_data.get('Time') or event_data.get('time')
-            print(f"📥 Received time from frontend: {time_value} (SAST)")
             
             # Convert SAST to UTC for database storage
             time_value_utc = convert_time_to_utc(time_value)
@@ -2426,11 +2417,9 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         # Time mapping
         if 'Time' in update_data or 'time' in update_data:
             time_value_sast = update_data.get('Time') or update_data.get('time')
-            print(f"📥 Received time from frontend: {time_value_sast} (assuming SAST)")
             
             # ALWAYS convert SAST to UTC for storage
             time_value_utc = convert_time_to_utc(time_value_sast)
-            print(f"💾 Converting to UTC for storage: {time_value_sast} SAST → {time_value_utc} UTC")
             
             update_fields['Time'] = time_value_utc
             update_fields['time'] = time_value_utc
