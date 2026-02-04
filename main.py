@@ -2415,7 +2415,6 @@ async def deactivate_event(
         current_time = datetime.utcnow()
         #calc date of deactivation end
         deactivation_end = current_time + timedelta(weeks=weeks)
-        #updates events of selected cell with this object
         print("BOOL",is_permanent_deact)
         updates = {
             "is_active": False,
@@ -2427,15 +2426,6 @@ async def deactivate_event(
         }
          
         query = {"$or": []}
-        #removed code to query for cells only
-        # cell_type_conditions = [
-        #     {"Event Type": "Cells"},
-        #     {"eventTypeName": "Cell  Testing"}, 
-        #     {"eventTypeName": "cells"},
-        #     {"eventTypeName": "Cells"}
-        # ]
-
-        #event name, event leader
         print(cell_identifier, person_name)
         
         if person_name:
@@ -2589,9 +2579,6 @@ async def reactivate_cell(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 # @scheduler.scheduled_job('cron', hour=0, minute=0)
 async def auto_reactivate_expired_events():
