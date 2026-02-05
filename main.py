@@ -1127,21 +1127,64 @@ def convert_time_to_sast(time_str: str) -> str:
         print(f"❌ Error converting time to SAST: {e}, input: {time_str}")
         return time_str
 
+# def convert_time_to_utc(time_str: str) -> str:
+#     """Convert SAST time string (HH:MM) to UTC (subtract 2 hours)"""
+#     if not time_str:
+#         return time_str
+    
+#     try:
+#         time_str = str(time_str).strip()
+        
+#         # If it's already a datetime object, handle it
+#         if isinstance(time_str, datetime):
+#             if time_str.tzinfo is None:
+#                 time_str = SAST_TZ.localize(time_str)
+#             utc_time = time_str.astimezone(pytz.UTC)
+#             result = utc_time.strftime('%H:%M')
+#             return result
+        
+#         # Parse HH:MM format
+#         if ':' in time_str:
+#             parts = time_str.split(':')
+#             hours = int(parts[0])
+#             minutes = int(parts[1]) if len(parts) > 1 else 0
+            
+#             # Create SAST time
+#             now = datetime.now(SAST_TZ)
+#             sast_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+            
+#             # Convert to UTC (subtract 2 hours)
+#             utc_time = sast_time.astimezone(pytz.UTC)
+            
+#             result = utc_time.strftime('%H:%M')
+#             return result
+        
+#         return time_str
+        
+#     except Exception as e:
+#         print(f"❌ Error converting time to UTC: {e}, input: {time_str}")
+#         return time_str
+    
 def convert_time_to_utc(time_str: str) -> str:
     """Convert SAST time string (HH:MM) to UTC (subtract 2 hours)"""
     if not time_str:
         return time_str
     
+    print(f"DEBUG convert_time_to_utc: Input = {time_str}, Type = {type(time_str)}")
+    
     try:
-        time_str = str(time_str).strip()
-        
-        # If it's already a datetime object, handle it
+        # Check if it's already a datetime object first
         if isinstance(time_str, datetime):
+            print(f"DEBUG: Input is datetime object")
             if time_str.tzinfo is None:
                 time_str = SAST_TZ.localize(time_str)
             utc_time = time_str.astimezone(pytz.UTC)
             result = utc_time.strftime('%H:%M')
+            print(f"DEBUG: Converted datetime to UTC: {result}")
             return result
+        
+        time_str = str(time_str).strip()
+        print(f"DEBUG: After string conversion: {time_str}")
         
         # Parse HH:MM format
         if ':' in time_str:
@@ -1149,21 +1192,45 @@ def convert_time_to_utc(time_str: str) -> str:
             hours = int(parts[0])
             minutes = int(parts[1]) if len(parts) > 1 else 0
             
-            # Create SAST time
+            print(f"DEBUG: Parsed hours={hours}, minutes={minutes}")
+            
+            # Create SAST time with today's date
             now = datetime.now(SAST_TZ)
             sast_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+            print(f"DEBUG: Created SAST time: {sast_time}")
+            
+            # Ensure SAST timezone is set
+            if sast_time.tzinfo is None:
+                sast_time = SAST_TZ.localize(sast_time)
             
             # Convert to UTC (subtract 2 hours)
             utc_time = sast_time.astimezone(pytz.UTC)
+            print(f"DEBUG: Converted to UTC: {utc_time}")
             
             result = utc_time.strftime('%H:%M')
+            print(f"DEBUG: Final result: {result}")
             return result
         
+        print(f"DEBUG: No colon found, returning as-is: {time_str}")
         return time_str
         
     except Exception as e:
-        print(f"❌ Error converting time to UTC: {e}, input: {time_str}")
-        return time_str
+        print(f"❌ Error converting time to UTC: {e}, input: {time_str}, type: {type(time_str)}")
+        import traceback
+        traceback.print_exc()
+        # Fallback: try to subtract 2 hours manually
+        if ':' in str(time_str):
+            try:
+                hours = int(str(time_str).split(':')[0])
+                minutes = int(str(time_str).split(':')[1]) if len(str(time_str).split(':')) > 1 else 0
+                # Subtract 2 hours for SAST to UTC
+                utc_hours = (hours - 2) % 24
+                result = f"{utc_hours:02d}:{minutes:02d}"
+                print(f"DEBUG: Fallback conversion: {time_str} -> {result}")
+                return result
+            except:
+                return time_str
+        return time_str  
     
 def is_recurring_event(event: dict) -> bool:
     """Check if event has recurring days configured"""
@@ -1313,6 +1380,255 @@ def get_current_week_identifier():
         return f"{year}-W{week:02d}"   
 
 # Events Section  ----------------------------------------------
+# @app.post("/events")
+# async def create_event(event: EventCreate):
+#     """Create a new event"""
+#     try:
+#         event_data = event.dict()
+        
+#         event_data["_id"] = ObjectId()
+        
+#         if not event_data.get("UUID"):
+#             event_data["UUID"] = str(uuid.uuid4())
+        
+#         event_type_name = event_data.get("eventTypeName")
+#         if not event_type_name:
+#             raise HTTPException(status_code=400, detail="eventTypeName is required")
+        
+#         print(f"DEBUG: Time received from frontend: {event_data.get('Time')} / {event_data.get('time')}")
+#         print(f"DEBUG: Date received from frontend: {event_data.get('date')} / {event_data.get('Date Of Event')}")
+        
+#         # 🔧 CRITICAL FIX: Handle Time field properly
+#         # Store time as-is, no conversion
+#         time_value = event_data.get("Time") or event_data.get("time")
+#         if time_value:
+#             print(f"Time field received: {time_value}")
+            
+#             # Clean the time - remove any timezone info if present
+#             if isinstance(time_value, str):
+#                 # If it's in ISO format with timezone, extract just HH:mm
+#                 if 'T' in time_value:
+#                     try:
+#                         from datetime import datetime
+#                         dt_obj = datetime.fromisoformat(time_value.replace('Z', '+00:00'))
+#                         time_value = dt_obj.strftime('%H:%M')
+#                         print(f"Extracted time from ISO: {time_value}")
+#                     except Exception as e:
+#                         print(f"Could not parse ISO time: {e}")
+#                 # Ensure it's in HH:mm format
+#                 elif ':' in time_value:
+#                     # Extract just HH:mm
+#                     parts = time_value.split(':')
+#                     if len(parts) >= 2:
+#                         hours = parts[0].zfill(2)
+#                         minutes = parts[1][:2].zfill(2)
+#                         time_value = f"{hours}:{minutes}"
+#                         print(f"Formatted time to HH:mm: {time_value}")
+            
+#             # Store both fields with the same value
+#             event_data["Time"] = time_value
+#             event_data["time"] = time_value
+#             print(f"Saving time as: {time_value}")
+        
+#         # 🔧 Also handle date properly
+#         date_value = event_data.get("date") or event_data.get("Date Of Event")
+#         if date_value:
+#             print(f"Date field received: {date_value}")
+            
+#             try:
+#                 from datetime import datetime
+#                 # Parse the date
+#                 if 'T' in date_value:
+#                     # ISO format with time
+#                     dt_obj = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+#                 else:
+#                     # Just date string
+#                     dt_obj = datetime.strptime(date_value, '%Y-%m-%d')
+                
+#                 # Store in multiple formats for compatibility
+#                 event_data["date"] = dt_obj.isoformat()
+#                 event_data["Date Of Event"] = dt_obj.isoformat() + 'Z'
+#                 event_data["display_date"] = dt_obj.strftime('%d - %m - %Y')
+                
+#                 print(f"Saving date as: {event_data['date']}")
+#                 print(f" Display date: {event_data['display_date']}")
+                
+#             except Exception as e:
+#                 print(f"Could not parse date: {e}")
+#                 # Store as-is if parsing fails
+#                 event_data["date"] = date_value
+#                 event_data["Date Of Event"] = date_value
+        
+#         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
+#             event_data["eventTypeId"] = "CELLS_BUILT_IN"
+#             event_data["eventTypeName"] = "CELLS"
+#             event_data["hasPersonSteps"] = True
+#             event_data["isGlobal"] = False
+#             print(f"Using built-in CELLS event type with leader fields enabled")
+#         else:
+#             event_type = await events_collection.find_one({
+#                 "$or": [
+#                     {"name": {"$regex": f"^{event_type_name}$", "$options": "i"}},
+#                     {"Event Type": {"$regex": f"^{event_type_name}$", "$options": "i"}},
+#                     {"eventType": {"$regex": f"^{event_type_name}$", "$options": "i"}}
+#                 ],
+#                 "isEventType": True
+#             })
+            
+#             if not event_type:
+#                 print(f"Event type '{event_type_name}' not found in database")
+#                 available_types = await events_collection.find({"isEventType": True}).to_list(length=50)
+#                 available_type_names = [et.get("name") for et in available_types if et.get("name")]
+#                 print(f"Available event types: {available_type_names}")
+#                 raise HTTPException(status_code=400, detail=f"Event type '{event_type_name}' not found")
+            
+#             print(f"Found event type: {event_type.get('name')}")
+            
+#             exact_event_type_name = event_type.get("name")
+#             event_data["eventTypeId"] = event_type["UUID"]
+#             event_data["eventTypeName"] = exact_event_type_name
+            
+#             event_type_lower = exact_event_type_name.lower()
+            
+#             if "global" in event_type_lower:
+#                 event_data["isGlobal"] = True
+#             else:
+#                 event_data["isGlobal"] = event_data.get("isGlobal", False)
+            
+#             if "cell" in event_type_lower:
+#                 event_data["hasPersonSteps"] = True
+#             else:
+#                 event_data["hasPersonSteps"] = event_data.get("hasPersonSteps", False)
+        
+#         event_data.pop("eventType", None)
+#         if "userEmail" in event_data:
+#             del event_data["userEmail"]
+#         if "email" in event_data:
+#             del event_data["email"]
+        
+#         if event_data.get("recurring_day"):
+#             recurring_days = event_data["recurring_day"]
+            
+#             if isinstance(recurring_days, str):
+#                 recurring_days = [recurring_days]
+            
+#             recurring_days = [day.strip() for day in recurring_days if day and day.strip()]
+            
+#             event_data["recurring_day"] = recurring_days
+            
+#             print(f"Saving event with recurring days: {recurring_days}")
+            
+#             if len(recurring_days) == 0:
+#                 event_data["day"] = event_data.get("day", "One-time")
+#             elif len(recurring_days) == 1:
+#                 event_data["day"] = recurring_days[0]
+#             else:
+#                 event_data["day"] = "Recurring"
+
+#         print(f"Using day value from frontend: {event_data.get('day')}")
+        
+#         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
+#         event_data.setdefault("eventLeaderEmail", event_data.get("eventLeaderEmail", ""))
+        
+#         if event_data.get("hasPersonSteps"):
+#             event_data.setdefault("leader1", event_data.get("leader1", ""))
+#             event_data.setdefault("leader12", event_data.get("leader12", ""))
+#             event_data["persistent_attendees"] = event_data.get("persistent_attendees", [])
+#             print(f"Saved leader fields - Leader@1: {event_data.get('leader1')}, Leader@12: {event_data.get('leader12')}")
+
+#         event_data.setdefault("attendees", [])
+#         event_data["total_attendance"] = len(event_data.get("attendees", []))
+        
+#         # Mark this as a new event for instance generation
+#         event_data["is_new_event"] = True
+#         event_data["created_at"] = datetime.utcnow()
+#         event_data["updated_at"] = datetime.utcnow()
+        
+#         if event_data.get("eventTypeName", "").upper() == "CELLS":
+#             event_data["status"] = "incomplete"
+#             print("Setting CELLS event status to 'incomplete'")
+#         else:
+#             event_data["status"] = "open"
+#             print(f"Setting {event_data.get('eventTypeName')} event status to 'open'")
+        
+#         event_data["isTicketed"] = event_data.get("isTicketed", False)
+        
+#         if event_data.get("isTicketed") and event_data.get("priceTiers"):
+#             event_data["priceTiers"] = [
+#                 {
+#                     "name": tier.get("name", ""),
+#                     "price": float(tier.get("price", 0)),
+#                     "ageGroup": tier.get("ageGroup", ""),
+#                     "memberType": tier.get("memberType", ""),
+#                     "paymentMethod": tier.get("paymentMethod", "")
+#                 }
+#                 for tier in event_data.get("priceTiers", [])
+#             ]
+#         else:
+#             event_data["priceTiers"] = []
+
+#         if event_data.get("isGlobal", False):
+#             fields_to_remove = ["leader1", "leader12"]
+#             for field in fields_to_remove:
+#                 if field in event_data and not event_data[field]:
+#                     del event_data[field]
+
+#         print(f"DEBUG - Final event data being saved:")
+#         print(f"  - Event Type: {event_data.get('eventTypeName')}")
+#         print(f"  - Day: {event_data.get('day')}")
+#         print(f"  - Time: {event_data.get('Time')} / {event_data.get('time')}")
+#         print(f"  - Date: {event_data.get('date')}")
+#         print(f"  - isGlobal: {event_data.get('isGlobal')}")
+#         print(f"  - hasPersonSteps: {event_data.get('hasPersonSteps')}")
+#         print(f"  - leader1: {event_data.get('leader1')}")
+#         print(f"  - leader12: {event_data.get('leader12')}")
+#         print(f"  - status: {event_data.get('status')}")
+#         print(f"  - is_new_event: {event_data.get('is_new_event')}")
+
+#         result = await events_collection.insert_one(event_data)
+        
+#         created_event = await events_collection.find_one({"_id": result.inserted_id})
+        
+#         print(f"Event created successfully: {result.inserted_id}")
+#         print(f"  Recurring days: {created_event.get('recurring_day')}")
+#         print(f"  Day value: {created_event.get('day')}")
+#         print(f"  Time value: {created_event.get('Time')} / {created_event.get('time')}")
+#         print(f"  Date value: {created_event.get('date')}")
+#         print(f"  Status: {created_event.get('status')}")
+
+#         return {
+#             "success": True,
+#             "message": "Event created successfully", 
+#             "id": str(result.inserted_id),
+#             "event": {
+#                 "_id": str(created_event["_id"]),
+#                 "UUID": created_event.get("UUID"),
+#                 "eventName": created_event.get("eventName"),
+#                 "eventLeaderName": created_event.get("eventLeaderName"),
+#                 "recurring_day": created_event.get("recurring_day"),
+#                 "eventLeaderEmail": created_event.get("eventLeaderEmail"),
+#                 "day": created_event.get("day"),
+#                 "Time": created_event.get("Time"),
+#                 "time": created_event.get("time"),
+#                 "date": created_event.get("date"),
+#                 "Date Of Event": created_event.get("Date Of Event"),
+#                 "location": created_event.get("location"),
+#                 "eventTypeName": created_event.get("eventTypeName"),
+#                 "isGlobal": created_event.get("isGlobal"),
+#                 "hasPersonSteps": created_event.get("hasPersonSteps"),
+#                 "leader1": created_event.get("leader1"),
+#                 "leader12": created_event.get("leader12"),
+#                 "status": created_event.get("status"),
+#                 "is_new_event": True
+#             }
+#         }
+
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Error creating event: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
+    
 @app.post("/events")
 async def create_event(event: EventCreate):
     """Create a new event"""
@@ -1562,6 +1878,7 @@ async def create_event(event: EventCreate):
         print(f"Error creating event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event: {str(e)}")
     
+
 @app.get("/events/cells")
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
@@ -2279,15 +2596,15 @@ async def update_cell_event_working(identifier: str, event_data: dict):
                 update_fields['location'] = location_value
                 print(f"  Setting location: {location_value}")
         
-        # Time mapping - STORE AS RECEIVED (no conversion)
+        # Time mapping - CONVERT SAST TO UTC BEFORE SAVING
         if 'Time' in event_data or 'time' in event_data:
-            time_value = event_data.get('Time') or event_data.get('time')
-            if time_value:
-                # CRITICAL FIX: Store the time as-is, no conversion
-                # The frontend already sends SAST time, store it as SAST
-                update_fields['Time'] = time_value
-                update_fields['time'] = time_value
-                print(f"  ⚡ Setting time (SAST): {time_value}")
+            time_value_sast = event_data.get('Time') or event_data.get('time')
+            if time_value_sast:
+                # Convert from SAST (frontend) to UTC (database)
+                time_value_utc = convert_time_to_utc(time_value_sast)
+                update_fields['Time'] = time_value_utc
+                update_fields['time'] = time_value_utc
+                print(f"⏰ Converting time: SAST {time_value_sast} → UTC {time_value_utc}")
         
         # Date mapping - Handle both formats AND display_date
         date_updated = False
