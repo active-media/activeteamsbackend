@@ -478,26 +478,7 @@ async def get_cached_people():
                 "load_progress": 0,
                 "cache_version": people_cache["version"]
             }
-           
-        # If we have some data but it's expired, return it anyway while refreshing
-        # if people_cache["data"]:
-        #     print("Cache expired, returning stale data while refreshing...")
-        #     # Trigger refresh in background
-        #     if not people_cache["is_loading"]:
-        #         asyncio.create_task(background_load_all_people())
-           
-        #     return {
-        #         "success": True,
-        #         "cached_data": people_cache["data"],
-        #         "cached_at": people_cache["last_updated"],
-        #         "expires_at": people_cache["expires_at"],
-        #         "source": "stale_cache",
-        #         "total_count": len(people_cache["data"]),
-        #         "is_complete": True,
-        #         "message": "Using stale data (refresh in progress)"
-        #     }
-       
-        # Return empty but indicate loading will start
+
         return {
             "success": True,
             "cached_data": [],
@@ -602,30 +583,7 @@ async def get_people_simple(
             "error": str(e),
             "results": []
         }
-       
-# @app.post("/cache/people/refresh")
-# async def refresh_people_cache():
-#     """
-#     Manually refresh the people cache
-#     """
-#     try:
-#         if not people_cache["is_loading"]:
-#             print("Manual cache refresh triggered")
-#             asyncio.create_task(background_load_all_people())
-           
-#         return {
-#             "success": True,
-#             "message": "Cache refresh triggered",
-#             "is_loading": people_cache["is_loading"],
-#             "current_progress": people_cache["load_progress"]
-#         }
-       
-#     except Exception as e:
-#         print(f"Error refreshing cache: {str(e)}")
-#         return {
-#             "success": False,
-#             "error": str(e)
-#         }
+
 @app.post("/cache/people/refresh")
 async def refresh_people_cache():
     """
@@ -1684,8 +1642,7 @@ async def get_cell_events(
                             "original_event_id": str(event.get("_id")),
                             "attendance": attendance, 
                             "is_active":event.get("is_active","") 
-                            # "statistics": weekly_stats,  
-                            # "total_associated_count": total_associated,
+                     
                         }
                     
                     cell_instances.append(instance)
@@ -4015,13 +3972,10 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             if field in event_data and event_data[field] is not None:
                 update_data[field] = event_data[field]
        
-        # =========== FIX: Ensure status updates BOTH fields for ALL users ===========
         if is_status_update and new_status:
-            # Update BOTH status fields for consistency
             update_data['status'] = new_status
             update_data['Status'] = new_status
             
-            # Track who made the change (for admin/leader synchronization)
             update_data['last_updated_by'] = {
                 "email": current_user.get('email'),
                 "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
@@ -4457,7 +4411,6 @@ async def get_admin_cell_events_debug(
         today = datetime.now(timezone)
         today_date = today.date()
        
-        # USE PROVIDED START DATE OR DEFAULT TO OCT 20, 2025
         start_date_filter = start_date if start_date else '2025-10-20'
         start_date_obj = datetime.strptime(start_date_filter, "%Y-%m-%d").date()
        
@@ -4973,7 +4926,6 @@ async def get_leader_at_1_for_leader_at_12(leader_at_12_name: str) -> str:
         print(f"   Found person: {person_full_name}")
         print(f"   Gender: '{gender}'")
        
-        # SIMPLE GENDER-BASED ASSIGNMENT
         if gender in ["female", "f", "woman", "lady", "girl"]:
             print(f"   Assigned: Vicky Enslin (female)")
             return "Vicky Enslin"
