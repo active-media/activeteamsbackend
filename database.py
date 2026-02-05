@@ -5,15 +5,16 @@ from dotenv import load_dotenv
 load_dotenv() 
 
 MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
-DB_NAME = "active-teams-db"
+# DB_NAME = "active-teams-db"
+DB_NAME = "testing-data-active-teams"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client[DB_NAME]
-events_collection = db["Events"]
+# events_collection = db["Events"]
 people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]
 #  is used to test the whole data for events
-# events_collection = db["cellst"]  
+events_collection = db["cellst"]  
 tasktypes_collection = db["TaskTypes"]
 
 def get_database():

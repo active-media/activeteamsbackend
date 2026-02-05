@@ -2620,7 +2620,7 @@ async def auto_reactivate_expired_events():
             "$and": [
                 {"is_active": False},
                 {"deactivation_end": {"$lte": current_time, "$ne": None}},
-                {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
+                {"is_permanent_deact":{"$ne":True}}
             ]
         }
         
@@ -2642,7 +2642,7 @@ async def auto_reactivate_expired_events():
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
+scheduler.add_job(auto_reactivate_expired_events,'cron',hour=20,minute=16) 
 scheduler.start()
 sleep(10)
       
