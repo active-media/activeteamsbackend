@@ -12,7 +12,8 @@ events_collection = db["Events"]
 people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]
-# events_collection = db["cellst"]   is used to test the whole data for events
+#  is used to test the whole data for events
+# events_collection = db["cellst"]  
 tasktypes_collection = db["TaskTypes"]
 
 def get_database():
