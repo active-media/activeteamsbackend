@@ -1255,6 +1255,17 @@ async def create_event(event: EventCreate):
     """Create a new event"""
     try:
         event_data = event.dict()
+
+        event_data["eventLeaderName"] = (
+            event_data.get("eventLeaderName")
+            or event_data.get("eventLeader")
+            or ""
+        )
+
+        event_data["eventLeaderEmail"] = (
+            event_data.get("eventLeaderEmail")
+            or ""
+        )        
         
         event_data["_id"] = ObjectId()
         
