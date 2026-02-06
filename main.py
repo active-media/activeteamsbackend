@@ -1383,10 +1383,10 @@ async def create_event(event: EventCreate):
 
                     new_event = event_data.copy()
                     new_event["_id"] = ObjectId()
-                    new_event["UUID"] = str(uuid.uuid4())
+                    series_uuid = event_data.get("UUID") or str(uuid.uuid4())
                     new_event["day"] = day.capitalize()
                     new_event["date"] = event_date.date().isoformat()
-                    new_event["recurring_day"] = [day.capitalize()]
+                    new_event["recurring_day"] = [d.capitalize() for d in recurring_days]
                     new_event["created_at"] = datetime.utcnow()
                     new_event["updated_at"] = datetime.utcnow()
                     new_event["is_new_event"] = True
@@ -2099,6 +2099,10 @@ async def get_other_events(
                 recurring_days = event.get("recurring_day", [])
 
                 is_recurring = bool(recurring_days) and len(recurring_days) > 0
+                # HIDE future recurring events until the actual day
+                if is_recurring and event_date != today and user_role  != "admin":
+                    continue
+
 
                 instance = {
                     "_id": str(event.get("_id")),
