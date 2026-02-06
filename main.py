@@ -1740,17 +1740,31 @@ async def get_cell_events(
                 target_weekday = day_mapping[day_name]
                 
                 # Show only this week if status is "incomplete", otherwise show all
+                 # Show only this week if status == "incomplete", otherwise check a few past weeks
                 max_weeks = 1 if status == "incomplete" else 4
-                for week_offset in range(max_weeks):
-                    days_since_target = (today.weekday() - target_weekday) % 7
-                    instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
-                    
+
+                # Compute the date for the target weekday in the current ISO week (Monday = 0)
+                days_since_monday = today.weekday()  # 0..6
+                week_start = today - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+
+                # If the current-week instance is in the future (e.g. today is Fri and instance is Sat),
+                # do not include that current-week instance. We only include instances <= today.
+                for week_back in range(0, max_weeks):
+                    instance_date = current_week_instance - timedelta(weeks=week_back)
+
+                    # Always skip future dates (strict)
+                    if instance_date > today:
+                        continue
+
+                    # Respect start_date filter (don't include very old instances)
                     if instance_date < start_date_obj:
                         continue
-                    
+
                     # Use EXACT DATE for lookup (YYYY-MM-DD format)
                     exact_date = instance_date.isoformat()
                     attendance_data = event.get("attendance", {})
+
                     
                     # Look for attendance by exact date
                     attendance = attendance_data.get(exact_date, {})
@@ -3766,10 +3780,15 @@ async def get_registrant_events(
                
                 # Calculate most recent occurrence
                 target_weekday = day_mapping[day]
-                current_weekday = today_date.weekday()
-                days_diff = (current_weekday - target_weekday) % 7
-               
-                most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                # Compute current-week instance (Monday..Sunday week)
+                days_since_monday = today_date.weekday()
+                week_start = today_date - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+                # Never include a future date - if current-week instance is in future, use previous week
+                if current_week_instance > today_date:
+                    most_recent_occurrence = current_week_instance - timedelta(weeks=1)
+                else:
+                    most_recent_occurrence = current_week_instance
                
                 # FILTER BY DATE RANGE
                 if most_recent_occurrence < start_date_obj or most_recent_occurrence > today_date:
@@ -5342,11 +5361,26 @@ async def get_user_cell_events_fixed_future(
                     continue
                
                 # Calculate next occurrence
-                target_weekday = day_mapping[day]
-                base_date = max(start_date_obj, today_date)
-                base_weekday = base_date.weekday()
-                days_until = (target_weekday - base_weekday) % 7
-                next_occurrence = base_date + timedelta(days=days_until)
+       
+                # Compute current-week instance (Monday..Sunday week)
+                days_since_monday = today_date.weekday()
+                week_start = today_date - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+                # Choose the most relevant occurrence not in the future
+                if current_week_instance > today_date:
+                    next_occurrence = current_week_instance - timedelta(weeks=1)
+                else:
+                    next_occurrence = current_week_instance
+                # Ensure within requested start_date (don't return occurrences older than start_date_obj)
+                if next_occurrence < start_date_obj:
+                    # find first occurrence on/after start_date_obj (but not in the future)
+                    days_since_start = start_date_obj.weekday()
+                    start_week_start = start_date_obj - timedelta(days=days_since_start)
+                    candidate = start_week_start + timedelta(days=target_weekday)
+                    if candidate > today_date:
+                        next_occurrence = candidate - timedelta(weeks=1)
+                    else:
+                        next_occurrence = candidate
 
                 # Get leader info
                 leader_name = event.get("Leader", "").strip()
@@ -5914,13 +5948,20 @@ async def get_cell_events_optimized(
                 attendance_data = cell.get("attendance", {})
                 
                 weeks_to_check = 1 if status == "incomplete" else 4
-                
-                for week_offset in range(weeks_to_check):
-                    days_since_target = (today.weekday() - target_weekday) % 7
-                    instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
-                    
-                    if instance_date < start_date_obj or instance_date > today:
+                # Compute current-week instance
+                days_since_monday = today.weekday()
+                week_start = today - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+
+                for week_back in range(0, weeks_to_check):
+                    instance_date = current_week_instance - timedelta(weeks=week_back)
+                    # Strict: skip future dates
+                    if instance_date > today:
                         continue
+                    if instance_date < start_date_obj:
+                        continue
+                     
+                    exact_date_str = instance_date.isoformat()
                     
                     exact_date_str = instance_date.isoformat()
                     week_attendance = attendance_data.get(exact_date_str, {})
