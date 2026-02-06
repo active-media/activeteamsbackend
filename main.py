@@ -2173,7 +2173,7 @@ async def get_other_events(
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
                     "is_recurring": is_recurring,
-                    # "recurring_days": recurring_days,
+                    "recurring_days": recurring_days,
                     "original_event_id": str(event.get("_id"))
                 }
 
@@ -2181,7 +2181,8 @@ async def get_other_events(
                 if "persistent_attendees" in event:
                     print(f"Removing persistent_attendees from non-cell event: {event_name}")
                 
-                if instance.get("is_active","") == True:
+                is_active = event.get("is_active", True)  
+                if is_active:
                     other_events.append(instance)
 
                 print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status})")
@@ -2192,7 +2193,6 @@ async def get_other_events(
 
         other_events.sort(key=lambda x: x['date'], reverse=True)
         
-       
         total_count = len(other_events)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
         skip = (page - 1) * limit
