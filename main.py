@@ -2114,7 +2114,7 @@ async def get_other_events(
 
                 is_recurring = bool(recurring_days) and len(recurring_days) > 0
                 # HIDE future recurring events until the actual day
-                if is_recurring and event_date != today and user_role  != "admin":
+                if is_recurring and event_date != today:
                     continue
 
 
