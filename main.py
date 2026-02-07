@@ -1359,7 +1359,7 @@ async def get_cell_events(
                         {"EventType": {"$regex": "^Cells$", "$options": "i"}},
                         {"eventTypeId": "CELLS_BUILT_IN"},
                         {"hasPersonSteps": True},
-                        {"is_active": True}
+                        # {"is_active": True}
                     ]
                 },
                 {"isEventType": {"$ne": True}},
@@ -1742,11 +1742,15 @@ async def get_other_events(
             end_dt = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today + timedelta(days=365)
         except:
             end_dt = today + timedelta(days=365)
+        
         query = {
             "$nor": [
                 {"Event Type": {"$regex": "^cells$", "$options": "i"}},
                 {"eventType": {"$regex": "^cells$", "$options": "i"}},
                 {"eventTypeName": {"$regex": "^cells$", "$options": "i"}},
+                {"EventType": {"$regex": "^cells$", "$options": "i"}},  
+                {"eventTypeId": "CELLS_BUILT_IN"},  
+                {"hasPersonSteps": True}, 
             ]
         }
 
@@ -1799,7 +1803,7 @@ async def get_other_events(
             }
             query = {"$and": [query, search_filter]}
 
-        print("FINAL QUERY:", query)
+        print("FINAL QUERY for /events/other:", query)
 
         cursor = events_collection.find(query)
         events = await cursor.to_list(length=1000)
@@ -1844,9 +1848,8 @@ async def get_other_events(
                 result_item = {
                     "_id": str(e.get("_id")),
                     "UUID": e.get("UUID", ""),
-                     "status": ev_status,
+                    "status": ev_status,
                     "recurring": recurring_display,
-                    
                     "eventName": e.get("eventName") or e.get("Event Name", ""),
                     "eventLeaderName": e.get("eventLeaderName") or e.get("Leader") or e.get("leader1", ""),
                     "eventLeaderEmail": e.get("eventLeaderEmail") or e.get("userEmail", ""),
@@ -1884,7 +1887,6 @@ async def get_other_events(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to fetch events")
-
 
 # ------------ Edit cells and events  ------------#
 @app.put("/events/cells/{identifier}")
