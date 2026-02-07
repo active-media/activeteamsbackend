@@ -1160,7 +1160,7 @@ def generate_current_week_instances(event: dict) -> list:
                 "did_not_meet": did_not_meet,
                 "_is_overdue": current_date < today and event_status == "incomplete",
                 "is_recurring": True,
-                "recurring_days": recurring_days,  #  IMPORTANT: Include this
+                # "recurring_days": recurring_days, 
                 "week_identifier": week_id,
                 "original_event_id": str(event.get("_id"))
             }
