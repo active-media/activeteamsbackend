@@ -1135,9 +1135,9 @@ def generate_current_week_instances(event: dict) -> list:
             else:
                 event_status = "incomplete"
             
-            # Week identifier
-            year, week, _ = current_date.isocalendar()
-            week_id = f"{year}-W{week:02d}"
+            # CHANGED: Use the exact instance date as the canonical attendance key (YYYY-MM-DD)
+            # to fix the week-vs-date mismatch that marked completed cells as incomplete.
+            exact_date_str = current_date.strftime("%Y-%m-%d")  # CHANGED: Canonical attendance key (fixes mismatch bug)
             
             # Create instance
             instance = {
@@ -1190,7 +1190,22 @@ def get_current_week_identifier():
         print(f"Error getting week identifier: {e}")
         now = datetime.utcnow()
         year, week, _ = now.isocalendar()
-        return f"{year}-W{week:02d}"   
+        return f"{year}-W{week:02d}"
+
+DAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+def get_monday(date_obj: datetime) -> datetime:
+    # Monday = 0
+    return date_obj - timedelta(days=date_obj.weekday())
+   
 
 # Events Section  ----------------------------------------------
 
@@ -1534,34 +1549,64 @@ async def get_cell_events(
                 target_weekday = day_mapping[day_name]
                 
                 # Show only this week if status is "incomplete", otherwise show all
+                 # Show only this week if status == "incomplete", otherwise check a few past weeks
                 max_weeks = 1 if status == "incomplete" else 4
-                for week_offset in range(max_weeks):
-                    days_since_target = (today.weekday() - target_weekday) % 7
-                    instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
-                    
+
+                # Compute the date for the target weekday in the current ISO week (Monday = 0)
+                days_since_monday = today.weekday()  # 0..6
+                week_start = today - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+
+                # If the current-week instance is in the future (e.g. today is Fri and instance is Sat),
+                # do not include that current-week instance. We only include instances <= today.
+                for week_back in range(0, max_weeks):
+                    instance_date = current_week_instance - timedelta(weeks=week_back)
+
+                    # Always skip future dates (strict)
+                    if instance_date > today:
+                        continue
+
+                    # Respect start_date filter (don't include very old instances)
                     if instance_date < start_date_obj:
                         continue
-                    
+
                     # Use EXACT DATE for lookup (YYYY-MM-DD format)
                     exact_date = instance_date.isoformat()
                     attendance_data = event.get("attendance", {})
+
                     
-                    # Look for attendance by exact date
-                    attendance = attendance_data.get(exact_date, {})
+                    # CHANGED: Look for attendance by exact date key first to avoid week-key drift bugs.
+                    attendance = attendance_data.get(exact_date_str, {})
                     
-                    # If not found by exact date, check for backward compatibility
+                    # CHANGED: Backward-compat read fallback for legacy entries (temporary migration logic)
+                    # to fix week/date mismatch bugs in older attendance records.
                     if not attendance:
                         for key, value in attendance_data.items():
                             if isinstance(value, dict):
-                                # Check event_date_exact field
-                                if value.get("event_date_exact") == exact_date:
+                                # CHANGED: Try matching legacy records that stored the exact date in fields to fix mismatch.
+                                if value.get("event_date_exact") == exact_date_str:
                                     attendance = value
                                     break
-                                # Check event_date_iso field
                                 event_date_iso = value.get("event_date_iso")
-                                if event_date_iso and exact_date in event_date_iso:
+                                if event_date_iso and exact_date_str in event_date_iso:
                                     attendance = value
                                     break
+                        # CHANGED: If legacy week-key exists, copy it into date-based key (read-only migration)
+                        # to fix week-key reads causing incomplete statuses.
+                        if not attendance:
+                            legacy_week_key = instance_date.strftime("%G-W%V")  # CHANGED: Legacy key lookup to fix mismatch bug
+                            legacy_attendance = attendance_data.get(legacy_week_key, {})
+                            if legacy_attendance:
+                                attendance = legacy_attendance
+                                try:
+                                    # CHANGED: Persist migrated date-based key without writing week-based keys,
+                                    # fixing the week/date mismatch bug at the source.
+                                    await events_collection.update_one(
+                                        {"_id": event["_id"]},
+                                        {"$set": {f"attendance.{exact_date_str}": legacy_attendance}}
+                                    )
+                                except Exception as migrate_error:
+                                    print(f"Legacy attendance migration skipped: {migrate_error}")
                     
                     # Determine status
                     if not attendance:
@@ -1619,7 +1664,7 @@ async def get_cell_events(
                     )
                     
                     instance = {
-                            "_id": f"{event.get('_id')}_{exact_date}",
+                            "_id": f"{event.get('_id')}_{exact_date_str}",  # CHANGED: Date-based id fixes week/date mismatch
                             "UUID": event.get("UUID", ""),
                             "eventName": event.get("Event Name") or event.get("eventName") or event.get("EventName", ""),
                             "eventType": "Cells",
@@ -1628,7 +1673,7 @@ async def get_cell_events(
                             "leader1": leaderAt1,
                             "leader12": leaderAt12,
                             "day": day_name.capitalize(),
-                            "date": exact_date,
+                            "date": exact_date_str,  # CHANGED: Date-based key fixes week/date mismatch
                             "display_date": instance_date.strftime("%d - %m - %Y"),
                             "location": event.get("Location") or event.get("location", ""),
                             "attendees": attendees,  
@@ -1690,17 +1735,38 @@ async def get_weekly_attendance(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        attendance_data = event.get("attendance", {}).get(week)
+        # CHANGED: Treat the path param as an exact date key (YYYY-MM-DD), not a week id,
+        # to fix week/date mismatches in attendance reads.
+        exact_date_str = week  # CHANGED: Canonical key (fixes mismatch bug)
+        attendance_data = event.get("attendance", {}).get(exact_date_str)
+        
+        # CHANGED: Backward-compat read fallback for legacy week keys (temporary migration logic)
+        # to fix older week-key reads causing incomplete statuses.
+        if not attendance_data:
+            try:
+                parsed_date = datetime.strptime(exact_date_str, "%Y-%m-%d").date()
+                legacy_week_key = parsed_date.strftime("%G-W%V")  # CHANGED: Legacy key lookup to fix mismatch bug
+                legacy_attendance = event.get("attendance", {}).get(legacy_week_key)
+                if legacy_attendance:
+                    attendance_data = legacy_attendance
+                    # CHANGED: Persist migrated date-based key without writing week-based keys,
+                    # fixing the week/date mismatch bug at the source.
+                    await events_collection.update_one(
+                        {"_id": ObjectId(event_id)},
+                        {"$set": {f"attendance.{exact_date_str}": legacy_attendance}}
+                    )
+            except Exception as migrate_error:
+                print(f"Legacy attendance migration skipped: {migrate_error}")
         
         if not attendance_data:
             return {
-                "week": week,
+                "week": exact_date_str,  # CHANGED: Date-based key fixes week/date mismatch
                 "exists": False,
                 "message": "No attendance data for this week"
             }
         
         return {
-            "week": week,
+            "week": exact_date_str,  # CHANGED: Date-based key fixes week/date mismatch
             "exists": True,
             "data": attendance_data,
             "persistent_attendees": event.get("persistent_attendees", []),
@@ -2003,6 +2069,10 @@ async def update_cell_event_working(identifier: str, event_data: dict):
         for key, value in event_data.items():
             if key not in protected_fields:
                 update_fields[key] = value
+         
+        if update_fields.get("deactivation_end"):
+            print("yay events!")
+            update_fields["deactivation_end"] = datetime.strptime(update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         
         update_fields["updated_at"] = datetime.utcnow()
         
@@ -2173,7 +2243,9 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
-        update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
+        if update_fields.get("deactivation_end",""):
+            print("yay!")
+            update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         print(f"Updating with: {update_fields}")
         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
         
@@ -2204,14 +2276,14 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         raise HTTPException(status_code=500, detail=str(e))
 
 #----------------Deactivate cells Endpoints------------
-@app.put("/cells/deactivate")
-async def deactivate_cell(
+@app.put("/events/deactivate")
+async def deactivate_event(
     cell_identifier: str = Query(..., description="Cell name or Person name"),
     weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
     reason: Optional[str] = Query(None, description="Reason for deactivation"),
     person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
     day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
-    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation")
+    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
 ):
     try:
         current_time = datetime.utcnow()
@@ -2220,51 +2292,44 @@ async def deactivate_cell(
         updates = {
             "is_active": False,
             "deactivation_start": current_time,
-            "deactivation_end": {"$date":deactivation_end},
+            "deactivation_end": datetime.strptime(str(deactivation_end),"%Y-%m-%d %H:%M:%S.%f"),
             "deactivation_reason": reason,
             "last_status_change": current_time,
             "is_permanent_deact":is_permanent_deact
         }
-        print(updates)
          
         query = {"$or": []}
-        
-        cell_type_conditions = [
-            {"Event Type": "Cells"},
-            {"eventTypeName": "Cell  Testing"}, 
-            {"eventTypeName": "cells"},
-            {"eventTypeName": "Cells"}
-        ]
+        print(cell_identifier, person_name)
         
         if person_name:
-            for cell_type in cell_type_conditions:
-                query["$or"].append({
-                    "$and": [
-                        cell_type,
-                        {"$or": [
-                            {"eventName": cell_identifier},
-                            {"Event Name": cell_identifier}
-                        ]},
-                        {"$or": [
-                            {"eventLeader": person_name},
-                            {"Leader": person_name},
-                            {"eventLeaderName": person_name}
-                        ]}
-                    ]
-                })
+            query["$or"].append({
+                "$and": [
+                    {"$or": [
+                        {"eventName": cell_identifier},
+                        {"Event Name": cell_identifier}
+                    ]},
+                    {"$or": [
+                        {"eventLeader": person_name},
+                        {"Leader": person_name},
+                        {"eventLeaderName": person_name}
+                    ]}
+                ]
+            })
         else:
-            for cell_type in cell_type_conditions:
-                query["$or"].append({
-                    "$and": [
-                        cell_type,
-                        {"$or": [
-                            {"eventLeader": cell_identifier},
-                            {"Leader": cell_identifier},
-                            {"eventLeaderName": cell_identifier}
-                        ]}
-                    ]
-                })
-        
+            query["$or"].append({
+                "$and": [
+                     {"$or": [
+                        {"eventName": cell_identifier},
+                        {"Event Name": cell_identifier}
+                    ]},
+                    {"$or": [
+                        {"eventLeader": cell_identifier},
+                        {"Leader": cell_identifier},
+                        {"eventLeaderName": cell_identifier}
+                    ]}
+                ]
+            })
+        print("QUERY", query)
         # Add day filter if specified
         if day_of_week:
             if "$or" in query and len(query["$or"]) > 0:
@@ -2395,7 +2460,6 @@ async def auto_reactivate_expired_cells():
         
         query = {
             "$and": [
-                {"$or": [{"eventType": "cells"}, {"Event Type": "cells"}, {"eventTypeName":"CELLS"}, {"Event Type": "Cells"}]},
                 {"is_active": False},
                 {"deactivation_end": {"$lte": current_time, "$ne": None}},
                 {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
@@ -2420,7 +2484,7 @@ async def auto_reactivate_expired_cells():
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_cells,'cron',hour=0,minute=0) 
+scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
 scheduler.start()
 sleep(10)
       
@@ -2971,33 +3035,35 @@ async def get_all_leaders():
 
 logging.basicConfig(level=logging.INFO)
 
-def get_actual_event_status(event: dict, today: date) -> str:
-    current_week = get_current_week_identifier()
+def get_actual_event_status(event: dict, target_date: date) -> str:
+    # CHANGED: Use the event's exact date key instead of week-based keys for attendance reads
+    # to fix the week-vs-date mismatch that marked completed cells as incomplete.
+    exact_date_str = get_exact_date_identifier(target_date)  # CHANGED: Canonical key (fixes mismatch bug)
    
     print(f"Checking status for: {event.get('Event Name', 'Unknown')}")
-    print(f"   Current week: {current_week}")
+    print(f"   Target date key: {exact_date_str}")  # CHANGED: Date-based log fixes week/date confusion
    
     # Check if explicitly marked as did not meet
     if event.get("did_not_meet", False):
         print(f"Marked as 'did_not_meet'")
         return "did_not_meet"
    
-    # Check weekly attendance data first
-    if "attendance" in event and current_week in event["attendance"]:
-        week_data = event["attendance"][current_week]
-        week_status = week_data.get("status", "incomplete")
+    # CHANGED: Check date-based attendance data first (YYYY-MM-DD) to fix mismatch bug.
+    if "attendance" in event and exact_date_str in event["attendance"]:
+        date_data = event["attendance"][exact_date_str]  # CHANGED: Date key read fixes mismatch bug
+        date_status = date_data.get("status", "incomplete")
        
-        print(f"Found week data - Status: {week_status}")
+        print(f"Found date data - Status: {date_status}")  # CHANGED: Date-based log fixes mismatch bug
        
-        if week_status == "complete":
-            checked_in_count = len([a for a in week_data.get("attendees", []) if a.get("checked_in", False)])
+        if date_status == "complete":
+            checked_in_count = len([a for a in date_data.get("attendees", []) if a.get("checked_in", False)])
             if checked_in_count > 0:
                 print(f" Week marked complete with {checked_in_count} checked-in attendees")
                 return "complete"
             else:
                 print(f" Week marked complete but no checked-in attendees")
                 return "incomplete"
-        elif week_status == "did_not_meet":
+        elif date_status == "did_not_meet":
             return "did_not_meet"
    
     attendees = event.get("attendees", [])
@@ -3482,10 +3548,15 @@ async def get_registrant_events(
                
                 # Calculate most recent occurrence
                 target_weekday = day_mapping[day]
-                current_weekday = today_date.weekday()
-                days_diff = (current_weekday - target_weekday) % 7
-               
-                most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                # Compute current-week instance (Monday..Sunday week)
+                days_since_monday = today_date.weekday()
+                week_start = today_date - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+                # Never include a future date - if current-week instance is in future, use previous week
+                if current_week_instance > today_date:
+                    most_recent_occurrence = current_week_instance - timedelta(weeks=1)
+                else:
+                    most_recent_occurrence = current_week_instance
                
                 # FILTER BY DATE RANGE
                 if most_recent_occurrence < start_date_obj or most_recent_occurrence > today_date:
@@ -3988,32 +4059,50 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             print(f"Updated status fields for ALL users: {new_status}")
             print(f"Updated by: {current_user.get('email')} ({current_user.get('role')})")
             
-            # If status is 'complete' or 'did_not_meet', also update weekly attendance
+            # CHANGED: If status is 'complete' or 'did_not_meet', update date-based attendance
+            # to fix week/date mismatch bugs in leader and disciple views.
             if new_status in ['complete', 'did_not_meet']:
                 try:
-                    # Determine current week
-                    sa_timezone = pytz.timezone("Africa/Johannesburg")
-                    event_date = datetime.utcnow()
+                    # CHANGED: Use the event's specific date (not "today") for attendance keys
+                    # to fix mismatches where status wrote to the wrong week key.
+                    event_date_field = (
+                        event_data.get("date")
+                        or event_data.get("Date Of Event")
+                        or event.get("date")
+                        or event.get("Date Of Event")
+                    )
+                    event_date = None
                     
-                    if event_date.tzinfo is None:
-                        event_date = pytz.utc.localize(event_date)
+                    if isinstance(event_date_field, datetime):
+                        event_date = event_date_field.date()
+                    elif isinstance(event_date_field, date):
+                        event_date = event_date_field
+                    elif isinstance(event_date_field, str):
+                        try:
+                            event_date = datetime.fromisoformat(event_date_field.replace("Z", "+00:00")).date()
+                        except Exception:
+                            try:
+                                event_date = datetime.strptime(event_date_field, "%Y-%m-%d").date()
+                            except Exception:
+                                event_date = None
                     
-                    event_date_sa = event_date.astimezone(sa_timezone)
-                    year, week, _ = event_date_sa.isocalendar()
-                    week_id = f"{year}-W{week:02d}"
-                    
-                    # Update weekly attendance status too
-                    attendance_field = f"attendance.{week_id}.status"
-                    update_data[attendance_field] = new_status
-                    update_data[f"attendance.{week_id}.updated_by_external"] = {
-                        "email": current_user.get('email'),
-                        "role": current_user.get('role'),
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                    
-                    print(f"Also updated weekly attendance ({week_id}) to: {new_status}")
+                    if event_date is None:
+                        print("Skipping attendance update: event date is missing or unparseable")
+                    else:
+                        exact_date_str = event_date.strftime("%Y-%m-%d")  # CHANGED: Canonical key fixes mismatch bug
+                        
+                        # CHANGED: Update date-based attendance status (no week-based keys) to fix mismatch bug.
+                        attendance_field = f"attendance.{exact_date_str}.status"
+                        update_data[attendance_field] = new_status
+                        update_data[f"attendance.{exact_date_str}.updated_by_external"] = {
+                            "email": current_user.get('email'),
+                            "role": current_user.get('role'),
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                        
+                        print(f"Also updated date-based attendance ({exact_date_str}) to: {new_status}")
                 except Exception as e:
-                    print(f"Note: Could not update weekly attendance: {e}")
+                    print(f"Note: Could not update date-based attendance: {e}")
         
         # Add update timestamp
         update_data['updated_at'] = datetime.utcnow()
@@ -4801,11 +4890,26 @@ async def get_user_cell_events_fixed_future(
                     continue
                
                 # Calculate next occurrence
-                target_weekday = day_mapping[day]
-                base_date = max(start_date_obj, today_date)
-                base_weekday = base_date.weekday()
-                days_until = (target_weekday - base_weekday) % 7
-                next_occurrence = base_date + timedelta(days=days_until)
+       
+                # Compute current-week instance (Monday..Sunday week)
+                days_since_monday = today_date.weekday()
+                week_start = today_date - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+                # Choose the most relevant occurrence not in the future
+                if current_week_instance > today_date:
+                    next_occurrence = current_week_instance - timedelta(weeks=1)
+                else:
+                    next_occurrence = current_week_instance
+                # Ensure within requested start_date (don't return occurrences older than start_date_obj)
+                if next_occurrence < start_date_obj:
+                    # find first occurrence on/after start_date_obj (but not in the future)
+                    days_since_start = start_date_obj.weekday()
+                    start_week_start = start_date_obj - timedelta(days=days_since_start)
+                    candidate = start_week_start + timedelta(days=target_weekday)
+                    if candidate > today_date:
+                        next_occurrence = candidate - timedelta(weeks=1)
+                    else:
+                        next_occurrence = candidate
 
                 # Get leader info
                 leader_name = event.get("Leader", "").strip()
@@ -5371,13 +5475,20 @@ async def get_cell_events_optimized(
                 attendance_data = cell.get("attendance", {})
                 
                 weeks_to_check = 1 if status == "incomplete" else 4
-                
-                for week_offset in range(weeks_to_check):
-                    days_since_target = (today.weekday() - target_weekday) % 7
-                    instance_date = today - timedelta(days=(days_since_target + (week_offset * 7)))
-                    
-                    if instance_date < start_date_obj or instance_date > today:
+                # Compute current-week instance
+                days_since_monday = today.weekday()
+                week_start = today - timedelta(days=days_since_monday)
+                current_week_instance = week_start + timedelta(days=target_weekday)
+
+                for week_back in range(0, weeks_to_check):
+                    instance_date = current_week_instance - timedelta(weeks=week_back)
+                    # Strict: skip future dates
+                    if instance_date > today:
                         continue
+                    if instance_date < start_date_obj:
+                        continue
+                     
+                    exact_date_str = instance_date.isoformat()
                     
                     exact_date_str = instance_date.isoformat()
                     week_attendance = attendance_data.get(exact_date_str, {})
@@ -7649,9 +7760,10 @@ async def get_stats_overview(period: str = "monthly"):
                     # Group by day name for weekly view
                     key = event_date.strftime("%A")
                 else:
-                    # Group by week number for monthly view
-                    week_num = event_date.isocalendar()[1]
-                    key = f"Week {week_num}"
+                    # CHANGED: Group by week start date (YYYY-MM-DD) to avoid week-number keys,
+                    # aligning weekly breakdowns with date-based attendance keys (fixes mismatch bug).
+                    week_start = event_date.date() - timedelta(days=event_date.weekday())  # CHANGED: Monday date fixes mismatch
+                    key = week_start.strftime("%Y-%m-%d")  # CHANGED: Date-based key fixes mismatch bug
                
                 if key not in attendance_breakdown:
                     attendance_breakdown[key] = 0
@@ -8733,8 +8845,10 @@ async def get_consolidation_stats(
             date_key = datetime.utcnow().date().isoformat()
             query = {"date": date_key, "type": "daily"}
         elif period == "weekly":
-            week_key = datetime.utcnow().strftime("%Y-W%U")
-            query = {"week": week_key, "type": "weekly"}
+            # CHANGED: Use date-based key (YYYY-MM-DD) for weekly stats to avoid week-number keys,
+            # keeping reporting aligned with date-based attendance keys (fixes mismatch bug).
+            exact_date_str = (datetime.utcnow().date() - timedelta(days=datetime.utcnow().date().weekday())).strftime("%Y-%m-%d")
+            query = {"week": exact_date_str, "type": "weekly"}  # CHANGED: Date-based weekly key fixes mismatch bug
         elif period == "monthly":
             month_key = datetime.utcnow().strftime("%Y-%m")
             query = {"month": month_key, "type": "monthly"}
