@@ -2025,13 +2025,6 @@ async def get_cell_events(
                 continue
             raw_time = event.get('time') or event.get('Time')
     
-        # Convert to SAST for display
-        if raw_time:
-            sast_time = convert_time_to_sast(raw_time)
-            instance['time'] = sast_time
-            instance['Time'] = sast_time
-            cell_instances.sort(key=lambda x: x['date'], reverse=True)
-        
         total_count = len(cell_instances)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
         skip = (page - 1) * limit
@@ -2342,6 +2335,8 @@ async def update_cell_event_working(identifier: str, event_data: dict):
     SINGLE EVENT UPDATE: Update ONLY the existing event, NEVER create new ones
     """
     try:
+        from datetime import datetime as dt
+        
         # Find the SINGLE event by ID
         event = None
         if ObjectId.is_valid(identifier):
@@ -2353,157 +2348,316 @@ async def update_cell_event_working(identifier: str, event_data: dict):
                 detail=f"Event not found with identifier: {identifier}"
             )
         
-        print(f"Received update data for event {identifier}")
-        print(f"Keys: {list(event_data.keys())}")
-        
-        print(f"🎯 DEBUG ========== UPDATE START ==========")
-        print(f"🎯 DEBUG - Event ID: {identifier}")
-        print(f"🎯 DEBUG - Original event time in DB: {event.get('time')}")
-        print(f"🎯 DEBUG - Original event Time in DB: {event.get('Time')}")
-        print(f"🎯 DEBUG - Received update data keys: {list(event_data.keys())}")
-        print(f"🎯 DEBUG - Full event_data: {event_data}")
-        
+        # Prepare update fields
         update_fields = {}
         
+        # Event Name mapping
         if 'eventName' in event_data or 'Event Name' in event_data:
-            value = event_data.get('eventName') or event_data.get('Event Name')
-            if value:
-                update_fields['eventName'] = value
-                update_fields['Event Name'] = value
-                
+            event_name_value = event_data.get('eventName') or event_data.get('Event Name')
+            update_fields['eventName'] = event_name_value
+            update_fields['Event Name'] = event_name_value
+        
+        # Day mapping
         if 'Day' in event_data or 'day' in event_data:
-            value = event_data.get('Day') or event_data.get('day')
-            if value:
-                update_fields['Day'] = value
-                update_fields['day'] = value
-
+            day_value = event_data.get('Day') or event_data.get('day')
+            update_fields['Day'] = day_value
+            update_fields['day'] = day_value
+        
+        # Address/location mapping
         if 'Address' in event_data or 'location' in event_data:
-            value = event_data.get('Address') or event_data.get('location')
-            if value:
-                update_fields['Address'] = value
-                update_fields['location'] = value
-                
+            location_value = event_data.get('Address') or event_data.get('location')
+            update_fields['Address'] = location_value
+            update_fields['location'] = location_value
+        
+        # Time mapping
         if 'Time' in event_data or 'time' in event_data:
-            raw_time = event_data.get('Time') or event_data.get('time')
-            print(f"🎯 DEBUG - Raw time from request: '{raw_time}'")
-            print(f"🎯 DEBUG - Raw time type: {type(raw_time)}")
-
-            if raw_time:
-                print(f"🎯 DEBUG - Processing time: '{raw_time}'")
-                try:
-                    parts = raw_time.split(":")
-                    clean_time = f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
-                except Exception:
-                    clean_time = raw_time
-
-                update_fields['Time'] = clean_time
-                update_fields['time'] = clean_time
-                print(f"🎯 DEBUG - Will store in update_fields: Time='{clean_time}', time='{clean_time}'")
-
-        date_updated = False
-
+            time_value = event_data.get('Time') or event_data.get('time')
+            update_fields['Time'] = time_value
+            update_fields['time'] = time_value
+        
+        # Date mapping - Handle both formats AND display_date
         if 'date' in event_data or 'Date Of Event' in event_data:
-            date_value = event_data.get('date') or event_data.get('Date Of Event')
-
-            if date_value:
-                try:
-                    dt_obj = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
-                    update_fields['date'] = dt_obj.isoformat()
-                    update_fields['Date Of Event'] = dt_obj.isoformat()
-                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
-                    date_updated = True
-                except Exception:
+            date_value = event_data.get('date')
+            date_of_event_value = event_data.get('Date Of Event')
+            
+            if date_of_event_value:
+                update_fields['Date Of Event'] = date_of_event_value
+                if date_value:
                     update_fields['date'] = date_value
+                else:
+                    try:
+                        dt_obj = dt.fromisoformat(date_of_event_value.replace('Z', '+00:00'))
+                        update_fields['date'] = dt_obj.strftime('%Y-%m-%dT%H:%M')
+                    except:
+                        update_fields['date'] = date_of_event_value
+                
+                # Update display_date for table
+                try:
+                    dt_obj = dt.fromisoformat(date_of_event_value.replace('Z', '+00:00'))
+                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
+                except:
+                    pass
+            
+            elif date_value:
+                update_fields['date'] = date_value
+                try:
+                    dt_obj = dt.fromisoformat(date_value)
+                    update_fields['Date Of Event'] = dt_obj.isoformat() + 'Z'
+                    # Update display_date for table
+                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
+                except:
                     update_fields['Date Of Event'] = date_value
-
+        
+        # Email mapping
         if 'Email' in event_data or 'eventLeaderEmail' in event_data:
-            value = event_data.get('Email') or event_data.get('eventLeaderEmail')
-            if value:
-                update_fields['Email'] = value
-                update_fields['eventLeaderEmail'] = value
-
+            email_value = event_data.get('Email') or event_data.get('eventLeaderEmail')
+            update_fields['Email'] = email_value
+            update_fields['eventLeaderEmail'] = email_value
+        
+        # Leader mapping
         if 'Leader' in event_data or 'eventLeader' in event_data or 'eventLeaderName' in event_data:
-            value = event_data.get('Leader') or event_data.get('eventLeader') or event_data.get('eventLeaderName')
-            if value:
-                update_fields['Leader'] = value
-                update_fields['eventLeader'] = value
-                update_fields['eventLeaderName'] = value
-
+            leader_value = event_data.get('Leader') or event_data.get('eventLeader') or event_data.get('eventLeaderName')
+            update_fields['Leader'] = leader_value
+            update_fields['eventLeader'] = leader_value
+            update_fields['eventLeaderName'] = leader_value
+        
+        # Status mapping
         if 'status' in event_data or 'Status' in event_data:
-            value = event_data.get('status') or event_data.get('Status')
-            if value:
-                update_fields['status'] = value
-                update_fields['Status'] = value
-
-        if 'leader12' in event_data or 'leader@12' in event_data or 'leader at 12' in event_data:
-            value = event_data.get('leader12') or event_data.get('leader@12') or event_data.get('leader at 12')
-            if value:
-                update_fields['leader12'] = value
-                update_fields['leader@12'] = value
-                update_fields['leader at 12'] = value
-
-        if 'leader1' in event_data or 'leader@1' in event_data or 'leader at 1' in event_data:
-            value = event_data.get('leader1') or event_data.get('leader@1') or event_data.get('leader at 1')
-            if value:
-                update_fields['leader1'] = value
-                update_fields['leader@1'] = value
-                update_fields['leader at 1'] = value
-        protected = {
-            '_id', 'id', 'UUID', 'created_at', 'original_event_id',
-            'week_identifier', 'recurring_days', 'is_recurring',
-            'persistent_attendees', 'attendees', 'attendance',
-            'did_not_meet', 'total_attendance'
-        }
-        handled = {
-            'eventName', 'Event Name', 'Day', 'day', 'Address', 'location',
-            'Time', 'time', 'date', 'Date Of Event',
-            'Email', 'eventLeaderEmail',
-            'Leader', 'eventLeader', 'eventLeaderName',
+            status_value = event_data.get('status') or event_data.get('Status')
+            update_fields['status'] = status_value
+            update_fields['Status'] = status_value
+        
+        # CRITICAL: Fields that should NEVER be updated from edit modal
+        protected_fields = [
+            'eventName', 'Event Name', 'Day', 'day', 'Address', 'location', 
+            'Time', 'time', 'date', 'Date Of Event', 'Email', 
+            'eventLeaderEmail', 'Leader', 'eventLeader', 'eventLeaderName',
             'status', 'Status',
-            'leader12', 'leader@12', 'leader at 12',
-            'leader1', 'leader@1', 'leader at 1',
-            'display_date'
-        }
-
+            # PROTECTED: Don't touch these fields
+            'persistent_attendees',  # Managed separately
+            'attendees',             # Managed separately
+            'attendance',            # Managed separately
+            '_id', 'id', 'UUID',     # System fields
+            'created_at',            # Don't modify creation time
+            'total_attendance'       # Calculated field
+        ]
+        
+        # Other fields - but skip protected ones
         for key, value in event_data.items():
-            if key in protected or key in handled:
-                continue
-            if value not in ("", None):
+            if key not in protected_fields:
                 update_fields[key] = value
-        if date_updated:
-            try:
-                event_date = update_fields.get('date')
-                if event_date:
-                    event_dt = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
-                    if event_dt < datetime.utcnow() and update_fields.get('status') != 'complete':
-                        update_fields['_is_overdue'] = True
-                        update_fields['isoverdue'] = True
-                    else:
-                        update_fields['_is_overdue'] = False
-                        update_fields['isoverdue'] = False
-            except Exception:
-                pass
-        update_fields['updated_at'] = datetime.utcnow()
-        print(f"🎯 DEBUG - Final update_fields: {update_fields}")
+         
+        if update_fields.get("deactivation_end"):
+            print("yay events!")
+            update_fields["deactivation_end"] = datetime.strptime(update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
+        
+        update_fields["updated_at"] = datetime.utcnow()
+        
+        print(f"Updating event {identifier} with fields: {update_fields}")
+        print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
+        
+        # PERFORM THE UPDATE
         result = await events_collection.update_one(
             {"_id": event["_id"]},
             {"$set": update_fields}
         )
-        print(f"🎯 DEBUG - Update result: modified_count={result.modified_count}")
-
-        updated_event = await events_collection.find_one({"_id": event["_id"]})
-        print(f"🎯 DEBUG - Updated event time: {updated_event.get('time')}")
-        print(f"🎯 DEBUG - Updated event Time: {updated_event.get('Time')}")
-        print(f"🎯 DEBUG ========== UPDATE END ==========")
+        
         return {
             "success": True,
+            "message": "Event updated successfully",
             "modified": result.modified_count > 0,
-            "event": updated_event
+            "event_id": str(event.get("_id"))
         }
+        
     except Exception as e:
         print(f"Error updating event: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
+# @app.put("/events/person/{person_name}/event/{event_name}/day/{day_name}")
+# async def update_events_by_person_event_and_day(person_name: str, event_name: str, day_name: str, update_data: dict):
+#     """
+#     Update ONLY events for a specific person with a SPECIFIC event name AND SPECIFIC day
+#     """
+#     try:
+#         from datetime import datetime as dt
+        
+#         decoded_person = unquote(person_name)
+#         decoded_event = unquote(event_name)
+#         decoded_day = unquote(day_name)
+        
+#         print(f"=== UPDATE PERSON+EVENT+DAY (PRECISE) ===")
+#         print(f"Person: {decoded_person}")
+#         print(f"Event name: {decoded_event}")
+#         print(f"Day: {decoded_day}")
+#         print(f"Update data: {update_data}")
+        
+#         # STRICT query
+#         strict_query = {
+#             "$and": [
+#                 {
+#                     "$or": [
+#                         {"Leader": decoded_person},
+#                         {"eventLeader": decoded_person},
+#                         {"eventLeaderName": decoded_person}
+#                     ]
+#                 },
+#                 {
+#                     "$or": [
+#                         {"Event Name": decoded_event},
+#                         {"eventName": decoded_event}
+#                     ]
+#                 },
+#                 {
+#                     "$or": [
+#                         {"Day": decoded_day},
+#                         {"day": decoded_day}
+#                     ]
+#                 }
+#             ]
+#         }
+        
+#         cursor = events_collection.find(strict_query)
+#         matching_events = await cursor.to_list(length=None)
+        
+#         if not matching_events:
+#             return {
+#                 "success": False,
+#                 "message": f"No {decoded_day} events found for {decoded_person} with name: {decoded_event}",
+#                 "matched_count": 0,
+#                 "modified_count": 0
+#             }
+        
+#         print(f"Found {len(matching_events)} matching events")
+        
+#         # Prepare update with proper field mapping
+#         update_fields = {}
+        
+#         # Event Name mapping
+#         if 'eventName' in update_data or 'Event Name' in update_data:
+#             event_name_value = update_data.get('eventName') or update_data.get('Event Name')
+#             update_fields['eventName'] = event_name_value
+#             update_fields['Event Name'] = event_name_value
+        
+#         # Day mapping
+#         if 'Day' in update_data or 'day' in update_data:
+#             day_value = update_data.get('Day') or update_data.get('day')
+#             update_fields['Day'] = day_value
+#             update_fields['day'] = day_value
+        
+#         # Date mapping - Handle both formats AND display_date
+#         if 'date' in update_data or 'Date Of Event' in update_data:
+#             date_value = update_data.get('date')
+#             date_of_event_value = update_data.get('Date Of Event')
+            
+#             if date_of_event_value:
+#                 update_fields['Date Of Event'] = date_of_event_value
+#                 if date_value:
+#                     update_fields['date'] = date_value
+#                 else:
+#                     try:
+#                         dt_obj = dt.fromisoformat(date_of_event_value.replace('Z', '+00:00'))
+#                         update_fields['date'] = dt_obj.strftime('%Y-%m-%dT%H:%M')
+#                     except:
+#                         update_fields['date'] = date_of_event_value
+                
+#                 # Update display_date for table
+#                 try:
+#                     dt_obj = dt.fromisoformat(date_of_event_value.replace('Z', '+00:00'))
+#                     update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
+#                 except:
+#                     pass
+            
+#             elif date_value:
+#                 update_fields['date'] = date_value
+#                 try:
+#                     dt_obj = dt.fromisoformat(date_value)
+#                     update_fields['Date Of Event'] = dt_obj.isoformat() + 'Z'
+#                     # Update display_date for table
+#                     update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
+#                 except:
+#                     update_fields['Date Of Event'] = date_value
+        
+#         # Time mapping
+#         if 'Time' in update_data or 'time' in update_data:
+#             time_value_sast = update_data.get('Time') or update_data.get('time')
+            
+#             # ALWAYS convert SAST to UTC for storage
+#             time_value_utc = convert_time_to_utc(time_value_sast)
+            
+#             update_fields['Time'] = time_value_utc
+#             update_fields['time'] = time_value_utc
+                
+#         # Address/Location mapping
+#         if 'Address' in update_data or 'location' in update_data:
+#             location_value = update_data.get('Address') or update_data.get('location')
+#             update_fields['Address'] = location_value
+#             update_fields['location'] = location_value
+        
+#         # Email mapping
+#         if 'Email' in update_data or 'eventLeaderEmail' in update_data:
+#             email_value = update_data.get('Email') or update_data.get('eventLeaderEmail')
+#             update_fields['Email'] = email_value
+#             update_fields['eventLeaderEmail'] = email_value
+        
+#         # Status mapping
+#         if 'status' in update_data or 'Status' in update_data:
+#             status_value = update_data.get('status') or update_data.get('Status')
+#             update_fields['status'] = status_value
+#             update_fields['Status'] = status_value
+        
+#         # CRITICAL: Fields that should NEVER be updated from edit modal
+#         protected_fields = [
+#             'eventName', 'Event Name', 'Day', 'day', 'date', 'Date Of Event', 
+#             'Time', 'time', 'Address', 'location', 'Email', 'eventLeaderEmail', 
+#             'status', 'Status',
+#             # PROTECTED: Don't touch these fields
+#             'persistent_attendees',  # Managed separately
+#             'attendees',             # Managed separately
+#             'attendance',            # Managed separately
+#             '_id', 'id', 'UUID',     # System fields
+#             'created_at',            # Don't modify creation time
+#             'total_attendance'       # Calculated field
+#         ]
+        
+#         # Other fields - but skip protected ones
+#         for key, value in update_data.items():
+#             if key not in protected_fields:
+#                 update_fields[key] = value
+        
+#         update_fields["updated_at"] = datetime.utcnow()
+#         if update_fields.get("deactivation_end",""):
+#             update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
+#         print(f"Updating with: {update_fields}")
+#         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
+        
+#         # Update all matching events
+#         result = await events_collection.update_many(
+#             strict_query,
+#             {"$set": update_fields}
+#         )
+        
+#         print(f"Updated: matched {result.matched_count}, modified {result.modified_count}")
+        
+#         return {
+#             "success": True,
+#             "message": f"Updated {result.modified_count} {decoded_day} events named '{decoded_event}'",
+#             "matched_count": len(matching_events),
+#             "modified_count": result.modified_count,
+#             "person": decoded_person,
+#             "original_event_name": decoded_event,
+#             "original_day": decoded_day,
+#             "new_event_name": update_fields.get('Event Name'),
+#             "new_day": update_fields.get('Day')
+#         }
+        
+#     except Exception as e:
+#         print(f"Error updating events: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=str(e))
 @app.put("/events/person/{person_name}/event/{event_name}/day/{day_name}")
 async def update_events_by_person_event_and_day(person_name: str, event_name: str, day_name: str, update_data: dict):
     """
@@ -2608,16 +2762,18 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                 except:
                     update_fields['Date Of Event'] = date_value
         
-        # Time mapping
+        # Time mappin
         if 'Time' in update_data or 'time' in update_data:
-            time_value_sast = update_data.get('Time') or update_data.get('time')
+            time_value = update_data.get('Time') or update_data.get('time')
             
-            # ALWAYS convert SAST to UTC for storage
-            time_value_utc = convert_time_to_utc(time_value_sast)
-            
-            update_fields['Time'] = time_value_utc
-            update_fields['time'] = time_value_utc
+            if time_value:
+                print(f"🕒 DEBUG - Time received from frontend: {time_value}")
+                print(f"🕒 DEBUG - Storing as SAST (no conversion)")
                 
+                # Store exactly as received
+                update_fields['Time'] = time_value
+                update_fields['time'] = time_value  
+                      
         # Address/Location mapping
         if 'Address' in update_data or 'location' in update_data:
             location_value = update_data.get('Address') or update_data.get('location')
@@ -2636,12 +2792,35 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             update_fields['status'] = status_value
             update_fields['Status'] = status_value
         
+        # Handle is_active and deactivation fields
+        if 'is_active' in update_data:
+            update_fields['is_active'] = update_data['is_active']
+        
+        if 'deactivation_reason' in update_data:
+            update_fields['deactivation_reason'] = update_data.get('deactivation_reason')
+        
+        if 'deactivation_start' in update_data:
+            deactivation_start = update_data.get('deactivation_start')
+            if deactivation_start:
+                try:
+                    update_fields['deactivation_start'] = dt.fromisoformat(deactivation_start.replace('Z', '+00:00'))
+                except:
+                    update_fields['deactivation_start'] = deactivation_start
+        
+        if 'deactivation_end' in update_data:
+            deactivation_end = update_data.get('deactivation_end')
+            if deactivation_end:
+                try:
+                    update_fields['deactivation_end'] = dt.fromisoformat(deactivation_end.replace('Z', '+00:00'))
+                except:
+                    update_fields['deactivation_end'] = deactivation_end
+        
+        # Handle is_permanent_deact
+        if 'is_permanent_deact' in update_data:
+            update_fields['is_permanent_deact'] = update_data['is_permanent_deact']
+        
         # CRITICAL: Fields that should NEVER be updated from edit modal
         protected_fields = [
-            'eventName', 'Event Name', 'Day', 'day', 'date', 'Date Of Event', 
-            'Time', 'time', 'Address', 'location', 'Email', 'eventLeaderEmail', 
-            'status', 'Status',
-            # PROTECTED: Don't touch these fields
             'persistent_attendees',  # Managed separately
             'attendees',             # Managed separately
             'attendance',            # Managed separately
@@ -2652,14 +2831,15 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         
         # Other fields - but skip protected ones
         for key, value in update_data.items():
-            if key not in protected_fields:
+            if key not in protected_fields and key not in update_fields:
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
-        if update_fields.get("deactivation_end",""):
-            update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
-        print(f"Updating with: {update_fields}")
-        print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
+        
+        print(f"🔄 DEBUG - Final update fields:")
+        for key, value in update_fields.items():
+            if 'time' in key.lower() or 'Time' in key:
+                print(f"  {key}: {value} (type: {type(value)})")
         
         # Update all matching events
         result = await events_collection.update_many(
@@ -2667,7 +2847,14 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             {"$set": update_fields}
         )
         
-        print(f"Updated: matched {result.matched_count}, modified {result.modified_count}")
+        print(f"✅ Updated: matched {result.matched_count}, modified {result.modified_count}")
+        
+        # Fetch and return one updated event to verify
+        updated_event = await events_collection.find_one(strict_query)
+        if updated_event:
+            print(f"✅ Sample updated event time: {updated_event.get('time')}")
+            print(f"✅ Sample updated event Time: {updated_event.get('Time')}")
+            print(f"✅ VERIFICATION: Time stored exactly as sent: {updated_event.get('time')}")
         
         return {
             "success": True,
@@ -2678,15 +2865,15 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             "original_event_name": decoded_event,
             "original_day": decoded_day,
             "new_event_name": update_fields.get('Event Name'),
-            "new_day": update_fields.get('Day')
+            "new_day": update_fields.get('Day'),
+            "sample_time_stored": updated_event.get('time') if updated_event else None
         }
         
     except Exception as e:
-        print(f"Error updating events: {str(e)}")
+        print(f"❌ Error updating events: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 #----------------Deactivate cells Endpoints------------
 @app.put("/cells/deactivate")
