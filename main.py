@@ -3970,7 +3970,6 @@ async def create_indexes_on_startup():
             name="leader_search_idx"
         )
        
-        # Index for people collection
         await people_collection.create_index(
             [("Name", 1), ("Surname", 1), ("Gender", 1)],
             name="people_lookup_idx"
