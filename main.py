@@ -696,167 +696,39 @@ async def search_people(
 @app.post("/signup")
 async def signup(user: UserCreate):
     logger.info(f"Signup attempt: {user.email}")
-   
+
     # Normalize email
     email = user.email.lower().strip()
-   
-    # Check if user already exists in Users collection ONLY
+
+    # Check if user already exists
     existing = await db["Users"].find_one({"email": email})
     if existing:
         logger.warning(f"Signup failed - email already registered: {email}")
         raise HTTPException(status_code=400, detail="Email already registered")
 
     # Hash password
-    hashed = hash_password(user.password)
-   
-    # Create user document
-    user_dict = {
-        "name": user.name,
-        "surname": user.surname,
+    hashed_password = hash_password(user.password)
+
+    # Create user document ONLY
+    user_doc = {
+        "name": user.name.strip(),
+        "surname": user.surname.strip(),
         "date_of_birth": user.date_of_birth,
-        "home_address": user.home_address,
-        "invited_by": user.invited_by,
-        "phone_number": user.phone_number,
+        "home_address": user.home_address.strip(),
+        "phone_number": user.phone_number.strip(),
         "email": email,
-        "gender": user.gender,
-        "password": hashed,
-        "confirm_password": hashed,
+        "gender": user.gender.strip(),
+        "password": hashed_password,
         "role": "user",
         "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.utcnow().isoformat(),
+        "invited_by": user.invited_by.strip() if user.invited_by else None
     }
-   
-    # Insert user into Users collection
-    user_result = await db["Users"].insert_one(user_dict)
+
+    await db["Users"].insert_one(user_doc)
+
     logger.info(f"User created successfully: {email}")
-   
-    # USE BACKGROUND-LOADED CACHE FOR LEADER ASSIGNMENT
-    inviter_full_name = user.invited_by.strip()
-    leader1 = ""
-    leader12 = ""
-    leader144 = ""
-    leader1728 = ""
-   
-    if inviter_full_name:
-        print(f"Looking for inviter in background cache: '{inviter_full_name}'")
-       
-        # Search in background-loaded cache (contains ALL people)
-        cached_inviter = None
-        for person in people_cache["data"]:
-            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            if (full_name.lower() == inviter_full_name.lower() or
-                person.get('Name', '').lower() == inviter_full_name.lower()):
-                cached_inviter = person
-                break
-       
-        if cached_inviter:
-            print(f"Found inviter in background cache: {cached_inviter.get('FullName')}")
-            # checking if gender is matching so it's not it can just assign them a leader at 12
-            isGenderMatching = cached_inviter.get("Gender", "") == user.gender.capitalize()
 
-            print(cached_inviter)
-            print(isGenderMatching)
-            print(cached_inviter.get("Gender", ""),user.gender.capitalize())
-
-            if  not isGenderMatching:
-                if user.gender == "male":
-                    leader1 = "Gavin Enslin"
-                else:
-                    leader1 = "Vicky Enslin"
-                leader12 = ""  
-                leader144 = ""
-                leader1728 = ""    
-            else: #if gender is matching should go on as usual
-                # Get the inviter's leader hierarchy from cache
-                inviter_leader1 = cached_inviter.get("Leader @1", "")
-                inviter_leader12 = cached_inviter.get("Leader @12", "")
-                inviter_leader144 = cached_inviter.get("Leader @144", "")
-                inviter_leader1728 = cached_inviter.get("Leader @1728", "")
-                print(cached_inviter,inviter_leader1,inviter_leader12,inviter_leader144,inviter_leader1728)
-               
-               
-                # Determine what level the inviter is at and set leaders accordingly
-                if inviter_leader1728:
-                    print("1")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_leader144
-                    leader1728 = inviter_full_name
-                elif inviter_leader144:
-                    print("2")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_leader144
-                    leader1728 = inviter_full_name
-                elif inviter_leader12:
-                    print("3")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_full_name
-                    leader1728 = ""
-                elif inviter_leader1:
-                    print("4")
-                    leader1 = inviter_leader1
-                    leader12 = ""
-                    leader144 = ""
-                    leader1728 = ""
-                else:
-                    print("5")
-                    leader1 = inviter_leader1
-                    leader12 = ""
-                    leader144 = ""
-                    leader1728 = ""
-               
-                logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
-        else:
-            print("6")
-            print(f"Inviter '{inviter_full_name}' not found in background cache")
-            # Fallback: set inviter as Leader @1
-            leader1 = inviter_full_name
-   
-    # Create corresponding person record in People collection
-    person_doc = {
-        "Name": user.name.strip(),
-        "Surname": user.surname.strip(),
-        "Email": email,
-        "Number": user.phone_number.strip(),
-        "Address": user.home_address.strip(),
-        "Gender": user.gender.strip(),
-        "Birthday": user.date_of_birth,
-        "InvitedBy": inviter_full_name,
-        "Leader @1": leader1,
-        "Leader @12": leader12,
-        "Leader @144": leader144,
-        "Leader @1728": leader1728,
-        "Stage": "Win",
-        "Date Created": datetime.utcnow().isoformat(),
-        "UpdatedAt": datetime.utcnow().isoformat(),
-        "user_id": str(user_result.inserted_id)
-    }
-   
-    try:
-        person_result = await people_collection.insert_one(person_doc)
-        logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
-       
-        # ADD THE NEW PERSON TO BACKGROUND CACHE
-        new_person_cache_entry = {
-            "_id": str(person_result.inserted_id),
-            "Name": user.name.strip(),
-            "Surname": user.surname.strip(),
-            "Email": email,
-            "Number": user.phone_number.strip(),
-            "Leader @1": leader1,
-            "Leader @12": leader12,
-            "Leader @144": leader144,
-            "Leader @1728": leader1728,
-            "FullName": f"{user.name.strip()} {user.surname.strip()}".strip()
-        }
-        people_cache["data"].append(new_person_cache_entry)
-        print(f"Added new person to background cache: {new_person_cache_entry['FullName']}")
-       
-    except Exception as e:
-        logger.error(f"Failed to create person record for {email}: {e}")
-   
     return {"message": "User created successfully"}
 
 # ---------------- Login ----------------
@@ -864,19 +736,6 @@ async def signup(user: UserCreate):
 async def login(user: UserLogin):
     logger.info(f"Login attempt: {user.email}")
     existing = await users_collection.find_one({"email": user.email})
-    if not existing or not verify_password(user.password, existing["password"]):
-        logger.warning(f"Login failed: {user.email}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email}) or {}
-
-
-    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
-    print("FULL NAME",full_name)
-    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
-    is_Leader = bool(is_Leader)
-    if not person:
-        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
-   
 
     access_token = create_access_token(
         {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
