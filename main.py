@@ -2430,12 +2430,17 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             elif date_value:
                 update_fields['date'] = date_value
                 try:
-                    dt_obj = dt.fromisoformat(date_value)
+                    # Handle YYYY-MM-DD format (what frontend sends)
+                    if len(date_value) == 10 and '-' in date_value:
+                        dt_obj = dt.strptime(date_value, '%Y-%m-%d')
+                    else:
+                        dt_obj = dt.fromisoformat(date_value)
+                    
                     update_fields['Date Of Event'] = dt_obj.isoformat() + 'Z'
-                    # Update display_date for table
-                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
+                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')  # ← ADD THIS LINE
                 except:
                     update_fields['Date Of Event'] = date_value
+
         
         # Time mappin
         if 'Time' in update_data or 'time' in update_data:
@@ -5176,12 +5181,29 @@ async def get_admin_cell_events_debug(
                 if day not in day_mapping:
                     continue
                
-                # Calculate most recent occurrence
-                target_weekday = day_mapping[day]
-                current_weekday = today_date.weekday()
-                days_diff = (current_weekday - target_weekday) % 7
-               
-                most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                stored_date = event.get("date")
+                
+                if stored_date:
+                    # Use the date from the database
+                    if isinstance(stored_date, str):
+                        try:
+                            most_recent_occurrence = datetime.strptime(stored_date, "%Y-%m-%d").date()
+                        except:
+                            most_recent_occurrence = datetime.fromisoformat(stored_date.replace('Z', '+00:00')).date()
+                    elif isinstance(stored_date, datetime):
+                        most_recent_occurrence = stored_date.date()
+                    else:
+                        # Fallback to calculation
+                        target_weekday = day_mapping[day]
+                        current_weekday = today_date.weekday()
+                        days_diff = (current_weekday - target_weekday) % 7
+                        most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                else:
+                    # Calculate most recent occurrence (original logic)
+                    target_weekday = day_mapping[day]
+                    current_weekday = today_date.weekday()
+                    days_diff = (current_weekday - target_weekday) % 7
+                    most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
                
                 # FILTER BY DATE RANGE (Oct 20, 2025 to today)
                 if most_recent_occurrence < start_date_obj or most_recent_occurrence > today_date:
@@ -5961,7 +5983,7 @@ async def get_cell_events_optimized(
                 ]
         else:
             query["Email"] = user_email
-        
+
         cursor = events_collection.find(query)
         all_cells = await cursor.to_list(length=None)
         
