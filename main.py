@@ -1989,7 +1989,7 @@ async def get_other_events(
             }
             query = {"$and": [query, search_filter]}
 
-        print(f"🎯 /events/other query for role {user_role}:", query)
+        print(f"/events/other query for role {user_role}:", query)
 
         cursor = events_collection.find(query)
         events = await cursor.to_list(length=1000)
@@ -2340,8 +2340,8 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             time_value = update_data.get('Time') or update_data.get('time')
             
             if time_value:
-                print(f"🕒 DEBUG - Time received from frontend: {time_value}")
-                print(f"🕒 DEBUG - Storing as SAST (no conversion)")
+                print(f"DEBUG - Time received from frontend: {time_value}")
+                print(f"DEBUG - Storing as SAST (no conversion)")
                 
                 # Store exactly as received
                 update_fields['Time'] = time_value
@@ -2399,15 +2399,11 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             {"$set": update_fields}
         )
         
-        print(f"✅ Updated: matched {result.matched_count}, modified {result.modified_count}")
+        print(f"Updated: matched {result.matched_count}, modified {result.modified_count}")
         
         # Fetch and return one updated event to verify
         updated_event = await events_collection.find_one(strict_query)
-        if updated_event:
-            print(f"✅ Sample updated event time: {updated_event.get('time')}")
-            print(f"✅ Sample updated event Time: {updated_event.get('Time')}")
-            print(f"✅ VERIFICATION: Time stored exactly as sent: {updated_event.get('time')}")
-        
+
         return {
             "success": True,
             "message": f"Updated {result.modified_count} {decoded_day} events named '{decoded_event}'",
