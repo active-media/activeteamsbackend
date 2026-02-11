@@ -1135,9 +1135,8 @@ def generate_current_week_instances(event: dict) -> list:
             else:
                 event_status = "incomplete"
             
-            # CHANGED: Use the exact instance date as the canonical attendance key (YYYY-MM-DD)
-            # to fix the week-vs-date mismatch that marked completed cells as incomplete.
-            exact_date_str = current_date.strftime("%Y-%m-%d")  # CHANGED: Canonical attendance key (fixes mismatch bug)
+ 
+            exact_date_str = current_date.strftime("%Y-%m-%d") 
             
             # Create instance
             instance = {
@@ -1742,22 +1741,17 @@ async def get_weekly_attendance(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        # CHANGED: Treat the path param as an exact date key (YYYY-MM-DD), not a week id,
-        # to fix week/date mismatches in attendance reads.
-        exact_date_str = week  # CHANGED: Canonical key (fixes mismatch bug)
+
+        exact_date_str = week 
         attendance_data = event.get("attendance", {}).get(exact_date_str)
-        
-        # CHANGED: Backward-compat read fallback for legacy week keys (temporary migration logic)
-        # to fix older week-key reads causing incomplete statuses.
+
         if not attendance_data:
             try:
                 parsed_date = datetime.strptime(exact_date_str, "%Y-%m-%d").date()
-                legacy_week_key = parsed_date.strftime("%G-W%V")  # CHANGED: Legacy key lookup to fix mismatch bug
+                legacy_week_key = parsed_date.strftime("%G-W%V") 
                 legacy_attendance = event.get("attendance", {}).get(legacy_week_key)
                 if legacy_attendance:
                     attendance_data = legacy_attendance
-                    # CHANGED: Persist migrated date-based key without writing week-based keys,
-                    # fixing the week/date mismatch bug at the source.
                     await events_collection.update_one(
                         {"_id": ObjectId(event_id)},
                         {"$set": {f"attendance.{exact_date_str}": legacy_attendance}}
@@ -1767,13 +1761,13 @@ async def get_weekly_attendance(
         
         if not attendance_data:
             return {
-                "week": exact_date_str,  # CHANGED: Date-based key fixes week/date mismatch
+                "week": exact_date_str, 
                 "exists": False,
                 "message": "No attendance data for this week"
             }
         
         return {
-            "week": exact_date_str,  # CHANGED: Date-based key fixes week/date mismatch
+            "week": exact_date_str,
             "exists": True,
             "data": attendance_data,
             "persistent_attendees": event.get("persistent_attendees", []),
@@ -4060,12 +4054,9 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             print(f"Updated status fields for ALL users: {new_status}")
             print(f"Updated by: {current_user.get('email')} ({current_user.get('role')})")
             
-            # CHANGED: If status is 'complete' or 'did_not_meet', update date-based attendance
-            # to fix week/date mismatch bugs in leader and disciple views.
+     
             if new_status in ['complete', 'did_not_meet']:
                 try:
-                    # CHANGED: Use the event's specific date (not "today") for attendance keys
-                    # to fix mismatches where status wrote to the wrong week key.
                     event_date_field = (
                         event_data.get("date")
                         or event_data.get("Date Of Event")
@@ -4090,9 +4081,8 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                     if event_date is None:
                         print("Skipping attendance update: event date is missing or unparseable")
                     else:
-                        exact_date_str = event_date.strftime("%Y-%m-%d")  # CHANGED: Canonical key fixes mismatch bug
+                        exact_date_str = event_date.strftime("%Y-%m-%d")
                         
-                        # CHANGED: Update date-based attendance status (no week-based keys) to fix mismatch bug.
                         attendance_field = f"attendance.{exact_date_str}.status"
                         update_data[attendance_field] = new_status
                         update_data[f"attendance.{exact_date_str}.updated_by_external"] = {
@@ -7748,23 +7738,18 @@ async def get_stats_overview(period: str = "monthly"):
         else:
             growth_rate = 100 if total_attendance > 0 else 0
        
-        # Calculate weekly/daily attendance breakdown (exclude cells)
         attendance_breakdown = {}
         for event in period_events:
             if event.get("date"):
                 event_date = event["date"]
                 if period == "daily":
-                    # Group by hour for daily view
                     hour = event_date.hour
                     key = f"{hour:02d}:00"
                 elif period == "weekly":
-                    # Group by day name for weekly view
                     key = event_date.strftime("%A")
                 else:
-                    # CHANGED: Group by week start date (YYYY-MM-DD) to avoid week-number keys,
-                    # aligning weekly breakdowns with date-based attendance keys (fixes mismatch bug).
-                    week_start = event_date.date() - timedelta(days=event_date.weekday())  # CHANGED: Monday date fixes mismatch
-                    key = week_start.strftime("%Y-%m-%d")  # CHANGED: Date-based key fixes mismatch bug
+                    week_start = event_date.date() - timedelta(days=event_date.weekday()) 
+                    key = week_start.strftime("%Y-%m-%d")  
                
                 if key not in attendance_breakdown:
                     attendance_breakdown[key] = 0
@@ -7772,7 +7757,7 @@ async def get_stats_overview(period: str = "monthly"):
        
         return {
             "outstanding_cells": outstanding_cells,
-            "outstanding_tasks": outstanding_tasks,  # Changed from outstanding_events to outstanding_tasks
+            "outstanding_tasks": outstanding_tasks,  
             "total_people": total_people,
             "total_attendance": total_attendance,
             "growth_rate": round(growth_rate, 1),
@@ -8846,10 +8831,8 @@ async def get_consolidation_stats(
             date_key = datetime.utcnow().date().isoformat()
             query = {"date": date_key, "type": "daily"}
         elif period == "weekly":
-            # CHANGED: Use date-based key (YYYY-MM-DD) for weekly stats to avoid week-number keys,
-            # keeping reporting aligned with date-based attendance keys (fixes mismatch bug).
             exact_date_str = (datetime.utcnow().date() - timedelta(days=datetime.utcnow().date().weekday())).strftime("%Y-%m-%d")
-            query = {"week": exact_date_str, "type": "weekly"}  # CHANGED: Date-based weekly key fixes mismatch bug
+            query = {"week": exact_date_str, "type": "weekly"} 
         elif period == "monthly":
             month_key = datetime.utcnow().strftime("%Y-%m")
             query = {"month": month_key, "type": "monthly"}
