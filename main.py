@@ -2335,7 +2335,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                     update_fields['Date Of Event'] = date_value
 
         
-        # Time mappin
+        # Time mapping
         if 'Time' in update_data or 'time' in update_data:
             time_value = update_data.get('Time') or update_data.get('time')
             
@@ -2418,7 +2418,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         }
         
     except Exception as e:
-        print(f"❌ Error updating events: {str(e)}")
+        print(f"Error updating events: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
