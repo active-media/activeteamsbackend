@@ -1045,6 +1045,8 @@ async def logout(user_id: str = Body(..., embed=True)):
     return {"message": "Logged out successfully"}
 
 # EVENTS ENDPOINTS-----------------------------------------------------------------
+SAST_TZ = pytz.timezone('Africa/Johannesburg')
+   
 def is_recurring_event(event: dict) -> bool:
     """Check if event has recurring days configured"""
     recurring_days = event.get("recurring_day") or event.get("recurring_days") or []
@@ -1208,6 +1210,76 @@ def get_monday(date_obj: datetime) -> datetime:
    
 
 # Events Section  ----------------------------------------------
+SAST_TZ = pytz.timezone('Africa/Johannesburg')
+
+# South African timezone
+
+def normalize_time(time_value: str) -> str:
+    """
+    Normalize time to HH:MM.
+    NO timezone conversion.
+    """
+    if not time_value or not isinstance(time_value, str):
+        return time_value
+
+    try:
+        # Defensive: ISO string sent accidentally
+        if "T" in time_value:
+            time_value = time_value.split("T")[1][:5]
+
+        parts = time_value.split(":")
+        if len(parts) >= 2:
+            return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
+    except Exception:
+        pass
+
+    return time_value
+
+def parse_date_to_sast(date_input):
+    """
+    Parse any date input and convert to SAST timezone-aware datetime.
+    """
+    try:
+        if not date_input:
+            return None
+
+        # If already a datetime object
+        if isinstance(date_input, datetime):
+            dt = date_input
+
+        # If input is a string
+        elif isinstance(date_input, str):
+            # Remove 'Z' if present and parse as ISO format
+            date_str = date_input.replace('Z', '+00:00')
+            dt = datetime.fromisoformat(date_str)
+
+        else:
+            return None
+
+        # If naive datetime (no timezone), assume it's SAST
+        if dt.tzinfo is None:
+            dt = SAST_TZ.localize(dt)
+        else:
+            # Convert to SAST
+            dt = dt.astimezone(SAST_TZ)
+
+        return dt
+
+    except Exception as e:
+        print(f"Error parsing date: {e}")
+        return None
+
+def format_display_date(dt):
+    """
+    Format datetime to DD - MM - YYYY
+    """
+    if not dt:
+        return ""
+
+    if isinstance(dt, str):
+        dt = parse_date_to_sast(dt)
+
+    return dt.strftime("%d - %m - %Y") if dt else ""
 
 @app.post("/events")
 async def create_event(event: EventCreate):
@@ -1251,6 +1323,21 @@ async def create_event(event: EventCreate):
             event_data["hasPersonSteps"] = event_type.get("hasPersonSteps", False)
             event_data["isTicketed"] = event_type.get("isTicketed", False)
             event_data["status"] = "open"
+
+        print(f"Using day value from frontend: {event_data.get('day')}")
+        
+
+        if event_data.get("time") or event_data.get("Time"):
+            raw_time = event_data.get("time") or event_data.get("Time")
+
+            print(f"Raw time received from frontend: {raw_time}")
+
+            clean_time = normalize_time(raw_time)
+
+            event_data["time"] = clean_time
+            event_data["Time"] = clean_time
+
+            print(f"Time stored as: {clean_time}")
 
         # 3. Clean up and Format Data
         event_data.pop("eventType", None)
@@ -1314,6 +1401,29 @@ async def create_event(event: EventCreate):
         if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=str(e))
 
+
+def convert_event_for_display(event):
+    """
+    Convert event from database format to display format
+    Times are already in SAST in DB, so no conversion needed
+    """
+    if not event:
+        return event
+    
+    # Ensure display_date is present
+    if event.get('date') and not event.get('display_date'):
+        sast_dt = parse_date_to_sast(event['date'])
+        if sast_dt:
+            event['display_date'] = format_display_date(sast_dt)
+    
+    # Times are already in SAST format (HH:MM), no conversion needed
+    # Just ensure both fields are populated
+    if event.get('Time') and not event.get('time'):
+        event['time'] = event['Time']
+    elif event.get('time') and not event.get('Time'):
+        event['Time'] = event['time']
+    
+    return event
 
 @app.get("/events/cells")
 async def get_cell_events(
@@ -1694,15 +1804,18 @@ async def get_cell_events(
                         "attendance": attendance,
                         "is_active": event.get("is_active", "")
                     }
+                    if event.get('time'):
+                        instance['time'] = event.get('time')
+                    if event.get('Time'):
+                        instance['Time'] = event.get('Time')
                     
                     cell_instances.append(instance)
                     
             except Exception as e:
                 print(f"Error processing event {event.get('_id')}: {e}")
                 continue
-        
-        cell_instances.sort(key=lambda x: x['date'], reverse=True)
-        
+            raw_time = event.get('time') or event.get('Time')
+    
         total_count = len(cell_instances)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
         skip = (page - 1) * limit
@@ -1876,7 +1989,7 @@ async def get_other_events(
             }
             query = {"$and": [query, search_filter]}
 
-        print(f"🎯 /events/other query for role {user_role}:", query)
+        print(f"/events/other query for role {user_role}:", query)
 
         cursor = events_collection.find(query)
         events = await cursor.to_list(length=1000)
@@ -1930,6 +2043,16 @@ async def get_other_events(
                     "eventType": e.get("eventTypeName") or e.get("eventType") or e.get("Event Type", ""),
                     "original_date": ev_date.isoformat(),
                 }
+                if event.get('time'):
+                    instance['time'] = event.get('time')
+                if event.get('Time'):
+                    instance['Time'] = event.get('Time')
+               
+                if "persistent_attendees" in event:
+                    print(f"Removing persistent_attendees from non-cell event: {event_name}")
+               
+                other_events.append(instance)
+                print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status})")
 
                 results.append(result_item)
 
@@ -2102,6 +2225,7 @@ async def update_cell_event_working(identifier: str, event_data: dict):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.put("/events/person/{person_name}/event/{event_name}/day/{day_name}")
 async def update_events_by_person_event_and_day(person_name: str, event_name: str, day_name: str, update_data: dict):
     """
@@ -2199,19 +2323,30 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             elif date_value:
                 update_fields['date'] = date_value
                 try:
-                    dt_obj = dt.fromisoformat(date_value)
+                    # Handle YYYY-MM-DD format (what frontend sends)
+                    if len(date_value) == 10 and '-' in date_value:
+                        dt_obj = dt.strptime(date_value, '%Y-%m-%d')
+                    else:
+                        dt_obj = dt.fromisoformat(date_value)
+                    
                     update_fields['Date Of Event'] = dt_obj.isoformat() + 'Z'
-                    # Update display_date for table
-                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
+                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y') 
                 except:
                     update_fields['Date Of Event'] = date_value
+
         
         # Time mapping
         if 'Time' in update_data or 'time' in update_data:
             time_value = update_data.get('Time') or update_data.get('time')
-            update_fields['Time'] = time_value
-            update_fields['time'] = time_value
-        
+            
+            if time_value:
+                print(f"DEBUG - Time received from frontend: {time_value}")
+                print(f"DEBUG - Storing as SAST (no conversion)")
+                
+                # Store exactly as received
+                update_fields['Time'] = time_value
+                update_fields['time'] = time_value  
+                      
         # Address/Location mapping
         if 'Address' in update_data or 'location' in update_data:
             location_value = update_data.get('Address') or update_data.get('location')
@@ -2243,10 +2378,15 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         ]
         
         for key, value in update_data.items():
-            if key not in protected_fields:
+            if key not in protected_fields and key not in update_fields:
                 update_fields[key] = value
         
         update_fields["updated_at"] = datetime.utcnow()
+        
+        for key, value in update_fields.items():
+            if 'time' in key.lower() or 'Time' in key:
+                print(f"  {key}: {value} (type: {type(value)})")
+                
         if update_fields.get("deactivation_end",""):
             print("yay!")
             update_fields["deactivation_end"] = datetime.strptime( update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
@@ -2261,6 +2401,9 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         
         print(f"Updated: matched {result.matched_count}, modified {result.modified_count}")
         
+        # Fetch and return one updated event to verify
+        updated_event = await events_collection.find_one(strict_query)
+
         return {
             "success": True,
             "message": f"Updated {result.modified_count} {decoded_day} events named '{decoded_event}'",
@@ -2270,7 +2413,8 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             "original_event_name": decoded_event,
             "original_day": decoded_day,
             "new_event_name": update_fields.get('Event Name'),
-            "new_day": update_fields.get('Day')
+            "new_day": update_fields.get('Day'),
+            "sample_time_stored": updated_event.get('time') if updated_event else None
         }
         
     except Exception as e:
@@ -3830,6 +3974,11 @@ async def get_global_events(
                     "closed_by": event.get("closed_by"),
                     "closed_at": event.get("closed_at")
                 }
+                
+                if event.get('time'):
+                    final_event['time'] = event.get('time')
+                if event.get('Time'):
+                    final_event['Time'] = event.get('Time')
                
                 processed_events.append(final_event)
                 print(f"  Event added to processed list")
@@ -4912,12 +5061,29 @@ async def get_admin_cell_events_debug(
                 if day not in day_mapping:
                     continue
                
-                # Calculate most recent occurrence
-                target_weekday = day_mapping[day]
-                current_weekday = today_date.weekday()
-                days_diff = (current_weekday - target_weekday) % 7
-               
-                most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                stored_date = event.get("date")
+                
+                if stored_date:
+                    # Use the date from the database
+                    if isinstance(stored_date, str):
+                        try:
+                            most_recent_occurrence = datetime.strptime(stored_date, "%Y-%m-%d").date()
+                        except:
+                            most_recent_occurrence = datetime.fromisoformat(stored_date.replace('Z', '+00:00')).date()
+                    elif isinstance(stored_date, datetime):
+                        most_recent_occurrence = stored_date.date()
+                    else:
+                        # Fallback to calculation
+                        target_weekday = day_mapping[day]
+                        current_weekday = today_date.weekday()
+                        days_diff = (current_weekday - target_weekday) % 7
+                        most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
+                else:
+                    # Calculate most recent occurrence (original logic)
+                    target_weekday = day_mapping[day]
+                    current_weekday = today_date.weekday()
+                    days_diff = (current_weekday - target_weekday) % 7
+                    most_recent_occurrence = today_date - timedelta(days=days_diff) if days_diff > 0 else today_date
                
                 # FILTER BY DATE RANGE (Oct 20, 2025 to today)
                 if most_recent_occurrence < start_date_obj or most_recent_occurrence > today_date:
@@ -5216,6 +5382,11 @@ async def get_user_cell_events_fixed_future(
                 print(f"Error processing event {event.get('_id')}: {str(e)}")
                 continue
 
+        if event.get('time'):
+            final_event['time'] = event.get('time')
+        if event.get('Time'):
+            final_event['Time'] = event.get('Time')     
+            
         # Sort by date
         processed_events.sort(key=lambda x: x['date'])
 
@@ -5706,7 +5877,7 @@ async def get_cell_events_optimized(
                 ]
         else:
             query["Email"] = user_email
-        
+
         cursor = events_collection.find(query)
         all_cells = await cursor.to_list(length=None)
         
@@ -5809,6 +5980,11 @@ async def get_cell_events_optimized(
                         "attendance": week_attendance,
                         "did_not_meet": did_not_meet,
                     }
+                     
+                    if cell.get('time'):
+                        instance['time'] = cell.get('time')
+                    if cell.get('Time'):
+                        instance['Time'] = cell.get('Time')
                     
                     cell_instances.append(instance)
                     
@@ -6406,6 +6582,11 @@ async def get_event_by_id(event_id: str = Path(...)):
         event["_id"] = str(event["_id"])
         event = convert_datetime_to_iso(event)
         event = sanitize_document(event)
+        
+        if event.get('time'):
+            event['time'] = event['time']
+        if event.get('Time'):
+            event['Time'] = event['Time']
        
         #  ENSURE NEW FIELDS ARE RETURNED
         event.setdefault("isTicketed", False)
