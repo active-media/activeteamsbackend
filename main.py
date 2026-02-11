@@ -2330,7 +2330,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
                         dt_obj = dt.fromisoformat(date_value)
                     
                     update_fields['Date Of Event'] = dt_obj.isoformat() + 'Z'
-                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')  # ← ADD THIS LINE
+                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y') 
                 except:
                     update_fields['Date Of Event'] = date_value
 
