@@ -46,3 +46,5 @@ ecdsa==0.19.1
 pytz
 requests
 resend
+# deactive schedulers 
+apscheduler==3.10.4
