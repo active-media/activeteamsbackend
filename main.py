@@ -2017,32 +2017,36 @@ async def get_other_events(
                 if status and status != ev_status:
                     continue
 
-                display_date = ev_date.strftime("%d - %m - %Y")
-                
-                is_recurring = e.get("recurring", False) or e.get("isRecurring", False)
-                recurring_display = "Recurring" if is_recurring else "False"
-                day_of_week = ev_date.strftime("%A")
-                
-                result_item = {
-                    "_id": str(e.get("_id")),
-                    "UUID": e.get("UUID", ""),
-                    "status": ev_status,
-                    "recurring": recurring_display,
-                    "eventName": e.get("eventName") or e.get("Event Name", ""),
-                    "eventLeaderName": e.get("eventLeaderName") or e.get("Leader") or e.get("leader1", ""),
-                    "eventLeaderEmail": e.get("eventLeaderEmail") or e.get("userEmail", ""),
-                    "dayOfWeek": day_of_week,
-                    "date": ev_date.isoformat(),
-                    "display_date": display_date,
-                    "eventType": e.get("eventTypeName") or e.get("eventType") or e.get("Event Type", ""),
-                    "original_date": ev_date.isoformat(),
+
+                instance = {
+                    "_id": str(event.get("_id")),
+                    "UUID": event.get("UUID", ""),
+                    "eventName": event_name,
+                    "eventType": event_type_value,
+                    "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
+                    "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
+                    "leader1": event.get("leader1", ""),
+                    "leader12": event.get("Leader @12") or event.get("Leader at 12", ""),
+                    "day": actual_day_value,
+                    "date": event_date.isoformat(),
+                    "location": event.get("Location") or event.get("location", ""),
+                    "attendees": weekly_attendees,
+                    "hasPersonSteps": False,
+                    "status": event_status,
+                    "Status": event_status.replace("_", " ").title(),
+                    "_is_overdue": event_date < today and event_status == "incomplete",
+                    "is_recurring": is_recurring,
+                    "recurring_days": recurring_days,
+                    "original_event_id": str(event.get("_id"))
                 }
 
-                # Add time if it exists
-                if e.get('time'):
-                    result_item['time'] = e.get('time')
-                if e.get('Time'):
-                    result_item['Time'] = e.get('Time')
+               
+                if "persistent_attendees" in event:
+                    print(f"Removing persistent_attendees from non-cell event: {event_name}")
+                
+                is_active = event.get("is_active", True)  
+                if is_active:
+                    other_events.append(instance)
 
                 results.append(result_item)
 
@@ -2050,7 +2054,12 @@ async def get_other_events(
                 print(f"EVENT PARSE ERROR for {e.get('_id')}: {ex}")
                 continue
 
-        results.sort(key=lambda x: x["original_date"], reverse=True)
+        other_events.sort(key=lambda x: x['date'], reverse=True)
+        
+        total_count = len(other_events)
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        skip = (page - 1) * limit
+        paginated_events = other_events[skip:skip + limit]
 
         total = len(results)
         skip = (page - 1) * limit
