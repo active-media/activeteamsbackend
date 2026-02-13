@@ -1389,6 +1389,55 @@ async def create_event(event: EventCreate):
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data["attendees"])
 
+        # ---- PLACE RECURRING LOGIC HERE ----
+
+        created_ids = []
+
+        reference_date = event_data.get("date")
+
+        if isinstance(reference_date, str):
+            reference_date = datetime.strptime(reference_date, "%Y-%m-%d")
+        elif not isinstance(reference_date, datetime):
+            reference_date = datetime.utcnow()
+
+        monday = get_monday(reference_date)
+
+        if recurring_days:
+            series_uuid = event_data["UUID"]
+
+            for day in recurring_days:
+                day_lower = day.lower()
+                if day_lower not in DAY_INDEX:
+                    continue
+
+                event_date = monday + timedelta(days=DAY_INDEX[day_lower])
+
+                new_event = event_data.copy()
+                new_event["_id"] = ObjectId()
+                new_event["UUID"] = series_uuid
+                new_event["day"] = day.capitalize()
+                new_event["date"] = event_date.date().isoformat()
+
+                result = await events_collection.insert_one(new_event)
+                created_ids.append(str(result.inserted_id))
+
+            return {
+                "success": True,
+                "message": "Recurring events created successfully",
+                "created_event_ids": created_ids,
+                "count": len(created_ids)
+            }
+
+        # ELSE → Single event
+        created_event = await events_collection.find_one({"_id": result.inserted_id})
+
+        return {
+            "success": True,
+            "message": "Event created successfully",
+            "id": str(result.inserted_id),
+            "event": {**created_event, "_id": str(created_event["_id"])}
+        }
+
         # 4. Save to Database
         print("Saving eventLeaderEmail:", event_data.get("eventLeaderEmail"))
 
@@ -2094,10 +2143,10 @@ async def get_other_events(
 
                 is_recurring = bool(recurring_days) and len(recurring_days) > 0
                 # HIDE future recurring events until the actual day
-                if is_recurring:
-                    today_day_name = today.strftime("%A")  # e.g. "Monday"
-                    if today_day_name not in recurring_days:
-                        continue
+                # Show event only if it is today
+                if event_date != today:
+                    continue
+
 
 
 
