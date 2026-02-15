@@ -9371,6 +9371,58 @@ async def get_service_checkin_real_time_data(
         print(f"Error getting real-time data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
 
+@app.get("/service-checkin/validate-removal")
+async def validate_removal(
+    event_id: str = Query(..., description="Event ID"),
+    consolidation_id: str = Query(None, description="Consolidation ID"),
+    person_id: str = Query(None, description="Person ID"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Validate what will be affected by removal
+    """
+    try:
+        if not consolidation_id and not person_id:
+            raise HTTPException(status_code=400, detail="Either consolidation_id or person_id is required")
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        consolidation = None
+        if consolidation_id:
+            consolidations = event.get("consolidations", [])
+            for cons in consolidations:
+                if cons.get("id") == consolidation_id:
+                    consolidation = cons
+                    break
+        
+        warnings = []
+        affected_tasks = []
+        
+        if consolidation:
+            task_id = consolidation.get("task_id")
+            if task_id and ObjectId.is_valid(task_id):
+                # Get ONLY the specific task
+                task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
+                if task:
+                    affected_tasks.append(task)
+                    warnings.append(f"Task for {task.get('contacted_person', {}).get('name', 'Unknown')} will be deleted")
+        
+        return {
+            "success": True,
+            "validation": {
+                "warnings": warnings,
+                "affected_tasks": affected_tasks,
+                "affected_tasks_count": len(affected_tasks)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Validation error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Validation error: {str(e)}")
+
+
 @app.post("/service-checkin/checkin")
 async def service_checkin_person(
     checkin_data: dict = Body(...),
@@ -10762,3 +10814,607 @@ async def close_event(
     except Exception as e:
         print(f" Error closing event: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
+
+# ==================== CREATE CONSOLIDATION (UPDATED) ====================
+@app.post("/service-checkin/create-consolidation")
+async def create_consolidation(
+    consolidation_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a new consolidation record and associated task
+    - Creates task in tasks collection
+    - Saves task_id in consolidation record
+    - Adds to event consolidations array
+    - Updates consolidations collection
+    """
+    try:
+        logger.info(f"Creating consolidation: {consolidation_data}")
+        
+        # Extract data
+        event_id = consolidation_data.get("event_id")
+        person_data = consolidation_data.get("person_data", {})
+        decision_type = consolidation_data.get("decision_type", "Commitment")
+        assigned_to = consolidation_data.get("assigned_to", "")
+        notes = consolidation_data.get("notes", "")
+        
+        # Validate required fields
+        if not event_id:
+            raise HTTPException(status_code=400, detail="Event ID is required")
+        
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+        
+        # Get event to verify existence
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # ========== 1. CREATE TASK FIRST ==========
+        # Get person details
+        person_name = person_data.get("name", "")
+        person_surname = person_data.get("surname", "")
+        person_email = person_data.get("email", "")
+        person_phone = person_data.get("phone", "") or person_data.get("number", "")
+        person_id = person_data.get("id", "")
+        
+        # Create task payload
+        task_payload = {
+            "memberID": current_user.get("user_id", current_user.get("email", "unknown")),
+            "name": assigned_to or current_user.get("name", "Unknown"),
+            "taskType": "consolidation",
+            "contacted_person": {
+                "name": f"{person_name} {person_surname}".strip(),
+                "phone": person_phone,
+                "email": person_email
+            },
+            "followup_date": datetime.utcnow().isoformat(),
+            "status": "Open",
+            "type": "consolidation",
+            "assignedfor": current_user.get("email", "unknown"),
+            "is_consolidation_task": True,
+            "leader_name": assigned_to,
+            "leader_assigned": assigned_to,
+            "consolidation_name": f"{person_name} {person_surname} - {decision_type}",
+            "decision_display_name": decision_type,
+            "source_display": "Service",
+            "consolidation_source": "Service",
+            "person_name": person_name,
+            "person_surname": person_surname,
+            "person_email": person_email,
+            "person_phone": person_phone,
+            "person_id": person_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        # Insert the task
+        task_result = await tasks_collection.insert_one(task_payload)
+        task_id = str(task_result.inserted_id)
+        logger.info(f"Created task {task_id} for consolidation")
+        
+        # ========== 2. CREATE CONSOLIDATION RECORD ==========
+        consolidation_id = str(ObjectId())
+        consolidation_record = {
+            "id": consolidation_id,
+            "task_id": task_id,  # CRITICAL: Link to task
+            "event_id": event_id,
+            "person_id": person_id,
+            "person_name": person_name,
+            "person_surname": person_surname,
+            "person_email": person_email,
+            "person_phone": person_phone,
+            "decision_type": decision_type,
+            "assigned_to": assigned_to,
+            "notes": notes,
+            "created_by": current_user.get("email", "unknown"),
+            "created_by_name": current_user.get("name", "Unknown"),
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            "status": "active",
+            "source": "service_checkin"
+        }
+        
+        # ========== 3. ADD TO EVENT CONSOLIDATIONS ARRAY ==========
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {
+                "$push": {"consolidations": consolidation_record},
+                "$set": {
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "last_updated_by": {
+                        "email": current_user.get("email", "unknown"),
+                        "name": current_user.get("name", ""),
+                        "action": "created_consolidation",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            # Rollback task creation if event update fails
+            await tasks_collection.delete_one({"_id": ObjectId(task_id)})
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to add consolidation to event"
+            )
+        
+        # ========== 4. ADD TO CONSOLIDATIONS COLLECTION ==========
+        try:
+            consolidations_collection = db["consolidations"]
+            consolidation_record["_id"] = ObjectId(consolidation_id)
+            await consolidations_collection.insert_one(consolidation_record)
+        except Exception as consolidation_error:
+            logger.warning(f"Note: Could not add to consolidations collection: {consolidation_error}")
+        
+        # ========== 5. LOG ACTIVITY ==========
+        try:
+            await log_activity(
+                user_id=current_user.get("user_id", current_user.get("email", "unknown")),
+                action="CONSOLIDATION_CREATED",
+                details=f"Created consolidation for '{person_name} {person_surname}' in event '{event.get('eventName', 'Unknown')}'"
+            )
+        except Exception as log_error:
+            logger.warning(f"Failed to log activity: {log_error}")
+        
+        # ========== 6. GET UPDATED STATS ==========
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
+        return {
+            "success": True,
+            "message": "Consolidation created successfully",
+            "consolidation": consolidation_record,
+            "task_id": task_id,  # Return task_id to frontend
+            "event_id": event_id,
+            "event_name": event.get("eventName", "Unknown Event"),
+            "updated_statistics": {
+                "consolidations_count": len(updated_event.get("consolidations", [])),
+                "new_people_count": len(updated_event.get("new_people", [])),
+                "total_attendance": updated_event.get("total_attendance", 0),
+                "total_attendees": len(updated_event.get("attendees", []))
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating consolidation: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal server error: {str(e)}"
+        )
+
+# ==================== REMOVE CONSOLIDATION (FIXED) ====================
+@app.delete("/service-checkin/remove-consolidation")
+async def remove_consolidation(
+    event_id: str = Query(..., description="Event ID"),
+    consolidation_id: str = Query(..., description="Consolidation ID"),
+    keep_person_in_attendees: bool = Query(True, description="Keep person in attendees list if present"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Remove a consolidation completely:
+    - Removes from event.consolidations array
+    - Deletes from consolidations collection
+    - Deletes associated task using consolidation_id
+    - Deletes from user-specific task collection
+    - Updates event statistics
+    """
+
+    try:
+        logger.info(f"Removing consolidation: event={event_id}, consolidation={consolidation_id}")
+
+        # Validate IDs
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+
+        if not consolidation_id:
+            raise HTTPException(status_code=400, detail="Consolidation ID required")
+
+        # Get event
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        event_name = event.get("eventName", "Unknown Event")
+
+        # Remove consolidation from event array
+        updated_consolidations = []
+        consolidation_to_remove = None
+
+        for c in event.get("consolidations", []):
+            # Match safely whether stored as id or _id
+            c_id = c.get("id") or c.get("_id")
+            if str(c_id) == consolidation_id:
+                consolidation_to_remove = c
+            else:
+                updated_consolidations.append(c)
+
+        if not consolidation_to_remove:
+            raise HTTPException(
+                status_code=404,
+                detail="Consolidation not found in event"
+            )
+
+        person_email = consolidation_to_remove.get("person_email")
+        person_name = consolidation_to_remove.get("person_name", "")
+        person_surname = consolidation_to_remove.get("person_surname", "")
+
+        # Prepare event update
+        update_data = {
+            "consolidations": updated_consolidations,
+            "updated_at": datetime.utcnow().isoformat(),
+            "last_updated_by": {
+                "email": current_user.get("email", "unknown"),
+                "action": "removed_consolidation",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+
+        # Optional: remove from attendees
+        if not keep_person_in_attendees and person_email:
+            updated_attendees = []
+            removed_from_attendees = False
+            total_attendance = event.get("total_attendance", 0)
+
+            for attendee in event.get("attendees", []):
+                email = attendee.get("email") or attendee.get("person_email")
+                if email and email.lower() == person_email.lower():
+                    removed_from_attendees = True
+                    if attendee.get("checked_in"):
+                        total_attendance = max(0, total_attendance - 1)
+                else:
+                    updated_attendees.append(attendee)
+
+            update_data["attendees"] = updated_attendees
+            update_data["total_attendance"] = total_attendance
+
+        # Update event
+        await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {"$set": update_data}
+        )
+
+        # ================================
+        # DELETE FROM CONSOLIDATIONS COLLECTION
+        # ================================
+        consolidations_collection = db["consolidations"]
+
+        if ObjectId.is_valid(consolidation_id):
+            await consolidations_collection.delete_one(
+                {"_id": ObjectId(consolidation_id)}
+            )
+        else:
+            await consolidations_collection.delete_one(
+                {"_id": consolidation_id}
+            )
+
+        # ================================
+        # DELETE ASSOCIATED TASK (SAFER METHOD)
+        # ================================
+        task_deleted = False
+        deleted_task_ids = []
+
+        # Find task using consolidation_id
+        task = await tasks_collection.find_one({
+            "consolidation_id": consolidation_id
+        })
+
+        if task:
+            task_id = str(task["_id"])
+
+            # Delete from main tasks collection
+            await tasks_collection.delete_one({
+                "_id": task["_id"]
+            })
+
+            task_deleted = True
+            deleted_task_ids.append(task_id)
+
+            # Delete from user-specific collection
+            assignedfor = task.get("assignedfor")
+            if assignedfor:
+                user_collection_name = f"tasks_{assignedfor.replace('@', '_').replace('.', '_')}"
+                user_tasks_collection = db.get_collection(user_collection_name)
+                await user_tasks_collection.delete_one({
+                    "_id": task["_id"]
+                })
+
+        # ================================
+        # LOG ACTIVITY
+        # ================================
+        try:
+            await log_activity(
+                user_id=current_user.get("email"),
+                action="CONSOLIDATION_REMOVED",
+                details=f"Removed consolidation for {person_name} {person_surname} from {event_name}"
+            )
+        except Exception as log_error:
+            logger.warning(f"Activity log failed: {log_error}")
+
+        # Get updated event
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+
+        return {
+            "success": True,
+            "message": "Consolidation removed successfully",
+            "task_deleted": task_deleted,
+            "deleted_task_ids": deleted_task_ids,
+            "updated_statistics": {
+                "consolidations_count": len(updated_event.get("consolidations", [])),
+                "total_attendance": updated_event.get("total_attendance", 0),
+                "total_attendees": len(updated_event.get("attendees", []))
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing consolidation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
+
+@app.post("/service-checkin/migrate-consolidations")
+async def migrate_consolidations(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Migration endpoint to add task_id to existing consolidations
+    Run this once to fix old consolidations
+    """
+    try:
+        # Only allow admins to run migration
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Only admins can run migrations")
+        
+        updates_made = 0
+        
+        # Get all events with consolidations
+        events = await events_collection.find({"consolidations": {"$exists": True, "$ne": []}}).to_list(None)
+        
+        logger.info(f"Found {len(events)} events with consolidations to migrate")
+        
+        for event in events:
+            consolidations = event.get("consolidations", [])
+            updated_consolidations = []
+            event_updated = False
+            
+            for consolidation in consolidations:
+                if isinstance(consolidation, dict):
+                    # If consolidation doesn't have task_id, try to find matching task
+                    if "task_id" not in consolidation:
+                        person_name = consolidation.get("person_name", "")
+                        person_surname = consolidation.get("person_surname", "")
+                        person_email = consolidation.get("person_email", "")
+                        assigned_to = consolidation.get("assigned_to", "")
+                        decision_type = consolidation.get("decision_type", "Commitment")
+                        
+                        # Try to find matching task
+                        task_query = {
+                            "is_consolidation_task": True,
+                            "type": "consolidation"
+                        }
+                        
+                        # Try multiple search criteria
+                        if person_email:
+                            task_query["contacted_person.email"] = person_email
+                        elif person_name and person_surname:
+                            full_name = f"{person_name} {person_surname}"
+                            task_query["contacted_person.name"] = {"$regex": full_name, "$options": "i"}
+                        
+                        if assigned_to:
+                            task_query["$or"] = [
+                                {"leader_name": assigned_to},
+                                {"leader_assigned": assigned_to},
+                                {"name": assigned_to}
+                            ]
+                        
+                        task = await tasks_collection.find_one(task_query)
+                        
+                        if not task and person_name:
+                            # Try broader search
+                            task = await tasks_collection.find_one({
+                                "is_consolidation_task": True,
+                                "$or": [
+                                    {"consolidation_name": {"$regex": person_name, "$options": "i"}},
+                                    {"person_name": {"$regex": person_name, "$options": "i"}},
+                                    {"person_surname": {"$regex": person_surname, "$options": "i"}}
+                                ]
+                            })
+                        
+                        if task:
+                            consolidation["task_id"] = str(task["_id"])
+                            consolidation["_migrated"] = True
+                            consolidation["_migrated_at"] = datetime.utcnow().isoformat()
+                            updates_made += 1
+                            event_updated = True
+                            logger.info(f"Added task_id {task['_id']} to consolidation for {person_name} {person_surname}")
+                        else:
+                            logger.warning(f"No matching task found for consolidation: {person_name} {person_surname}")
+                            consolidation["_migration_note"] = "No matching task found"
+                    
+                    updated_consolidations.append(consolidation)
+            
+            # Update the event if we made changes
+            if event_updated:
+                await events_collection.update_one(
+                    {"_id": event["_id"]},
+                    {"$set": {"consolidations": updated_consolidations}}
+                )
+        
+        return {
+            "success": True,
+            "message": f"Migration complete. Updated {updates_made} consolidations with task_id.",
+            "updates_made": updates_made,
+            "events_processed": len(events)
+        }
+        
+    except Exception as e:
+        logger.error(f"Migration error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Migration failed: {str(e)}"
+        )
+
+
+# ==================== DEBUG: CHECK CONSOLIDATIONS ====================
+@app.get("/service-checkin/debug-consolidations")
+async def debug_consolidations(
+    event_id: str = Query(None, description="Event ID (optional)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Debug endpoint to check consolidation data structure
+    """
+    try:
+        query = {}
+        if event_id and ObjectId.is_valid(event_id):
+            query["_id"] = ObjectId(event_id)
+        elif event_id:
+            query["eventName"] = {"$regex": event_id, "$options": "i"}
+        
+        events = await events_collection.find({"consolidations": {"$exists": True, "$ne": []}, **query}).to_list(None)
+        
+        debug_results = []
+        
+        for event in events:
+            consolidations = event.get("consolidations", [])
+            event_debug = {
+                "event_id": str(event.get("_id")),
+                "event_name": event.get("eventName", "Unknown"),
+                "total_consolidations": len(consolidations),
+                "consolidations": []
+            }
+            
+            for i, cons in enumerate(consolidations):
+                if isinstance(cons, dict):
+                    cons_debug = {
+                        "index": i,
+                        "has_task_id": "task_id" in cons,
+                        "task_id": cons.get("task_id"),
+                        "person_name": cons.get("person_name", "Unknown"),
+                        "person_email": cons.get("person_email", ""),
+                        "assigned_to": cons.get("assigned_to", ""),
+                        "decision_type": cons.get("decision_type", "")
+                    }
+                    
+                    # Check if task exists
+                    task_id = cons.get("task_id")
+                    if task_id and ObjectId.is_valid(task_id):
+                        task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
+                        cons_debug["task_exists"] = task is not None
+                        if task:
+                            cons_debug["task_status"] = task.get("status")
+                            cons_debug["task_name"] = task.get("name")
+                    else:
+                        cons_debug["task_exists"] = False
+                    
+                    event_debug["consolidations"].append(cons_debug)
+            
+            debug_results.append(event_debug)
+        
+        return {
+            "success": True,
+            "debug_results": debug_results,
+            "total_events": len(debug_results)
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Debug failed: {str(e)}"
+        )  
+        
+        
+        
+# ==================== CLEANUP ORPHANED TASKS ====================
+@app.delete("/tasks/cleanup-orphaned")
+async def cleanup_orphaned_tasks(
+    user_email: str = Query(None, description="User email to cleanup tasks for (optional)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Clean up orphaned consolidation tasks that don't have corresponding consolidations
+    """
+    try:
+        query = {
+            "taskType": "consolidation",
+            "status": {"$nin": ["completed", "cancelled", "deleted"]}
+        }
+        
+        if user_email:
+            query["assignedfor"] = user_email
+        
+        # Get all active consolidation tasks
+        consolidation_tasks = await tasks_collection.find(query).to_list(None)
+        
+        deleted_count = 0
+        deleted_ids = []
+        
+        for task in consolidation_tasks:
+            task_id = str(task.get("_id"))
+            consolidation_id = task.get("consolidation_id")
+            person_email = task.get("contacted_person", {}).get("email")
+            person_name = task.get("contacted_person", {}).get("name", "")
+            
+            consolidation_exists = False
+            
+            # Check if consolidation exists in events
+            if consolidation_id:
+                # Check in events collection
+                event_with_consolidation = await events_collection.find_one({
+                    "consolidations.id": consolidation_id,
+                    "consolidations.status": {"$ne": "removed"}
+                })
+                
+                if event_with_consolidation:
+                    consolidation_exists = True
+                else:
+                    # Check in consolidations collection
+                    consolidation = await consolidations_collection.find_one({
+                        "$or": [
+                            {"_id": ObjectId(consolidation_id) if ObjectId.is_valid(consolidation_id) else None},
+                            {"id": consolidation_id}
+                        ],
+                        "status": {"$ne": "removed"}
+                    })
+                    if consolidation:
+                        consolidation_exists = True
+            
+            # Also check by person name/email
+            if not consolidation_exists and person_email:
+                # Check if person exists in any active consolidation
+                event_with_person = await events_collection.find_one({
+                    "consolidations.person_email": person_email,
+                    "consolidations.status": {"$ne": "removed"}
+                })
+                if event_with_person:
+                    consolidation_exists = True
+            
+            # If consolidation doesn't exist, delete the task
+            if not consolidation_exists:
+                delete_result = await tasks_collection.delete_one({"_id": task["_id"]})
+                if delete_result.deleted_count > 0:
+                    deleted_count += 1
+                    deleted_ids.append(task_id)
+                    logger.info(f"Deleted orphaned task {task_id} for {person_name}")
+        
+        return {
+            "success": True,
+            "message": f"Cleaned up {deleted_count} orphaned consolidation tasks",
+            "deleted_count": deleted_count,
+            "deleted_ids": deleted_ids
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up orphaned tasks: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")     
+        
+        
+        
