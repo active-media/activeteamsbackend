@@ -2703,20 +2703,7 @@ scheduler = AsyncIOScheduler()
 scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
 scheduler.start()
 sleep(10)
-
-
-#   CRON JOB TO MANUALLY UPDATE THE BACKUP DATABASE
-async def back_up_database():
-    try:
-        #TASKS COLLECTION
-        current_time = datetime.utcnow()
-        tasks_result = await tasks_collection.find_one({"followup_date":{"$qte":current_time}})
-        print("Data23",tasks_result)
-
-    except Exception as e:
-        print(f"database backup error:{e}")
-
-back_up_database()      
+  
 #------------------ MIGRATION ENDPOINTS ---------- 
 @app.post("/migrate-event-types-uuids")
 async def migrate_event_types_uuids():
