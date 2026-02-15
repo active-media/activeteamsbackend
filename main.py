@@ -1332,7 +1332,8 @@ async def get_cell_events(
     leader_at_1_identifier: Optional[str] = Query(None),
     isLeaderAt12: Optional[bool] = Query(None),
     firstName: Optional[str] = Query(None),
-    userSurname: Optional[str] = Query(None)
+    userSurname: Optional[str] = Query(None),
+    must_paginate: Optional[bool] = Query(False)
 ):
     try:
         role = current_user.get("role", "user").lower()
@@ -1528,7 +1529,8 @@ async def get_cell_events(
                 query["$and"].append({"$or": conditions})
             else:
                 query["$and"].append({"_id": "nonexistent_id"})
-
+        
+        print("SEARCH TEXT",search)
         print(f"📋 Final query for cells: {query}")
 
         pipeline = [
@@ -1701,28 +1703,36 @@ async def get_cell_events(
                 print(f"Error processing event {event.get('_id')}: {e}")
                 continue
         
-        cell_instances.sort(key=lambda x: x['date'], reverse=True)
-        
-        total_count = len(cell_instances)
-        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-        skip = (page - 1) * limit
-        paginated = cell_instances[skip:skip + limit]
-        
-        return {
-            "events": paginated,
-            "total_events": total_count,
-            "total_pages": total_pages,
-            "current_page": page,
-            "page_size": limit,
-            "user_info": {
-                "name": user_name,
-                "email": user_email,
-                "role": role,
-                "is_leader_at_12": is_actual_leader_at_12,
-                "view_mode": "personal" if (personal or show_personal_cells) else "all"
+            cell_instances.sort(key=lambda x: x['date'], reverse=True)
+
+            #if must_paginate variable is true, fetch events as normal
+        if must_paginate:
+            total_count = len(cell_instances)
+            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+            skip = (page - 1) * limit
+            paginated = cell_instances[skip:skip + limit]
+            print("FETCHED PAGINATED CELLS",total_count)
+            
+            return {
+                "events": paginated,
+                "total_events": total_count,
+                "total_pages": total_pages,
+                "current_page": page,
+                "page_size": limit,
+                "user_info": {
+                    "name": user_name,
+                    "email": user_email,
+                    "role": role,
+                    "is_leader_at_12": is_actual_leader_at_12,
+                    "view_mode": "personal" if (personal or show_personal_cells) else "all"
+                }
             }
-        }
-        
+        else:
+            #if must_paginate variable is false then fetch all events to search over
+            return {
+            "events": cell_instances
+            }
+
     except Exception as e:
         print(f"Error in /events/cells: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2466,7 +2476,7 @@ async def auto_reactivate_expired_events():
             "$and": [
                 {"is_active": False},
                 {"deactivation_end": {"$lte": current_time, "$ne": None}},
-                {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
+                {"$or":[{"is_permanent_deact":{"$ne":True}}]}
             ]
         }
         
@@ -2491,7 +2501,20 @@ scheduler = AsyncIOScheduler()
 scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
 scheduler.start()
 sleep(10)
-      
+
+
+#   CRON JOB TO MANUALLY UPDATE THE BACKUP DATABASE
+async def back_up_database():
+    try:
+        #TASKS COLLECTION
+        current_time = datetime.utcnow()
+        tasks_result = await tasks_collection.find_one({"followup_date":{"$qte":current_time}})
+        print("Data23",tasks_result)
+
+    except Exception as e:
+        print(f"database backup error:{e}")
+
+back_up_database()      
 #------------------ MIGRATION ENDPOINTS ---------- 
 @app.post("/migrate-event-types-uuids")
 async def migrate_event_types_uuids():
