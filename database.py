@@ -15,6 +15,7 @@ tasks_collection = db["tasks"]
 #  is used to test the whole data for events
 # events_collection = db["cellst"]  
 tasktypes_collection = db["TaskTypes"]
+consolidations_collection=db["consolidations"]
 
 def get_database():
     return db
