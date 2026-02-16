@@ -2095,7 +2095,7 @@ async def get_other_events(
                     # ✅ Include ONLY these attendance-related fields for the modal
                     "attendance": attendance if attendance else {},  # Pass the full attendance object
                     "persistent_attendees": persistent_attendees,  # Pass persistent attendees
-                    # ❌ DO NOT add these fields here - they belong in the modal only
+                    #  DO NOT add these fields here - they belong in the modal only
                     # "attendees": ...,
                     # "checked_in_count": ...,
                     # "total_headcounts": ...,
@@ -2137,7 +2137,7 @@ async def get_other_events(
             "total_events": total,
             "total_pages": (total + limit - 1) // limit if total > 0 else 1,
             "current_page": page,
-            # ❌ REMOVE this statistics summary - it belongs in the modal only
+            #  REMOVE this statistics summary - it belongs in the modal only
             # "statistics_summary": { ... }
         }
 
@@ -10782,7 +10782,6 @@ async def create_consolidation(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        # ========== 1. CREATE TASK FIRST ==========
         # Get person details
         person_name = person_data.get("name", "")
         person_surname = person_data.get("surname", "")
