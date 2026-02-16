@@ -2671,7 +2671,7 @@ async def auto_reactivate_expired_events():
             "$and": [
                 {"is_active": False},
                 {"deactivation_end": {"$lte": current_time, "$ne": None}},
-                {"$or":[{"isPermanent":{"$ne":True}},{"is_permanent_deact":{"$ne":True}}]}
+                {"is_permanent_deact":{"$ne":True}}
             ]
         }
         
