@@ -2359,8 +2359,8 @@ async def get_other_events(
                     "status": event_status,
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
-                    # "is_recurring": is_recurring,
-                    # "recurring_days": recurring_days,
+                    "is_recurring": is_recurring,
+                    "recurring_days": recurring_days,
                     "original_event_id": str(event.get("_id"))
                 }
 
