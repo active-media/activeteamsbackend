@@ -8561,7 +8561,15 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
         print(f"ERROR: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
-  
+
+
+@app.get("/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    current_user["_id"] = str(current_user["_id"])
+    return current_user
+
+
+
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(
     user_id: str,

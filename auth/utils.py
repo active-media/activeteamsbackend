@@ -128,11 +128,15 @@ def verify_password_reset_token(token: str) -> Optional[str]:
 # ==============================
 # FASTAPI DEPENDENCIES
 # ==============================
-async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
+async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
     payload = decode_access_token(token.credentials)
-    if not payload:
+    user_id = payload.get("user_id")
+    if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-    return payload
+    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
 
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
