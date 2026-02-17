@@ -10944,41 +10944,84 @@ async def get_dashboard_quick_stats(
         traceback.print_exc()
         raise HTTPException(500, f"Error fetching quick stats: {str(e)}")
     
-@app.patch("/events/{event_id}/close")
-async def close_event(
+@app.patch("/events/{event_id}/toggle-status")
+async def toggle_event_status(
     event_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Close/Complete an event - Update status to "complete"
+    Toggle event status between complete/incomplete
+    Can only reopen events that occurred today
     """
     try:
-        print(f" Closing event: {event_id}")
+        print(f"Toggling event status: {event_id}")
         
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        
         current_status = event.get("status", "").lower()
-        if current_status in ["complete", "closed"]:
-            return {
-                "message": f"Event '{event.get('eventName', 'Unknown')}' is already closed",
-                "status": current_status,
-                "already_closed": True
-            }
-
+        event_date = event.get("date")
         
-        update_data = {
-            "status": "complete",
-            "updated_at": datetime.utcnow().isoformat(),
-            "closed_by": current_user.get("email", ""),
-            "closed_at": datetime.utcnow().isoformat()
-        }
+        # If trying to reopen (unsave) an event
+        if current_status in ["complete", "closed"]:
+            # Check if event date is today
+            if event_date:
+                try:
+                    # Parse event date
+                    if isinstance(event_date, str):
+                        event_datetime = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+                    else:
+                        event_datetime = event_date
+                    
+                    # Get today's date (start of day)
+                    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                    event_day = event_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    # Only allow reopening if event is today
+                    if event_day < today:
+                        raise HTTPException(
+                            status_code=403, 
+                            detail="Cannot reopen events from past dates. Only today's events can be reopened."
+                        )
+                except ValueError as ve:
+                    print(f"Error parsing date: {ve}")
+                    raise HTTPException(status_code=400, detail="Invalid event date format")
+            
+            # Reopen the event
+            update_data = {
+                "status": "incomplete",
+                "updated_at": datetime.utcnow().isoformat(),
+                "reopened_by": current_user.get("email", ""),
+                "reopened_at": datetime.utcnow().isoformat()
+            }
+            action_msg = "reopened"
+            log_action = "EVENT_REOPENED"
+        
+        elif current_status in ["open", "incomplete", ""]:
+            update_data = {
+                "status": "complete",
+                "updated_at": datetime.utcnow().isoformat(),
+                "closed_by": current_user.get("email", ""),
+                "closed_at": datetime.utcnow().isoformat()
+            }
+            action_msg = "closed"
+            log_action = "EVENT_CLOSED"
+        
+        else:
+            # Default to closing behavior with warning
+            print(f"Unexpected status '{current_status}', defaulting to close action")
+            update_data = {
+                "status": "complete",
+                "updated_at": datetime.utcnow().isoformat(),
+                "closed_by": current_user.get("email", ""),
+                "closed_at": datetime.utcnow().isoformat()
+            }
+            action_msg = "closed"
+            log_action = "EVENT_CLOSED"
 
         result = await events_collection.update_one(
             {"_id": ObjectId(event_id)},
@@ -10988,34 +11031,34 @@ async def close_event(
         if result.modified_count == 0:
             raise HTTPException(status_code=500, detail="Failed to update event status")
 
-        
         updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        
         
         await log_activity(
             user_id=current_user.get("_id"),
-            action="EVENT_CLOSED",
-            details=f"Closed event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
+            action=log_action,
+            details=f"{action_msg.capitalize()} event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
         )
 
-        print(f" Event {event.get('eventName')} closed successfully")
+        print(f"Event {event.get('eventName')} {action_msg} successfully")
 
         return {
             "success": True,
-            "message": f"Event '{event.get('eventName', 'Unknown')}' closed successfully",
+            "message": f"Event '{event.get('eventName', 'Unknown')}' {action_msg} successfully",
             "event_id": event_id,
             "event_name": event.get("eventName", "Unknown"),
-            "new_status": "complete",
-            "closed_by": current_user.get("email", ""),
-            "closed_at": update_data["closed_at"]
+            "previous_status": current_status,
+            "new_status": update_data["status"],
+            "action": action_msg,
+            "actioned_by": current_user.get("email", ""),
+            "actioned_at": update_data.get("closed_at") or update_data.get("reopened_at")
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error closing event: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
-
+        print(f"❌ Error toggling event status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
+    
 # ==================== CREATE CONSOLIDATION (UPDATED) ====================
 @app.post("/service-checkin/create-consolidation")
 async def create_consolidation(
@@ -11051,7 +11094,6 @@ async def create_consolidation(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        # ========== 1. CREATE TASK FIRST ==========
         # Get person details
         person_name = person_data.get("name", "")
         person_surname = person_data.get("surname", "")
@@ -11534,7 +11576,7 @@ async def debug_consolidations(
         
         
         
-# ==================== CLEANUP ORPHANED TASKS ====================
+# ==================== CLEANUP ORPHANED TASKS
 @app.delete("/tasks/cleanup-orphaned")
 async def cleanup_orphaned_tasks(
     user_email: str = Query(None, description="User email to cleanup tasks for (optional)"),
