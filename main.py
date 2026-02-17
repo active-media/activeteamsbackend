@@ -2143,7 +2143,6 @@ async def get_weekly_attendance(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ...existing code...
 @app.get("/events/eventsdata")
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
@@ -2167,7 +2166,7 @@ async def get_other_events(
         
         user_email = current_user.get("email", "").lower().strip()
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-        email = user_email  # keep legacy variable used below
+        email = user_email  
 
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
@@ -2343,10 +2342,6 @@ async def get_other_events(
                 # Show event only if it is today
                 if event_date > today:
                     continue
-
-
-
-
                 instance = {
                     "_id": str(event.get("_id")),
                     "UUID": event.get("UUID", ""),
@@ -2364,8 +2359,8 @@ async def get_other_events(
                     "status": event_status,
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
-                    "is_recurring": is_recurring,
-                    "recurring_days": recurring_days,
+                    # "is_recurring": is_recurring,
+                    # "recurring_days": recurring_days,
                     "original_event_id": str(event.get("_id"))
                 }
 
