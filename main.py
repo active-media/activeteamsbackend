@@ -8610,7 +8610,7 @@ async def update_user_role(
         print(f"Error updating role: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
 
-@app.get("/me")
+@app.get("/updated-role")
 async def get_me(current_user: dict = Depends(get_current_user)):
     # Print this to see exactly what keys you have
     print("current_user payload:", current_user)
