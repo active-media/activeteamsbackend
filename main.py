@@ -8110,11 +8110,8 @@ async def create_task_type(task: TaskTypeIn):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Helper to convert ObjectId to string
-def serialize_doc(doc):
-    if doc and "_id" in doc:
-        doc["_id"] = str(doc["_id"])
-    return doc
+class TaskTypeUpdate(BaseModel):
+    name: str
 
 @app.put("/tasktypes/{tasktype_id}")
 async def update_task_type(tasktype_id: str, update_data: TaskTypeUpdate):
