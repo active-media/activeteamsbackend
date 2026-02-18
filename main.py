@@ -24,12 +24,14 @@ oauth2_scheme = HTTPBearer()
 from passlib.context import CryptContext
 import json
 from urllib.parse import unquote
+from fastapi import Depends, Query, HTTPException, File, UploadFile
 import traceback
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
+from pydantic import BaseModel
 app = FastAPI()
 
 app.add_middleware(
@@ -8113,6 +8115,51 @@ def serialize_doc(doc):
     if doc and "_id" in doc:
         doc["_id"] = str(doc["_id"])
     return doc
+
+@app.put("/tasktypes/{tasktype_id}")
+async def update_task_type(tasktype_id: str, update_data: TaskTypeUpdate):
+    try:
+        oid = ObjectId(tasktype_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+    updated = await tasktypes_collection.find_one_and_update(
+        {"_id": oid},
+        {"$set": {"name": update_data.name.strip()}},
+        return_document=True  # important – return the updated doc
+    )
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Task type not found")
+
+    # Convert ObjectId to string for frontend
+    updated["_id"] = str(updated["_id"])
+    return {"message": "Task type updated", "taskType": updated}
+
+
+@app.delete("/tasktypes/{tasktype_id}")
+async def delete_task_type(tasktype_id: str):
+    try:
+        oid = ObjectId(tasktype_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+    deleted = await tasktypes_collection.find_one_and_delete(
+        {"_id": oid}
+    )
+    print(deleted)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task type not found")
+
+    return {"message": "Task type deleted successfully"}
+
+# Helper to convert ObjectId to string
+def serialize_doc(doc):
+    if doc and "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+    return doc
+
 
 # --- Update route ---
 @app.put("/tasks/{task_id}")
