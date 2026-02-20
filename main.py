@@ -2180,7 +2180,6 @@ async def get_other_events(
         except:
             end_dt = today + timedelta(days=365)
 
-        # Build base query - exclude cells events only
         query = {
             "$nor": [
                 {"Event Type": {"$regex": "^cells$", "$options": "i"}},
@@ -2189,7 +2188,6 @@ async def get_other_events(
             ]
         }
 
-        # Role-based visibility
         if user_role not in ["admin", "leaderat12", "registrant"]:
             visibility_filter = {
                 "$or": [
@@ -2241,17 +2239,13 @@ async def get_other_events(
             }
             query = {"$and": [query, search_filter]}
 
-        print(f"/events/eventsdata query for role {user_role}: {query}")
-
         cursor = events_collection.find(query)
         events = await cursor.to_list(length=1000)
-        print(f"Found {len(events)} raw events from DB")
 
         results = []
 
         for e in events:
             try:
-                # --- Resolve event date ---
                 event_date = None
                 dt_raw = e.get("date") or e.get("Date Of Event") or e.get("eventDate") or e.get("startDate")
 
@@ -2274,46 +2268,40 @@ async def get_other_events(
                 if event_date < start_dt or event_date > end_dt:
                     continue
 
-                # Only show events up to today
                 if event_date > today:
                     continue
 
                 exact_date_str = event_date.isoformat()
 
-                # --- Resolve attendance data ---
                 attendance_data = e.get("attendance", {})
                 date_attendance = attendance_data.get(exact_date_str, {})
 
-                # --- Determine event status ---
                 main_status = str(e.get("status", "")).lower()
+                ev_status = "incomplete"
+
                 if date_attendance:
                     att_status = str(date_attendance.get("status", "")).lower()
                     if att_status == "did_not_meet" or date_attendance.get("is_did_not_meet"):
                         ev_status = "did_not_meet"
                     elif att_status in ["complete", "closed"] or len(date_attendance.get("attendees", [])) > 0:
                         ev_status = "complete"
-                    else:
-                        ev_status = main_status if main_status in ["complete", "closed", "did_not_meet"] else "incomplete"
                 else:
                     if main_status in ["complete", "closed"]:
                         ev_status = "complete"
                     elif main_status == "did_not_meet":
                         ev_status = "did_not_meet"
-                    else:
-                        ev_status = "incomplete"
 
                 if status and status != ev_status:
                     continue
 
-                # --- isGlobal / isTicketed ---
+                is_overdue = event_date < today and ev_status == "incomplete"
+
                 raw_global = e.get("isGlobal")
                 is_global = raw_global is True or str(raw_global).lower() == "true"
 
                 raw_ticketed = e.get("isTicketed")
                 is_ticketed = raw_ticketed is True or str(raw_ticketed).lower() == "true"
 
-                # --- Attendees / new_people / consolidations ---
-                # These are stored at the event level for global events
                 attendees_list = e.get("attendees", [])
                 if not isinstance(attendees_list, list):
                     attendees_list = []
@@ -2326,11 +2314,9 @@ async def get_other_events(
                 if not isinstance(consolidations_list, list):
                     consolidations_list = []
 
-                # Also check inside date_attendance for attendees
                 if not attendees_list and date_attendance:
                     attendees_list = date_attendance.get("attendees", [])
 
-                # --- Day name ---
                 day_name_raw = e.get("Day") or e.get("day") or e.get("eventDay") or ""
                 day_name = str(day_name_raw).strip()
                 if not day_name:
@@ -2339,12 +2325,15 @@ async def get_other_events(
 
                 result_item = {
                     "_id": str(e.get("_id")),
-                    "id": str(e.get("_id")), 
+                    "id": str(e.get("_id")),
+                    "original_event_id": str(e.get("_id")),
+                    "_is_overdue": is_overdue,
                     "UUID": e.get("UUID", ""),
                     "eventName": e.get("eventName") or e.get("Event Name", ""),
                     "status": ev_status,
-                    "isGlobal": is_global,     
-                    "isTicketed": is_ticketed, 
+                    "Status": ev_status.replace("_", " ").title(),
+                    "isGlobal": is_global,
+                    "isTicketed": is_ticketed,
                     "date": exact_date_str,
                     "day": day_name,
                     "eventType": e.get("eventTypeName") or e.get("eventType") or e.get("Event Type", "Global Events"),
@@ -2364,34 +2353,29 @@ async def get_other_events(
                     "updated_at": str(e.get("updated_at", "")),
                     "is_recurring": bool(e.get("recurring_day", [])),
                     "recurring_days": e.get("recurring_day", []),
-                    "_sort_date": exact_date_str,  # temp sort field
+                    "_sort_date": exact_date_str,
+                    "original_composite_id": str(e.get("_id"))
                 }
 
                 if e.get("time"):
                     result_item["time"] = e.get("time")
+
                 if e.get("Time"):
                     result_item["Time"] = e.get("Time")
 
                 results.append(result_item)
 
-            except Exception as ex:
-                print(f"EVENT PARSE ERROR for {e.get('_id')}: {ex}")
-                import traceback
-                traceback.print_exc()
+            except:
                 continue
 
-        # Sort by date descending
         results.sort(key=lambda x: x["_sort_date"], reverse=True)
 
-        # Remove temp sort field
         for item in results:
             item.pop("_sort_date", None)
 
         total = len(results)
         skip = (page - 1) * limit
         paginated = results[skip: skip + limit]
-
-        print(f"Returning {len(paginated)} events (page {page}), total={total}")
 
         return {
             "events": paginated,
@@ -2401,10 +2385,7 @@ async def get_other_events(
             "page_size": limit,
         }
 
-    except Exception as e:
-        print(f"Error in /events/eventsdata: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception:
         raise HTTPException(status_code=500, detail="Failed to fetch events")
 
 @app.put("/events/cells/{identifier}")
