@@ -1658,8 +1658,6 @@ def convert_event_for_display(event):
         if sast_dt:
             event['display_date'] = format_display_date(sast_dt)
     
-    # Times are already in SAST format (HH:MM), no conversion needed
-    # Just ensure both fields are populated
     if event.get('Time') and not event.get('time'):
         event['time'] = event['Time']
     elif event.get('time') and not event.get('Time'):
@@ -1883,8 +1881,6 @@ async def get_cell_events(
                 query["$and"].append({"_id": "nonexistent_id"})
         
         print("SEARCH TEXT",search)
-        print(f"📋 Final query for cells: {query}")
-
         pipeline = [
             {"$match": query},
             {
@@ -5912,10 +5908,10 @@ async def get_cell_events_optimized(
                     continue
                 attendance_data = cell.get("attendance", {})
                 weeks_to_check = 1 if status == "incomplete" else 4
+                # Use 'today' (a date) defined at top of this function
                 days_since_monday = today.weekday()
                 week_start = today - timedelta(days=days_since_monday)
                 current_week_instance = week_start + timedelta(days=target_weekday)
-
                 for week_back in range(0, weeks_to_check):
                     instance_date = current_week_instance - timedelta(weeks=week_back)
                     # Strict: skip future dates
@@ -6027,6 +6023,7 @@ async def get_cell_events_optimized(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
@@ -7804,6 +7801,7 @@ async def search_people_fast(
         if not query or len(query) < 2:
             return {"results": []}
        
+        # Simple regex search on name fields - much faster than complex queries
         search_regex = {"$regex": query.strip(), "$options": "i"}
        
         # Only fetch essential fields for autocomplete
@@ -8602,35 +8600,6 @@ async def update_user_role(
         print(f"Error updating role: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
 
-@app.get("/updated-role")
-async def get_me(current_user: dict = Depends(get_current_user)):
-    # Print this to see exactly what keys you have
-    print("current_user payload:", current_user)
-    
-    # Try these in order until one works:
-    user_id = (
-        current_user.get("sub") or 
-        current_user.get("id") or 
-        current_user.get("_id") or
-        current_user.get("user_id")
-    )
-    
-    if not user_id:
-        raise HTTPException(status_code=400, detail=f"No user ID in token. Keys: {list(current_user.keys())}")
-    
-    user = await users_collection.find_one({"_id": ObjectId(str(user_id))})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    return {
-        "id": str(user["_id"]),
-        "role": user.get("role", "user"),
-        "email": user.get("email"),
-        "name": f"{user.get('name', '')} {user.get('surname', '')}".strip(),
-    }
-
-
-
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
@@ -8737,7 +8706,6 @@ async def log_activity(user_id: str, action: str, details: str):
         await db.activity_logs.insert_one(activity_doc)
     except Exception as e:
         print(f"Error logging activity: {str(e)}")
-        # Don't raise exception, just log the error
 
 @app.get("/admin/activity-logs")
 async def get_activity_logs(
