@@ -5912,11 +5912,9 @@ async def get_cell_events_optimized(
                     continue
                 attendance_data = cell.get("attendance", {})
                 weeks_to_check = 1 if status == "incomplete" else 4
-                # Use 'today' (a date) defined at top of this function
                 days_since_monday = today.weekday()
                 week_start = today - timedelta(days=days_since_monday)
                 current_week_instance = week_start + timedelta(days=target_weekday)
-# ...existing code...
 
                 for week_back in range(0, weeks_to_check):
                     instance_date = current_week_instance - timedelta(weeks=week_back)
@@ -6029,7 +6027,6 @@ async def get_cell_events_optimized(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
@@ -7807,7 +7804,6 @@ async def search_people_fast(
         if not query or len(query) < 2:
             return {"results": []}
        
-        # Simple regex search on name fields - much faster than complex queries
         search_regex = {"$regex": query.strip(), "$options": "i"}
        
         # Only fetch essential fields for autocomplete
