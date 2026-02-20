@@ -8610,6 +8610,35 @@ async def update_user_role(
         print(f"Error updating role: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
 
+@app.get("/updated-role")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    # Print this to see exactly what keys you have
+    print("current_user payload:", current_user)
+    
+    # Try these in order until one works:
+    user_id = (
+        current_user.get("sub") or 
+        current_user.get("id") or 
+        current_user.get("_id") or
+        current_user.get("user_id")
+    )
+    
+    if not user_id:
+        raise HTTPException(status_code=400, detail=f"No user ID in token. Keys: {list(current_user.keys())}")
+    
+    user = await users_collection.find_one({"_id": ObjectId(str(user_id))})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {
+        "id": str(user["_id"]),
+        "role": user.get("role", "user"),
+        "email": user.get("email"),
+        "name": f"{user.get('name', '')} {user.get('surname', '')}".strip(),
+    }
+
+
+
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
