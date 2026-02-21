@@ -2334,13 +2334,13 @@ async def get_other_events(
                     day_name = days[event_date.weekday()]
 
                 result_item = {
-                    "_id": str(e.get("_id")),
-                    "id": str(e.get("_id")), 
+                    # "_id": str(e.get("_id")),
+                   
                     "UUID": e.get("UUID", ""),
                     "eventName": e.get("eventName") or e.get("Event Name", ""),
                     "status": ev_status,
-                    "isGlobal": is_global,     
-                    "isTicketed": is_ticketed, 
+                    # "isGlobal": is_global,     
+                    # "isTicketed": is_ticketed, 
                     "date": exact_date_str,
                     "day": day_name,
                     "eventType": e.get("eventTypeName") or e.get("eventType") or e.get("Event Type", "Global Events"),
@@ -2348,16 +2348,7 @@ async def get_other_events(
                     "eventLeaderEmail": e.get("eventLeaderEmail") or e.get("Email", ""),
                     "leader1": e.get("leader1", ""),
                     "leader12": e.get("Leader @12") or e.get("Leader at 12", ""),
-                    "location": e.get("location") or e.get("Location", ""),
-                    "description": e.get("description", ""),
-                    "attendees": attendees_list,
-                    "new_people": new_people_list,
-                    "consolidations": consolidations_list,
-                    "total_attendance": len(attendees_list),
-                    "closed_by": e.get("closed_by", ""),
-                    "closed_at": e.get("closed_at", ""),
-                    "created_at": str(e.get("created_at", "")),
-                    "updated_at": str(e.get("updated_at", "")),
+            
                     "is_recurring": bool(e.get("recurring_day", [])),
                     "recurring_days": e.get("recurring_day", []),
                     "_sort_date": exact_date_str,  # temp sort field
@@ -4702,7 +4693,6 @@ async def create_indexes_on_startup():
     except Exception as e:
         print(f"Error creating indexes: {e}")
    
-
 @app.put("/events/{event_id}")
 async def update_event(event_id: str, event_data: dict, current_user: dict = Depends(get_current_user)):
     """
