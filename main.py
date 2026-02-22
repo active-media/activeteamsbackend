@@ -1669,7 +1669,7 @@ def convert_event_for_display(event):
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(25, ge=1, le=1000),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
@@ -1708,7 +1708,6 @@ async def get_cell_events(
             db_surname = person.get('Surname', '').strip()
             user_name_from_db = f"{db_first} {db_surname}".strip()
             
-            # Also check for any "Leader at" fields that might have the proper name
             leader_at_12_name = person.get('Leader at 12') or person.get('Leader @12') or person.get('leader12') or ""
             if leader_at_12_name:
                 user_name_from_db = leader_at_12_name.strip()
@@ -1725,7 +1724,7 @@ async def get_cell_events(
         else:
             user_name = user_name_from_token
             
-        print(f"🔍 Leader at 12 user name resolved as: {user_name}")
+        print(f" Leader at 12 user name resolved as: {user_name}")
 
         query = {
             "$and": [
@@ -2150,7 +2149,7 @@ async def get_weekly_attendance(
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(25, ge=1, le=1000),
     status: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
