@@ -1,4 +1,5 @@
-import os 
+import os
+import certifi 
 from motor.motor_asyncio import AsyncIOMotorClient 
 from dotenv import load_dotenv 
 
@@ -6,7 +7,7 @@ load_dotenv()
 
 MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
 DB_NAME = "active-teams-db"
-client = AsyncIOMotorClient(MONGO_URI)
+client = AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
 
 db = client[DB_NAME]
 events_collection = db["Events"]
