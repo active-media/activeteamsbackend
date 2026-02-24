@@ -1,6 +1,5 @@
-
 import os
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import time
 from bson import ObjectId
 import re
@@ -131,7 +130,7 @@ async def invalidate_people_cache(operation_type: str, details: dict = None):
             people_cache["refresh_queue"].append({
                 "operation": operation_type,
                 "details": details,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc)
             })
         
         stale_data = people_cache["data"].copy() if people_cache["data"] else []
@@ -151,7 +150,7 @@ async def invalidate_people_cache(operation_type: str, details: dict = None):
             "operation": operation_type,
             "current_data_size": len(stale_data),
             "refresh_triggered": not people_cache["is_loading"],
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc)
         }
         
     except Exception as e:
@@ -249,8 +248,8 @@ async def background_refresh_people_cache(stale_data: list = None):
         
         # Final cache update with complete dataset
         people_cache["data"] = all_people_data
-        people_cache["last_updated"] = datetime.utcnow().isoformat()
-        people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        people_cache["last_updated"] = datetime.now(timezone.utc)
+        people_cache["expires_at"] = (datetime.now(timezone.utc) + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
         people_cache["is_loading"] = False
         people_cache["load_progress"] = 100
         people_cache["is_valid"] = True
@@ -374,8 +373,8 @@ async def background_load_all_people():
        
         # Update cache with complete dataset
         people_cache["data"] = all_people_data
-        people_cache["last_updated"] = datetime.utcnow().isoformat()
-        people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        people_cache["last_updated"] = datetime.now(timezone.utc)
+        people_cache["expires_at"] = (datetime.now(timezone.utc) + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
         people_cache["is_loading"] = False
         people_cache["load_progress"] = 100
        
@@ -397,7 +396,7 @@ async def get_cached_people():
     Get cached people data - returns whatever is available immediately
     """
     try:
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
        
         # If we have data and it's not expired, return it
         if (people_cache["data"] and
@@ -515,7 +514,7 @@ async def health_check():
     """Simple health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc),
         "cache_status": {
             "has_data": len(people_cache["data"]) > 0,
             "data_count": len(people_cache["data"]),
@@ -721,8 +720,8 @@ async def signup(user: UserCreate):
         "password": hashed,
         "confirm_password": hashed,
         "role": "user",
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "createdAt": datetime.now(timezone.utc),
+        "updatedAt": datetime.now(timezone.utc)
     }
    
     # Insert user into Users collection
@@ -827,8 +826,8 @@ async def signup(user: UserCreate):
         "Leader @144": leader144,
         "Leader @1728": leader1728,
         "Stage": "Win",
-        "Date Created": datetime.utcnow().isoformat(),
-        "UpdatedAt": datetime.utcnow().isoformat(),
+        "Date Created": datetime.now(timezone.utc),
+        "UpdatedAt": datetime.now(timezone.utc),
         "user_id": str(user_result.inserted_id)
     }
    
@@ -884,7 +883,7 @@ async def login(user: UserLogin):
     refresh_token_id = secrets.token_urlsafe(16)
     refresh_plain = secrets.token_urlsafe(32)
     refresh_hash = hash_password(refresh_plain)
-    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_expires = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     await users_collection.update_one(
         {"_id": existing["_id"]},
@@ -996,7 +995,7 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         or not user.get("refresh_token_hash")
         or not verify_password(payload.refresh_token, user["refresh_token_hash"])
         or not user.get("refresh_token_expires")
-        or user["refresh_token_expires"] < datetime.utcnow()
+        or user["refresh_token_expires"] < datetime.now(timezone.utc)
     ):
         logger.warning(f"Refresh token invalid/expired: {payload.refresh_token_id}")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
@@ -1009,7 +1008,7 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
     new_refresh_token_id = secrets.token_urlsafe(16)
     new_refresh_plain = secrets.token_urlsafe(32)
     new_refresh_hash = hash_password(new_refresh_plain)
-    new_refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    new_refresh_expires = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
     await users_collection.update_one(
         {"_id": user["_id"]},
@@ -1186,7 +1185,7 @@ def get_current_week_identifier():
         return f"{year}-W{week:02d}"
     except Exception as e:
         print(f"Error getting week identifier: {e}")
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         year, week, _ = now.isocalendar()
         return f"{year}-W{week:02d}"
 
@@ -1376,8 +1375,8 @@ async def create_event(event: EventCreate):
 
         # Metadata
         event_data["is_new_event"] = True
-        event_data["created_at"] = datetime.utcnow()
-        event_data["updated_at"] = datetime.utcnow()
+        event_data["createdAt"] = datetime.now(timezone.utc)
+        event_data["updatedAt"] = datetime.now(timezone.utc)
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data["attendees"])
 
@@ -2250,7 +2249,7 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             'attendees',             
             'attendance',           
             '_id', 'id', 'UUID',     
-            'created_at',            
+            'createdAt',            
             'total_attendance'   
         ]
         
@@ -2263,7 +2262,7 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             print("yay events!")
             update_fields["deactivation_end"] = datetime.strptime(update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
         
-        update_fields["updated_at"] = datetime.utcnow()
+        update_fields["updatedAt"] = datetime.now(timezone.utc)
         
         print(f"Updating event {identifier} with fields: {update_fields}")
         print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
@@ -2434,7 +2433,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             'attendees',            
             'attendance',           
             '_id', 'id', 'UUID',     
-            'created_at',            
+            'createdAt',            
             'total_attendance'      
         ]
         
@@ -2442,7 +2441,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             if key not in protected_fields and key not in update_fields:
                 update_fields[key] = value
         
-        update_fields["updated_at"] = datetime.utcnow()
+        update_fields["updatedAt"] = datetime.now(timezone.utc)
         
         for key, value in update_fields.items():
             if 'time' in key.lower() or 'Time' in key:
@@ -2495,7 +2494,7 @@ async def deactivate_event(
     is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
 ):
     try:
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         deactivation_end = current_time + timedelta(weeks=weeks)
         print("BOOL",is_permanent_deact)
         updates = {
@@ -2593,7 +2592,7 @@ async def reactivate_cell(
     day_of_week: Optional[str] = Query(None, description="Specific day to reactivate")
 ):
     try:
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         updates = {
             "is_active": True,
@@ -2664,7 +2663,7 @@ async def reactivate_cell(
 
 async def auto_reactivate_expired_events():
     try:
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         
         query = {
@@ -2772,8 +2771,8 @@ async def create_event_type(event_type: EventTypeCreate):
             "isTicketed": event_type.isTicketed if hasattr(event_type, 'isTicketed') else False,
             "isGlobal": event_type.isGlobal if hasattr(event_type, 'isGlobal') else False,
             "hasPersonSteps": event_type.hasPersonSteps if hasattr(event_type, 'hasPersonSteps') else False,
-            "createdAt": datetime.utcnow(),
-            "updatedAt": datetime.utcnow(),
+            "createdAt": datetime.now(timezone.utc),
+            "updatedAt": datetime.now(timezone.utc),
         }
         
         # Set isGlobal based on name if not explicitly set
@@ -2892,7 +2891,7 @@ async def update_event_type(
             
             # Build update fields
             update_fields = {
-                "updatedAt": datetime.utcnow()
+                "updatedAt": datetime.now(timezone.utc)
             }
             
             if name_changed:
@@ -2928,7 +2927,7 @@ async def update_event_type(
 
         update_data_dict = updated_data.dict()
         update_data_dict["name"] = new_name
-        update_data_dict["updatedAt"] = datetime.utcnow()
+        update_data_dict["updatedAt"] = datetime.now(timezone.utc)
        
         update_data_dict = {k: v for k, v in update_data_dict.items() if v is not None}
        
@@ -3877,8 +3876,8 @@ async def get_global_events(
             try:
                 last_updated_dt = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
                 query["$or"] = [
-                    {"created_at": {"$gte": last_updated_dt}},
-                    {"updated_at": {"$gte": last_updated_dt}}
+                    {"createdAt": {"$gte": last_updated_dt}},
+                    {"updatedAt": {"$gte": last_updated_dt}}
                 ]
                 print(f"Real-time update: fetching events since {last_updated}")
             except Exception as e:
@@ -3897,7 +3896,7 @@ async def get_global_events(
         print(f"Query for Global Events: {query}")
        
         
-        cursor = events_collection.find(query).sort([("created_at", -1), ("date", -1)])
+        cursor = events_collection.find(query).sort([("createdAt", -1), ("date", -1)])
         all_events = await cursor.to_list(length=None)
        
         print(f"Found {len(all_events)} raw global events")
@@ -3908,8 +3907,8 @@ async def get_global_events(
             
             timestamps = []
             for event in all_events:
-                created = event.get("created_at")
-                updated = event.get("updated_at")
+                created = event.get("createdAt")
+                updated = event.get("updatedAt")
                 if created:
                     timestamps.append(created if isinstance(created, datetime) else datetime.fromisoformat(created.replace("Z", "+00:00")))
                 if updated:
@@ -3927,8 +3926,8 @@ async def get_global_events(
             try:
                 is_new_event = False
                 if last_updated:
-                    event_created = event.get("created_at")
-                    event_updated = event.get("updated_at")
+                    event_created = event.get("createdAt")
+                    event_updated = event.get("updatedAt")
                    
                     if event_created:
                         if isinstance(event_created, datetime):
@@ -4028,8 +4027,8 @@ async def get_global_events(
                     "priceTiers": event.get("priceTiers", []),
                     "total_attendance": event.get("total_attendance", 0),
                     "UUID": event.get("UUID", ""),
-                    "created_at": event.get("created_at"),
-                    "updated_at": event.get("updated_at"),
+                    "createdAt": event.get("createdAt"),
+                    "updatedAt": event.get("updatedAt"),
                     "_is_new": is_new_event,  
                     
                     "closed_by": event.get("closed_by"),
@@ -4518,7 +4517,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                 "email": current_user.get('email'),
                 "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
                 "role": current_user.get('role'),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc)
             }
             
             print(f"Updated status fields for ALL users: {new_status}")
@@ -4557,7 +4556,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                         update_data[f"attendance.{exact_date_str}.updated_by_external"] = {
                             "email": current_user.get('email'),
                             "role": current_user.get('role'),
-                            "timestamp": datetime.utcnow().isoformat()
+                            "timestamp": datetime.now(timezone.utc)
                         }
                         
                         print(f"Also updated date-based attendance ({exact_date_str}) to: {new_status}")
@@ -4565,7 +4564,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                     print(f"Note: Could not update date-based attendance: {e}")
         
         # Add update timestamp
-        update_data['updated_at'] = datetime.utcnow()
+        update_data['updatedAt'] = datetime.now(timezone.utc)
        
         print(f"Updating with data: {update_data}")
        
@@ -4600,7 +4599,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                 "new_status": new_status,
                 "updated_by": current_user.get('email'),
                 "updated_by_role": current_user.get('role'),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc),
                 "message": "Status synchronized for ALL users" if is_status_update else "Event updated"
             }
         }
@@ -4691,7 +4690,7 @@ async def bulk_assign_all_leaders_comprehensive(current_user: dict = Depends(get
                     "leader12": leader_at_12,
                     "Leader @12": leader_at_12,
                     "Leader at 12": leader_at_12,
-                    "updated_at": datetime.utcnow()
+                    "updatedAt": datetime.now(timezone.utc)
                 }
                
                 await events_collection.update_one(
@@ -4832,7 +4831,7 @@ async def fix_all_leaders_at_1(current_user: dict = Depends(get_current_user)):
                 {"$set": {
                     "leader1": leader_at_1,
                     "Leader @1": leader_at_1,
-                    "updated_at": datetime.utcnow()
+                    "updatedAt": datetime.now(timezone.utc)
                 }}
             )
            
@@ -5546,12 +5545,12 @@ async def update_event_status(event_id: str, new_status: str, updated_by: dict):
     update_data = {
         "status": new_status,
         "Status": new_status,
-        "updated_at": datetime.utcnow(),
+        "updatedAt": datetime.now(timezone.utc),
         "last_updated_by": {
             "email": updated_by.get('email'),
             "name": f"{updated_by.get('name', '')} {updated_by.get('surname', '')}".strip(),
             "role": updated_by.get('role'),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc)
         }
     }
     
@@ -5949,7 +5948,7 @@ async def submit_attendance(
         
         # Prepare update fields - these are common for all event types
         cell_update_fields = {
-            "updated_at": now,
+            "updatedAt": now,
             "last_attendance_count": weekly_attendance,
             "last_headcount": manual_headcount,
             "last_decisions_count": total_decisions,
@@ -6054,7 +6053,7 @@ async def update_persistent_attendees(
                 "$set": {
                     "persistent_attendees": cleaned_attendees,
                     "total_associated_count": len(cleaned_attendees),
-                    "updated_at": datetime.utcnow()
+                    "updatedAt": datetime.now(timezone.utc)
                 }
             }
         )
@@ -6544,7 +6543,7 @@ async def check_in_person(checkin: CheckIn):
 
         attendee_record = {
             "name": checkin.name,
-            "time": datetime.utcnow(),
+            "time": datetime.now(timezone.utc),
         }
 
         await events_collection.update_one(
@@ -6704,7 +6703,7 @@ async def update_profile(
                     print(f"Mapping {frontend_field} -> {db_field}: {value}")
 
         # Add update timestamp
-        update_payload["updated_at"] = datetime.utcnow().isoformat()
+        update_payload["updatedAt"] = datetime.now(timezone.utc)
        
         print(f" FINAL UPDATE PAYLOAD: {update_payload}")
 
@@ -6979,8 +6978,8 @@ async def get_people(
                 "Leader @144": person.get("Leader @144", ""),
                 "Leader @1728": person.get("Leader @1728", ""),
                 "Stage": person.get("Stage", "Win"),
-                "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
-                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "Date Created": person.get("Date Created") or datetime.now(timezone.utc),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.now(timezone.utc),
             }
             people_list.append(mapped)
 
@@ -7043,8 +7042,8 @@ async def get_person_by_id(person_id: str = Path(...)):
             "Stage": person.get("Stage", "Win"),
             
             # Timestamps
-            "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
-            "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+            "Date Created": person.get("Date Created") or (datetime.now(timezone.utc)),
+            "UpdatedAt": person.get("UpdatedAt") or (datetime.now(timezone.utc)),
             
             # Additional fields that might exist
             "user_id": person.get("user_id", ""),
@@ -7154,7 +7153,7 @@ async def update_person_with_cache_invalidation_enhanced(
             normalized_data["Stage"] = (update_data.get("Stage") or update_data.get("stage", "Win")).strip()
         
         # Add update timestamp
-        normalized_data["UpdatedAt"] = datetime.utcnow().isoformat()
+        normalized_data["UpdatedAt"] = (datetime.now(timezone.utc))
         
         print(f"Normalized update data: {normalized_data}")
         
@@ -7189,7 +7188,7 @@ async def update_person_with_cache_invalidation_enhanced(
                         "Number": normalized_data.get("Number", person.get("Number", "")),
                         "Gender": normalized_data.get("Gender", person.get("Gender", "")),
                         "FullName": f"{normalized_data.get('Name', person.get('Name', ''))} {normalized_data.get('Surname', person.get('Surname', ''))}".strip(),
-                        "UpdatedAt": datetime.utcnow().isoformat()
+                        "UpdatedAt": datetime.now(timezone.utc)
                     })
                     print(f"Updated cached entry for person ID: {person_id}")
                     break
@@ -7255,7 +7254,7 @@ def normalize_person_data(data: dict) -> dict:
         "Leader @144": data.get("Leader @144") or data.get("leader144", ""),
         "Leader @1728": data.get("Leader @1728") or data.get("leader1728", ""),
         "Stage": data.get("Stage") or data.get("stage", "Win"),
-        "UpdatedAt": datetime.utcnow().isoformat()
+        "UpdatedAt": datetime.now(timezone.utc)
     }
 
 @app.patch("/people/{person_id}")
@@ -7313,7 +7312,7 @@ async def update_person_with_cache_invalidation(
                         "Leader @1728": normalized_data.get("Leader @1728", person.get("Leader @1728", "")),
                         "Stage": normalized_data.get("Stage", person.get("Stage", "Win")),
                         "FullName": f"{normalized_data.get('Name', person.get('Name', ''))} {normalized_data.get('Surname', person.get('Surname', ''))}".strip(),
-                        "UpdatedAt": datetime.utcnow().isoformat()
+                        "UpdatedAt": datetime.now(timezone.utc)
                     })
                     print(f"Updated cached entry for person ID: {person_id}")
                     break
@@ -7400,8 +7399,8 @@ async def create_person_with_cache_invalidation(
             "Leader @144": leader144,
             "Leader @1728": leader1728,
             "Stage": person_data.stage or "Win",
-            "Date Created": datetime.utcnow().isoformat(),
-            "UpdatedAt": datetime.utcnow().isoformat()
+            "Date Created": datetime.now(timezone.utc),
+            "UpdatedAt": datetime.now(timezone.utc)
         }
         
         # Insert into MongoDB
@@ -7716,7 +7715,7 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 @app.get("/tasks")
 async def get_user_tasks(
-    email: str = Query(None),
+    user_email: str = Query(None),
     userId: str = Query(None),
     view_all: bool = Query(False),
     current_user: dict = Depends(get_current_user)
@@ -7763,18 +7762,37 @@ async def get_user_tasks(
         all_tasks = []
 
         async for task in cursor:
-            task_date_str = task.get("followup_date")
+            task_date_raw = task.get("followup_date")
             task_datetime = None
 
-            if task_date_str:
-                if isinstance(task_date_str, datetime):
-                    task_datetime = task_date_str.astimezone(timezone)
-                else:
-                    try:
-                        task_datetime = datetime.fromisoformat(task_date_str).astimezone(timezone)
-                    except ValueError:
-                        logging.warning(f"Invalid date format: {task_date_str}")
-                        continue
+            if task_date_raw:
+                try:
+                    if isinstance(task_date_raw, datetime):
+                        # FIX: previously astimezone() was only called inside
+                        # `if dt.tzinfo is None` for strings, so timezone-aware
+                        # datetime objects (stored as datetime.now(timezone.utc))
+                        # were never converted — task_datetime stayed None, causing
+                        # followup_date to return as null and DailyTasks to
+                        # filter the task out of every date range entirely.
+                        if task_date_raw.tzinfo is None:
+                            task_date_raw = task_date_raw.replace(tzinfo=pytz.utc)
+                        task_datetime = task_date_raw.astimezone(timezone)
+                    else:
+                        cleaned = str(task_date_raw).replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(cleaned)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=pytz.utc)
+                        task_datetime = dt.astimezone(timezone)
+                except Exception:
+                    logging.warning(f"Invalid followup_date: {task_date_raw}")
+                    task_datetime = None
+                    # Do NOT continue — still include the task
+
+            def _to_iso(val):
+                """Safely convert a datetime or string to ISO string."""
+                if isinstance(val, datetime):
+                    return val.isoformat()
+                return val  # already a string or None
 
             all_tasks.append({
                 "_id": str(task["_id"]),
@@ -7785,12 +7803,19 @@ async def get_user_tasks(
                 "assignedfor": task.get("assignedfor", ""),
                 "assigned_to_email": task.get("assigned_to_email", ""),
                 "leader_name": task.get("leader_name", ""),
+                "leader_assigned": task.get("leader_assigned", ""),
                 "type": task.get("type", "call"),
                 "contacted_person": task.get("contacted_person", {}),
                 "isRecurring": bool(task.get("recurring_day")),
                 "is_consolidation_task": bool(task.get("is_consolidation_task")),
                 "consolidation_source": task.get("consolidation_source", "manual"),
-                "source_display": task.get("source_display", "Manual")
+                "consolidation_id": task.get("consolidation_id", ""),
+                "source_display": task.get("source_display", "Manual"),
+                "person_name": task.get("person_name", ""),
+                "person_surname": task.get("person_surname", ""),
+                "decision_display_name": task.get("decision_display_name", ""),
+                "createdAt": _to_iso(task.get("createdAt")),
+                "completedAt": _to_iso(task.get("completedAt")),
             })
 
         # Sort newest first
@@ -7846,18 +7871,22 @@ def serialize_doc(doc):
 # --- Update route ---
 @app.put("/tasks/{task_id}")
 async def update_task(task_id: str, updated_task: dict):
-    try:
-        obj_id = ObjectId(task_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid task ID")
-   
-    # Check if task exists
-    task = await db["tasks"].find_one({"_id": obj_id})
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-   
-    # Prepare update data - only include fields that should be updated
-    update_data = {}
+    def parse_dt(value):
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+        if isinstance(value, str):
+            cleaned = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+        return None
+
+        if "followup_date" in updated_task:
+            dt = parse_dt(updated_task["followup_date"])
+            if not dt:
+                raise HTTPException(status_code=400, detail="Invalid followup_date format")
+        update_data["followup_date"] = dt
    
     # Map frontend fields to backend fields
     if "name" in updated_task:
@@ -7870,26 +7899,61 @@ async def update_task(task_id: str, updated_task: dict):
         update_data["contacted_person"] = updated_task["contacted_person"]
    
     if "followup_date" in updated_task:
-        # Ensure it's a proper datetime string or convert it
+        raw_date = updated_task["followup_date"]
         try:
-            if isinstance(updated_task["followup_date"], str):
-                update_data["followup_date"] = updated_task["followup_date"]
-            else:
-                update_data["followup_date"] = updated_task["followup_date"]
-        except Exception as e:
+            if isinstance(raw_date, datetime):
+                if raw_date.tzinfo is None:
+                    raw_date = raw_date.replace(tzinfo=timezone.utc)
+                update_data["followup_date"] = raw_date
+            elif isinstance(raw_date, str) and raw_date:
+                # Parse ISO string → real datetime so MongoDB stores a BSON Date.
+                # A plain string field is INVISIBLE to the stats pipeline $match
+                # which uses $gte/$lte against Python datetime objects (BSON Dates).
+                # Storing it as a string means the task disappears from all stats
+                # date-range queries even though it exists in the collection.
+                parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                update_data["followup_date"] = parsed
+        except (ValueError, AttributeError) as e:
             raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
-   
+
     if "status" in updated_task:
-        update_data["status"] = updated_task["status"]
-   
+        new_status = updated_task["status"]
+        update_data["status"] = new_status
+
+        # completedAt MUST be a real datetime object, not a string.
+        # The stats pipeline does: {"completedAt": {"$gte": start, "$lte": end}}
+        # where start/end are Python datetime objects → BSON Dates.
+        # If completedAt is a string, this comparison always fails silently
+        # and the task never appears in any "completed in period" count.
+        completed_statuses = {"completed", "complete", "done", "closed", "finished"}
+
+        if isinstance(new_status, str) and new_status.strip().lower() in completed_statuses:
+            update_data["completedAt"] = datetime.now(timezone.utc)
+        else:
+            update_data["completedAt"] = None
+
     if "type" in updated_task:
         update_data["type"] = updated_task["type"]
-   
-    if "assignedfor" in updated_task:
-        update_data["assignedfor"] = updated_task["assignedfor"]
-   
-    # Add updated timestamp
-    update_data["updated_at"] = datetime.utcnow().isoformat()
+
+    # DO NOT allow assignedfor to be overwritten from the frontend.
+    # The frontend stores a normalized display name (e.g. "Nhlakanipho Madlanga")
+    # or the current user's email instead of the leader's email that was
+    # carefully resolved at task creation time. Overwriting it here would
+    # move the task to the wrong person's group in the stats pipeline,
+    # which groups by assignedfor to build the per-person breakdown.
+    # assignedfor should only be changed via a dedicated admin operation.
+
+    now = datetime.now(timezone.utc)
+    update_data["updatedAt"] = now
+
+    # Backfill createdAt if the task is missing it.
+    # The stats $match uses createdAt as one of its three OR conditions.
+    # If createdAt is null or was stored as a string, the task can only
+    # be matched via followup_date or completedAt.
+    if not task.get("createdAt"):
+        update_data["createdAt"] = now
    
     # Update the task
     try:
@@ -7921,15 +7985,17 @@ from collections import defaultdict
 async def get_stats_overview(period: str = "monthly"):
     """Get overall statistics for the dashboard with time period filtering"""
     try:
+        from datetime import datetime, timezone, timedelta
+        
         # Calculate date range based on period
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if period == "daily":
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=1)
+            end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
         elif period == "weekly":
             start_date = now - timedelta(days=now.weekday())
             start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=7)
+            end_date = now
         else:  # monthly
             start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             if now.month == 12:
@@ -7937,91 +8003,66 @@ async def get_stats_overview(period: str = "monthly"):
             else:
                 end_date = now.replace(month=now.month + 1, day=1)
 
-        # Count outstanding cells (cells with status != "completed" or "closed")
-        # Assuming cells are events with eventType "Cell" and have a status field
-        outstanding_cells = await events_collection.count_documents({
-            "eventType": "Cell",
-            "status": {"$nin": ["completed", "closed", "done"]}
+        # Count completed tasks within the period (all types)
+        completed_tasks = await tasks_collection.count_documents({
+            "completedAt": {"$gte": start_date, "$lte": end_date},
+            "status": {"$in": ["completed", "Completed", "done", "closed"]}
         })
-       
-        # Count outstanding tasks from tasks collection
-        # Assuming tasks have a status field and are not completed/closed
+        
+        # Break down by task type. note that some consolidation tasks may not have
+        # a matching taskType string, so we include them via a second query below.
+        completed_by_type = await tasks_collection.aggregate([
+            {
+                "$match": {
+                    "completedAt": {"$gte": start_date, "$lte": end_date},
+                    "status": {"$in": ["completed", "Completed", "done", "closed"]}
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$taskType",
+                    "count": {"$sum": 1}
+                }
+            }
+        ]).to_list(length=None)
+        
+        # Convert to dict for easy access
+        task_breakdown = {}
+        for doc in completed_by_type:
+            raw = doc.get("_id")
+            key = (str(raw).strip().lower() if raw else "uncategorized")
+            task_breakdown[key] = task_breakdown.get(key, 0) + doc.get("count", 0)
+
+        # Some consolidation tasks may have been flagged using the boolean field
+        # instead of having taskType == "consolidation" (case insensitive). Add
+        # those counts now so they are included in the breakdown and in the
+        # separate consolidation counters below.
+        extra_cons = await tasks_collection.count_documents({
+            "completedAt": {"$gte": start_date, "$lte": end_date},
+            "status": {"$in": ["completed", "Completed", "done", "closed"]},
+            "is_consolidation_task": True,
+            "taskType": {"$not": {"$regex": "^consolidation$", "$options": "i"}}
+        })
+        if extra_cons > 0:
+            task_breakdown["consolidation"] = task_breakdown.get("consolidation", 0) + extra_cons
+
+        # Count outstanding (incomplete) tasks
         outstanding_tasks = await tasks_collection.count_documents({
-            "status": {"$nin": ["completed", "closed", "done"]}
+            "status": {"$nin": ["completed", "Completed", "closed", "done"]}
         })
-       
-        # Get total people (assuming you have a people collection)
-        total_people = await people_collection.count_documents({})
-       
-        # Get events for the period to calculate attendance and growth
-        # Only include non-cell events for attendance calculation
-        period_events = await events_collection.find({
-            "date": {"$gte": start_date, "$lt": end_date},
-            "status": {"$in": ["completed", "closed"]},
-            "eventType": {"$ne": "Cell"}  # Exclude cells from attendance calculation
-        }).to_list(length=None)
-       
-        # Calculate total attendance for the period
-        total_attendance = sum(event.get("total_attendance", 0) for event in period_events)
-       
-        # Calculate previous period for growth comparison
-        if period == "daily":
-            prev_start = start_date - timedelta(days=1)
-            prev_end = start_date
-        elif period == "weekly":
-            prev_start = start_date - timedelta(days=7)
-            prev_end = start_date
-        else:  # monthly
-            if start_date.month == 1:
-                prev_start = start_date.replace(year=start_date.year - 1, month=12)
-            else:
-                prev_start = start_date.replace(month=start_date.month - 1)
-            prev_end = start_date
-       
-        # Get previous period attendance (exclude cells)
-        prev_events = await events_collection.find({
-            "date": {"$gte": prev_start, "$lt": prev_end},
-            "status": {"$in": ["completed", "closed"]},
-            "eventType": {"$ne": "Cell"}
-        }).to_list(length=None)
-       
-        prev_attendance = sum(event.get("total_attendance", 0) for event in prev_events)
-       
-        # Calculate growth rate
-        if prev_attendance > 0:
-            growth_rate = ((total_attendance - prev_attendance) / prev_attendance) * 100
-        else:
-            growth_rate = 100 if total_attendance > 0 else 0
-       
-        # Calculate weekly/daily attendance breakdown (exclude cells)
-        attendance_breakdown = {}
-        for event in period_events:
-            if event.get("date"):
-                event_date = event["date"]
-                if period == "daily":
-                    # Group by hour for daily view
-                    hour = event_date.hour
-                    key = f"{hour:02d}:00"
-                elif period == "weekly":
-                    # Group by day name for weekly view
-                    key = event_date.strftime("%A")
-                else:
-                    # aligning weekly breakdowns with date-based attendance keys (fixes mismatch bug).
-                    week_start = event_date.date() - timedelta(days=event_date.weekday())  
-                    key = week_start.strftime("%Y-%m-%d")  
-               
-                if key not in attendance_breakdown:
-                    attendance_breakdown[key] = 0
-                attendance_breakdown[key] += event.get("total_attendance", 0)
-       
+
+        # ... rest of your stats code ...
+
         return {
-            "outstanding_cells": outstanding_cells,
-            "outstanding_tasks": outstanding_tasks,  
-            "total_people": total_people,
-            "total_attendance": total_attendance,
-            "growth_rate": round(growth_rate, 1),
-            "attendance_breakdown": attendance_breakdown,
-            "period": period
+            "outstanding_tasks": outstanding_tasks,
+            "completed_tasks": completed_tasks,  # ✅ NEW
+            # note: consolidation count already includes any extra boolean-flagged
+            # tasks via the query above.
+            "completed_consolidations": task_breakdown.get("consolidation", 0),
+            "completed_calls": task_breakdown.get("call task", 0),
+            "completed_visits": task_breakdown.get("visit task", 0),
+            "task_breakdown": task_breakdown,
+            # ... rest of your return data
         }
     except Exception as e:
         print(f"Error in stats overview: {str(e)}")
@@ -8107,8 +8148,14 @@ async def get_people_capture_stats():
                 "$lookup": {
                     "from": "people",
                     "localField": "_id",
-                    "foreignField": "_id",  # or "email" depending on your schema
+                    "foreignField": "email",  # or "email" depending on your schema
                     "as": "capturer_details"
+                },
+                "$lookup": {
+                    "from": "people",
+                    "loacalField": "_id",
+                    "foreignField": "_id",
+                    "as": "captured_details"
                 }
             },
             {
@@ -8121,7 +8168,10 @@ async def get_people_capture_stats():
                 "$project": {
                     "capturer_id": "$_id",
                     "capturer_name": {
-                        "$ifNull": ["$capturer_details.fullName", "$capturer_details.name", "Unknown Capturer"]
+                        "$ifNull": [
+                            "$capturer_details.fullName",
+                            {"$ifNull": ["$capturer_details.name", "Unknown Capturer"]}
+                        ]
                     },
                     "capturer_email": {
                         "$ifNull": ["$capturer_details.email", "No email"]
@@ -8136,7 +8186,7 @@ async def get_people_capture_stats():
             }
         ]
        
-        results = list(db.people.aggregate(pipeline))  # Query the PEOPLE collection
+        results = await db.people.aggregrate(pipeline).to_list(length=None)   # Query the PEOPLE collection
        
         if not results:
             return {
@@ -8234,8 +8284,8 @@ async def create_user(
             "leader1728": user_data.leader1728,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "createdAt": datetime.now(timezone.utc),
+            "updatedAt": datetime.now(timezone.utc)
         }
        
         result = await users_collection.insert_one(user_doc)
@@ -8280,7 +8330,7 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
                 leader144=user.get("leader144"),
                 leader1728=user.get("leader1728"),
                 stage=user.get("stage"),
-                created_at=user.get("created_at")
+                created_at=user.get("createdAt")
             ))
        
         return UserList(users=users)
@@ -8317,7 +8367,7 @@ async def update_user_role(
             {
                 "$set": {
                     "role": role_update.role,
-                    "updated_at": datetime.utcnow()
+                    "updatedAt": datetime.now(timezone.utc)
                 }
             }
         )
@@ -8438,7 +8488,7 @@ async def log_activity(user_id: str, action: str, details: str):
             "user_id": user_id,
             "action": action,
             "details": details,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.now(timezone.utc)
         }
        
         # Insert into activity_logs collection
@@ -8551,7 +8601,7 @@ async def create_consolidation(
             print(f"Found existing person: {person_id}")
             update_data = {
                 "Stage": "Consolidate",
-                "UpdatedAt": datetime.utcnow().isoformat(),
+                "UpdatedAt": datetime.now(timezone.utc),
                 "DecisionType": consolidation.decision_type.value,
                 "DecisionDate": consolidation.decision_date,
             }
@@ -8594,8 +8644,8 @@ async def create_consolidation(
                 "Stage": "Consolidate",
                 "DecisionType": consolidation.decision_type.value,
                 "DecisionDate": consolidation.decision_date,
-                "Date Created": datetime.utcnow().isoformat(),
-                "UpdatedAt": datetime.utcnow().isoformat(),
+                "Date Created": datetime.now(timezone.utc),
+                "UpdatedAt": datetime.now(timezone.utc),
                 "InvitedBy": current_user.get("email", ""),
                 "Leader @1": consolidation.leaders[0] if len(consolidation.leaders) > 0 else "",
                 "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
@@ -8707,7 +8757,7 @@ async def create_consolidation(
             "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
             "taskType": "consolidation",
             "description": f"Follow up with {consolidation.person_name} {consolidation.person_surname} who made a {decision_display_name.lower()} on {consolidation.decision_date} ({source_display} Consolidation)",
-            "followup_date": datetime.utcnow().isoformat(),
+            "followup_date": datetime.now(timezone.utc),
             "status": "Open",
             "assignedfor": assigned_for,
             "assigned_to_email": leader_email,
@@ -8729,7 +8779,7 @@ async def create_consolidation(
                 "email": person_email,
                 "phone": consolidation.person_phone or ""
             },
-            "created_at": datetime.utcnow().isoformat(),
+            "createdAt": datetime.now(timezone.utc),
             "created_by": current_user.get("email", ""),
             "is_consolidation_task": True
         }
@@ -8750,7 +8800,7 @@ async def create_consolidation(
                 "decision_display_name": decision_display_name,
                 "assigned_to": consolidation.assigned_to,
                 "assigned_to_email": leader_email,
-                "created_at": datetime.utcnow().isoformat(),
+                "createdAt": datetime.now(timezone.utc),
                 "type": "consolidation",
                 "status": "active",
                 "notes": consolidation.notes,
@@ -8762,7 +8812,7 @@ async def create_consolidation(
                 {"_id": ObjectId(consolidation.event_id)},
                 {
                     "$push": {"consolidations": consolidation_record},
-                    "$set": {"updated_at": datetime.utcnow().isoformat()}
+                    "$set": {"updatedAt": datetime.now(timezone.utc)}
                 }
             )
             print(f"Added to event consolidations: {consolidation.event_id}")
@@ -8784,7 +8834,7 @@ async def create_consolidation(
             "event_id": consolidation.event_id,
             "notes": consolidation.notes,
             "created_by": current_user.get("email", ""),
-            "created_at": datetime.utcnow().isoformat(),
+            "createdAt": datetime.now(timezone.utc),
             "status": "active",
             "task_id": task_id,
             "source": consolidation_source,
@@ -8839,7 +8889,7 @@ async def get_all_users():
                 "role": user.get("role", "member"),
                 "phone": user.get("phone", ""),
                 "avatar": user.get("avatar"),
-                "created_at": user.get("created_at")
+                "createdAt": user.get("createdAt")
             })
 
         return {
@@ -8924,7 +8974,7 @@ async def get_all_tasks(
                     "type": task.get("type", "call"),
                     "contacted_person": task.get("contacted_person", {}),
                     "isRecurring": bool(task.get("recurring_day")),
-                    "createdAt": task.get("createdAt", datetime.utcnow()).isoformat() if task.get("createdAt") else None,
+                    "createdAt": task.get("createdAt", datetime.now(timezone.utc)).isoformat() if task.get("createdAt") else None,
                 })
 
             # Sort newest first
@@ -9052,7 +9102,7 @@ async def update_consolidation(
             raise HTTPException(status_code=404, detail="Consolidation not found")
        
         # Update consolidation
-        update_data["updated_at"] = datetime.utcnow().isoformat()
+        update_data["updatedAt"] = datetime.now(timezone.utc)
         await consolidations_collection.update_one(
             {"_id": ObjectId(consolidation_id)},
             {"$set": update_data}
@@ -9062,14 +9112,18 @@ async def update_consolidation(
         if update_data.get("status") == "completed":
             await people_collection.update_one(
                 {"_id": ObjectId(consolidation["person_id"])},
-                {"$set": {"Stage": "Disciple", "UpdatedAt": datetime.utcnow().isoformat()}}
+                {"$set": {"Stage": "Disciple", "UpdatedAt": datetime.now(timezone.utc)}}
             )
            
             # Also update the associated task
             if consolidation.get("task_id"):
                 await tasks_collection.update_one(
                     {"_id": ObjectId(consolidation["task_id"])},
-                    {"$set": {"status": "completed"}}
+                    {"$set": {
+                        "status": "completed",
+                        "completedAt": datetime.now(timezone.utc),
+                        "updatedAt": datetime.now(timezone.utc),
+                    }}
                 )
        
         return {"message": "Consolidation updated successfully", "success": True}
@@ -9087,10 +9141,10 @@ async def get_consolidation_stats(
         stats_collection = db["consolidation_stats"]
        
         if period == "daily":
-            date_key = datetime.utcnow().date().isoformat()
+            date_key = datetime.now(timezone.utc)
             query = {"date": date_key, "type": "daily"}
         elif period == "weekly":
-            exact_date_str = (datetime.utcnow().date() - timedelta(days=datetime.utcnow().date().weekday())).strftime("%Y-%m-%d")
+            exact_date_str = (datetime.now(timezone.utc) - timedelta(days=datetime.utcnow().date().weekday())).strftime("%Y-%m-%d")
             query = {"week": exact_date_str, "type": "weekly"} 
         elif period == "monthly":
             month_key = datetime.utcnow().strftime("%Y-%m")
@@ -9179,7 +9233,7 @@ async def get_event_consolidations(event_id: str = Path(...)):
         consolidations_collection = db["consolidations"]
         consolidations = await consolidations_collection.find({
             "event_id": event_id
-        }).sort("created_at", -1).to_list(length=None)
+        }).sort("createdAt", -1).to_list(length=None)
        
         # Enhance with person details
         enhanced_consolidations = []
@@ -9301,7 +9355,7 @@ async def get_service_checkin_real_time_data(
             "new_people_count": new_people_count,  # ACTUAL COUNT FROM DB
             "consolidation_count": consolidation_count,  # ACTUAL COUNT FROM DB
             "total_attendance": len(attendees),
-            "refreshed_at": datetime.utcnow().isoformat()
+            "refreshed_at": datetime.now(timezone.utc)
         }
 
     except Exception as e:
@@ -9382,7 +9436,7 @@ async def service_checkin_person(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc)
 
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
@@ -9420,7 +9474,7 @@ async def service_checkin_person(
                 {
                     "$push": {"attendees": attendee_record},
                     "$inc": {"total_attendance": 1},
-                    "$set": {"updated_at": now}
+                    "$set": {"updatedAt": now}
                 }
             )
 
@@ -9467,7 +9521,7 @@ async def service_checkin_person(
                 {"_id": ObjectId(event_id)},
                 {
                     "$push": {"new_people": new_person_record},
-                    "$set": {"updated_at": now}
+                    "$set": {"updatedAt": now}
                 }
             )
 
@@ -9499,7 +9553,7 @@ async def service_checkin_person(
                 "decision_display_name": person_data.get("decision_display_name", ""),
                 "assigned_to": person_data.get("assigned_to", ""),
                 "notes": person_data.get("notes", ""),
-                "created_at": now,
+                "createdAt": now,
                 "type": "consolidation",
                 "status": "active"
             }
@@ -9508,7 +9562,7 @@ async def service_checkin_person(
                 {"_id": ObjectId(event_id)},
                 {
                     "$push": {"consolidations": consolidation_record},
-                    "$set": {"updated_at": now}
+                    "$set": {"updatedAt": now}
                 }
             )
 
@@ -9565,7 +9619,7 @@ async def remove_from_service_checkin(
         # Build the update query
         update_query = {
             "$pull": {data_type: {"id": person_id}},
-            "$set": {"updated_at": datetime.utcnow().isoformat()}
+            "$set": {"updatedAt": datetime.now(timezone.utc)}
         }
 
         # If removing from attendees, also decrement total_attendance
@@ -9637,7 +9691,7 @@ async def update_service_checkin_person(
         for field, value in update_fields.items():
             set_fields[f"{data_type}.$.{field}"] = value
 
-        set_fields["updated_at"] = datetime.utcnow().isoformat()
+        set_fields["updatedAt"] = datetime.now(timezone.utc)
 
         result = await events_collection.update_one(
             {
@@ -9695,7 +9749,7 @@ async def initialize_event_structure(
             "attendees": event.get("attendees", []),
             "new_people": event.get("new_people", []),
             "consolidations": event.get("consolidations", []),
-            "updated_at": datetime.utcnow().isoformat()
+            "updatedAt": datetime.now(timezone.utc)
         }
 
         
@@ -9768,7 +9822,7 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
                                     "First Time Decision" if attendee.get("decision") == "first_time" else "Recommitment"),
                                 "assigned_to": attendee.get("assigned_leader", ""),
                                 "assigned_to_email": attendee.get("assigned_leader_email", ""),
-                                "created_at": attendee.get("time", datetime.utcnow().isoformat()),
+                                "createdAt": attendee.get("time", datetime.now(timezone.utc)),
                                 "type": "consolidation",
                                 "status": "active"
                             }
@@ -9782,7 +9836,7 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
                                 "email": attendee.get("email", ""),
                                 "phone": attendee.get("phone", ""),
                                 "leader12": attendee.get("leader12", ""),
-                                "time": attendee.get("time", datetime.utcnow().isoformat()),
+                                "time": attendee.get("time", datetime.now(timezone.utc)),
                                 "checked_in": attendee.get("checked_in", True),
                                 "type": "attendee"
                             }
@@ -9792,7 +9846,7 @@ async def migrate_all_events_structure(current_user: dict = Depends(get_current_
                     "attendees": new_attendees,
                     "new_people": new_people,
                     "consolidations": consolidations,
-                    "updated_at": datetime.utcnow().isoformat()
+                    "updatedAt": datetime.now(timezone.utc)
                 }
 
                 if "total_attendance" not in event:
@@ -9841,7 +9895,7 @@ def get_period_range(period: str):
     - previousWeek
     - previousMonth
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
     
@@ -9860,9 +9914,9 @@ def get_period_range(period: str):
     if period == "thisMonth":
         start = today.replace(day=1)
         if today.month == 12:
-            end = datetime(today.year + 1, 1, 1) - timedelta(microseconds=1)
+            end = datetime(today.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
         else:
-            end = datetime(today.year, today.month + 1, 1) - timedelta(microseconds=1)
+            end = datetime(today.year, today.month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
         return start, end
     
     
@@ -9887,12 +9941,12 @@ def get_period_range(period: str):
         if month == 0:
             month = 12
             year -= 1
-        
-        start = datetime(year, month, 1)
+
+        start = datetime(year, month, 1, tzinfo=timezone.utc)
         if month == 12:
-            end = datetime(year + 1, 1, 1) - timedelta(microseconds=1)
+            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
         else:
-            end = datetime(year, month + 1, 1) - timedelta(microseconds=1)
+            end = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
         return start, end
     
     raise ValueError(f"Invalid period '{period}'")
@@ -9995,9 +10049,26 @@ async def get_dashboard_comprehensive(
             },
             {
                 "$addFields": {
-                    
+                    # Normalize type label so that any task flagged as a
+                    # consolidation shows up as "consolidation" regardless of
+                    # the original taskType string.
                     "task_type_label": {
-                        "$ifNull": ["$taskType", "Uncategorized"]
+                        "$switch": {
+                            "branches": [
+                                {
+                                    "case": {
+                                        "$or": [
+                                            {"$eq": ["$is_consolidation_task", True]},
+                                            {"$regexMatch": {"input": {"$ifNull": ["$taskType", ""]},
+                                                               "regex": "^consolidation$",
+                                                               "options": "i"}}
+                                        ]
+                                    },
+                                    "then": "consolidation"
+                                }
+                            ],
+                            "default": {"$ifNull": ["$taskType", "Uncategorized"]}
+                        }
                     },
                     
                     "is_excluded_type": {
@@ -10100,7 +10171,7 @@ async def get_dashboard_comprehensive(
                         "$push": {
                             "_id": "$_id",
                             "name": "$name",
-                            "taskType": "$taskType",
+                            "taskType": "$task_type_label",
                             "task_type_label": "$task_type_label",
                             "followup_date": "$followup_date",
                             "due_date": "$followup_date",
@@ -10171,7 +10242,15 @@ async def get_dashboard_comprehensive(
             users_cursor.to_list(limit),
         )
 
-        
+        # make sure any task marked with the consolidation flag is treated as
+        # a consolidation task regardless of its stored taskType string. the
+        # aggregation pipeline already takes care of most cases, but this
+        # extra pass prevents edge cases from slipping through.
+        for group in task_groups:
+            for t in group.get("tasks", []):
+                if t.get("is_consolidation_task"):
+                    t["taskType"] = "consolidation"
+
         formatted_overdue_cells = []
         for cell in overdue_cells:
             cell["_id"] = str(cell["_id"])
@@ -10235,30 +10314,30 @@ async def get_dashboard_comprehensive(
                         task[date_field] = task[date_field].isoformat()
                 
                 
-                task_type = task.get("taskType") or "Uncategorized"
-                is_excluded = task.get("is_excluded_type", False)
+                raw = task.get("taskType")
+                key = (str(raw).strip().lower() if raw else "uncategorized")
                 
                 
-                if task_type not in task_type_stats:
-                    task_type_stats[task_type] = {
-                        "total": 0, 
-                        "completed": 0, 
+                if key not in task_type_stats:
+                    task_type_stats[key] = {
+                        "total": 0,
+                        "completed": 0,
                         "completed_in_period": 0,
                         "due_in_period": 0,
                         "incomplete_due": 0,
-                        "is_excluded": is_excluded
+                        "is_excluded": task.get("is_excluded_type", False),
                     }
                 
                 
-                task_type_stats[task_type]["total"] += 1
+                task_type_stats[key]["total"] += 1
                 if task.get("is_completed"):
-                    task_type_stats[task_type]["completed"] += 1
+                    task_type_stats[key]["completed"] += 1
                 if task.get("completed_in_period"):
-                    task_type_stats[task_type]["completed_in_period"] += 1
+                    task_type_stats[key]["completed_in_period"] += 1
                 if task.get("is_due_in_period"):
-                    task_type_stats[task_type]["due_in_period"] += 1
+                    task_type_stats[key]["due_in_period"] += 1
                 if task.get("is_due_in_period") and not task.get("is_completed"):
-                    task_type_stats[task_type]["incomplete_due"] += 1
+                    task_type_stats[key]["incomplete_due"] += 1
 
             
             total_for_user = task_group["total_tasks"]
@@ -10385,7 +10464,7 @@ async def get_dashboard_comprehensive(
             "available_task_types": all_task_types,
             "task_types_found": unique_task_types_found,
             "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc)
         }
 
     except Exception as e:
@@ -10439,19 +10518,29 @@ async def get_dashboard_quick_stats(
         })
 
         
+        # consolidation queries now also look at is_consolidation_task for safety
         consolidation_completed_in_period = await tasks_collection.count_documents({
             "completedAt": {"$gte": start, "$lte": end},
             "status": {"$in": ["completed", "done", "closed", "finished"]},
-            "taskType": "consolidation"
+            "$or": [
+                {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
+                {"is_consolidation_task": True}
+            ]
         })
 
         total_consolidation_tasks = await tasks_collection.count_documents({
-            "taskType": "consolidation"
+            "$or": [
+                {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
+                {"is_consolidation_task": True}
+            ]
         })
 
         total_consolidation_completed = await tasks_collection.count_documents({
-            "taskType": "consolidation",
-            "status": {"$in": ["completed", "done", "closed", "finished"]}
+            "status": {"$in": ["completed", "done", "closed", "finished"]},
+            "$or": [
+                {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
+                {"is_consolidation_task": True}
+            ]
         })
 
         
@@ -10480,8 +10569,25 @@ async def get_dashboard_quick_stats(
             },
             {
                 "$addFields": {
-                    
-                    "task_type": {"$ifNull": ["$taskType", "Uncategorized"]},
+                    # normalise consolidation flag into the type field
+                    "task_type": {
+                        "$switch": {
+                            "branches": [
+                                {
+                                    "case": {
+                                        "$or": [
+                                            {"$eq": ["$is_consolidation_task", True]},
+                                            {"$regexMatch": {"input": {"$ifNull": ["$taskType", ""]},
+                                                               "regex": "^consolidation$",
+                                                               "options": "i"}}
+                                        ]
+                                    },
+                                    "then": "consolidation"
+                                }
+                            ],
+                            "default": {"$ifNull": ["$taskType", "Uncategorized"]}
+                        }
+                    },
                     
                     "is_excluded": {
                         "$cond": [
@@ -10603,19 +10709,15 @@ async def get_dashboard_quick_stats(
         
         task_type_stats = {}
         for stat in task_type_stats_raw:
-            task_type = stat["_id"] or "Uncategorized"
-            total = stat["total"]
-            completed = stat["completed"]
-            is_excluded = stat["is_excluded"]
-            
-            task_type_stats[task_type] = {
-                "total": total,
-                "completed": completed,
+            raw = stat.get("_id")
+            # treat consolidation flag as lowercase key as well
+            key = (str(raw).strip().lower() if raw else "uncategorized")
+            task_type_stats[key] = {
+                "total": stat["total"],
+                "completed": stat["completed"],
                 "completed_in_period": stat["completed_in_period"],
                 "due_in_period": stat["due_in_period"],
-                "is_excluded": is_excluded,
-                "completion_rate": round((completed / total * 100), 2) if total > 0 else 0,
-                "completion_rate_in_period": round((stat["completed_in_period"] / stat["due_in_period"] * 100), 2) if stat["due_in_period"] > 0 else 0
+                "is_excluded": stat.get("is_excluded", False),
             }
 
         
@@ -10671,7 +10773,7 @@ async def get_dashboard_quick_stats(
             "totalTaskTypesFound": len(task_type_stats),
             "excludedTaskTypes": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
             
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc),
             "note": "'no answer' and 'Awaiting Call' task types are excluded from completed counts"
         }
 
@@ -10711,9 +10813,9 @@ async def close_event(
         
         update_data = {
             "status": "complete",
-            "updated_at": datetime.utcnow().isoformat(),
+            "updatedAt": datetime.now(timezone.utc),
             "closed_by": current_user.get("email", ""),
-            "closed_at": datetime.utcnow().isoformat()
+            "closed_at": datetime.now(timezone.utc)
         }
 
         result = await events_collection.update_one(
@@ -10795,34 +10897,84 @@ async def create_consolidation(
         person_phone = person_data.get("phone", "") or person_data.get("number", "")
         person_id = person_data.get("id", "")
         
+        # ========== RESOLVE LEADER EMAIL FOR CORRECT STATS ASSIGNMENT ==========
+        leader_email = consolidation_data.get("assigned_to_email", "")
+        leader_user_id = None
+
+        if not leader_email and assigned_to:
+            # Try to resolve leader email from the users collection by name
+            leader_parts = assigned_to.strip().split()
+            first_name = leader_parts[0] if leader_parts else ""
+            surname = " ".join(leader_parts[1:]) if len(leader_parts) > 1 else ""
+
+            leader_user = await users_collection.find_one({
+                "$or": [
+                    {"name": first_name, "surname": surname},
+                    {"$expr": {"$eq": [
+                        {"$toLower": {"$concat": ["$name", " ", "$surname"]}},
+                        assigned_to.lower()
+                    ]}}
+                ]
+            })
+            if leader_user:
+                leader_email = leader_user.get("email", "")
+                leader_user_id = str(leader_user["_id"])
+                logger.info(f"Resolved leader email from users: {leader_email}")
+
+            if not leader_email:
+                # Fallback: try people collection
+                leader_person = await people_collection.find_one({
+                    "$or": [
+                        {"Name": first_name, "Surname": surname},
+                        {"$expr": {"$eq": [
+                            {"$toLower": {"$concat": ["$Name", " ", "$Surname"]}},
+                            assigned_to.lower()
+                        ]}}
+                    ]
+                })
+                if leader_person:
+                    leader_email = leader_person.get("Email", "")
+                    logger.info(f"Resolved leader email from people: {leader_email}")
+
+        if leader_email and not leader_user_id:
+            leader_user = await users_collection.find_one({"email": leader_email})
+            if leader_user:
+                leader_user_id = str(leader_user["_id"])
+
+        # assignedfor must be the leader's email so stats group tasks correctly
+        assignedfor = leader_email if leader_email else assigned_to
+
         # Create task payload
         task_payload = {
-            "memberID": current_user.get("user_id", current_user.get("email", "unknown")),
-            "name": assigned_to or current_user.get("name", "Unknown"),
+            "memberID": leader_user_id if leader_user_id else current_user.get("user_id", current_user.get("email", "unknown")),
+            "name": f"Consolidation: {person_name} {person_surname} ({decision_type})",
             "taskType": "consolidation",
             "contacted_person": {
                 "name": f"{person_name} {person_surname}".strip(),
                 "phone": person_phone,
                 "email": person_email
             },
-            "followup_date": datetime.utcnow().isoformat(),
+            "followup_date": datetime.now(timezone.utc),
             "status": "Open",
             "type": "consolidation",
-            "assignedfor": current_user.get("email", "unknown"),
+            "assignedfor": assignedfor,
+            "assigned_to_email": leader_email,
+            "assigned_to_user_id": leader_user_id,
             "is_consolidation_task": True,
             "leader_name": assigned_to,
             "leader_assigned": assigned_to,
             "consolidation_name": f"{person_name} {person_surname} - {decision_type}",
             "decision_display_name": decision_type,
             "source_display": "Service",
-            "consolidation_source": "Service",
+            "consolidation_source": "service_consolidation",
             "person_name": person_name,
             "person_surname": person_surname,
             "person_email": person_email,
             "person_phone": person_phone,
             "person_id": person_id,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat()
+            "created_by": current_user.get("email", "unknown"),
+            "createdAt": datetime.now(timezone.utc),
+            "updatedAt": datetime.now(timezone.utc)
         }
         
         # Insert the task
@@ -10846,8 +10998,8 @@ async def create_consolidation(
             "notes": notes,
             "created_by": current_user.get("email", "unknown"),
             "created_by_name": current_user.get("name", "Unknown"),
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "createdAt": datetime.now(timezone.utc),
+            "updatedAt": datetime.now(timezone.utc),
             "status": "active",
             "source": "service_checkin"
         }
@@ -10858,12 +11010,12 @@ async def create_consolidation(
             {
                 "$push": {"consolidations": consolidation_record},
                 "$set": {
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updatedAt": datetime.now(timezone.utc),
                     "last_updated_by": {
                         "email": current_user.get("email", "unknown"),
                         "name": current_user.get("name", ""),
                         "action": "created_consolidation",
-                        "timestamp": datetime.utcnow().isoformat()
+                        "timestamp": datetime.now(timezone.utc)
                     }
                 }
             }
@@ -10911,7 +11063,7 @@ async def create_consolidation(
                 "total_attendance": updated_event.get("total_attendance", 0),
                 "total_attendees": len(updated_event.get("attendees", []))
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc)
         }
         
     except HTTPException:
@@ -10982,11 +11134,11 @@ async def remove_consolidation(
         # Prepare event update
         update_data = {
             "consolidations": updated_consolidations,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updatedAt": datetime.now(timezone.utc),
             "last_updated_by": {
                 "email": current_user.get("email", "unknown"),
                 "action": "removed_consolidation",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc)
             }
         }
 
@@ -11084,7 +11236,7 @@ async def remove_consolidation(
                 "total_attendance": updated_event.get("total_attendance", 0),
                 "total_attendees": len(updated_event.get("attendees", []))
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc)
         }
 
     except HTTPException:
@@ -11167,7 +11319,7 @@ async def migrate_consolidations(
                         if task:
                             consolidation["task_id"] = str(task["_id"])
                             consolidation["_migrated"] = True
-                            consolidation["_migrated_at"] = datetime.utcnow().isoformat()
+                            consolidation["_migrated_at"] = datetime.now(timezone.utc)
                             updates_made += 1
                             event_updated = True
                             logger.info(f"Added task_id {task['_id']} to consolidation for {person_name} {person_surname}")
@@ -11351,7 +11503,4 @@ async def cleanup_orphaned_tasks(
         
     except Exception as e:
         logger.error(f"Error cleaning up orphaned tasks: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")     
-        
-        
-        
+        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")

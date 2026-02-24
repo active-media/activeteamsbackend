@@ -188,7 +188,59 @@ async def test_get_person_by_id_invalid_id():
     
     assert response.status_code in [400, 422, 500]
 
-# ========== TEST POST /people ==========
+# ========== TEST POST /people ========== 
+
+# ========== ADDITIONAL STATS TESTS ==========
+
+from main import app as main_app
+
+@pytest.mark.asyncio
+async def test_stats_overview_includes_consolidations(monkeypatch):
+    """Make sure the overview endpoint reports consolidation counts even when
+    the boolean flag is used instead of the taskType string."""
+    # fake aggregate result with one consolidation and one call task
+    async def fake_aggregate(pipeline):
+        return [{"_id": "consolidation", "count": 3}]
+
+    async def fake_count(filter):
+        # return 2 extra consolidations when boolean filter present
+        if filter.get("is_consolidation_task"):
+            return 2
+        # default completion count
+        return 10
+
+    monkeypatch.setattr('main.tasks_collection.aggregate', lambda pipeline: AsyncMock(to_list=AsyncMock(return_value=fake_aggregate(pipeline))))
+    monkeypatch.setattr('main.tasks_collection.count_documents', AsyncMock(side_effect=fake_count))
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        response = await client.get("/stats/overview?period=daily")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("completed_consolidations") == 5
+
+@pytest.mark.asyncio
+async def test_dashboard_quick_stats_consolidation(monkeypatch):
+    """Quick stats should include tasks flagged by boolean or string."""
+    async def fake_count(filter):
+        # count of consolidation tasks independent of other filters
+        if filter.get("$or"):
+            # this is the total_consolidation_tasks call
+            return 7
+        if filter.get("status"):
+            # completed filters
+            return 4
+        return 0
+
+    monkeypatch.setattr('main.tasks_collection.count_documents', AsyncMock(side_effect=fake_count))
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        response = await client.get("/stats/dashboard-quick?period=today")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("consolidationTasks") == 7
+    assert data.get("consolidationCompleted") == 4
 
 @pytest.mark.asyncio
 async def test_create_person_success(mock_person_create_data, mock_object_id):
