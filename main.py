@@ -1658,6 +1658,8 @@ def convert_event_for_display(event):
         if sast_dt:
             event['display_date'] = format_display_date(sast_dt)
     
+    # Times are already in SAST format (HH:MM), no conversion needed
+    # Just ensure both fields are populated
     if event.get('Time') and not event.get('time'):
         event['time'] = event['Time']
     elif event.get('time') and not event.get('Time'):
@@ -1669,7 +1671,7 @@ def convert_event_for_display(event):
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=1000),
+    limit: int = Query(25, ge=1, le=100),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
@@ -1708,6 +1710,7 @@ async def get_cell_events(
             db_surname = person.get('Surname', '').strip()
             user_name_from_db = f"{db_first} {db_surname}".strip()
             
+            # Also check for any "Leader at" fields that might have the proper name
             leader_at_12_name = person.get('Leader at 12') or person.get('Leader @12') or person.get('leader12') or ""
             if leader_at_12_name:
                 user_name_from_db = leader_at_12_name.strip()
@@ -1724,7 +1727,7 @@ async def get_cell_events(
         else:
             user_name = user_name_from_token
             
-        print(f" Leader at 12 user name resolved as: {user_name}")
+        print(f"🔍 Leader at 12 user name resolved as: {user_name}")
 
         query = {
             "$and": [
@@ -1880,6 +1883,8 @@ async def get_cell_events(
                 query["$and"].append({"_id": "nonexistent_id"})
         
         print("SEARCH TEXT",search)
+        print(f"📋 Final query for cells: {query}")
+
         pipeline = [
             {"$match": query},
             {
@@ -2149,7 +2154,7 @@ async def get_weekly_attendance(
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=1000),
+    limit: int = Query(25, ge=1, le=100),
     status: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -2175,7 +2180,6 @@ async def get_other_events(
         except:
             end_dt = today + timedelta(days=365)
 
-        # Build base query - exclude cells events only
         query = {
             "$nor": [
                 {"Event Type": {"$regex": "^cells$", "$options": "i"}},
@@ -2184,7 +2188,6 @@ async def get_other_events(
             ]
         }
 
-        # Role-based visibility
         if user_role not in ["admin", "leaderat12", "registrant"]:
             visibility_filter = {
                 "$or": [
@@ -2236,17 +2239,13 @@ async def get_other_events(
             }
             query = {"$and": [query, search_filter]}
 
-        print(f"/events/eventsdata query for role {user_role}: {query}")
-
         cursor = events_collection.find(query)
         events = await cursor.to_list(length=1000)
-        print(f"Found {len(events)} raw events from DB")
 
         results = []
 
         for e in events:
             try:
-                # --- Resolve event date ---
                 event_date = None
                 dt_raw = e.get("date") or e.get("Date Of Event") or e.get("eventDate") or e.get("startDate")
 
@@ -2269,13 +2268,11 @@ async def get_other_events(
                 if event_date < start_dt or event_date > end_dt:
                     continue
 
-                # Only show events up to today
                 if event_date > today:
                     continue
 
                 exact_date_str = event_date.isoformat()
 
-                # --- Resolve attendance data ---
                 attendance_data = e.get("attendance", {})
                 if not isinstance(attendance_data, dict):
                     attendance_data = {}
@@ -2283,28 +2280,26 @@ async def get_other_events(
                 if not isinstance(date_attendance, dict):
                     date_attendance = {}
 
-                # --- Determine event status ---
                 main_status = str(e.get("status", "")).lower()
+                ev_status = "incomplete"
+
                 if date_attendance:
                     att_status = str(date_attendance.get("status", "")).lower()
                     if att_status == "did_not_meet" or date_attendance.get("is_did_not_meet"):
                         ev_status = "did_not_meet"
                     elif att_status in ["complete", "closed"] or len(date_attendance.get("attendees", [])) > 0:
                         ev_status = "complete"
-                    else:
-                        ev_status = main_status if main_status in ["complete", "closed", "did_not_meet"] else "incomplete"
                 else:
                     if main_status in ["complete", "closed"]:
                         ev_status = "complete"
                     elif main_status == "did_not_meet":
                         ev_status = "did_not_meet"
-                    else:
-                        ev_status = "incomplete"
 
                 if status and status != ev_status:
                     continue
 
-                # --- isGlobal / isTicketed ---
+                is_overdue = event_date < today and ev_status == "incomplete"
+
                 raw_global = e.get("isGlobal")
                 is_global = raw_global is True or str(raw_global).lower() == "true"
 
@@ -2405,24 +2400,17 @@ async def get_other_events(
 
                 results.append(result_item)
 
-            except Exception as ex:
-                print(f"EVENT PARSE ERROR for {e.get('_id')}: {ex}")
-                import traceback
-                traceback.print_exc()
+            except:
                 continue
 
-        # Sort by date descending
         results.sort(key=lambda x: x["_sort_date"], reverse=True)
 
-        # Remove temp sort field
         for item in results:
             item.pop("_sort_date", None)
 
         total = len(results)
         skip = (page - 1) * limit
         paginated = results[skip: skip + limit]
-
-        print(f"Returning {len(paginated)} events (page {page}), total={total}")
 
         return {
             "events": paginated,
@@ -2432,10 +2420,7 @@ async def get_other_events(
             "page_size": limit,
         }
 
-    except Exception as e:
-        print(f"Error in /events/eventsdata: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception:
         raise HTTPException(status_code=500, detail="Failed to fetch events")
     
 @app.put("/events/cells/{identifier}")
@@ -4736,6 +4721,7 @@ async def create_indexes_on_startup():
     except Exception as e:
         print(f"Error creating indexes: {e}")
    
+
 @app.put("/events/{event_id}")
 async def update_event(event_id: str, event_data: dict, current_user: dict = Depends(get_current_user)):
     """
@@ -5718,6 +5704,8 @@ async def get_cell_events_optimized(
                 days_since_monday = today.weekday()
                 week_start = today - timedelta(days=days_since_monday)
                 current_week_instance = week_start + timedelta(days=target_weekday)
+# ...existing code...
+
                 for week_back in range(0, weeks_to_check):
                     instance_date = current_week_instance - timedelta(weeks=week_back)
                     # Strict: skip future dates
@@ -8404,6 +8392,35 @@ async def update_user_role(
         print(f"Error updating role: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
 
+@app.get("/updated-role")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    # Print this to see exactly what keys you have
+    print("current_user payload:", current_user)
+    
+    # Try these in order until one works:
+    user_id = (
+        current_user.get("sub") or 
+        current_user.get("id") or 
+        current_user.get("_id") or
+        current_user.get("user_id")
+    )
+    
+    if not user_id:
+        raise HTTPException(status_code=400, detail=f"No user ID in token. Keys: {list(current_user.keys())}")
+    
+    user = await users_collection.find_one({"_id": ObjectId(str(user_id))})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {
+        "id": str(user["_id"]),
+        "role": user.get("role", "user"),
+        "email": user.get("email"),
+        "name": f"{user.get('name', '')} {user.get('surname', '')}".strip(),
+    }
+
+
+
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
@@ -8510,6 +8527,7 @@ async def log_activity(user_id: str, action: str, details: str):
         await db.activity_logs.insert_one(activity_doc)
     except Exception as e:
         print(f"Error logging activity: {str(e)}")
+        # Don't raise exception, just log the error
 
 @app.get("/admin/activity-logs")
 async def get_activity_logs(
@@ -10744,157 +10762,84 @@ async def get_dashboard_quick_stats(
         traceback.print_exc()
         raise HTTPException(500, f"Error fetching quick stats: {str(e)}")
     
-# @app.patch("/events/{event_id}/toggle-status")
-# async def toggle_event_status(
-#     event_id: str,
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     """
-#     Toggle event status between complete/incomplete
-#     Can only reopen events that occurred today
-#     """
-#     try:
-#         print(f"Toggling event status: {event_id}")
-        
-#         if not ObjectId.is_valid(event_id):
-#             raise HTTPException(status_code=400, detail="Invalid event ID")
-
-#         event = await events_collection.find_one({"_id": ObjectId(event_id)})
-#         if not event:
-#             raise HTTPException(status_code=404, detail="Event not found")
-        
-#         current_status = event.get("status", "").lower()
-#         event_date = event.get("date")
-        
-#         # If trying to reopen (unsave) an event
-#         if current_status in ["complete", "closed"]:
-#             # Check if event date is today
-#             if event_date:
-#                 try:
-#                     # Parse event date
-#                     if isinstance(event_date, str):
-#                         event_datetime = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
-#                     else:
-#                         event_datetime = event_date
-                    
-#                     # Get today's date (start of day)
-#                     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-#                     event_day = event_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
-                    
-#                     # Only allow reopening if event is today
-#                     if event_day < today:
-#                         raise HTTPException(
-#                             status_code=403, 
-#                             detail="Cannot reopen events from past dates. Only today's events can be reopened."
-#                         )
-#                 except ValueError as ve:
-#                     print(f"Error parsing date: {ve}")
-#                     raise HTTPException(status_code=400, detail="Invalid event date format")
-            
-#             # Reopen the event
-#             update_data = {
-#                 "status": "incomplete",
-#                 "updated_at": datetime.utcnow().isoformat(),
-#                 "reopened_by": current_user.get("email", ""),
-#                 "reopened_at": datetime.utcnow().isoformat()
-#             }
-#             action_msg = "reopened"
-#             log_action = "EVENT_REOPENED"
-        
-#         elif current_status in ["open", "incomplete", ""]:
-#             update_data = {
-#                 "status": "complete",
-#                 "updated_at": datetime.utcnow().isoformat(),
-#                 "closed_by": current_user.get("email", ""),
-#                 "closed_at": datetime.utcnow().isoformat()
-#             }
-#             action_msg = "closed"
-#             log_action = "EVENT_CLOSED"
-        
-#         else:
-#             # Default to closing behavior with warning
-#             print(f"Unexpected status '{current_status}', defaulting to close action")
-#             update_data = {
-#                 "status": "complete",
-#                 "updated_at": datetime.utcnow().isoformat(),
-#                 "closed_by": current_user.get("email", ""),
-#                 "closed_at": datetime.utcnow().isoformat()
-#             }
-#             action_msg = "closed"
-#             log_action = "EVENT_CLOSED"
-
-#         result = await events_collection.update_one(
-#             {"_id": ObjectId(event_id)},
-#             {"$set": update_data}
-#         )
-
-#         if result.modified_count == 0:
-#             raise HTTPException(status_code=500, detail="Failed to update event status")
-
-#         updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        
-#         await log_activity(
-#             user_id=current_user.get("_id"),
-#             action=log_action,
-#             details=f"{action_msg.capitalize()} event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
-#         )
-
-#         print(f"Event {event.get('eventName')} {action_msg} successfully")
-
-#         return {
-#             "success": True,
-#             "message": f"Event '{event.get('eventName', 'Unknown')}' {action_msg} successfully",
-#             "event_id": event_id,
-#             "event_name": event.get("eventName", "Unknown"),
-#             "previous_status": current_status,
-#             "new_status": update_data["status"],
-#             "action": action_msg,
-#             "actioned_by": current_user.get("email", ""),
-#             "actioned_at": update_data.get("closed_at") or update_data.get("reopened_at")
-#         }
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         print(f"❌ Error toggling event status: {str(e)}")
-#         raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
-    
-
-@app.patch("/events/{event_id}/close")
-async def close_event(
+@app.patch("/events/{event_id}/toggle-status")
+async def toggle_event_status(
     event_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Close/Complete an event - Update status to "complete"
+    Toggle event status between complete/incomplete
+    Can only reopen events that occurred today
     """
     try:
-        print(f" Closing event: {event_id}")
+        print(f"Toggling event status: {event_id}")
         
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        
         current_status = event.get("status", "").lower()
-        if current_status in ["complete", "closed"]:
-            return {
-                "message": f"Event '{event.get('eventName', 'Unknown')}' is already closed",
-                "status": current_status,
-                "already_closed": True
-            }
-
+        event_date = event.get("date")
         
-        update_data = {
-            "status": "complete",
-            "updated_at": datetime.utcnow().isoformat(),
-            "closed_by": current_user.get("email", ""),
-            "closed_at": datetime.utcnow().isoformat()
-        }
+        # If trying to reopen (unsave) an event
+        if current_status in ["complete", "closed"]:
+            # Check if event date is today
+            if event_date:
+                try:
+                    # Parse event date
+                    if isinstance(event_date, str):
+                        event_datetime = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
+                    else:
+                        event_datetime = event_date
+                    
+                    # Get today's date (start of day)
+                    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                    event_day = event_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    # Only allow reopening if event is today
+                    if event_day < today:
+                        raise HTTPException(
+                            status_code=403, 
+                            detail="Cannot reopen events from past dates. Only today's events can be reopened."
+                        )
+                except ValueError as ve:
+                    print(f"Error parsing date: {ve}")
+                    raise HTTPException(status_code=400, detail="Invalid event date format")
+            
+            # Reopen the event
+            update_data = {
+                "status": "incomplete",
+                "updated_at": datetime.utcnow().isoformat(),
+                "reopened_by": current_user.get("email", ""),
+                "reopened_at": datetime.utcnow().isoformat()
+            }
+            action_msg = "reopened"
+            log_action = "EVENT_REOPENED"
+        
+        elif current_status in ["open", "incomplete", ""]:
+            update_data = {
+                "status": "complete",
+                "updated_at": datetime.utcnow().isoformat(),
+                "closed_by": current_user.get("email", ""),
+                "closed_at": datetime.utcnow().isoformat()
+            }
+            action_msg = "closed"
+            log_action = "EVENT_CLOSED"
+        
+        else:
+            # Default to closing behavior with warning
+            print(f"Unexpected status '{current_status}', defaulting to close action")
+            update_data = {
+                "status": "complete",
+                "updated_at": datetime.utcnow().isoformat(),
+                "closed_by": current_user.get("email", ""),
+                "closed_at": datetime.utcnow().isoformat()
+            }
+            action_msg = "closed"
+            log_action = "EVENT_CLOSED"
 
         result = await events_collection.update_one(
             {"_id": ObjectId(event_id)},
@@ -10904,33 +10849,33 @@ async def close_event(
         if result.modified_count == 0:
             raise HTTPException(status_code=500, detail="Failed to update event status")
 
-        
         updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        
         
         await log_activity(
             user_id=current_user.get("_id"),
-            action="EVENT_CLOSED",
-            details=f"Closed event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
+            action=log_action,
+            details=f"{action_msg.capitalize()} event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
         )
 
-        print(f" Event {event.get('eventName')} closed successfully")
+        print(f"Event {event.get('eventName')} {action_msg} successfully")
 
         return {
             "success": True,
-            "message": f"Event '{event.get('eventName', 'Unknown')}' closed successfully",
+            "message": f"Event '{event.get('eventName', 'Unknown')}' {action_msg} successfully",
             "event_id": event_id,
             "event_name": event.get("eventName", "Unknown"),
-            "new_status": "complete",
-            "closed_by": current_user.get("email", ""),
-            "closed_at": update_data["closed_at"]
+            "previous_status": current_status,
+            "new_status": update_data["status"],
+            "action": action_msg,
+            "actioned_by": current_user.get("email", ""),
+            "actioned_at": update_data.get("closed_at") or update_data.get("reopened_at")
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error closing event: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error closing event: {str(e)}")
+        print(f"❌ Error toggling event status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
     
 # ==================== CREATE CONSOLIDATION (UPDATED) ====================
 @app.post("/service-checkin/create-consolidation")
