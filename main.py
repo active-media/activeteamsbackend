@@ -8420,7 +8420,6 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     }
 
 
-
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
