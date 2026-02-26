@@ -1437,7 +1437,8 @@ def format_display_date(dt):
 async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
-        event_data["_id"] = ObjectId()
+        print(f"[DEBUG] priceTiers received = {event_data.get('priceTiers')}")
+        print(f"[DEBUG] isTicketed = {event_data.get('isTicketed')}")
         
         if not event_data.get("UUID"):
             event_data["UUID"] = str(uuid.uuid4())
@@ -1478,17 +1479,12 @@ async def create_event(event: EventCreate):
 
         print(f"Using day value from frontend: {event_data.get('day')}")
         
-
         if event_data.get("time") or event_data.get("Time"):
             raw_time = event_data.get("time") or event_data.get("Time")
-
             print(f"Raw time received from frontend: {raw_time}")
-
             clean_time = normalize_time(raw_time)
-
             event_data["time"] = clean_time
             event_data["Time"] = clean_time
-
             print(f"Time stored as: {clean_time}")
 
         # 3. Clean up and Format Data
@@ -1502,7 +1498,6 @@ async def create_event(event: EventCreate):
         for key in ["userEmail", "email"]:
             event_data.pop(key, None)
 
-
         # Recurring Day Logic
         recurring_days = event_data.get("recurring_day", [])
         if isinstance(recurring_days, str):
@@ -1515,7 +1510,6 @@ async def create_event(event: EventCreate):
         else:
             event_data["day"] = recurring_days[0]
 
-
         # Leader Fields
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
         if event_data.get("hasPersonSteps"):
@@ -1524,13 +1518,15 @@ async def create_event(event: EventCreate):
             event_data.setdefault("persistent_attendees", [])
 
         # Ticket/Price Logic
-        if event_data.get("isTicketed") and event_data.get("priceTiers"):
+        raw_tiers = event_data.get("priceTiers") or []
+        if event_data.get("isTicketed") and raw_tiers:
             event_data["priceTiers"] = [
                 {k: (float(v) if k == "price" else v) for k, v in tier.items()}
-                for tier in event_data["priceTiers"]
+                for tier in raw_tiers
             ]
         else:
-            event_data["priceTiers"] = []
+            # Preserve whatever was sent — don't wipe it
+            event_data["priceTiers"] = raw_tiers
 
         # Cleanup leader fields for Global events
         if event_data.get("isGlobal"):
@@ -1545,13 +1541,14 @@ async def create_event(event: EventCreate):
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data["attendees"])
 
-        # ---- PLACE RECURRING LOGIC HERE ----
+        # ---- FIX: Insert the event FIRST ----
+        print("Saving eventLeaderEmail:", event_data.get("eventLeaderEmail"))
+        result = await events_collection.insert_one(event_data)
 
-        created_ids = []
-
+        # ---- THEN handle recurring vs single event logic ----
         reference_date = event_data.get("date")
-
-         # Normalize reference_date -> date object (use today if missing)
+        
+        # Normalize reference_date -> date object (use today if missing)
         if isinstance(reference_date, str):
             try:
                 reference_dt = datetime.strptime(reference_date, "%Y-%m-%d")
@@ -1569,6 +1566,8 @@ async def create_event(event: EventCreate):
         # For each recurring day, pick the next occurrence on or after reference_date
         if recurring_days:
             series_uuid = event_data["UUID"]
+            created_ids = [str(result.inserted_id)]  # Include the first event we already inserted
+
             for day in recurring_days:
                 day_lower = day.lower().strip()
                 if day_lower not in DAY_INDEX:
@@ -1578,6 +1577,10 @@ async def create_event(event: EventCreate):
                 # days until next target (0..6). 0 => same day
                 days_until = (target_weekday - reference_date.weekday()) % 7
                 event_date = reference_date + timedelta(days=days_until)
+
+                # Skip if same as the first event we already created
+                if event_date == reference_date:
+                    continue
 
                 # Create a new event for that upcoming date
                 new_event = event_data.copy()
@@ -1594,41 +1597,24 @@ async def create_event(event: EventCreate):
 
                 try:
                     print(f"[RECURRING CREATE] Preparing to insert recurring event -> day: {day.capitalize()}, date: {event_date.isoformat()}, eventName: {new_event.get('Event Name') or new_event.get('eventName')}")
-                    print(f"[RECURRING CREATE] New event _id (pre-insert): {str(new_event['_id'])}, UUID: {series_uuid}")
                 except Exception as _log_err:
                     print(f"[RECURRING CREATE] Debug log error: {_log_err}")
 
-                result = await events_collection.insert_one(new_event)
-                # Log DB result for debugging (inserted id and created date)
-                try:
-                    inserted_id = result.inserted_id if result and hasattr(result, "inserted_id") else None
-                    print(f"[RECURRING CREATE] Inserted recurring event -> _id: {inserted_id}, date: {event_date.isoformat()}, eventName: {new_event.get('Event Name') or new_event.get('eventName')}")
-                except Exception as _log_err:
-                    print(f"[RECURRING CREATE] Post-insert log error: {_log_err}")
+                recurring_result = await events_collection.insert_one(new_event)
+                created_ids.append(str(recurring_result.inserted_id))
 
-                created_ids.append(str(result.inserted_id))
-
+            # Fetch the first created event for response
+            created_event = await events_collection.find_one({"_id": result.inserted_id})
+            
             return {
                 "success": True,
-                "message": "Recurring events created successfully (next occurrences)",
+                "message": "Recurring events created successfully",
                 "created_event_ids": created_ids,
-                "count": len(created_ids)
+                "count": len(created_ids),
+                "event": {**created_event, "_id": str(created_event["_id"])} if created_event else None
             }
 
         # ELSE → Single event
-        created_event = await events_collection.find_one({"_id": result.inserted_id})
-
-        return {
-            "success": True,
-            "message": "Event created successfully",
-            "id": str(result.inserted_id),
-            "event": {**created_event, "_id": str(created_event["_id"])}
-        }
-
-        # 4. Save to Database
-        print("Saving eventLeaderEmail:", event_data.get("eventLeaderEmail"))
-
-        result = await events_collection.insert_one(event_data)
         created_event = await events_collection.find_one({"_id": result.inserted_id})
         
         return {
@@ -1640,9 +1626,9 @@ async def create_event(event: EventCreate):
 
     except Exception as e:
         print(f"Error creating event: {str(e)}")
-        if isinstance(e, HTTPException): raise e
+        if isinstance(e, HTTPException): 
+            raise e
         raise HTTPException(status_code=500, detail=str(e))
-
 
 def convert_event_for_display(event):
     """
