@@ -2410,9 +2410,13 @@ async def get_other_events(
                     "last_attendance_count": e.get("last_attendance_count", 0),
                     "last_decisions_count": e.get("last_decisions_count", 0),
                     "last_attendance_breakdown": e.get("last_attendance_breakdown", {}),
+                    "is_overdue": event_date < today and ev_status not in ["complete", "closed", "cancelled", "did_not_meet"],
                     "_sort_date": exact_date_str,
                 }
-
+                
+                if e.get("is_active") is False:
+                    continue
+                
                 results.append(result_item)
 
             except Exception as inner_err:
