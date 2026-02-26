@@ -7053,6 +7053,71 @@ async def get_people(
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+@app.get("/people/search-fast")
+async def search_people_fast(
+    query: str = Query(..., min_length=2),
+    limit: int = Query(25, le=50)
+):
+    """
+    FAST search endpoint for autocomplete - optimized for signup form
+    Uses simple regex matching and returns minimal fields
+    """
+    try:
+        if not query or len(query) < 2:
+            return {"results": []}
+       
+        # Simple regex search on name fields - much faster than complex queries
+        search_regex = {"$regex": query.strip(), "$options": "i"}
+       
+        # Only fetch essential fields for autocomplete
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Phone": 1,
+            "Leader @1": 1,
+            "Leader @12": 1,
+            "Leader @144": 1,
+            "Leader @1728": 1
+        }
+       
+        cursor = people_collection.find({
+            "$or": [
+                {"Name": search_regex},
+                {"Surname": search_regex},
+                {"Email": search_regex},
+                {"$expr": {
+                    "$regexMatch": {
+                        "input": {"$concat": ["$Name", " ", "$Surname"]},
+                        "regex": query.strip(),
+                        "options": "i"
+                    }
+                }}
+            ]
+        }, projection).limit(limit)
+       
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+       
+        return {"results": results}
+       
+    except Exception as e:
+        print(f"Error in fast search: {e}")
+        return {"results": []}
+       
+
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
     """
@@ -7581,70 +7646,6 @@ async def delete_person_with_cache_invalidation(
     except Exception as e:
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/people/search-fast")
-async def search_people_fast(
-    query: str = Query(..., min_length=2),
-    limit: int = Query(25, le=50)
-):
-    """
-    FAST search endpoint for autocomplete - optimized for signup form
-    Uses simple regex matching and returns minimal fields
-    """
-    try:
-        if not query or len(query) < 2:
-            return {"results": []}
-       
-        # Simple regex search on name fields - much faster than complex queries
-        search_regex = {"$regex": query.strip(), "$options": "i"}
-       
-        # Only fetch essential fields for autocomplete
-        projection = {
-            "_id": 1,
-            "Name": 1,
-            "Surname": 1,
-            "Email": 1,
-            "Phone": 1,
-            "Leader @1": 1,
-            "Leader @12": 1,
-            "Leader @144": 1,
-            "Leader @1728": 1
-        }
-       
-        cursor = people_collection.find({
-            "$or": [
-                {"Name": search_regex},
-                {"Surname": search_regex},
-                {"Email": search_regex},
-                {"$expr": {
-                    "$regexMatch": {
-                        "input": {"$concat": ["$Name", " ", "$Surname"]},
-                        "regex": query.strip(),
-                        "options": "i"
-                    }
-                }}
-            ]
-        }, projection).limit(limit)
-       
-        results = []
-        async for person in cursor:
-            results.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
-            })
-       
-        return {"results": results}
-       
-    except Exception as e:
-        print(f"Error in fast search: {e}")
-        return {"results": []}
 
 @app.get("/people/all-minimal")
 async def get_all_people_minimal():
