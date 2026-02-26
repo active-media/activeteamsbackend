@@ -2397,6 +2397,8 @@ async def get_other_events(
 
                     "_sort_date": exact_date_str,
                 }
+                if e.get("is_active","") == False:
+                    continue
 
                 results.append(result_item)
 
