@@ -41,7 +41,7 @@ class Attendee(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     decision: Optional[str] = None
-    
+    priceName: Optional[str] = None
     priceTier: Optional[str] = None
     price: Optional[float] = None
     ageGroup: Optional[str] = None
@@ -50,10 +50,10 @@ class Attendee(BaseModel):
     paid: Optional[float] = None
     owing: Optional[float] = None
 
-    @field_validator("fullName", mode="before")
-    def set_fullname(cls, v, info):
-        if not v and info.data.get("name"):
-            return info.data.get("name")
+    @field_validator("priceName", mode="before")
+    def set_price_name(cls, v, info):
+        if not v and info.data.get("priceTier"):
+            return info.data.get("priceTier")
         return v
 
 # ===== IMPROVED AttendanceSubmission Model =====
