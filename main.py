@@ -27,7 +27,7 @@ from urllib.parse import unquote
 import traceback
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
-
+from pydantic import BaseModel
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 app = FastAPI()
@@ -37,7 +37,8 @@ app.add_middleware(
     allow_origins=[
         "https://teams.theactivechurch.org",
         "http://localhost:8000",
-        "http://localhost:5173",  
+        "http://localhost:5173",
+        "http://localhost:5174",
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com"
@@ -7071,6 +7072,71 @@ async def get_people(
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+@app.get("/people/search-fast")
+async def search_people_fast(
+    query: str = Query(..., min_length=2),
+    limit: int = Query(25, le=50)
+):
+    """
+    FAST search endpoint for autocomplete - optimized for signup form
+    Uses simple regex matching and returns minimal fields
+    """
+    try:
+        if not query or len(query) < 2:
+            return {"results": []}
+       
+        # Simple regex search on name fields - much faster than complex queries
+        search_regex = {"$regex": query.strip(), "$options": "i"}
+       
+        # Only fetch essential fields for autocomplete
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Phone": 1,
+            "Leader @1": 1,
+            "Leader @12": 1,
+            "Leader @144": 1,
+            "Leader @1728": 1
+        }
+       
+        cursor = people_collection.find({
+            "$or": [
+                {"Name": search_regex},
+                {"Surname": search_regex},
+                {"Email": search_regex},
+                {"$expr": {
+                    "$regexMatch": {
+                        "input": {"$concat": ["$Name", " ", "$Surname"]},
+                        "regex": query.strip(),
+                        "options": "i"
+                    }
+                }}
+            ]
+        }, projection).limit(limit)
+       
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+       
+        return {"results": results}
+       
+    except Exception as e:
+        print(f"Error in fast search: {e}")
+        return {"results": []}
+       
+
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
     """
@@ -7600,70 +7666,6 @@ async def delete_person_with_cache_invalidation(
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/search-fast")
-async def search_people_fast(
-    query: str = Query(..., min_length=2),
-    limit: int = Query(25, le=50)
-):
-    """
-    FAST search endpoint for autocomplete - optimized for signup form
-    Uses simple regex matching and returns minimal fields
-    """
-    try:
-        if not query or len(query) < 2:
-            return {"results": []}
-       
-        # Simple regex search on name fields - much faster than complex queries
-        search_regex = {"$regex": query.strip(), "$options": "i"}
-       
-        # Only fetch essential fields for autocomplete
-        projection = {
-            "_id": 1,
-            "Name": 1,
-            "Surname": 1,
-            "Email": 1,
-            "Phone": 1,
-            "Leader @1": 1,
-            "Leader @12": 1,
-            "Leader @144": 1,
-            "Leader @1728": 1
-        }
-       
-        cursor = people_collection.find({
-            "$or": [
-                {"Name": search_regex},
-                {"Surname": search_regex},
-                {"Email": search_regex},
-                {"$expr": {
-                    "$regexMatch": {
-                        "input": {"$concat": ["$Name", " ", "$Surname"]},
-                        "regex": query.strip(),
-                        "options": "i"
-                    }
-                }}
-            ]
-        }, projection).limit(limit)
-       
-        results = []
-        async for person in cursor:
-            results.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
-            })
-       
-        return {"results": results}
-       
-    except Exception as e:
-        print(f"Error in fast search: {e}")
-        return {"results": []}
-
 @app.get("/people/all-minimal")
 async def get_all_people_minimal():
     """
@@ -7909,6 +7911,47 @@ async def create_task_type(task: TaskTypeIn):
         return task_type_serializer(created)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+class TaskTypeUpdate(BaseModel):
+    name: str
+
+@app.put("/tasktypes/{tasktype_id}")
+async def update_task_type(tasktype_id: str, update_data: TaskTypeUpdate):
+    try:
+        oid = ObjectId(tasktype_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+    updated = await tasktypes_collection.find_one_and_update(
+        {"_id": oid},
+        {"$set": {"name": update_data.name.strip()}},
+        return_document=True  # important – return the updated doc
+    )
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Task type not found")
+
+    # Convert ObjectId to string for frontend
+    updated["_id"] = str(updated["_id"])
+    return {"message": "Task type updated", "taskType": updated}
+
+
+@app.delete("/tasktypes/{tasktype_id}")
+async def delete_task_type(tasktype_id: str):
+    try:
+        oid = ObjectId(tasktype_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+    deleted = await tasktypes_collection.find_one_and_delete(
+        {"_id": oid}
+    )
+    print(deleted)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task type not found")
+
+    return {"message": "Task type deleted successfully"}       
 
 # Helper to convert ObjectId to string
 def serialize_doc(doc):
