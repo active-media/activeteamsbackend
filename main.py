@@ -1375,7 +1375,6 @@ def normalize_time(time_value: str) -> str:
         return time_value
 
     try:
-        # Defensive: ISO string sent accidentally
         if "T" in time_value:
             time_value = time_value.split("T")[1][:5]
 
@@ -1447,7 +1446,6 @@ async def create_event(event: EventCreate):
         if not event_type_name:
             raise HTTPException(status_code=400, detail="eventTypeName is required")
 
-        # 1. Handle Built-in CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
@@ -1469,7 +1467,6 @@ async def create_event(event: EventCreate):
             if not event_type:
                 raise HTTPException(status_code=400, detail=f"Event type '{event_type_name}' not found")
             
-            # Use Master Settings from the Event Type record
             event_data["eventTypeId"] = event_type.get("UUID")
             event_data["eventTypeName"] = event_type.get("name")
             event_data["isGlobal"] = event_type.get("isGlobal", False)
@@ -1507,8 +1504,8 @@ async def create_event(event: EventCreate):
             event_data["day"] = recurring_days[0]
 
         # Leader Fields
-        # event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
-        event_data.pop("eventLeader", None)
+        event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
+        # event_data.pop("eventLeader", None)
         if event_data.get("hasPersonSteps"):
             event_data.setdefault("leader1", "")
             event_data.setdefault("leader12", "")
@@ -1562,12 +1559,11 @@ async def create_event(event: EventCreate):
                 if day_lower not in DAY_INDEX:
                     continue
 
-                target_weekday = DAY_INDEX[day_lower]  # 0=Mon .. 6=Sun
+                target_weekday = DAY_INDEX[day_lower] 
                 # days until next target (0..6). 0 => same day
                 days_until = (target_weekday - reference_date.weekday()) % 7
                 event_date = reference_date + timedelta(days=days_until)
 
-                # Skip if same as the first event we already created
                 if event_date == reference_date:
                     continue
 
@@ -1576,9 +1572,7 @@ async def create_event(event: EventCreate):
                 new_event["_id"] = ObjectId()
                 new_event["UUID"] = series_uuid
                 new_event["day"] = day.capitalize()
-                # store as ISO date string (YYYY-MM-DD) to match other code paths
                 new_event["date"] = event_date.isoformat()
-                # Also set Date Of Event in datetime-ish form for compatibility
                 try:
                     new_event["Date Of Event"] = datetime.combine(event_date, datetime.min.time()).isoformat() + "Z"
                 except Exception:
@@ -1603,7 +1597,6 @@ async def create_event(event: EventCreate):
                 "event": {**created_event, "_id": str(created_event["_id"])} if created_event else None
             }
 
-        # ELSE → Single event
         created_event = await events_collection.find_one({"_id": result.inserted_id})
         
         return {
@@ -1633,8 +1626,6 @@ def convert_event_for_display(event):
         if sast_dt:
             event['display_date'] = format_display_date(sast_dt)
     
-    # Times are already in SAST format (HH:MM), no conversion needed
-    # Just ensure both fields are populated
     if event.get('Time') and not event.get('time'):
         event['time'] = event['Time']
     elif event.get('time') and not event.get('Time'):
