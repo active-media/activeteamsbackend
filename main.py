@@ -1077,12 +1077,14 @@ async def login(user: UserLogin):
     }
 
 @app.post("/forgot-password")
+
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     logger.info(f"Forgot password requested for email: {payload.email}")
    
     # Find the user by email
     user = await users_collection.find_one({"email": payload.email})
-   
+    
+    # Not user
     if not user:
         logger.info(f"Forgot password - email not found: {payload.email}")
         return {"message": "If your email exists, a reset link has been sent."}
