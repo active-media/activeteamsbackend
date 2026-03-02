@@ -1225,8 +1225,8 @@ def generate_current_week_instances(event: dict) -> list:
     if isinstance(recurring_days, str):
         recurring_days = [recurring_days] if recurring_days else []
     
-    # Need at least 2 days to be recurring
-    if len(recurring_days) <= 1:
+    # Need at least 1 day to be recurring
+    if len(recurring_days) < 1:
         return instances
     
     # Day name to weekday number
@@ -2254,7 +2254,8 @@ async def get_other_events(
 
                 if not event_date:
                     continue
-
+                if event_date > today:
+                    continue                
                 # Date range filter
                 if event_date < start_dt or event_date > end_dt:
                     continue
