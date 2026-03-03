@@ -2008,7 +2008,7 @@ async def get_cell_events(
                         "date": exact_date,
                         "display_date": instance_date.strftime("%d - %m - %Y"),
                         "location": event.get("Location") or event.get("location", ""),
-                        "attendees": attendees,
+                        "attendees": attendees if event_status == "complete" else [],
                         "persistent_attendees": event.get("persistent_attendees", []),
                         "hasPersonSteps": True,
                         "status": event_status,
@@ -2221,7 +2221,7 @@ async def get_other_events(
 
         results = []
 
-        for e in raw_events:
+        for e in events:
             try:
                 if e.get("is_active", True) == False:
                     continue
@@ -2352,7 +2352,7 @@ async def get_other_events(
                             "phone": p.get("phone", ""),
                             "leader12": p.get("leader12", ""),
                             "leader144": p.get("leader144", ""),
-                            # ✅ Preserve ticket fields
+                            #  Preserve ticket fields
                             "priceName": p.get("priceName", ""),
                             "price": p.get("price", 0),
                             "ageGroup": p.get("ageGroup", ""),
@@ -2565,7 +2565,6 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             'total_attendance'   
         ]
         
-        # Other fields - but skip protected ones
         for key, value in event_data.items():
             if key not in protected_fields:
                 update_fields[key] = value
@@ -4361,7 +4360,7 @@ async def get_global_events(
                 continue
        
         print(f"Processed {len(processed_events)} global events after filtering")
-        print(f"🆕 New events since last update: {new_events_count}")
+        print(f" New events since last update: {new_events_count}")
        
         
         processed_events.sort(key=lambda x: x['date'], reverse=True)
@@ -5406,7 +5405,6 @@ async def get_leader_at_1_for_leader_at_144(leader_at_144_name: str) -> str:
    
     print(f"Getting Leader at 1 for Leader @144: {leader_at_144_name}")
    
-    #  Try to find the person by Name (their own record)
     person = await people_collection.find_one({
         "$or": [
             {"Name": {"$regex": f"^{leader_at_144_name}$", "$options": "i"}},
@@ -5946,7 +5944,7 @@ async def submit_attendance(
         except:
             manual_headcount = 0
         
-        # ✅ persistent_attendees_dict now preserves ticket fields
+        #  persistent_attendees_dict now preserves ticket fields
         persistent_attendees_dict = []
         for attendee in persistent_attendees:
             if isinstance(attendee, dict):
@@ -6068,7 +6066,7 @@ async def submit_attendance(
                 "total": total_decisions,
                 "date": exact_date_str,
             }
-            # ✅ last_attendance_data also gets ticket fields via checked_in_attendees
+            #  last_attendance_data also gets ticket fields via checked_in_attendees
             cell_update_fields["last_attendance_data"] = {
                 "attendees": checked_in_attendees,
                 "count": weekly_attendance,
@@ -6077,7 +6075,7 @@ async def submit_attendance(
             }
         
         if persistent_attendees_dict:
-            # ✅ Top-level persistent_attendees now has ticket fields too
+            #  Top-level persistent_attendees now has ticket fields too
             cell_update_fields["persistent_attendees"] = persistent_attendees_dict
             cell_update_fields["total_associated_count"] = len(persistent_attendees_dict)
         
@@ -6179,11 +6177,15 @@ async def get_persistent_attendees(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        if not ObjectId.is_valid(event_id):
+        #  Handle composite cell event IDs like "67abc123_2025-11-30"
+        actual_event_id = event_id.split("_")[0] if "_" in event_id else event_id
+        date_from_id = event_id.split("_")[1] if "_" in event_id else None
+
+        if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
         
         event = await events_collection.find_one(
-            {"_id": ObjectId(event_id)},
+            {"_id": ObjectId(actual_event_id)},  #  Use actual_event_id
             {
                 "persistent_attendees": 1,
                 "Event Name": 1,
@@ -6200,7 +6202,6 @@ async def get_persistent_attendees(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        # Clean persistent attendees — preserve ALL fields including ticket data
         raw_persistent = event.get("persistent_attendees", [])
         cleaned = []
         for p in raw_persistent:
@@ -6219,37 +6220,36 @@ async def get_persistent_attendees(
                     "paymentMethod": p.get("paymentMethod", ""),
                 })
         
-        # Find checked-in attendees from attendance map
-        # These have the most accurate ticket data from when they were checked in
         attendance_map = event.get("attendance", {})
-        event_date = event.get("date", "")
 
-        # Normalise date to YYYY-MM-DD string
-        if isinstance(event_date, datetime):
-            event_date = event_date.date().isoformat()
-        elif isinstance(event_date, str) and "T" in event_date:
-            event_date = event_date.split("T")[0]
+        #  Priority: use date extracted from composite ID, then fall back to event's date field
+        if date_from_id:
+            event_date = date_from_id
+        else:
+            event_date = event.get("date", "")
+            if isinstance(event_date, datetime):
+                event_date = event_date.date().isoformat()
+            elif isinstance(event_date, str) and "T" in event_date:
+                event_date = event_date.split("T")[0]
 
         checked_in_attendees = []
         headcount = 0
         attendance_status = event.get("status", "incomplete")
 
         if isinstance(attendance_map, dict) and attendance_map:
-            # Try exact date key first
             date_entry = attendance_map.get(event_date, {})
-            
-            # Fall back to most recent entry
-            if not date_entry:
-                keys = sorted(attendance_map.keys(), reverse=True)
-                if keys:
-                    date_entry = attendance_map.get(keys[0], {})
-            
-            if isinstance(date_entry, dict):
+            print(f"🔍 event_date looking for: {event_date}")
+            print(f"🔍 attendance_map keys: {list(attendance_map.keys())}")
+            print(f"🔍 date_entry found: {bool(date_entry)}")
+            print(f"🔍 attendance_status: {attendance_status}")
+
+            #  NO FALLBACK - if no entry for today's date, it's incomplete
+
+            if isinstance(date_entry, dict) and date_entry:
                 raw_attendees = date_entry.get("attendees", [])
                 headcount = date_entry.get("total_headcounts", 0)
-                attendance_status = date_entry.get("status", attendance_status)
-                
-                # Clean checked-in attendees — preserve ticket fields
+                attendance_status = date_entry.get("status", "incomplete")
+
                 for a in raw_attendees:
                     if isinstance(a, dict):
                         checked_in_attendees.append({
@@ -6262,14 +6262,16 @@ async def get_persistent_attendees(
                             "leader144": a.get("leader144", ""),
                             "checked_in": True,
                             "decision": a.get("decision", ""),
-                            # Ticket fields
                             "priceName": a.get("priceName", ""),
                             "price": a.get("price", 0),
                             "ageGroup": a.get("ageGroup", ""),
                             "paymentMethod": a.get("paymentMethod", ""),
                         })
-
-        return {
+            else:
+                attendance_status = "incomplete"
+                checked_in_attendees = []
+                headcount = 0
+                return {
             "persistent_attendees": cleaned,
             "checked_in_attendees": checked_in_attendees,
             "attendance_status": attendance_status,
@@ -6282,7 +6284,7 @@ async def get_persistent_attendees(
     except Exception as e:
         print(f"Error getting persistent attendees: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(
     event_id: str = Path(...),
@@ -6496,7 +6498,6 @@ async def get_leader_cells(email: str):
     - Leader @144 sees their own cells + their Leader @12 + Leader @1
     """
     try:
-        # STEP 1: Find the user in the people database
         person = await people_collection.find_one({"Email": {"$regex": f"^{email}$", "$options": "i"}})
         if not person:
             return {"error": "Person not found", "email": email}
@@ -6504,7 +6505,6 @@ async def get_leader_cells(email: str):
         user_name = f"{person.get('Name','')} {person.get('Surname','')}".strip()
         user_gender = (person.get("Gender") or "").lower().strip()
 
-        # Helper function to get Leader @1 based on gender
         async def leader_at_1_for(name: str) -> str:
             if not name:
                 return ""
@@ -6956,42 +6956,40 @@ def format_user_response(user):
         "profile_picture": user.get("profile_picture", ""),
     }
 
-# Debug endpoint
-@app.put("/profile/{user_id}/debug")
-async def debug_profile_update(
-    user_id: str,
-    request: Request,
-    current_user: dict = Depends(get_current_user)
-):
-    """Debug endpoint to see what's happening"""
-    try:
-        body = await request.body()
-        body_str = body.decode('utf-8')
+# @app.put("/profile/{user_id}/debug")
+# async def debug_profile_update(
+#     user_id: str,
+#     request: Request,
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """Debug endpoint to see what's happening"""
+#     try:
+#         body = await request.body()
+#         body_str = body.decode('utf-8')
        
-        return {
-            "message": "Debug info",
-            "user_id_from_url": user_id,
-            "user_id_from_token": current_user.get("user_id"),
-            "authorized": current_user.get("user_id") == user_id,
-            "raw_body": body_str,
-            "current_user_email": current_user.get("email")
-        }
-    except Exception as e:
-        return {"error": str(e)}
+#         return {
+#             "message": "Debug info",
+#             "user_id_from_url": user_id,
+#             "user_id_from_token": current_user.get("user_id"),
+#             "authorized": current_user.get("user_id") == user_id,
+#             "raw_body": body_str,
+#             "current_user_email": current_user.get("email")
+#         }
+#     except Exception as e:
+#         return {"error": str(e)}
 
-# Test endpoint
-@app.get("/profile/{user_id}/test")
-async def test_profile_access(
-    user_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Test if profile access works"""
-    return {
-        "message": "Profile test",
-        "user_id": user_id,
-        "current_user": current_user.get("user_id"),
-        "authorized": current_user.get("user_id") == user_id
-    }
+# @app.get("/profile/{user_id}/test")
+# async def test_profile_access(
+#     user_id: str,
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """Test if profile access works"""
+#     return {
+#         "message": "Profile test",
+#         "user_id": user_id,
+#         "current_user": current_user.get("user_id"),
+#         "authorized": current_user.get("user_id") == user_id
+#     }
    
 
 @app.post("/users/{user_id}/avatar")
