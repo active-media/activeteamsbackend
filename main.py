@@ -84,7 +84,7 @@ consolidations_collection = db.get_collection("consolidations")
 def get_database_client():
     """Return a Mongo client instance compatible with existing `db` usage."""
     try:
-        # Motor/MongoDB async DB should expose client
+        # Motor/MongoDB async DB should expose Client
         client = getattr(db, "client", None)
         if client:
             return client
