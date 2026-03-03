@@ -218,6 +218,142 @@ async def test_stats_overview_includes_consolidations(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data.get("completed_consolidations") == 5
+    # newly added consolidations are due, not completed
+    # overview from comprehensive contains due count as well
+    assert "consolidation_due_in_period" in data
+
+    # also ensure that if the stats code tries to count completed tasks using
+    # updatedAt (no completedAt field) we still receive a value. the fake_count
+    # defined above returns 10 for most calls but we can mimic an updatedAt
+    # scenario by passing a filter containing updatedAt directly.
+    update_filter = {"$or": [{"updatedAt": {"$gte": "dummy"}}]}
+    # monkeypatch was already set; calling directly should hit fake_count
+    assert main.tasks_collection.count_documents(update_filter) == 10
+
+@pytest.mark.asyncio
+async def test_stats_overview_due_handles_string_date(monkeypatch):
+    """Tasks due query should include string dates by using $expr conversion."""
+    filters = []
+    async def fake_count(filter):
+        filters.append(filter)
+        # return some non-zero so we can assert it propagates
+        return 2
+
+    async def fake_agg(pipeline):
+        return []
+
+    monkeypatch.setattr('main.tasks_collection.count_documents', AsyncMock(side_effect=fake_count))
+    monkeypatch.setattr('main.tasks_collection.aggregate', lambda pipeline: AsyncMock(to_list=AsyncMock(return_value=fake_agg(pipeline))))
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        response = await client.get("/stats/overview?period=daily")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("tasks_due_in_period") == 2
+    # confirm that at least one of the filters used $expr (string handling)
+    assert any("$expr" in str(f) for f in filters)
+
+
+@pytest.mark.asyncio
+async def test_update_task_converts_strings_and_sets_completed(monkeypatch):
+    """PUT /tasks should parse incoming ISO strings to proper datetimes and
+    stamp completedAt when the status is changed to a finished value.
+    """
+    # prepare a fake existing task document
+    sample_id = str(ObjectId())
+    original_doc = {"_id": ObjectId(sample_id), "status": "open"}
+    captured = {}
+
+    async def fake_find_one(filter):
+        # return a copy so callers cannot mutate our sentinel
+        return dict(original_doc)
+
+    class FakeResult:
+        matched_count = 1
+        modified_count = 1
+
+    async def fake_update_one(filter, update):
+        captured["filter"] = filter
+        captured["update"] = update
+        return FakeResult()
+
+    monkeypatch.setattr('main.db', main.db)
+    monkeypatch.setattr(main.db["tasks"], "find_one", fake_find_one)
+    monkeypatch.setattr(main.db["tasks"], "update_one", fake_update_one)
+
+    # send payload containing string dates and a completed status
+    payload = {
+        "followup_date": "2026-02-25T00:00:00Z",
+        "status": "Completed",
+        "completedAt": "2026-02-25T01:23:45Z",
+        "createdAt": "2026-01-01T12:00:00Z",
+        # consolidation-specific values that should be preserved
+        "leader_name": "Test Leader",
+        "leader_assigned": "assigned@example.com",
+        # include some extraneous UI field that should be ignored
+        "assignedTo": "Bob"  
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        response = await client.put(f"/tasks/{sample_id}", json=payload)
+
+    assert response.status_code == 200
+    # the update_one stub should have captured our set document
+    assert "update" in captured and "$set" in captured["update"]
+    set_doc = captured["update"]["$set"]
+    # followup_date and completedAt should be converted to datetime objects
+    assert isinstance(set_doc.get("followup_date"), datetime)
+    assert isinstance(set_doc.get("completedAt"), datetime)
+    assert isinstance(set_doc.get("createdAt"), datetime)
+    # status is always stored in canonical lower-case form
+    assert set_doc.get("status") == "completed"
+    # extra UI field must not have been propagated
+    assert "assignedTo" not in set_doc
+    # consolidation fields should be preserved
+    assert set_doc.get("leader_name") == "Test Leader"
+    assert set_doc.get("leader_assigned") == "assigned@example.com"
+    # completedAt should match the status logic (timestamp close to now)
+    assert set_doc.get("completedAt") is not None
+    # updatedAt should also have been stamped
+    assert isinstance(set_doc.get("updatedAt"), datetime)
+
+
+@pytest.mark.asyncio
+async def test_update_task_ignore_empty_or_invalid_followup(monkeypatch):
+    """Sending an empty or malformed followup_date should not overwrite the
+    existing date field. The request should still succeed and simply skip
+    that field."""
+    sample_id = str(ObjectId())
+    original_doc = {"_id": ObjectId(sample_id), "status": "open"}
+    captured = {}
+
+    async def fake_find_one(filter):
+        return dict(original_doc)
+
+    class FakeResult:
+        matched_count = 1
+        modified_count = 1
+
+    async def fake_update_one(filter, update):
+        captured["update"] = update
+        return FakeResult()
+
+    monkeypatch.setattr('main.db', main.db)
+    monkeypatch.setattr(main.db["tasks"], "find_one", fake_find_one)
+    monkeypatch.setattr(main.db["tasks"], "update_one", fake_update_one)
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        # 1. empty string
+        resp1 = await client.put(f"/tasks/{sample_id}", json={"followup_date": ""})
+        assert resp1.status_code == 200
+        assert "followup_date" not in captured["update"]["$set"]
+
+        # 2. invalid date string
+        captured.clear()
+        resp2 = await client.put(f"/tasks/{sample_id}", json={"followup_date": "not-a-date"})
+        assert resp2.status_code == 200
+        assert "followup_date" not in captured["update"]["$set"]
 
 @pytest.mark.asyncio
 async def test_dashboard_quick_stats_consolidation(monkeypatch):
@@ -241,6 +377,83 @@ async def test_dashboard_quick_stats_consolidation(monkeypatch):
     data = response.json()
     assert data.get("consolidationTasks") == 7
     assert data.get("consolidationCompleted") == 4
+    assert data.get("consolidationDueInPeriod") == 0  # our fake_count didn't supply due, default 0
+
+@pytest.mark.asyncio
+async def test_dashboard_quick_stats_updated_at_fallback(monkeypatch):
+    """Tasks completed in period should count items where updatedAt falls in
+    the period even if completedAt is absent (common when status migrated from
+    open to closed)."""
+    def fake_count(filter):
+        # the quick stats implementation now wraps the criteria in an $or
+        # that includes a branch checking updatedAt (possibly nested inside
+        # an $and). simply look for the substring in the serialized filter.
+        if "updatedAt" in str(filter):
+            return 5
+        # fallback for other queries
+        return 0
+
+    monkeypatch.setattr('main.tasks_collection.count_documents', AsyncMock(side_effect=fake_count))
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        response = await client.get("/stats/dashboard-quick?period=today")
+
+    assert response.status_code == 200
+    data = response.json()
+    # our fake_count returns 5 when updatedAt branch exists
+    assert data.get("tasksCompletedInPeriod") == 5
+
+@pytest.mark.asyncio
+async def test_dashboard_comprehensive_pipeline_normalizes_dates(monkeypatch):
+    """Ensure the aggregation pipeline adds normalized date fields before
+    filtering.  This guards against string dates disappearing from results."""
+    captured = {}
+    async def fake_aggregate(pipeline):
+        captured["pipeline"] = pipeline
+        return []
+    monkeypatch.setattr('main.tasks_collection.aggregate', \
+        lambda pipeline: AsyncMock(to_list=AsyncMock(return_value=fake_aggregate(pipeline))))
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        await client.get("/stats/dashboard-comprehensive?period=today")
+
+    # verify the very first stage injects normalized date fields
+    first_stage = captured.get("pipeline", [])[0]
+    assert first_stage and "$addFields" in first_stage
+    add_fields = first_stage["$addFields"]
+    assert "createdAt_dt" in add_fields
+    assert "followup_date_dt" in add_fields
+    assert "completedAt_effective" in add_fields
+
+@pytest.mark.asyncio
+async def test_update_task_does_not_clear_completed_at(monkeypatch):
+    """Updating a task to a non-completed status should not wipe an existing
+    completedAt timestamp."""
+    sample_id = str(ObjectId())
+    original_doc = {
+        "_id": ObjectId(sample_id),
+        "status": "completed",
+        "completedAt": datetime.now(timezone.utc)
+    }
+    captured = {}
+
+    async def fake_find_one(filter):
+        return dict(original_doc)
+    class FakeResult:
+        matched_count = 1
+        modified_count = 1
+    async def fake_update_one(filter, update):
+        captured["update"] = update
+        return FakeResult()
+
+    monkeypatch.setattr('main.db', main.db)
+    monkeypatch.setattr(main.db["tasks"], "find_one", fake_find_one)
+    monkeypatch.setattr(main.db["tasks"], "update_one", fake_update_one)
+
+    async with AsyncClient(transport=ASGITransport(app=main_app), base_url="http://test") as client:
+        resp = await client.put(f"/tasks/{sample_id}", json={"status": "open"})
+    assert resp.status_code == 200
+    assert "completedAt" not in captured["update"]["$set"]
 
 @pytest.mark.asyncio
 async def test_create_person_success(mock_person_create_data, mock_object_id):

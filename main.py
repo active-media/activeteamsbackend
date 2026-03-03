@@ -12,7 +12,7 @@ import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection
 from auth.email_utils import send_reset_email
-from typing import Optional, List,  Optional,  Dict
+from typing import Optional, List,  Optional,  Dict, Any
 from collections import Counter
 import logging
 import pytz
@@ -8143,64 +8143,66 @@ def serialize_doc(doc):
 # --- Update route ---
 @app.put("/tasks/{task_id}")
 async def update_task(task_id: str, updated_task: dict):
+    # helper that turns any ISO‑style string or naive datetime into a UTC
+    # timezone‑aware datetime instance.  Returns None for unparseable values.
     def parse_dt(value):
         if isinstance(value, datetime):
             return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
         if isinstance(value, str):
             cleaned = value.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(cleaned)
+            try:
+                dt = datetime.fromisoformat(cleaned)
+            except Exception:
+                return None
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
         return None
 
-        if "followup_date" in updated_task:
-            dt = parse_dt(updated_task["followup_date"])
-            if not dt:
-                raise HTTPException(status_code=400, detail="Invalid followup_date format")
-        update_data["followup_date"] = dt
-   
-    # Map frontend fields to backend fields
+    # validate id and load existing document early so we can refer to it below
+    if not ObjectId.is_valid(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    obj_id = ObjectId(task_id)
+    task = await db["tasks"].find_one({"_id": obj_id})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # build the update document only from fields we explicitly support;
+    # any extra UI-only properties will be ignored automatically.
+    update_data: dict = {}
+
+    # allow callers to supply completedAt/createdAt in case of migration
+    if "completedAt" in updated_task:
+        dt = parse_dt(updated_task.get("completedAt"))
+        if dt:
+            update_data["completedAt"] = dt
+    if "createdAt" in updated_task:
+        dt = parse_dt(updated_task.get("createdAt"))
+        if dt:
+            update_data["createdAt"] = dt
+
     if "name" in updated_task:
         update_data["name"] = updated_task["name"]
-   
     if "taskType" in updated_task:
         update_data["taskType"] = updated_task["taskType"]
-   
     if "contacted_person" in updated_task:
         update_data["contacted_person"] = updated_task["contacted_person"]
-   
+
     if "followup_date" in updated_task:
         raw_date = updated_task["followup_date"]
-        try:
-            if isinstance(raw_date, datetime):
-                if raw_date.tzinfo is None:
-                    raw_date = raw_date.replace(tzinfo=timezone.utc)
-                update_data["followup_date"] = raw_date
-            elif isinstance(raw_date, str) and raw_date:
-                # Parse ISO string → real datetime so MongoDB stores a BSON Date.
-                # A plain string field is INVISIBLE to the stats pipeline $match
-                # which uses $gte/$lte against Python datetime objects (BSON Dates).
-                # Storing it as a string means the task disappears from all stats
-                # date-range queries even though it exists in the collection.
-                parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                update_data["followup_date"] = parsed
-        except (ValueError, AttributeError) as e:
-            raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+        # only attempt conversion when a truthy value is provided; an empty
+        # string or None should leave the existing value untouched.
+        if raw_date:
+            dt = parse_dt(raw_date)
+            if dt:
+                update_data["followup_date"] = dt
+            # else: invalid value, ignore rather than raising; we don't want a
+            # bad client payload to wipe out a valid date or crash the request.
+        # if raw_date is falsy we simply don't include it in update_data
 
     if "status" in updated_task:
         new_status = updated_task["status"]
         update_data["status"] = new_status
-
-        # completedAt MUST be a real datetime object, not a string.
-        # The stats pipeline does: {"completedAt": {"$gte": start, "$lte": end}}
-        # where start/end are Python datetime objects → BSON Dates.
-        # If completedAt is a string, this comparison always fails silently
-        # and the task never appears in any "completed in period" count.
+        # automatically stamp completedAt when status becomes a finished value
         completed_statuses = {"completed", "complete", "done", "closed", "finished"}
-
         if isinstance(new_status, str) and new_status.strip().lower() in completed_statuses:
             update_data["completedAt"] = datetime.now(timezone.utc)
         else:
@@ -8209,132 +8211,371 @@ async def update_task(task_id: str, updated_task: dict):
     if "type" in updated_task:
         update_data["type"] = updated_task["type"]
 
-    # DO NOT allow assignedfor to be overwritten from the frontend.
-    # The frontend stores a normalized display name (e.g. "Nhlakanipho Madlanga")
-    # or the current user's email instead of the leader's email that was
-    # carefully resolved at task creation time. Overwriting it here would
-    # move the task to the wrong person's group in the stats pipeline,
-    # which groups by assignedfor to build the per-person breakdown.
-    # assignedfor should only be changed via a dedicated admin operation.
+    # support consolidation-specific fields when front-end includes them
+    if "leader_name" in updated_task:
+        update_data["leader_name"] = updated_task["leader_name"]
+    if "leader_assigned" in updated_task:
+        update_data["leader_assigned"] = updated_task["leader_assigned"]
+
+    # never permit assignedfor to be changed via the general endpoint
+    # (the frontend normally would not send it anyway)
 
     now = datetime.now(timezone.utc)
     update_data["updatedAt"] = now
 
-    # Backfill createdAt if the task is missing it.
-    # The stats $match uses createdAt as one of its three OR conditions.
-    # If createdAt is null or was stored as a string, the task can only
-    # be matched via followup_date or completedAt.
+    # backfill createdAt if the existing document lacks it
     if not task.get("createdAt"):
         update_data["createdAt"] = now
-   
-    # Update the task
+
+    # perform the update
     try:
-        result = await db["tasks"].update_one(
-            {"_id": obj_id},
-            {"$set": update_data}
-        )
-       
+        result = await db["tasks"].update_one({"_id": obj_id}, {"$set": update_data})
         if result.modified_count == 0:
-            # Check if task actually exists but nothing changed
             if result.matched_count > 0:
-                # Task exists but no changes were made
+                # nothing changed; return the current document
                 updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
                 return {"updatedTask": serialize_doc(updated_task_in_db)}
             else:
                 raise HTTPException(status_code=404, detail="Task not found")
-       
-        # Fetch and return the updated task
         updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
         return {"updatedTask": serialize_doc(updated_task_in_db)}
-       
     except Exception as e:
-        print(f"Error updating task: {str(e)}")  # Log the error
+        print(f"Error updating task: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 from collections import defaultdict
 
+# ---------- Helpers (resilient to messy DB) ----------
+COMPLETED_STATUSES = {"completed", "complete", "done", "closed", "finished"}
+OPEN_STATUSES = {"open", "incomplete", "overdue"}  # "overdue" often shown as label but status still open in some apps
+AWAITING_STATUSES = {"awaiting", "pending", "waiting"}
+
+
+def _to_lower(s: Any) -> str:
+    return str(s or "").strip().lower()
+
+
+def parse_any_dt(v: Any) -> Optional[datetime]:
+    """
+    Accepts:
+      - datetime (naive or aware)
+      - ISO string (with or without Z / timezone)
+    Returns tz-aware UTC datetime or None.
+    """
+    if v is None:
+        return None
+
+    if isinstance(v, datetime):
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v.astimezone(timezone.utc)
+
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            s = s.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    return None
+
+
+def get_field_any(doc: dict, *keys: str):
+    for k in keys:
+        if k in doc and doc[k] is not None:
+            return doc[k]
+    return None
+
+
+def is_consolidation_task(doc: dict) -> bool:
+    # Accept both markers
+    if bool(doc.get("is_consolidation_task")):
+        return True
+    if _to_lower(doc.get("taskType")) == "consolidation":
+        return True
+    return False
+
+
+def status_bucket(doc: dict) -> str:
+    s = _to_lower(doc.get("status"))
+    if s in COMPLETED_STATUSES:
+        return "completed"
+    if s in AWAITING_STATUSES:
+        return "awaiting"
+    # treat anything else as open by default (less rigid)
+    return "open"
+
+
+def effective_completed_at(doc: dict) -> Optional[datetime]:
+    """
+    If completedAt is missing, fall back to updatedAt for completed tasks.
+    This fixes Open -> Completed tasks that never got a completedAt field.
+    """
+    s = status_bucket(doc)
+    comp = parse_any_dt(get_field_any(doc, "completedAt", "completed_at"))
+    if comp:
+        return comp
+    if s == "completed":
+        upd = parse_any_dt(get_field_any(doc, "updatedAt", "updated_at"))
+        return upd
+    return None
+
+
+def serialize_safe(doc: dict) -> dict:
+    """
+    Use your project serialize_doc if available, else do minimal safe conversion.
+    """
+    try:
+        # If your main.py already has serialize_doc in scope, this will work
+        return serialize_doc(doc)  # type: ignore
+    except Exception:
+        out = dict(doc)
+        # ObjectId -> str (avoid import errors if ObjectId isn’t in scope here)
+        if "_id" in out:
+            out["_id"] = str(out["_id"])
+        return out
+
+
+def period_range(period: str) -> Dict[str, datetime]:
+    """
+    Returns UTC start/end for the requested period.
+    End is exclusive (cleaner math).
+    """
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if period == "today":
+        start = today_start
+        end = start + timedelta(days=1)
+
+    elif period == "thisWeek":
+        # Monday as start of week
+        start = today_start - timedelta(days=today_start.weekday())
+        end = start + timedelta(days=7)
+
+    elif period == "previousWeek":
+        end = today_start - timedelta(days=today_start.weekday())
+        start = end - timedelta(days=7)
+
+    elif period == "thisMonth":
+        start = today_start.replace(day=1)
+        # next month
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
+
+    elif period == "previousMonth":
+        this_month = today_start.replace(day=1)
+        # previous month start
+        if this_month.month == 1:
+            start = this_month.replace(year=this_month.year - 1, month=12)
+        else:
+            start = this_month.replace(month=this_month.month - 1)
+        end = this_month
+
+    else:
+        # default to today
+        start = today_start
+        end = start + timedelta(days=1)
+
+    return {"start": start, "end": end}
+
+
 @app.get("/stats/overview")
-async def get_stats_overview(period: str = "monthly"):
+async def get_stats_overview(
+    period: str = Query("monthly"),
+    current_user: dict = Depends(get_current_user)
+):
     """Get overall statistics for the dashboard with time period filtering"""
     try:
-        from datetime import datetime, timezone, timedelta
-        
-        # Calculate date range based on period
-        now = datetime.now(timezone.utc)
-        if period == "daily":
-            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        elif period == "weekly":
-            start_date = now - timedelta(days=now.weekday())
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = now
-        else:  # monthly
-            start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            if now.month == 12:
-                end_date = now.replace(year=now.year + 1, month=1, day=1)
+        # map legacy value for compatibility
+        if period == "monthly":
+            period = "thisMonth"
+
+        rng = period_range(period)
+        start = rng["start"]
+        end = rng["end"]
+
+        tasks_collection = db["tasks"]
+
+        # Performance note: we normalise in Python for correctness
+        projection = {
+            "_id": 1,
+            "name": 1,
+            "description": 1,
+            "taskType": 1,
+            "type": 1,
+            "priority": 1,
+            "status": 1,
+            "assignedfor": 1,
+            "assigned_to_email": 1,
+            "assigned_to_user_id": 1,
+            "leader_name": 1,
+            "leader_assigned": 1,
+            "contacted_person": 1,
+            "is_consolidation_task": 1,
+            "followup_date": 1,
+            "followupDate": 1,
+            "createdAt": 1,
+            "created_at": 1,
+            "updatedAt": 1,
+            "updated_at": 1,
+            "completedAt": 1,
+            "completed_at": 1,
+        }
+
+        cursor = tasks_collection.find({}, projection)
+        all_tasks: List[dict] = []
+
+        counts = {
+            "open": 0,
+            "awaiting": 0,
+            "completed": 0,
+            "open_consolidation": 0,
+            "completed_consolidation": 0,
+            "awaiting_consolidation": 0,
+            "tasks_due_in_period": 0,
+            "consolidation_due_in_period": 0,
+            "tasks_completed_in_period": 0,
+            "consolidation_completed_in_period": 0,
+        }
+
+        grouped: Dict[str, dict] = {}
+
+        async for t in cursor:
+            task = serialize_safe(t)
+
+            due_dt = parse_any_dt(get_field_any(t, "followup_date", "followupDate"))
+            created_dt = parse_any_dt(get_field_any(t, "createdAt", "created_at"))
+            updated_dt = parse_any_dt(get_field_any(t, "updatedAt", "updated_at"))
+            comp_eff = effective_completed_at(t)
+
+            bucket = status_bucket(t)
+            is_cons = is_consolidation_task(t)
+
+            due_in_period = bool(due_dt and start <= due_dt < end)
+            completed_in_period = bool(comp_eff and start <= comp_eff < end)
+
+            if bucket == "open":
+                counts["open"] += 1
+                if is_cons:
+                    counts["open_consolidation"] += 1
+            elif bucket == "awaiting":
+                counts["awaiting"] += 1
+                if is_cons:
+                    counts["awaiting_consolidation"] += 1
+            elif bucket == "completed":
+                counts["completed"] += 1
+                if is_cons:
+                    counts["completed_consolidation"] += 1
+
+            if due_in_period and bucket in {"open", "awaiting"}:
+                if is_cons:
+                    counts["consolidation_due_in_period"] += 1
+                else:
+                    counts["tasks_due_in_period"] += 1
+
+            if completed_in_period and bucket == "completed":
+                if is_cons:
+                    counts["consolidation_completed_in_period"] += 1
+                else:
+                    counts["tasks_completed_in_period"] += 1
+
+            task["followup_date"] = due_dt.isoformat() if due_dt else (task.get("followup_date") or None)
+            task["createdAt"] = created_dt.isoformat() if created_dt else (task.get("createdAt") or task.get("created_at") or None)
+            task["updatedAt"] = updated_dt.isoformat() if updated_dt else (task.get("updatedAt") or task.get("updated_at") or None)
+            task["completedAt"] = comp_eff.isoformat() if comp_eff else (task.get("completedAt") or None)
+
+            task["is_consolidation_task"] = is_cons
+            task["status_bucket"] = bucket
+            task["due_in_period"] = due_in_period
+            task["completed_in_period"] = completed_in_period
+
+            all_tasks.append(task)
+
+            key = (task.get("assignedfor") or task.get("assigned_to_email") or "unassigned").strip() if isinstance(task.get("assignedfor") or task.get("assigned_to_email") or "unassigned", str) else "unassigned"
+            if key not in grouped:
+                grouped[key] = {
+                    "assignedfor": key,
+                    "total_tasks": 0,
+                    "open_tasks": 0,
+                    "awaiting_tasks": 0,
+                    "completed_tasks": 0,
+                    "tasks_due_in_period": 0,
+                    "tasks_completed_in_period": 0,
+                    "open_consolidation": 0,
+                    "awaiting_consolidation": 0,
+                    "completed_consolidation": 0,
+                    "consolidation_due_in_period": 0,
+                    "consolidation_completed_in_period": 0,
+                    "tasks": [],
+                }
+
+            g = grouped[key]
+            g["total_tasks"] += 1
+            if bucket == "open":
+                g["open_tasks"] += 1
+                if is_cons:
+                    g["open_consolidation"] += 1
+            elif bucket == "awaiting":
+                g["awaiting_tasks"] += 1
+                if is_cons:
+                    g["awaiting_consolidation"] += 1
             else:
-                end_date = now.replace(month=now.month + 1, day=1)
+                g["completed_tasks"] += 1
+                if is_cons:
+                    g["completed_consolidation"] += 1
 
-        # Count completed tasks within the period (all types)
-        completed_tasks = await tasks_collection.count_documents({
-            "completedAt": {"$gte": start_date, "$lte": end_date},
-            "status": {"$in": ["completed", "Completed", "done", "closed"]}
-        })
-        
-        # Break down by task type. note that some consolidation tasks may not have
-        # a matching taskType string, so we include them via a second query below.
-        completed_by_type = await tasks_collection.aggregate([
-            {
-                "$match": {
-                    "completedAt": {"$gte": start_date, "$lte": end_date},
-                    "status": {"$in": ["completed", "Completed", "done", "closed"]}
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$taskType",
-                    "count": {"$sum": 1}
-                }
-            }
-        ]).to_list(length=None)
-        
-        # Convert to dict for easy access
-        task_breakdown = {}
-        for doc in completed_by_type:
-            raw = doc.get("_id")
-            key = (str(raw).strip().lower() if raw else "uncategorized")
-            task_breakdown[key] = task_breakdown.get(key, 0) + doc.get("count", 0)
+            if due_in_period and bucket in {"open", "awaiting"}:
+                if is_cons:
+                    g["consolidation_due_in_period"] += 1
+                else:
+                    g["tasks_due_in_period"] += 1
 
-        # Some consolidation tasks may have been flagged using the boolean field
-        # instead of having taskType == "consolidation" (case insensitive). Add
-        # those counts now so they are included in the breakdown and in the
-        # separate consolidation counters below.
-        extra_cons = await tasks_collection.count_documents({
-            "completedAt": {"$gte": start_date, "$lte": end_date},
-            "status": {"$in": ["completed", "Completed", "done", "closed"]},
-            "is_consolidation_task": True,
-            "taskType": {"$not": {"$regex": "^consolidation$", "$options": "i"}}
-        })
-        if extra_cons > 0:
-            task_breakdown["consolidation"] = task_breakdown.get("consolidation", 0) + extra_cons
+            if completed_in_period and bucket == "completed":
+                if is_cons:
+                    g["consolidation_completed_in_period"] += 1
+                else:
+                    g["tasks_completed_in_period"] += 1
 
-        # Count outstanding (incomplete) tasks
-        outstanding_tasks = await tasks_collection.count_documents({
-            "status": {"$nin": ["completed", "Completed", "closed", "done"]}
-        })
+            g["tasks"].append(task)
 
-        # ... rest of your stats code ...
+        grouped_tasks = sorted(grouped.values(), key=lambda x: x["assignedfor"])
+
+        overview = {
+            # Existing fields your UI already uses:
+            "tasks_due_in_period": counts["tasks_due_in_period"],
+            "consolidation_due_in_period": counts["consolidation_due_in_period"],
+
+            # New fields you asked for:
+            "open_tasks": counts["open"],
+            "awaiting_tasks": counts["awaiting"],
+            "completed_tasks": counts["completed"],
+            "open_consolidation_tasks": counts["open_consolidation"],
+            "awaiting_consolidation_tasks": counts["awaiting_consolidation"],
+            "completed_consolidation_tasks": counts["completed_consolidation"],
+
+            # Period completion:
+            "tasks_completed_in_period": counts["tasks_completed_in_period"],
+            "consolidation_completed_in_period": counts["consolidation_completed_in_period"],
+        }
 
         return {
-            "outstanding_tasks": outstanding_tasks,
-            "completed_tasks": completed_tasks,  # ✅ NEW
-            # note: consolidation count already includes any extra boolean-flagged
-            # tasks via the query above.
-            "completed_consolidations": task_breakdown.get("consolidation", 0),
-            "completed_calls": task_breakdown.get("call task", 0),
-            "completed_visits": task_breakdown.get("visit task", 0),
-            "task_breakdown": task_breakdown,
-            # ... rest of your return data
+            "overview": overview,
+            "allTasks": all_tasks,
+            "groupedTasks": grouped_tasks,
+            "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+            # Keep these for compatibility with your current Stats.jsx (it expects them)
+            "events": [],
+            "overdueCells": [],
+            "allUsers": [],
         }
     except Exception as e:
         print(f"Error in stats overview: {str(e)}")
@@ -10344,10 +10585,58 @@ async def get_dashboard_comprehensive(
                     "$or": [
                         {"followup_date": {"$gte": start, "$lte": end}},
                         {"completedAt": {"$gte": start, "$lte": end}},
-                        {"createdAt": {"$gte": start, "$lte": end}}
+                        {"createdAt": {"$gte": start, "$lte": end}},
+                        # fallback for tasks where completedAt might be missing but
+                        # the status was changed to a completed value during the
+                        # requested period.  updatedAt is used as a proxy so the
+                        # task doesn’t vanish entirely from the dashboard if an
+                        # earlier bug failed to populate completedAt.
+                        {
+                            "$and": [
+                                {"$in": [
+                                    {"$toLower": {"$ifNull": ["$status", ""]}},
+                                    ["completed", "done", "closed", "finished"]
+                                ]},
+                                {"updatedAt": {"$gte": start, "$lte": end}}
+                            ]
+                        },
+                        # also handle string-valued date fields by converting them
+                        # to BSON dates for comparison. this catches old or
+                        # malformed records where dates were saved as strings.
+                        {
+                            "$expr": {
+                                "$or": [
+                                    {
+                                        "$and": [
+                                            {"$ne": ["$followup_date", None]},
+                                            {"$eq": [{"$type": "$followup_date"}, "string"]},
+                                            {"$gte": [{"$toDate": "$followup_date"}, start]},
+                                            {"$lte": [{"$toDate": "$followup_date"}, end]}
+                                        ]
+                                    },
+                                    {
+                                        "$and": [
+                                            {"$ne": ["$completedAt", None]},
+                                            {"$eq": [{"$type": "$completedAt"}, "string"]},
+                                            {"$gte": [{"$toDate": "$completedAt"}, start]},
+                                            {"$lte": [{"$toDate": "$completedAt"}, end]}
+                                        ]
+                                    },
+                                    {
+                                        "$and": [
+                                            {"$ne": ["$createdAt", None]},
+                                            {"$eq": [{"$type": "$createdAt"}, "string"]},
+                                            {"$gte": [{"$toDate": "$createdAt"}, start]},
+                                            {"$lte": [{"$toDate": "$createdAt"}, end]}
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
                     ]
                 }
             },
+
             {
                 "$addFields": {
                     # Normalize type label so that any task flagged as a
@@ -10419,29 +10708,62 @@ async def get_dashboard_comprehensive(
                     "completed_in_period": {
                         "$cond": [
                             {
-                                "$and": [
-                                    {"$ne": ["$completedAt", None]},
-                                    {"$gte": ["$completedAt", start]},
-                                    {"$lte": ["$completedAt", end]},
+                                "$or": [
                                     {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
+                                        # usual case: the BSON completedAt falls in range
+                                        "$and": [
+                                            {"$ne": ["$completedAt", None]},
+                                            {"$gte": ["$completedAt", start]},
+                                            {"$lte": ["$completedAt", end]},
+                                            {
+                                                "$in": [
+                                                    {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                                    ["completed", "done", "closed", "finished"]
+                                                ]
+                                            },
+                                            {
+                                                "$not": {
+                                                    "$cond": [
+                                                        {
+                                                            "$and": [
+                                                                {"$ne": ["$taskType", None]},
+                                                                {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                            ]
+                                                        },
+                                                        True,
+                                                        False
+                                                    ]
+                                                }
+                                            }
                                         ]
                                     },
                                     {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                        # fallback when completedAt was never set: use
+                                        # updatedAt timestamp instead and trust the
+                                        # status field
+                                        "$and": [
+                                            {
+                                                "$in": [
+                                                    {"$toLower": {"$ifNull": ["$status", ""]}},
+                                                    ["completed", "done", "closed", "finished"]
+                                                ]
+                                            },
+                                            {"updatedAt": {"$gte": start, "$lte": end}},
+                                            {
+                                                "$not": {
+                                                    "$cond": [
+                                                        {
+                                                            "$and": [
+                                                                {"$ne": ["$taskType", None]},
+                                                                {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                            ]
+                                                        },
+                                                        True,
+                                                        False
                                                     ]
-                                                },
-                                                True,
-                                                False
-                                            ]
-                                        }
+                                                }
+                                            }
+                                        ]
                                     }
                                 ]
                             },
@@ -10453,10 +10775,24 @@ async def get_dashboard_comprehensive(
                     "is_due_in_period": {
                         "$cond": [
                             {
-                                "$and": [
-                                    {"$ne": ["$followup_date", None]},
-                                    {"$gte": ["$followup_date", start]},
-                                    {"$lte": ["$followup_date", end]}
+                                "$or": [
+                                    {
+                                        # normal datetime comparison
+                                        "$and": [
+                                            {"$ne": ["$followup_date", None]},
+                                            {"$gte": ["$followup_date", start]},
+                                            {"$lte": ["$followup_date", end]}
+                                        ]
+                                    },
+                                    {
+                                        # string stored date; try converting
+                                        "$and": [
+                                            {"$ne": ["$followup_date", None]},
+                                            {"$eq": [{"$type": "$followup_date"}, "string"]},
+                                            {"$gte": [{"$toDate": "$followup_date"}, start]},
+                                            {"$lte": [{"$toDate": "$followup_date"}, end]}
+                                        ]
+                                    }
                                 ]
                             },
                             True,
@@ -10801,15 +11137,44 @@ async def get_dashboard_quick_stats(
         })
 
         
+        # count tasks with a followup_date in the period; also include
+        # those where followup_date is stored as a string to avoid missing
+        # older/malformed records.
         tasks_due_in_period = await tasks_collection.count_documents({
-            "followup_date": {"$gte": start, "$lte": end}
+            "$or": [
+                {"followup_date": {"$gte": start, "$lte": end}},
+                {
+                    "$expr": {
+                        "$and": [
+                            {"$eq": [{"$type": "$followup_date"}, "string"]},
+                            {"$gte": [{"$toDate": "$followup_date"}, start]},
+                            {"$lte": [{"$toDate": "$followup_date"}, end]}
+                        ]
+                    }
+                }
+            ]
         })
 
         
+        # count tasks that were completed during the period. normally we
+        # rely on completedAt, but some older or malformed documents
+        # might never have that field populated even though the status
+        # changed. include an OR branch that checks updatedAt when
+        # status indicates completion so the task doesn’t vanish from all
+        # stats.
         tasks_completed_in_period = await tasks_collection.count_documents({
-            "completedAt": {"$gte": start, "$lte": end},
-            "status": {"$in": ["completed", "done", "closed", "finished"]},
-            "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
+            "$or": [
+                {
+                    "completedAt": {"$gte": start, "$lte": end},
+                    "status": {"$in": ["completed", "done", "closed", "finished"]},
+                    "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
+                },
+                {
+                    "status": {"$in": ["completed", "done", "closed", "finished"]},
+                    "updatedAt": {"$gte": start, "$lte": end},
+                    "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
+                }
+            ]
         })
 
         
@@ -10821,11 +11186,23 @@ async def get_dashboard_quick_stats(
         
         # consolidation queries now also look at is_consolidation_task for safety
         consolidation_completed_in_period = await tasks_collection.count_documents({
-            "completedAt": {"$gte": start, "$lte": end},
-            "status": {"$in": ["completed", "done", "closed", "finished"]},
             "$or": [
-                {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
-                {"is_consolidation_task": True}
+                {
+                    "completedAt": {"$gte": start, "$lte": end},
+                    "status": {"$in": ["completed", "done", "closed", "finished"]},
+                    "$or": [
+                        {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
+                        {"is_consolidation_task": True}
+                    ]
+                },
+                {
+                    "status": {"$in": ["completed", "done", "closed", "finished"]},
+                    "updatedAt": {"$gte": start, "$lte": end},
+                    "$or": [
+                        {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
+                        {"is_consolidation_task": True}
+                    ]
+                }
             ]
         })
 
@@ -10841,6 +11218,31 @@ async def get_dashboard_quick_stats(
             "$or": [
                 {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
                 {"is_consolidation_task": True}
+            ]
+        })
+
+        consolidation_due_in_period = await tasks_collection.count_documents({
+            "$and": [
+                {
+                    "$or": [
+                        {"followup_date": {"$gte": start, "$lte": end}},
+                        {
+                            "$expr": {
+                                "$and": [
+                                    {"$eq": [{"$type": "$followup_date"}, "string"]},
+                                    {"$gte": [{"$toDate": "$followup_date"}, start]},
+                                    {"$lte": [{"$toDate": "$followup_date"}, end]}
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "$or": [
+                        {"taskType": {"$regex": "^consolidation$", "$options": "i"}},
+                        {"is_consolidation_task": True}
+                    ]
+                }
             ]
         })
 
@@ -11051,6 +11453,7 @@ async def get_dashboard_quick_stats(
             "consolidationTasks": total_consolidation_tasks,
             "consolidationCompleted": total_consolidation_completed,
             "consolidationCompletedInPeriod": consolidation_completed_in_period,
+            "consolidationDueInPeriod": consolidation_due_in_period,
             "consolidationCompletionRate": (
                 round((total_consolidation_completed / total_consolidation_tasks * 100), 2)
                 if total_consolidation_tasks > 0 else 0
