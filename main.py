@@ -1478,17 +1478,12 @@ async def create_event(event: EventCreate):
 
         print(f"Using day value from frontend: {event_data.get('day')}")
         
-
         if event_data.get("time") or event_data.get("Time"):
             raw_time = event_data.get("time") or event_data.get("Time")
-
             print(f"Raw time received from frontend: {raw_time}")
-
             clean_time = normalize_time(raw_time)
-
             event_data["time"] = clean_time
             event_data["Time"] = clean_time
-
             print(f"Time stored as: {clean_time}")
 
         # 3. Clean up and Format Data
@@ -1502,7 +1497,6 @@ async def create_event(event: EventCreate):
         for key in ["userEmail", "email"]:
             event_data.pop(key, None)
 
-
         # Recurring Day Logic
         recurring_days = event_data.get("recurring_day", [])
         if isinstance(recurring_days, str):
@@ -1514,7 +1508,6 @@ async def create_event(event: EventCreate):
             event_data["day"] = event_data.get("day", "One-time")
         else:
             event_data["day"] = recurring_days[0]
-
 
         # Leader Fields
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
@@ -1545,13 +1538,8 @@ async def create_event(event: EventCreate):
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data["attendees"])
 
-        # ---- PLACE RECURRING LOGIC HERE ----
-
-        created_ids = []
-
+        # Normalize reference_date -> date object (use today if missing)
         reference_date = event_data.get("date")
-
-         # Normalize reference_date -> date object (use today if missing)
         if isinstance(reference_date, str):
             try:
                 reference_dt = datetime.strptime(reference_date, "%Y-%m-%d")
@@ -1569,6 +1557,8 @@ async def create_event(event: EventCreate):
         # For each recurring day, pick the next occurrence on or after reference_date
         if recurring_days:
             series_uuid = event_data["UUID"]
+            created_ids = []
+            
             for day in recurring_days:
                 day_lower = day.lower().strip()
                 if day_lower not in DAY_INDEX:
@@ -1616,18 +1606,6 @@ async def create_event(event: EventCreate):
             }
 
         # ELSE → Single event
-        created_event = await events_collection.find_one({"_id": result.inserted_id})
-
-        return {
-            "success": True,
-            "message": "Event created successfully",
-            "id": str(result.inserted_id),
-            "event": {**created_event, "_id": str(created_event["_id"])}
-        }
-
-        # 4. Save to Database
-        print("Saving eventLeaderEmail:", event_data.get("eventLeaderEmail"))
-
         result = await events_collection.insert_one(event_data)
         created_event = await events_collection.find_one({"_id": result.inserted_id})
         
@@ -1640,7 +1618,8 @@ async def create_event(event: EventCreate):
 
     except Exception as e:
         print(f"Error creating event: {str(e)}")
-        if isinstance(e, HTTPException): raise e
+        if isinstance(e, HTTPException): 
+            raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -10355,7 +10334,8 @@ async def get_dashboard_comprehensive(
                                 "$and": [
                                     {"$ne": ["$followup_date", None]},
                                     {"$gte": ["$followup_date", start]},
-                                    {"$lte": ["$followup_date", end]}
+                                    {"$lte": ["$followup_date", end]},
+                                    {"$not": "$is_completed"}
                                 ]
                             },
                             True,
@@ -10632,6 +10612,8 @@ async def get_dashboard_comprehensive(
             "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
             "total_unique_task_types": len(unique_task_types_found),
             "note": f"'no answer' and 'Awaiting Call' task types are excluded from completed counts"
+
+            
         }
 
         return {
@@ -10693,7 +10675,8 @@ async def get_dashboard_quick_stats(
 
         
         tasks_due_in_period = await tasks_collection.count_documents({
-            "followup_date": {"$gte": start, "$lte": end}
+            "followup_date": {"$gte": start, "$lte": end},
+            "status": {"$nin": ["completed", "done", "closed", "finished"]}
         })
 
         
@@ -10703,6 +10686,13 @@ async def get_dashboard_quick_stats(
             "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
         })
 
+        total_tasks_in_period = await tasks_collection.count_documents({
+    "$or": [
+        {"followup_date": {"$gte": start, "$lte": end}},
+        {"completedAt": {"$gte": start, "$lte": end}},
+        {"createdAt": {"$gte": start, "$lte": end}}
+    ]
+})
         
         total_completed = await tasks_collection.count_documents({
             "status": {"$in": ["completed", "done", "closed", "finished"]},
