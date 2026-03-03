@@ -8489,14 +8489,30 @@ async def create_user(
     
 @app.get("/admin/users", response_model=UserList)
 async def get_all_users(current_user: dict = Depends(get_current_user)):
-    """Get all users - Admin only"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+
+    projection = {
+        "name": 1,
+        "surname": 1,
+        "email": 1,
+        "role": 1,
+        "date_of_birth": 1,
+        "phone_number": 1,
+        "address": 1,
+        "gender": 1,
+        "invitedBy": 1,
+        "leader12": 1,
+        "leader144": 1,
+        "leader1728": 1,
+        "stage": 1,
+        "created_at": 1
+    }
+
     try:
         users = []
-        cursor = users_collection.find({})
-       
+        cursor = users_collection.find({}, projection).batch_size(1000)
+
         async for user in cursor:
             users.append(UserListResponse(
                 id=str(user["_id"]),
@@ -8515,13 +8531,10 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
                 stage=user.get("stage"),
                 created_at=user.get("created_at")
             ))
-       
+
         return UserList(users=users)
-       
+
     except Exception as e:
-        import traceback
-        print(f"ERROR: {str(e)}")
-        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
   
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
