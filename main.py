@@ -1694,7 +1694,7 @@ async def get_cell_events(
         else:
             user_name = user_name_from_token
             
-        print(f"🔍 Leader at 12 user name resolved as: {user_name}")
+        print(f" Leader at 12 user name resolved as: {user_name}")
 
         query = {
             "$and": [
@@ -6177,7 +6177,6 @@ async def get_persistent_attendees(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        #  Handle composite cell event IDs like "67abc123_2025-11-30"
         actual_event_id = event_id.split("_")[0] if "_" in event_id else event_id
         date_from_id = event_id.split("_")[1] if "_" in event_id else None
 
@@ -6185,7 +6184,7 @@ async def get_persistent_attendees(
             raise HTTPException(status_code=400, detail="Invalid event ID")
         
         event = await events_collection.find_one(
-            {"_id": ObjectId(actual_event_id)},  #  Use actual_event_id
+            {"_id": ObjectId(actual_event_id)},
             {
                 "persistent_attendees": 1,
                 "Event Name": 1,
@@ -6222,33 +6221,45 @@ async def get_persistent_attendees(
         
         attendance_map = event.get("attendance", {})
 
-        #  Priority: use date extracted from composite ID, then fall back to event's date field
         if date_from_id:
             event_date = date_from_id
         else:
             event_date = event.get("date", "")
             if isinstance(event_date, datetime):
                 event_date = event_date.date().isoformat()
-            elif isinstance(event_date, str) and "T" in event_date:
-                event_date = event_date.split("T")[0]
+            elif isinstance(event_date, str):
+                event_date = event_date.split("T")[0].split(" ")[0].strip()
+
+        print(f" event_date looking for: {event_date}")
+        print(f" attendance_map keys: {list(attendance_map.keys()) if isinstance(attendance_map, dict) else 'NOT A DICT'}")
 
         checked_in_attendees = []
         headcount = 0
-        attendance_status = event.get("status", "incomplete")
+        attendance_status = "incomplete"
 
         if isinstance(attendance_map, dict) and attendance_map:
             date_entry = attendance_map.get(event_date, {})
-            print(f"🔍 event_date looking for: {event_date}")
-            print(f"🔍 attendance_map keys: {list(attendance_map.keys())}")
-            print(f"🔍 date_entry found: {bool(date_entry)}")
-            print(f"🔍 attendance_status: {attendance_status}")
 
-            #  NO FALLBACK - if no entry for today's date, it's incomplete
+            print(f" date_entry found: {bool(date_entry)}")
+
+            # ✅ BUG 1 FIX: if exact date not found, search all keys for matching date
+            if not date_entry:
+                for key, value in attendance_map.items():
+                    if isinstance(value, dict):
+                        if (value.get("event_date_iso") == event_date or
+                            value.get("event_date_exact") == event_date or
+                            key == event_date):
+                            date_entry = value
+                            print(f" Found date_entry via fallback key: {key}")
+                            break
 
             if isinstance(date_entry, dict) and date_entry:
                 raw_attendees = date_entry.get("attendees", [])
                 headcount = date_entry.get("total_headcounts", 0)
                 attendance_status = date_entry.get("status", "incomplete")
+
+                print(f" attendance_status from date_entry: {attendance_status}")
+                print(f" raw_attendees count: {len(raw_attendees)}")
 
                 for a in raw_attendees:
                     if isinstance(a, dict):
@@ -6268,10 +6279,13 @@ async def get_persistent_attendees(
                             "paymentMethod": a.get("paymentMethod", ""),
                         })
             else:
+                # ✅ BUG 2 FIX: was returning early inside else, cutting off the final return
                 attendance_status = "incomplete"
                 checked_in_attendees = []
                 headcount = 0
-                return {
+
+        # ✅ Single return at the end — always reached
+        return {
             "persistent_attendees": cleaned,
             "checked_in_attendees": checked_in_attendees,
             "attendance_status": attendance_status,
@@ -6284,7 +6298,6 @@ async def get_persistent_attendees(
     except Exception as e:
         print(f"Error getting persistent attendees: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(
     event_id: str = Path(...),
