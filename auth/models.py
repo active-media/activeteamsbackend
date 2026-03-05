@@ -19,13 +19,12 @@ class UserCreate(BaseModel):
     surname: str
     date_of_birth: str
     home_address: str
-    invited_by: str
+    invited_by: Optional[str] = None  # Changed from "str" to "Optional[str] = None"
     phone_number: str
     email: EmailStr
     gender: str
     password: str
     role: Optional[str] = None
-
 class UserLogin(BaseModel):
     email: EmailStr
     password: str

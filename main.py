@@ -11,7 +11,7 @@ from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCrea
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection
+from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, org_config_collection
 from auth.email_utils import send_reset_email
 from typing import Optional, List,  Optional,  Dict
 from collections import Counter
@@ -864,18 +864,16 @@ async def signup(user: UserCreate):
     # Hash password
     hashed = hash_password(user.password)
    
-    # Create user document
+    # Create user document - REMOVED invited_by
     user_dict = {
         "name": user.name,
         "surname": user.surname,
         "date_of_birth": user.date_of_birth,
         "home_address": user.home_address,
-        "invited_by": user.invited_by,
         "phone_number": user.phone_number,
         "email": email,
         "gender": user.gender,
         "password": hashed,
-        "confirm_password": hashed,
         "role": "user",
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat()
@@ -885,90 +883,14 @@ async def signup(user: UserCreate):
     user_result = await db["Users"].insert_one(user_dict)
     logger.info(f"User created successfully: {email}")
    
-    inviter_full_name = user.invited_by.strip()
+    # Set default leader based on gender only (no invited_by logic)
     leader1 = ""
-    leader12 = ""
-    leader144 = ""
-    leader1728 = ""
+    if user.gender == "male":
+        leader1 = "Gavin Enslin"
+    else:
+        leader1 = "Vicky Enslin"
    
-    if inviter_full_name:
-        print(f"Looking for inviter in background cache: '{inviter_full_name}'")
-       
-        # Search in background-loaded cache (contains ALL people)
-        cached_inviter = None
-        for person in people_cache["data"]:
-            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            if (full_name.lower() == inviter_full_name.lower() or
-                person.get('Name', '').lower() == inviter_full_name.lower()):
-                cached_inviter = person
-                break
-       
-        if cached_inviter:
-            print(f"Found inviter in background cache: {cached_inviter.get('FullName')}")
-            # checking if gender is matching so it's not it can just assign them a leader at 12
-            isGenderMatching = cached_inviter.get("Gender", "") == user.gender.capitalize()
-
-            print(cached_inviter)
-            print(isGenderMatching)
-            print(cached_inviter.get("Gender", ""),user.gender.capitalize())
-
-            if  not isGenderMatching:
-                if user.gender == "male":
-                    leader1 = "Gavin Enslin"
-                else:
-                    leader1 = "Vicky Enslin"
-                leader12 = ""  
-                leader144 = ""
-                leader1728 = ""    
-            else: #if gender is matching should go on as usual
-                # Get the inviter's leader hierarchy from cache
-                inviter_leader1 = cached_inviter.get("Leader @1", "")
-                inviter_leader12 = cached_inviter.get("Leader @12", "")
-                inviter_leader144 = cached_inviter.get("Leader @144", "")
-                inviter_leader1728 = cached_inviter.get("Leader @1728", "")
-                print(cached_inviter,inviter_leader1,inviter_leader12,inviter_leader144,inviter_leader1728)
-               
-               
-                # Determine what level the inviter is at and set leaders accordingly
-                if inviter_leader1728:
-                    print("1")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_leader144
-                    leader1728 = inviter_full_name
-                elif inviter_leader144:
-                    print("2")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_leader144
-                    leader1728 = inviter_full_name
-                elif inviter_leader12:
-                    print("3")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_full_name
-                    leader1728 = ""
-                elif inviter_leader1:
-                    print("4")
-                    leader1 = inviter_leader1
-                    leader12 = ""
-                    leader144 = ""
-                    leader1728 = ""
-                else:
-                    print("5")
-                    leader1 = inviter_leader1
-                    leader12 = ""
-                    leader144 = ""
-                    leader1728 = ""
-               
-                logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
-        else:
-            print("6")
-            print(f"Inviter '{inviter_full_name}' not found in background cache")
-            # Fallback: set inviter as Leader @1
-            leader1 = inviter_full_name
-   
-    # Create corresponding person record in People collection
+    # Create corresponding person record in People collection - NO invited_by field
     person_doc = {
         "Name": user.name.strip(),
         "Surname": user.surname.strip(),
@@ -977,11 +899,10 @@ async def signup(user: UserCreate):
         "Address": user.home_address.strip(),
         "Gender": user.gender.strip(),
         "Birthday": user.date_of_birth,
-        "InvitedBy": inviter_full_name,
-        "Leader @1": leader1,
-        "Leader @12": leader12,
-        "Leader @144": leader144,
-        "Leader @1728": leader1728,
+        "Leader @1": leader1,  # Just set based on gender
+        "Leader @12": "",      # Leave empty
+        "Leader @144": "",     # Leave empty
+        "Leader @1728": "",    # Leave empty
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
@@ -1000,9 +921,9 @@ async def signup(user: UserCreate):
             "Email": email,
             "Number": user.phone_number.strip(),
             "Leader @1": leader1,
-            "Leader @12": leader12,
-            "Leader @144": leader144,
-            "Leader @1728": leader1728,
+            "Leader @12": "",
+            "Leader @144": "",
+            "Leader @1728": "",
             "FullName": f"{user.name.strip()} {user.surname.strip()}".strip()
         }
         people_cache["data"].append(new_person_cache_entry)
@@ -1012,36 +933,53 @@ async def signup(user: UserCreate):
         logger.error(f"Failed to create person record for {email}: {e}")
    
     return {"message": "User created successfully"}
-
 # ---------------- Login ----------------
+
 @app.post("/login")
 async def login(user: UserLogin):
     logger.info(f"Login attempt: {user.email}")
     existing = await users_collection.find_one({"email": user.email})
+    
+    # TEMPORARY DEBUG
+    print(f"Found user: {existing.get('email') if existing else 'NOT FOUND'} | has password: {bool(existing.get('password')) if existing else False}")
+    
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email}) or {}
-
-
+    
+    person = await people_collection.find_one({"Email": user.email}) or {}
     full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
-    print("FULL NAME",full_name)
-    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
+    print("FULL NAME", full_name)
+    
+    is_Leader = await events_collection.find_one({
+        "$or": [
+            {"Email": user.email, "Event Type": "Cells"},
+            {"Leader": full_name, "Event Type": "Cells"}
+        ]
+    })
     is_Leader = bool(is_Leader)
+    
     if not person:
-        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
-   
+        person = await people_collection.find_one({
+            "Name": existing["name"], 
+            "Surname": existing["surname"]
+        }) or {}
 
     access_token = create_access_token(
-        {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
+        {
+            "user_id": str(existing["_id"]),
+            "email": existing["email"],
+            "role": existing.get("role", "user"),
+            "org_id": existing.get("org_id", "active-teams"),
+        },
         expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
-
+    
     refresh_token_id = secrets.token_urlsafe(16)
     refresh_plain = secrets.token_urlsafe(32)
     refresh_hash = hash_password(refresh_plain)
     refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
+    
     await users_collection.update_one(
         {"_id": existing["_id"]},
         {"$set": {
@@ -1050,32 +988,36 @@ async def login(user: UserLogin):
             "refresh_token_expires": refresh_expires,
         }}
     )
-
+    
     logger.info(f"Login successful: {user.email}")
+    
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "refresh_token_id": refresh_token_id,
         "refresh_token": refresh_plain,
         "user": {
-        "id": str(existing["_id"]),
-        "email": existing["email"],
-        "name": existing.get("name", ""),
-        "surname": existing.get("surname", ""),
-        "role": existing.get("role", "registrant"),
-        "date_of_birth": existing.get("date_of_birth", ""),
-        "home_address": existing.get("home_address", ""),
-        "phone_number": existing.get("phone_number", ""),
-        "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", "")
-    },
-    "leaders":{
-        'leaderAt1':person.get("Leader @1",""),
-        'leaderAt12':person.get("Leader @12",""),
-        'leaderAt144':person.get("Leader @144",""),
-    },
-    "isLeader": is_Leader
+            "id": str(existing["_id"]),
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "registrant"),
+            "org_id": existing.get("org_id", "active-teams"),
+            "date_of_birth": existing.get("date_of_birth", ""),
+            "home_address": existing.get("home_address", ""),
+            "phone_number": existing.get("phone_number", ""),
+            "gender": existing.get("gender", ""),
+            "invited_by": existing.get("invited_by", "")
+        },
+        "leaders": {
+            "leaderAt1": person.get("Leader @1", ""),
+            "leaderAt12": person.get("Leader @12", ""),
+            "leaderAt144": person.get("Leader @144", ""),
+        },
+        "isLeader": is_Leader
     }
+
+
 
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
@@ -1434,7 +1376,7 @@ def format_display_date(dt):
     return dt.strftime("%d - %m - %Y") if dt else ""
 
 @app.post("/events")
-async def create_event(event: EventCreate):
+async def create_event(event: EventCreate, current_user: dict = Depends(get_current_user)):
     try:
         event_data = event.dict()
         print(f"[DEBUG] priceTiers received = {event_data.get('priceTiers')}")
@@ -1528,6 +1470,7 @@ async def create_event(event: EventCreate):
                 if field in event_data and not event_data[field]:
                     del event_data[field]
 
+        event_data["org_id"] = current_user.get("org_id", "active-teams")
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
 
@@ -1655,16 +1598,27 @@ async def get_cell_events(
     must_paginate: Optional[bool] = Query(True)
 ):
     try:
-        role = current_user.get("role", "user").lower()
-        user_email = current_user.get("email", "").lower().strip()
+        org_id = current_user.get("org_id", "active-teams")
+        org_config = await org_config_collection.find_one({"_id": org_id})
+        recurring_type = org_config.get("recurring_event_type", "Cells") if org_config else "Cells"
         
-        is_leader_at_12_role = (
-            "leaderat12" in role or 
+        user_email = current_user.get("email", "")
+        role = current_user.get("role", "").lower().strip()
+        is_actual_leader_at_12 = (
+            role == "leaderat12" or
+            "leaderat12" in role or
             "leader at 12" in role or
-            "leader@12" in role or
-            role == "leaderat12"
+            "leader@12" in role
         )
-        is_actual_leader_at_12 = isLeaderAt12 or is_leader_at_12_role
+        
+        if recurring_type.lower() != "cells":
+            return {
+                "events": [],
+                "total_events": 0,
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": 25,
+            }
         
         # Get user name from multiple sources
         user_name_from_frontend = f"{firstName or ''} {userSurname or ''}".strip()
@@ -1696,6 +1650,8 @@ async def get_cell_events(
             
         print(f" Leader at 12 user name resolved as: {user_name}")
 
+        org_id = current_user.get("org_id", "active-teams")
+
         query = {
             "$and": [
                 {
@@ -1709,6 +1665,7 @@ async def get_cell_events(
                     ]
                 },
                 {"isEventType": {"$ne": True}},
+                {"org_id": org_id},      # ADD THIS
                 {
                     "$or": [
                         { "is_active": True },
@@ -1717,7 +1674,6 @@ async def get_cell_events(
                 },
             ]
         }
-        
         if search and search.strip():
             search_term = search.strip()
             query["$and"].append({
@@ -2130,7 +2086,7 @@ async def get_other_events(
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query("2025-10-10"),
     end_date: Optional[str] = Query(None),
-    show_all_dates: Optional[bool] = Query(False)  # New parameter to control date filtering
+    show_all_dates: Optional[bool] = Query(False)  
 ):
     try:
         user_role = str(current_user.get("role", "user")).lower().strip()
@@ -2152,7 +2108,9 @@ async def get_other_events(
             end_dt = today + timedelta(days=365)
 
         # Base query - exclude cells events
+        org_id = current_user.get("org_id", "active-teams")
         query = {
+            "org_id": org_id,
             "$nor": [
                 {"Event Type": {"$regex": "^cells$", "$options": "i"}},
                 {"eventType": {"$regex": "^cells$", "$options": "i"}},
@@ -3040,30 +2998,32 @@ async def migrate_event_types_uuids():
 
 # -----------------EVENTS TYPES SECTION--------------
 @app.post("/event-types")
-async def create_event_type(event_type: EventTypeCreate):
+async def create_event_type(event_type: EventTypeCreate, current_user: dict = Depends(get_current_user)):
     try:
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
         
         name = event_type.name.strip()
-        
         name_lower = name.lower()
         
         if re.search(r'\bcell[s]?\b', name_lower) or 'cell' in name_lower:
             raise HTTPException(
                 status_code=400,
-                detail="Event types containing 'cell' or 'cells' (in any case or variation) are reserved and cannot be created. Please use a different name."
+                detail="Event types containing 'cell' or 'cells' are reserved and cannot be created."
             )
         
         name = name.lower()
         
+        org_id = current_user.get("org_id", "active-teams")
+
         existing = await events_collection.find_one({
             "$or": [
                 {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
                 {"eventType": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
                 {"eventTypeName": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
             ],
-            "isEventType": True
+            "isEventType": True,
+            "org_id": org_id
         })
         
         if existing:
@@ -3072,7 +3032,6 @@ async def create_event_type(event_type: EventTypeCreate):
                 detail=f"Event type '{name}' already exists"
             )
         
-        # Create the event type data dictionary
         event_type_data = {
             "name": name,
             "eventType": name,
@@ -3082,51 +3041,51 @@ async def create_event_type(event_type: EventTypeCreate):
             "isTicketed": event_type.isTicketed if hasattr(event_type, 'isTicketed') else False,
             "isGlobal": event_type.isGlobal if hasattr(event_type, 'isGlobal') else False,
             "hasPersonSteps": event_type.hasPersonSteps if hasattr(event_type, 'hasPersonSteps') else False,
+            "org_id": org_id,
+            "UUID": str(uuid.uuid4()),
             "createdAt": datetime.utcnow(),
             "updatedAt": datetime.utcnow(),
         }
         
-        # Set isGlobal based on name if not explicitly set
         if event_type_data.get("isGlobal") is None:
             event_type_data["isGlobal"] = "global" in name_lower
         
         if event_type_data.get("hasPersonSteps") is None:
-            event_type_data["hasPersonSteps"] = any(keyword in name_lower for keyword in ["person", "individual"])
-        
-        if not event_type_data.get("UUID"):
-            event_type_data["UUID"] = str(uuid.uuid4())
-        
+            event_type_data["hasPersonSteps"] = any(
+                keyword in name_lower for keyword in ["person", "individual"]
+            )
+
         result = await events_collection.insert_one(event_type_data)
         inserted = await events_collection.find_one({"_id": result.inserted_id})
         inserted["_id"] = str(inserted["_id"])
         
-        print(f" Created event type: {name}")
+        print(f"Created event type: {name} for org: {org_id}")
         
         return inserted
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error creating event type: {str(e)}")
+        print(f"Error creating event type: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
-    
+
 @app.get("/event-types")
-async def get_event_types():
+async def get_event_types(current_user: dict = Depends(get_current_user)):
     try:
+        org_id = current_user.get("org_id", "active-teams")
+        print(f"GET EVENT TYPES — user: {current_user.get('email')} | org_id: {org_id}")
+
         cursor = events_collection.find({
-            "isEventType": True
+            "isEventType": True,
+            "org_id": org_id
         }).sort("createdAt", 1)
        
         event_types = []
         async for et in cursor:
-           
             et["_id"] = str(et["_id"])
             event_types.append(et)
        
-        print(f" Found {len(event_types)} event types (isEventType=True)")
-       
-        for et in event_types:
-            print(f"   - {et.get('name')} (ID: {et.get('_id')})")
+        print(f"Found {len(event_types)} event types for org: {org_id}")
        
         return event_types
        
@@ -3912,10 +3871,8 @@ async def get_registrant_events_status_counts(
         if not email:
             raise HTTPException(status_code=400, detail="User email not found")
 
-        # ADD DATE FILTER
         start_date_filter = start_date if start_date else '2025-11-30'
        
-        # Registrants only see their own events
         query = {
             "Event Type": "Cells",
             "$or": [
@@ -3924,7 +3881,6 @@ async def get_registrant_events_status_counts(
             ]
         }
        
-        # Add event type filter
         if event_type and event_type != 'all':
             query["Event Type"] = event_type
        
@@ -11671,4 +11627,149 @@ async def cleanup_orphaned_tasks(
         raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")     
         
         
+
+# ─────────────────────────────────────────────────────────────
+# ORG CONFIG ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/org-config")
+async def get_org_config(current_user: dict = Depends(get_current_user)):
+    try:
+        org_id = current_user.get("org_id", "active-teams")
+        config = await org_config_collection.find_one({"_id": org_id})
+
+        if not config:
+            return {
+                "org_id": "active-teams",
+                "org_name": "Active Teams",
+                "recurring_event_type": "Cells",
+                "hierarchy": [
+                    {"level": 1, "field": "leader1",   "label": "Leader @1"},
+                    {"level": 2, "field": "leader12",  "label": "Leader @12"},
+                    {"level": 3, "field": "leader144", "label": "Leader @144"}
+                ],
+                "top_leaders": {
+                    "male":   "Gavin Enslin",
+                    "female": "Vicky Enslin"
+                },
+                "allows_create_event": True,
+                "allows_create_event_type": True,
+            }
+
+        config["org_id"] = str(config["_id"])
+        config.pop("_id", None)
+        return config
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/org-config")
+async def update_org_config(
+    config_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    try:
+        org_id = current_user.get("org_id", "active-teams")
+        allowed_fields = [
+            "org_name", "recurring_event_type", "hierarchy",
+            "top_leaders", "allows_create_event", "allows_create_event_type",
+        ]
+        update = {k: v for k, v in config_data.items() if k in allowed_fields}
+        update["updated_at"] = datetime.utcnow()
+        update["updated_by"] = current_user.get("email")
+
+        await org_config_collection.update_one(
+            {"_id": org_id},
+            {"$set": update},
+            upsert=True
+        )
+        return {"success": True, "message": "Config updated"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/detect-hierarchy")
+async def detect_hierarchy_from_people(
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    try:
+        sample_people = await people_collection.find({}).limit(10).to_list(10)
+
+        if not sample_people:
+            return {"detected_hierarchy": [], "message": "No people data found"}
+
+        all_fields = set()
+        for person in sample_people:
+            all_fields.update(person.keys())
+
+        hierarchy_keywords = [
+            "leader", "pastor", "zone", "district",
+            "region", "overseer", "bishop", "elder",
+            "shepherd", "mentor", "coach"
+        ]
+
+        hierarchy_fields = []
+        for field in all_fields:
+            field_lower = field.lower()
+            if field.startswith("_") or field in [
+                "Name", "Surname", "Email", "Phone",
+                "Gender", "created_at", "updated_at", "role"
+            ]:
+                continue
+            if any(kw in field_lower for kw in hierarchy_keywords):
+                num_match = re.search(r'\d+', field)
+                level_num = int(num_match.group()) if num_match else 999
+                hierarchy_fields.append({
+                    "field": field,
+                    "label": field,
+                    "level_num": level_num
+                })
+
+        hierarchy_fields.sort(key=lambda x: x["level_num"])
+        detected = [
+            {"level": i + 1, "field": hf["field"], "label": hf["field"]}
+            for i, hf in enumerate(hierarchy_fields)
+        ]
+
+        return {
+            "detected_hierarchy": detected,
+            "message": f"Detected {len(detected)} hierarchy levels",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def get_top_leader_dynamic(gender: str, org_id: str = "active-teams") -> str:
+    try:
+        config = await org_config_collection.find_one({"_id": org_id})
+        gender_lower = gender.lower().strip()
+        is_female = gender_lower in ["female", "f", "woman", "lady", "girl"]
+        is_male   = gender_lower in ["male", "m", "man", "gentleman", "boy"]
+
+        if config and config.get("top_leaders"):
+            top = config["top_leaders"]
+            if is_female: return top.get("female", "")
+            if is_male:   return top.get("male", "")
+            return ""
+
+        # Fallback
+        if is_female: return "Vicky Enslin"
+        if is_male:   return "Gavin Enslin"
+        return ""
+
+    except Exception as e:
+        print(f"Error in get_top_leader_dynamic: {e}")
+        if "female" in gender.lower(): return "Vicky Enslin"
+        if "male" in gender.lower():   return "Gavin Enslin"
+        return ""
+    
         
