@@ -11,7 +11,7 @@ from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCrea
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection
+from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection
 from auth.email_utils import send_reset_email
 from typing import Optional, List,  Optional,  Dict
 from collections import Counter
@@ -864,6 +864,19 @@ async def signup(user: UserCreate):
     # Hash password
     hashed = hash_password(user.password)
    
+
+    # ---- Resolve organization & org_tag dynamically from DB ----
+    organization = (user.organization or "").strip()
+    org_tag = ""
+    if organization:
+        org_doc = await organizations_collection.find_one(
+            {"name": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}}
+        )
+        if org_doc:
+            org_tag = org_doc.get("tag", organization)
+        else:
+            org_tag = organization  # fallback: use name as tag if not found
+
     # Create user document
     user_dict = {
         "name": user.name,
@@ -877,6 +890,8 @@ async def signup(user: UserCreate):
         "password": hashed,
         "confirm_password": hashed,
         "role": "user",
+        "organization": organization,
+        "org_tag": org_tag,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat()
     }
@@ -963,10 +978,22 @@ async def signup(user: UserCreate):
                
                 logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
         else:
-            print("6")
-            print(f"Inviter '{inviter_full_name}' not found in background cache")
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
+   
+    # ---- Dynamic Leadership Logic: ONLY for Active Church ----
+    if organization and organization.lower() != "active church":
+        logger.info(f"Organization '{organization}' is not 'Active Church'. Clearing leadership hierarchy for {email}.")
+        leader1 = ""
+        leader12 = ""
+        leader144 = ""
+        leader1728 = ""
+    elif not organization:
+        # Default to Active Church if no organization specified? 
+        # Or should we assume no org means no church?
+        # Given the context, usually No Org implies Active Church or NO church.
+        # But if the user wants it to be dynamic, let's stick to the explicit "Active Church" check.
+        pass
    
     # Create corresponding person record in People collection
     person_doc = {
@@ -982,6 +1009,8 @@ async def signup(user: UserCreate):
         "Leader @12": leader12,
         "Leader @144": leader144,
         "Leader @1728": leader1728,
+        "Organization": organization,
+        "OrgTag": org_tag,
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
@@ -1011,7 +1040,7 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
    
-    return {"message": "User created successfully"}
+    return {"message": "User created successfully", "organization": organization, "org_tag": org_tag}
 
 # ---------------- Login ----------------
 @app.post("/login")
@@ -1067,7 +1096,9 @@ async def login(user: UserLogin):
         "home_address": existing.get("home_address", ""),
         "phone_number": existing.get("phone_number", ""),
         "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", "")
+        "invited_by": existing.get("invited_by", ""),
+        "organization": existing.get("organization", ""),
+        "org_tag": existing.get("org_tag", ""),
     },
     "leaders":{
         'leaderAt1':person.get("Leader @1",""),
@@ -1198,7 +1229,129 @@ async def logout(user_id: str = Body(..., embed=True)):
     logger.info(f"User logged out: {user_id}")
     return {"message": "Logged out successfully"}
 
-# EVENTS ENDPOINTS-----------------------------------------------------------------
+
+# ====================================================================
+# ORGANIZATIONS ENDPOINTS  (dynamic orgs & tags for churches)
+# ====================================================================
+
+@app.get("/organizations")
+async def list_organizations():
+    """Return all organizations stored in the database."""
+    try:
+        cursor = organizations_collection.find({}, {"_id": 1, "name": 1, "tag": 1, "description": 1, "created_at": 1})
+        orgs = await cursor.to_list(length=None)
+        for org in orgs:
+            org["_id"] = str(org["_id"])
+        return {"success": True, "organizations": orgs, "total": len(orgs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch organizations: {str(e)}")
+
+
+@app.get("/organizations/{org_id}")
+async def get_organization(org_id: str):
+    """Return a single organization by ID."""
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org["_id"] = str(org["_id"])
+    return {"success": True, "organization": org}
+
+
+@app.post("/organizations")
+async def create_organization(data: dict = Body(...)):
+    """
+    Create a new organization.
+    Body: { "name": "City Church", "tag": "City Church", "description": "..." }
+    - 'name'  is the display name (must be unique, case-insensitive)
+    - 'tag'   is the badge label shown on user profiles (defaults to name)
+    """
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name is required")
+
+    # Enforce uniqueness (case-insensitive)
+    existing = await organizations_collection.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Organization '{name}' already exists")
+
+    tag = (data.get("tag") or name).strip()
+    doc = {
+        "name": name,
+        "tag": tag,
+        "description": (data.get("description") or "").strip(),
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    result = await organizations_collection.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    logger.info(f"Organization created: {name} (tag={tag})")
+    return {"success": True, "message": "Organization created", "organization": doc}
+
+
+@app.put("/organizations/{org_id}")
+async def update_organization(org_id: str, data: dict = Body(...)):
+    """
+    Update an existing organization's name, tag, or description.
+    Updating the name/tag will also re-derive org_tag on existing users
+    (for the updated org only — a background sweep option is also available).
+    """
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    existing = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    update_fields: dict = {}
+    if "name" in data and data["name"]:
+        update_fields["name"] = data["name"].strip()
+    if "tag" in data and data["tag"]:
+        update_fields["tag"] = data["tag"].strip()
+    elif "name" in update_fields and "tag" not in data:
+        # Auto-sync tag to new name if tag not explicitly provided
+        update_fields["tag"] = update_fields["name"]
+    if "description" in data:
+        update_fields["description"] = (data["description"] or "").strip()
+
+    if not update_fields:
+        return {"success": False, "message": "No fields to update"}
+
+    update_fields["updated_at"] = datetime.utcnow().isoformat()
+    await organizations_collection.update_one({"_id": ObjectId(org_id)}, {"$set": update_fields})
+
+    # If name or tag changed, propagate new org_tag to all affected users
+    old_name = existing.get("name", "")
+    new_tag = update_fields.get("tag", existing.get("tag", old_name))
+    if "name" in update_fields or "tag" in update_fields:
+        new_name = update_fields.get("name", old_name)
+        await users_collection.update_many(
+            {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
+            {"$set": {"organization": new_name, "org_tag": new_tag}}
+        )
+        logger.info(f"Propagated org update: '{old_name}' → '{new_name}' (tag={new_tag}) to all users")
+
+    updated = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    updated["_id"] = str(updated["_id"])
+    return {"success": True, "message": "Organization updated", "organization": updated}
+
+
+@app.delete("/organizations/{org_id}")
+async def delete_organization(org_id: str):
+    """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    logger.info(f"Organization deleted: {org_id}")
+    return {"success": True, "message": "Organization deleted"}
+
+
+
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
    
 def is_recurring_event(event: dict) -> bool:
@@ -6819,6 +6972,8 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "gender": user.get("gender", ""),
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
+        "organization": user.get("organization", ""),
+        "org_tag": user.get("org_tag", ""),
     }
 
 @app.put("/profile/{user_id}")
@@ -6876,6 +7031,7 @@ async def update_profile(
             "invited_by": "invited_by",
             "gender": "gender",
             "profile_picture": "profile_picture",
+            "organization": "organization",
            
             # Alternative field names from frontend
             "dob": "date_of_birth",
@@ -6898,6 +7054,25 @@ async def update_profile(
 
         # Add update timestamp
         update_payload["updated_at"] = datetime.utcnow().isoformat()
+
+        # ---- If organization changed, re-resolve org_tag from DB ----
+        if "organization" in update_payload:
+            new_org = update_payload["organization"]
+            org_doc = await organizations_collection.find_one(
+                {"name": {"$regex": f"^{re.escape(new_org)}$", "$options": "i"}}
+            )
+            update_payload["org_tag"] = org_doc.get("tag", new_org) if org_doc else new_org
+            
+            # CLEAR LEADERSHIP IF NOT ACTIVE CHURCH
+            if new_org.lower() != "active church":
+                print(f" Organization changed to {new_org}. Clearing leadership.")
+                update_payload["leader1"] = ""
+                update_payload["leader12"] = ""
+                update_payload["leader144"] = ""
+                update_payload["Leader @1"] = ""   # Also clear for person record if applicable
+                update_payload["Leader @12"] = ""
+                update_payload["Leader @144"] = ""
+                update_payload["Leader @1728"] = ""
        
         print(f" FINAL UPDATE PAYLOAD: {update_payload}")
 
@@ -6967,6 +7142,8 @@ def format_user_response(user):
         "gender": normalize_gender_value(user.get("gender", "")),
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
+        "organization": user.get("organization", ""),
+        "org_tag": user.get("org_tag", ""),
     }
 
 # @app.put("/profile/{user_id}/debug")

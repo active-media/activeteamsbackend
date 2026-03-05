@@ -25,6 +25,8 @@ class UserCreate(BaseModel):
     gender: str
     password: str
     role: Optional[str] = None
+    organization: Optional[str] = None  # e.g. "Active Church", "City Church"
+    org_tag: Optional[str] = None       # auto-resolved from organization if omitted
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -192,16 +194,20 @@ class UserProfile(BaseModel):
     email: EmailStr
     gender: str
     role: Optional[str] = "user"
+    organization: Optional[str] = None
+    org_tag: Optional[str] = None
+    profile_picture: Optional[str] = None
 
 class UserProfileUpdate(BaseModel):
-    name: Optional[str]
-    surname: Optional[str]
-    date_of_birth: Optional[str]
-    home_address: Optional[str]
-    invited_by: Optional[str]
-    phone_number: Optional[str]
-    email: Optional[EmailStr]
-    gender: Optional[str]
+    name: Optional[str] = None
+    surname: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    home_address: Optional[str] = None
+    invited_by: Optional[str] = None
+    phone_number: Optional[str] = None
+    email: Optional[EmailStr] = None
+    gender: Optional[str] = None
+    organization: Optional[str] = None  # updating org also re-derives org_tag
 
 # ===== Cell Events =====
 class CellEventCreate(BaseModel):
