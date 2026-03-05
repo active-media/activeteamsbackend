@@ -7124,7 +7124,7 @@ async def get_people(
 
         # Construct the query based on provided parameters
         if name:
-            query["Name"] = {"$regex": name, "$options": "i"}
+            query["$or"] = [{"Name":{"$regex": name, "$options": "i"}},{"Surname":{"$regex": name, "$options": "i"}}]
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
