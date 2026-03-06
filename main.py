@@ -939,10 +939,6 @@ async def signup(user: UserCreate):
 async def login(user: UserLogin):
     logger.info(f"Login attempt: {user.email}")
     existing = await users_collection.find_one({"email": user.email})
-    
-    # TEMPORARY DEBUG
-    print(f"Found user: {existing.get('email') if existing else 'NOT FOUND'} | has password: {bool(existing.get('password')) if existing else False}")
-    
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -951,26 +947,32 @@ async def login(user: UserLogin):
     full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
     print("FULL NAME", full_name)
     
-    is_Leader = await events_collection.find_one({
-        "$or": [
-            {"Email": user.email, "Event Type": "Cells"},
-            {"Leader": full_name, "Event Type": "Cells"}
-        ]
-    })
+    is_Leader = await events_collection.find_one({"$or": [
+        {"Email": user.email, "Event Type": "Cells"},
+        {"Leader": full_name, "Event Type": "Cells"}
+    ]})
     is_Leader = bool(is_Leader)
     
     if not person:
         person = await people_collection.find_one({
-            "Name": existing["name"], 
+            "Name": existing["name"],
             "Surname": existing["surname"]
         }) or {}
+
+    # ── Derive org_id ──
+    org_name = (
+        existing.get("org_id") or
+        existing.get("organization") or
+        "active-teams"
+    )
+    org_id = org_name.lower().replace(" ", "-")
 
     access_token = create_access_token(
         {
             "user_id": str(existing["_id"]),
             "email": existing["email"],
             "role": existing.get("role", "user"),
-            "org_id": existing.get("org_id", "active-teams"),
+            "org_id": org_id,    
         },
         expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
@@ -986,6 +988,7 @@ async def login(user: UserLogin):
             "refresh_token_id": refresh_token_id,
             "refresh_token_hash": refresh_hash,
             "refresh_token_expires": refresh_expires,
+            "org_id": org_id,    # ← ADDED: saves back to user doc
         }}
     )
     
@@ -1002,12 +1005,13 @@ async def login(user: UserLogin):
             "name": existing.get("name", ""),
             "surname": existing.get("surname", ""),
             "role": existing.get("role", "registrant"),
-            "org_id": existing.get("org_id", "active-teams"),
+            "org_id": org_id,    # ← ADDED
             "date_of_birth": existing.get("date_of_birth", ""),
             "home_address": existing.get("home_address", ""),
             "phone_number": existing.get("phone_number", ""),
             "gender": existing.get("gender", ""),
-            "invited_by": existing.get("invited_by", "")
+            "invited_by": existing.get("invited_by", ""),
+            "organization": existing.get("organization", ""),
         },
         "leaders": {
             "leaderAt1": person.get("Leader @1", ""),
@@ -1016,8 +1020,6 @@ async def login(user: UserLogin):
         },
         "isLeader": is_Leader
     }
-
-
 
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
@@ -1099,25 +1101,37 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         logger.warning(f"Refresh token invalid/expired: {payload.refresh_token_id}")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
+    # Derive org_id
+    org_name = (
+        user.get("org_id") or
+        user.get("organization") or
+        user.get("org_tag") or
+        "active-teams"
+    )
+    org_id = org_name.lower().replace(" ", "-")
+
     token = create_access_token(
-        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+        {
+            "user_id": str(user["_id"]),
+            "email": user["email"],
+            "role": user.get("role", "user"),
+            "org_id": org_id,    
+        },
         expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
-
     new_refresh_token_id = secrets.token_urlsafe(16)
     new_refresh_plain = secrets.token_urlsafe(32)
     new_refresh_hash = hash_password(new_refresh_plain)
     new_refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
     await users_collection.update_one(
         {"_id": user["_id"]},
         {"$set": {
             "refresh_token_id": new_refresh_token_id,
             "refresh_token_hash": new_refresh_hash,
             "refresh_token_expires": new_refresh_expires,
+            "org_id": org_id,    
         }},
     )
-
     logger.info(f"Refresh token rotated for user: {user['email']}")
     return {
         "access_token": token,
@@ -1596,9 +1610,13 @@ async def get_cell_events(
     firstName: Optional[str] = Query(None),
     userSurname: Optional[str] = Query(None),
     must_paginate: Optional[bool] = Query(True)
-):
+):  
     try:
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+        current_user.get("org_id") or
+        (current_user.get("organization", "").lower().replace(" ", "-")) or
+        "active-teams"
+        )
         org_config = await org_config_collection.find_one({"_id": org_id})
         recurring_type = org_config.get("recurring_event_type", "Cells") if org_config else "Cells"
         
@@ -1650,7 +1668,11 @@ async def get_cell_events(
             
         print(f" Leader at 12 user name resolved as: {user_name}")
 
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+            current_user.get("org_id") or
+            (current_user.get("organization", "").lower().replace(" ", "-")) or
+            "active-teams"
+            )
 
         query = {
             "$and": [
@@ -2108,7 +2130,11 @@ async def get_other_events(
             end_dt = today + timedelta(days=365)
 
         # Base query - exclude cells events
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+            current_user.get("org_id") or
+            (current_user.get("organization", "").lower().replace(" ", "-")) or
+            "active-teams"
+        )
         query = {
             "org_id": org_id,
             "$nor": [
@@ -3014,7 +3040,11 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
         
         name = name.lower()
         
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+            current_user.get("org_id") or
+            (current_user.get("organization", "").lower().replace(" ", "-")) or
+            "active-teams"
+        )
 
         existing = await events_collection.find_one({
             "$or": [
@@ -3072,7 +3102,11 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
 @app.get("/event-types")
 async def get_event_types(current_user: dict = Depends(get_current_user)):
     try:
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+            current_user.get("org_id") or
+            (current_user.get("organization", "").lower().replace(" ", "-")) or
+            "active-teams"
+        )
         print(f"GET EVENT TYPES — user: {current_user.get('email')} | org_id: {org_id}")
 
         cursor = events_collection.find({
@@ -11631,38 +11665,42 @@ async def cleanup_orphaned_tasks(
 # ─────────────────────────────────────────────────────────────
 # ORG CONFIG ENDPOINTS
 # ─────────────────────────────────────────────────────────────
-
 @app.get("/org-config")
 async def get_org_config(current_user: dict = Depends(get_current_user)):
     try:
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+            current_user.get("org_id") or
+            (current_user.get("organization", "").lower().replace(" ", "-")) or
+            "active-teams"
+        )
         config = await org_config_collection.find_one({"_id": org_id})
-
+        
         if not config:
-            return {
-                "org_id": "active-teams",
-                "org_name": "Active Teams",
-                "recurring_event_type": "Cells",
+            # Auto-create config for this org instead of returning active-teams default
+            new_config = {
+                "_id": org_id,
+                "org_id": org_id,
+                "org_name": current_user.get("organization") or current_user.get("org_tag") or org_id,
+                "recurring_event_type": "Gatherings",
                 "hierarchy": [
                     {"level": 1, "field": "leader1",   "label": "Leader @1"},
                     {"level": 2, "field": "leader12",  "label": "Leader @12"},
                     {"level": 3, "field": "leader144", "label": "Leader @144"}
                 ],
-                "top_leaders": {
-                    "male":   "Gavin Enslin",
-                    "female": "Vicky Enslin"
-                },
+                "top_leaders": {"male": "", "female": ""},
                 "allows_create_event": True,
                 "allows_create_event_type": True,
+                "created_at": datetime.utcnow(),
             }
+            await org_config_collection.insert_one(new_config)
+            new_config.pop("_id", None)
+            return new_config
 
         config["org_id"] = str(config["_id"])
         config.pop("_id", None)
         return config
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.put("/org-config")
 async def update_org_config(
@@ -11673,7 +11711,11 @@ async def update_org_config(
         raise HTTPException(status_code=403, detail="Admin only")
 
     try:
-        org_id = current_user.get("org_id", "active-teams")
+        org_id = (
+            current_user.get("org_id") or
+            (current_user.get("organization", "").lower().replace(" ", "-")) or
+            "active-teams"
+        )
         allowed_fields = [
             "org_name", "recurring_event_type", "hierarchy",
             "top_leaders", "allows_create_event", "allows_create_event_type",
