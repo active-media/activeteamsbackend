@@ -1119,17 +1119,31 @@ async def reset_password(data: ResetPasswordRequest):
         logger.warning("Invalid token payload")
         raise HTTPException(status_code=400, detail="Invalid token payload")
 
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID in token")
+
     hashed_pw = hash_password(data.new_password)
+
     result = await users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+        {"$set": {
+            "password": hashed_pw,
+            "updated_at": datetime.utcnow(),
+            # Optional: "password_reset_at": datetime.utcnow(),
+            # Do NOT store confirm_password
+        }}
     )
 
     if result.modified_count == 0:
-        logger.warning(f"Reset password failed - user not found or unchanged: {user_id}")
-        raise HTTPException(status_code=404, detail="User not found or password unchanged")
+        logger.warning(f"Reset password failed - no change applied for user: {user_id}")
+        raise HTTPException(status_code=404, detail="User not found or no update applied")
+
+    # Optional: invalidate old refresh tokens or sessions here if you want higher security
 
     user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=500, detail="User disappeared after update")
+
     access_token = create_access_token(
         {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
         expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
@@ -1137,7 +1151,7 @@ async def reset_password(data: ResetPasswordRequest):
 
     logger.info(f"Password reset successful for {user['email']}")
     return {
-        "message": "Password has been reset successfully.",
+        "message": "Password has been reset successfully. Please log in.",
         "access_token": access_token,
         "token_type": "bearer"
     }
@@ -6795,6 +6809,11 @@ async def update_profile(
             {"$set": update_payload}
         )
 
+        print(f"UPDATE RESULT for user {user_id} - matched: {result.matched_count}, modified: {result.modified_count}")
+        if result.modified_count == 0:
+            current_state = await users_collection.find_one({"_id": ObjectId(user_id)}, {"password": 1})
+            print("CURRENT PASSWORD IN DB AFTER ATTEMPTED UPDATE:", current_state["password"][:40] + "...")
+            
         print(f"UPDATE RESULT - matched: {result.matched_count}, modified: {result.modified_count}")
 
         # Fetch and return updated user
@@ -6940,13 +6959,17 @@ async def change_password(
     password_data: dict,
     current_user: dict = Depends(get_current_user)
 ):
-    """Change user password - uses consistent authentication"""
+    """
+    Change user password - improved version with better logging and checks
+    """
     try:
-        # Verify user owns this account
-        token_user_id = current_user.get("user_id")
-       
-        if not token_user_id or token_user_id != user_id:
-            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+        # Authorization: ensure the token matches the requested user
+        token_user_id = current_user.get("user_id") or current_user.get("sub")
+        if not token_user_id or str(token_user_id) != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to update this user's password"
+            )
 
         if not ObjectId.is_valid(user_id):
             raise HTTPException(status_code=400, detail="Invalid user ID")
@@ -6955,13 +6978,24 @@ async def change_password(
         new_password = password_data.get("newPassword")
 
         if not current_password or not new_password:
-            raise HTTPException(status_code=400, detail="Current password and new password are required")
+            raise HTTPException(
+                status_code=400,
+                detail="Current password and new password are required"
+            )
 
-        # Basic password validation
         if len(new_password) < 8:
-            raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
+            raise HTTPException(
+                status_code=400,
+                detail="New password must be at least 8 characters long"
+            )
 
-        # Get user and verify current password
+        if current_password == new_password:
+            raise HTTPException(
+                status_code=400,
+                detail="New password must be different from current password"
+            )
+
+        # Fetch the user
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -6970,25 +7004,48 @@ async def change_password(
         if not verify_password(current_password, user["password"]):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-        # Hash new password and update
+        # Hash new password
         hashed_new_password = hash_password(new_password)
-       
+
+        # Debug logging (remove or replace with proper logger in production)
+        print(f"[PASSWORD CHANGE] User {user_id}")
+        print(f"  - Old hash:     {user['password'][:40]}...")
+        print(f"  - New hash:     {hashed_new_password[:40]}...")
+        print(f"  - Current time: {datetime.utcnow().isoformat()}")
+
+        # Perform the update
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
-            {"$set": {"password": hashed_new_password}}
+            {
+                "$set": {
+                    "password": hashed_new_password,
+                    "updated_at": datetime.utcnow(),
+                    # Optional: "password_changed_at": datetime.utcnow()
+                }
+            }
         )
 
+        
+
         if result.modified_count == 0:
-            raise HTTPException(status_code=500, detail="Failed to update password")
+            print(f"[WARNING] Password update had modified_count = 0 for user {user_id}")
+            raise HTTPException(
+                status_code=500,
+                detail="Password update failed - document was not modified"
+            )
+
+        print(f"[SUCCESS] Password updated for user {user_id} - modified_count: {result.modified_count}")
 
         return {"message": "Password updated successfully"}
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
-
-
+        print(f"[ERROR] Password change failed for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Server error during password change: {str(e)}"
+        )
 
 # PEOPLE ENDPOINTS
 @app.get("/people")
