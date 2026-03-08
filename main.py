@@ -1105,7 +1105,6 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
     org_name = (
         user.get("org_id") or
         user.get("organization") or
-        user.get("org_tag") or
         "active-teams"
     )
     org_id = org_name.lower().replace(" ", "-")
@@ -6958,41 +6957,6 @@ def format_user_response(user):
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
     }
-
-# @app.put("/profile/{user_id}/debug")
-# async def debug_profile_update(
-#     user_id: str,
-#     request: Request,
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     """Debug endpoint to see what's happening"""
-#     try:
-#         body = await request.body()
-#         body_str = body.decode('utf-8')
-       
-#         return {
-#             "message": "Debug info",
-#             "user_id_from_url": user_id,
-#             "user_id_from_token": current_user.get("user_id"),
-#             "authorized": current_user.get("user_id") == user_id,
-#             "raw_body": body_str,
-#             "current_user_email": current_user.get("email")
-#         }
-#     except Exception as e:
-#         return {"error": str(e)}
-
-# @app.get("/profile/{user_id}/test")
-# async def test_profile_access(
-#     user_id: str,
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     """Test if profile access works"""
-#     return {
-#         "message": "Profile test",
-#         "user_id": user_id,
-#         "current_user": current_user.get("user_id"),
-#         "authorized": current_user.get("user_id") == user_id
-#     }
    
 
 @app.post("/users/{user_id}/avatar")
@@ -11673,10 +11637,11 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
             (current_user.get("organization", "").lower().replace(" ", "-")) or
             "active-teams"
         )
+        print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
+        
         config = await org_config_collection.find_one({"_id": org_id})
         
         if not config:
-            # Auto-create config for this org instead of returning active-teams default
             new_config = {
                 "_id": org_id,
                 "org_id": org_id,
@@ -11701,7 +11666,7 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         return config
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.put("/org-config")
 async def update_org_config(
     config_data: dict,
