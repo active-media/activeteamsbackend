@@ -27,7 +27,7 @@ from urllib.parse import unquote
 import traceback
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
-
+from pydantic import BaseModel
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 app = FastAPI()
@@ -37,7 +37,8 @@ app.add_middleware(
     allow_origins=[
         "https://teams.theactivechurch.org",
         "http://localhost:8000",
-        "http://localhost:5173",  
+        "http://localhost:5173",
+        "http://localhost:5174",
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com"
@@ -1377,7 +1378,6 @@ def normalize_time(time_value: str) -> str:
         return time_value
 
     try:
-        # Defensive: ISO string sent accidentally
         if "T" in time_value:
             time_value = time_value.split("T")[1][:5]
 
@@ -1439,7 +1439,8 @@ def format_display_date(dt):
 async def create_event(event: EventCreate):
     try:
         event_data = event.dict()
-        event_data["_id"] = ObjectId()
+        print(f"[DEBUG] priceTiers received = {event_data.get('priceTiers')}")
+        print(f"[DEBUG] isTicketed = {event_data.get('isTicketed')}")
         
         if not event_data.get("UUID"):
             event_data["UUID"] = str(uuid.uuid4())
@@ -1448,7 +1449,6 @@ async def create_event(event: EventCreate):
         if not event_type_name:
             raise HTTPException(status_code=400, detail="eventTypeName is required")
 
-        # 1. Handle Built-in CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
@@ -1470,7 +1470,6 @@ async def create_event(event: EventCreate):
             if not event_type:
                 raise HTTPException(status_code=400, detail=f"Event type '{event_type_name}' not found")
             
-            # Use Master Settings from the Event Type record
             event_data["eventTypeId"] = event_type.get("UUID")
             event_data["eventTypeName"] = event_type.get("name")
             event_data["isGlobal"] = event_type.get("isGlobal", False)
@@ -1480,30 +1479,20 @@ async def create_event(event: EventCreate):
 
         print(f"Using day value from frontend: {event_data.get('day')}")
         
-
         if event_data.get("time") or event_data.get("Time"):
             raw_time = event_data.get("time") or event_data.get("Time")
-
             print(f"Raw time received from frontend: {raw_time}")
-
             clean_time = normalize_time(raw_time)
-
             event_data["time"] = clean_time
-            event_data["Time"] = clean_time
 
-            print(f"Time stored as: {clean_time}")
-
-        # 3. Clean up and Format Data
         event_data.pop("eventType", None)
 
         # Ensure eventLeaderEmail exists
         if not event_data.get("eventLeaderEmail"):
             raise HTTPException(status_code=400, detail="eventLeaderEmail is required")
 
-        # Remove unused email fields
         for key in ["userEmail", "email"]:
             event_data.pop(key, None)
-
 
         # Recurring Day Logic
         recurring_days = event_data.get("recurring_day", [])
@@ -1517,43 +1506,38 @@ async def create_event(event: EventCreate):
         else:
             event_data["day"] = recurring_days[0]
 
-
         # Leader Fields
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
+        # event_data.pop("eventLeader", None)
         if event_data.get("hasPersonSteps"):
             event_data.setdefault("leader1", "")
             event_data.setdefault("leader12", "")
             event_data.setdefault("persistent_attendees", [])
 
         # Ticket/Price Logic
-        if event_data.get("isTicketed") and event_data.get("priceTiers"):
+        raw_tiers = event_data.get("priceTiers") or []
+        if event_data.get("isTicketed") and raw_tiers:
             event_data["priceTiers"] = [
                 {k: (float(v) if k == "price" else v) for k, v in tier.items()}
-                for tier in event_data["priceTiers"]
+                for tier in raw_tiers
             ]
         else:
-            event_data["priceTiers"] = []
+            # Preserve whatever was sent — don't wipe it
+            event_data["priceTiers"] = raw_tiers
 
-        # Cleanup leader fields for Global events
         if event_data.get("isGlobal"):
             for field in ["leader1", "leader12"]:
                 if field in event_data and not event_data[field]:
                     del event_data[field]
 
-        # Metadata
-        event_data["is_new_event"] = True
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
-        event_data.setdefault("attendees", [])
-        event_data["total_attendance"] = len(event_data["attendees"])
 
-        # ---- PLACE RECURRING LOGIC HERE ----
-
-        created_ids = []
+        print("Saving eventLeaderEmail:", event_data.get("eventLeaderEmail"))
+        result = await events_collection.insert_one(event_data)
 
         reference_date = event_data.get("date")
-
-         # Normalize reference_date -> date object (use today if missing)
+        
         if isinstance(reference_date, str):
             try:
                 reference_dt = datetime.strptime(reference_date, "%Y-%m-%d")
@@ -1571,24 +1555,27 @@ async def create_event(event: EventCreate):
         # For each recurring day, pick the next occurrence on or after reference_date
         if recurring_days:
             series_uuid = event_data["UUID"]
+            created_ids = [str(result.inserted_id)]  # Include the first event we already inserted
+
             for day in recurring_days:
                 day_lower = day.lower().strip()
                 if day_lower not in DAY_INDEX:
                     continue
 
-                target_weekday = DAY_INDEX[day_lower]  # 0=Mon .. 6=Sun
+                target_weekday = DAY_INDEX[day_lower] 
                 # days until next target (0..6). 0 => same day
                 days_until = (target_weekday - reference_date.weekday()) % 7
                 event_date = reference_date + timedelta(days=days_until)
+
+                if event_date == reference_date:
+                    continue
 
                 # Create a new event for that upcoming date
                 new_event = event_data.copy()
                 new_event["_id"] = ObjectId()
                 new_event["UUID"] = series_uuid
                 new_event["day"] = day.capitalize()
-                # store as ISO date string (YYYY-MM-DD) to match other code paths
                 new_event["date"] = event_date.isoformat()
-                # Also set Date Of Event in datetime-ish form for compatibility
                 try:
                     new_event["Date Of Event"] = datetime.combine(event_date, datetime.min.time()).isoformat() + "Z"
                 except Exception:
@@ -1596,41 +1583,23 @@ async def create_event(event: EventCreate):
 
                 try:
                     print(f"[RECURRING CREATE] Preparing to insert recurring event -> day: {day.capitalize()}, date: {event_date.isoformat()}, eventName: {new_event.get('Event Name') or new_event.get('eventName')}")
-                    print(f"[RECURRING CREATE] New event _id (pre-insert): {str(new_event['_id'])}, UUID: {series_uuid}")
                 except Exception as _log_err:
                     print(f"[RECURRING CREATE] Debug log error: {_log_err}")
 
-                result = await events_collection.insert_one(new_event)
-                # Log DB result for debugging (inserted id and created date)
-                try:
-                    inserted_id = result.inserted_id if result and hasattr(result, "inserted_id") else None
-                    print(f"[RECURRING CREATE] Inserted recurring event -> _id: {inserted_id}, date: {event_date.isoformat()}, eventName: {new_event.get('Event Name') or new_event.get('eventName')}")
-                except Exception as _log_err:
-                    print(f"[RECURRING CREATE] Post-insert log error: {_log_err}")
+                recurring_result = await events_collection.insert_one(new_event)
+                created_ids.append(str(recurring_result.inserted_id))
 
-                created_ids.append(str(result.inserted_id))
-
+            # Fetch the first created event for response
+            created_event = await events_collection.find_one({"_id": result.inserted_id})
+            
             return {
                 "success": True,
-                "message": "Recurring events created successfully (next occurrences)",
+                "message": "Recurring events created successfully",
                 "created_event_ids": created_ids,
-                "count": len(created_ids)
+                "count": len(created_ids),
+                "event": {**created_event, "_id": str(created_event["_id"])} if created_event else None
             }
 
-        # ELSE → Single event
-        created_event = await events_collection.find_one({"_id": result.inserted_id})
-
-        return {
-            "success": True,
-            "message": "Event created successfully",
-            "id": str(result.inserted_id),
-            "event": {**created_event, "_id": str(created_event["_id"])}
-        }
-
-        # 4. Save to Database
-        print("Saving eventLeaderEmail:", event_data.get("eventLeaderEmail"))
-
-        result = await events_collection.insert_one(event_data)
         created_event = await events_collection.find_one({"_id": result.inserted_id})
         
         return {
@@ -1642,9 +1611,9 @@ async def create_event(event: EventCreate):
 
     except Exception as e:
         print(f"Error creating event: {str(e)}")
-        if isinstance(e, HTTPException): raise e
+        if isinstance(e, HTTPException): 
+            raise e
         raise HTTPException(status_code=500, detail=str(e))
-
 
 def convert_event_for_display(event):
     """
@@ -1660,8 +1629,6 @@ def convert_event_for_display(event):
         if sast_dt:
             event['display_date'] = format_display_date(sast_dt)
     
-    # Times are already in SAST format (HH:MM), no conversion needed
-    # Just ensure both fields are populated
     if event.get('Time') and not event.get('time'):
         event['time'] = event['Time']
     elif event.get('time') and not event.get('Time'):
@@ -1729,7 +1696,7 @@ async def get_cell_events(
         else:
             user_name = user_name_from_token
             
-        print(f"🔍 Leader at 12 user name resolved as: {user_name}")
+        print(f" Leader at 12 user name resolved as: {user_name}")
 
         query = {
             "$and": [
@@ -2043,7 +2010,7 @@ async def get_cell_events(
                         "date": exact_date,
                         "display_date": instance_date.strftime("%d - %m - %Y"),
                         "location": event.get("Location") or event.get("location", ""),
-                        "attendees": attendees,
+                        "attendees": attendees if event_status == "complete" else [],
                         "persistent_attendees": event.get("persistent_attendees", []),
                         "hasPersonSteps": True,
                         "status": event_status,
@@ -2156,12 +2123,12 @@ async def get_weekly_attendance(
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=500),
     status: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
-    start_date: Optional[str] = Query("2025-10-10"),
+    start_date: Optional[str] = Query("2024-01-01"),
     end_date: Optional[str] = Query(None)
 ):
     try:
@@ -2172,16 +2139,18 @@ async def get_other_events(
         timezone = pytz.timezone("Africa/Johannesburg")
         today = datetime.now(timezone).date()
 
+        # Parse start and end dates
         try:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime("2000-01-01", "%Y-%m-%d").date()
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime("2024-01-01", "%Y-%m-%d").date()
         except:
-            start_dt = datetime.strptime("2000-01-01", "%Y-%m-%d").date()
+            start_dt = datetime.strptime("2024-01-01", "%Y-%m-%d").date()
 
         try:
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today + timedelta(days=365)
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today
         except:
-            end_dt = today + timedelta(days=365)
+            end_dt = today
 
+        # Base query: exclude all cells events
         query = {
             "$nor": [
                 {"Event Type": {"$regex": "^cells$", "$options": "i"}},
@@ -2190,6 +2159,7 @@ async def get_other_events(
             ]
         }
 
+        # Role-based visibility filter
         if user_role not in ["admin", "leaderat12", "registrant"]:
             visibility_filter = {
                 "$or": [
@@ -2204,6 +2174,7 @@ async def get_other_events(
             }
             query = {"$and": [query, visibility_filter]}
 
+        # Personal filter
         if personal:
             personal_filter = {
                 "$or": [
@@ -2215,6 +2186,7 @@ async def get_other_events(
             }
             query = {"$and": [query, personal_filter]}
 
+        # Event type filter
         if event_type and event_type.lower() not in ["all", "cells"]:
             event_type_filter = {
                 "$or": [
@@ -2225,6 +2197,7 @@ async def get_other_events(
             }
             query = {"$and": [query, event_type_filter]}
 
+        # Search filter
         if search and search.strip():
             safe = re.escape(search.strip())
             search_filter = {
@@ -2242,11 +2215,10 @@ async def get_other_events(
             query = {"$and": [query, search_filter]}
 
         cursor = events_collection.find(query)
-        events = await cursor.to_list(length=1000)
-
+        raw_events = await cursor.to_list(length=2000)
         results = []
 
-        for e in events:
+        for e in raw_events:
             try:
                 event_date = None
                 dt_raw = e.get("date") or e.get("Date Of Event") or e.get("eventDate") or e.get("startDate")
@@ -2267,14 +2239,24 @@ async def get_other_events(
                 if not event_date:
                     continue
 
-                if event_date < start_dt or event_date > end_dt:
+                # Only include events that are today or in the past
+                if event_date > today:
                     continue
 
-                if event_date > today:
+                # Date range filter
+                if event_date < start_dt or event_date > end_dt:
                     continue
 
                 exact_date_str = event_date.isoformat()
 
+                # Global and ticketed flags
+                raw_global = e.get("isGlobal")
+                is_global = raw_global is True or str(raw_global).lower() == "true"
+                raw_ticketed = e.get("isTicketed")
+                is_ticketed = raw_ticketed is True or str(raw_ticketed).lower() == "true"
+
+                # Attendance & status
+                main_status = str(e.get("status", "")).lower().strip()
                 attendance_data = e.get("attendance", {})
                 if not isinstance(attendance_data, dict):
                     attendance_data = {}
@@ -2282,49 +2264,48 @@ async def get_other_events(
                 if not isinstance(date_attendance, dict):
                     date_attendance = {}
 
-                main_status = str(e.get("status", "")).lower()
-                ev_status = "incomplete"
-
-                if date_attendance:
-                    att_status = str(date_attendance.get("status", "")).lower()
-                    if att_status == "did_not_meet" or date_attendance.get("is_did_not_meet"):
-                        ev_status = "did_not_meet"
-                    elif att_status in ["complete", "closed"] or len(date_attendance.get("attendees", [])) > 0:
-                        ev_status = "complete"
-                else:
+                # Determine status
+                if is_global:
                     if main_status in ["complete", "closed"]:
                         ev_status = "complete"
-                    elif main_status == "did_not_meet":
+                    elif main_status in ["cancelled"]:
+                        ev_status = "cancelled"
+                    elif main_status in ["did_not_meet"]:
                         ev_status = "did_not_meet"
+                    else:
+                        ev_status = "incomplete"
+                else:
+                    ev_status = "incomplete"
+                    if date_attendance:
+                        att_status = str(date_attendance.get("status", "")).lower()
+                        if att_status == "did_not_meet" or date_attendance.get("is_did_not_meet"):
+                            ev_status = "did_not_meet"
+                        elif att_status in ["complete", "closed"] or len(date_attendance.get("attendees", [])) > 0:
+                            ev_status = "complete"
+                    else:
+                        if main_status in ["complete", "closed"]:
+                            ev_status = "complete"
+                        elif main_status == "did_not_meet":
+                            ev_status = "did_not_meet"
 
+                # Apply status filter
                 if status and status != ev_status:
                     continue
 
-                is_overdue = event_date < today and ev_status == "incomplete"
-
-                raw_global = e.get("isGlobal")
-                is_global = raw_global is True or str(raw_global).lower() == "true"
-
-                raw_ticketed = e.get("isTicketed")
-                is_ticketed = raw_ticketed is True or str(raw_ticketed).lower() == "true"
-
-                # --- Attendees list ---
+                # Attendees
                 attendees_list = e.get("attendees", [])
                 if not isinstance(attendees_list, list):
                     attendees_list = []
-
-                # Also check inside date_attendance for attendees
                 if not attendees_list and date_attendance:
                     attendees_list = date_attendance.get("attendees", [])
                 if not isinstance(attendees_list, list):
                     attendees_list = []
 
-                # --- Persistent attendees ---
+                # Persistent attendees
                 persistent_attendees = e.get("persistent_attendees", [])
                 if not isinstance(persistent_attendees, list):
                     persistent_attendees = []
 
-                # Clean persistent attendees to ensure correct shape
                 cleaned_persistent = []
                 for p in persistent_attendees:
                     if isinstance(p, dict):
@@ -2338,27 +2319,30 @@ async def get_other_events(
                             "leader144": p.get("leader144", ""),
                         })
 
-                # --- new_people / consolidations ---
+                # New people & consolidations
                 new_people_list = e.get("new_people", [])
                 if not isinstance(new_people_list, list):
                     new_people_list = []
-
                 consolidations_list = e.get("consolidations", [])
                 if not isinstance(consolidations_list, list):
                     consolidations_list = []
 
-                # --- Day name ---
+                # Day name
                 day_name_raw = e.get("Day") or e.get("day") or e.get("eventDay") or ""
                 day_name = str(day_name_raw).strip()
                 if not day_name:
-                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                     day_name = days[event_date.weekday()]
 
-                # --- Statistics from date attendance ---
                 date_stats = date_attendance.get("statistics", {})
                 if not isinstance(date_stats, dict):
                     date_stats = {}
 
+                # Skip inactive events
+                if e.get("is_active") is False:
+                    continue
+
+                # Build final result
                 result_item = {
                     "_id": str(e["_id"]),
                     "UUID": e.get("UUID", ""),
@@ -2379,36 +2363,36 @@ async def get_other_events(
                     "leader12": e.get("Leader @12") or e.get("Leader at 12", ""),
                     "is_recurring": bool(e.get("recurring_day", [])),
                     "recurring_days": e.get("recurring_day", []),
-
-                    # Persistent attendees - key fix
                     "persistent_attendees": cleaned_persistent,
                     "total_associated_count": len(cleaned_persistent),
-
-                    # Attendance data
                     "attendance": attendance_data,
                     "attendees": attendees_list,
                     "attendance_data": date_attendance,
-
-                    # Stats
+                    "new_people": new_people_list,
+                    "consolidations": consolidations_list,
+                    "total_attendance": len(attendees_list),
+                    "new_people_count": len(new_people_list),
+                    "consolidation_count": len(consolidations_list),
                     "checked_in_count": date_attendance.get("checked_in_count", len(attendees_list)),
                     "decisions": date_stats.get("decisions", {}),
                     "total_associated": date_stats.get("total_associated", len(cleaned_persistent)),
                     "last_attendance_count": e.get("last_attendance_count", 0),
                     "last_decisions_count": e.get("last_decisions_count", 0),
                     "last_attendance_breakdown": e.get("last_attendance_breakdown", {}),
-
+                    "is_today": event_date == today,
+                    "is_past": event_date < today,
+                    "has_attendance": bool(attendees_list),
                     "_sort_date": exact_date_str,
                 }
-                if e.get("is_active","") == False:
-                    continue
 
                 results.append(result_item)
 
-            except:
+            except Exception as inner_err:
+                print(f"[eventsdata] Skipping event {e.get('_id', 'unknown')}: {inner_err}")
                 continue
 
+        # Sort newest first
         results.sort(key=lambda x: x["_sort_date"], reverse=True)
-
         for item in results:
             item.pop("_sort_date", None)
 
@@ -2424,7 +2408,8 @@ async def get_other_events(
             "page_size": limit,
         }
 
-    except Exception:
+    except Exception as e:
+        print(f"[eventsdata] Outer error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch events")
     
 @app.put("/events/cells/{identifier}")
@@ -2537,7 +2522,6 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             'total_attendance'   
         ]
         
-        # Other fields - but skip protected ones
         for key, value in event_data.items():
             if key not in protected_fields:
                 update_fields[key] = value
@@ -4333,7 +4317,7 @@ async def get_global_events(
                 continue
        
         print(f"Processed {len(processed_events)} global events after filtering")
-        print(f"🆕 New events since last update: {new_events_count}")
+        print(f" New events since last update: {new_events_count}")
        
         
         processed_events.sort(key=lambda x: x['date'], reverse=True)
@@ -5378,7 +5362,6 @@ async def get_leader_at_1_for_leader_at_144(leader_at_144_name: str) -> str:
    
     print(f"Getting Leader at 1 for Leader @144: {leader_at_144_name}")
    
-    #  Try to find the person by Name (their own record)
     person = await people_collection.find_one({
         "$or": [
             {"Name": {"$regex": f"^{leader_at_144_name}$", "$options": "i"}},
@@ -5708,7 +5691,6 @@ async def get_cell_events_optimized(
                 days_since_monday = today.weekday()
                 week_start = today - timedelta(days=days_since_monday)
                 current_week_instance = week_start + timedelta(days=target_weekday)
-# ...existing code...
 
                 for week_back in range(0, weeks_to_check):
                     instance_date = current_week_instance - timedelta(weeks=week_back)
@@ -5869,10 +5851,8 @@ async def submit_attendance(
         if extracted_date:
             event_date_local = timezone.localize(datetime.combine(extracted_date, datetime.min.time()))
         else:
-            # Try to get date from event in various possible fields
             event_date = None
             
-            # Check different date field names
             for date_field in ["date", "Date Of Event", "eventDate", "startDate"]:
                 if date_field in event:
                     date_val = event[date_field]
@@ -5914,16 +5894,18 @@ async def submit_attendance(
         persistent_attendees = submission.get('persistent_attendees', [])
         did_not_meet = submission.get('did_not_meet', False)
         manual_headcount = submission.get('headcount', 0)
+        is_ticketed = submission.get('isTicketed', False)
         
         try:
             manual_headcount = int(manual_headcount) if manual_headcount else 0
         except:
             manual_headcount = 0
         
+        #  persistent_attendees_dict now preserves ticket fields
         persistent_attendees_dict = []
         for attendee in persistent_attendees:
             if isinstance(attendee, dict):
-                persistent_attendees_dict.append({
+                persistent_entry = {
                     "id": attendee.get("id", ""),
                     "name": attendee.get("name", ""),
                     "fullName": attendee.get("fullName", attendee.get("name", "")),
@@ -5931,8 +5913,15 @@ async def submit_attendance(
                     "phone": attendee.get("phone", ""),
                     "leader12": attendee.get("leader12", ""),
                     "leader144": attendee.get("leader144", ""),
-                    "isPersistent": True
-                })
+                    "isPersistent": True,
+                }
+                # Always save ticket fields — harmless empty strings on non-ticketed
+                persistent_entry["priceName"] = attendee.get("priceName", "")
+                persistent_entry["price"] = attendee.get("price", 0)
+                persistent_entry["ageGroup"] = attendee.get("ageGroup", "")
+                persistent_entry["paymentMethod"] = attendee.get("paymentMethod", "")
+
+                persistent_attendees_dict.append(persistent_entry)
         
         checked_in_attendees = []
         first_time_count = 0
@@ -5949,8 +5938,13 @@ async def submit_attendance(
                     "leader12": att.get("leader12", ""),
                     "leader144": att.get("leader144", ""),
                     "checked_in": True,
-                    "check_in_date": datetime.now(timezone).isoformat(),
-                    "isPersistent": att.get("isPersistent", False)
+                    # "check_in_date": datetime.now(timezone).isoformat(),
+                    "isPersistent": att.get("isPersistent", False),
+                    # priceName takes priority, falls back to priceTier for old data
+                    "priceName": att.get("priceName") or att.get("priceTier") or "",
+                    "price": att.get("price", 0),
+                    "ageGroup": att.get("ageGroup", ""),
+                    "paymentMethod": att.get("paymentMethod", ""),
                 }
                 
                 decision = att.get("decision", "")
@@ -5987,18 +5981,13 @@ async def submit_attendance(
         weekly_attendance_entry = {
             "status": date_status,
             "attendees": checked_in_attendees if has_attendance else [],
-            "submitted_at": now,
-            "submitted_by": user_email,
-            "submitted_by_name": user_name,
-            "submitted_date": now.isoformat(),
-            "event_date": event_date_local.isoformat(),
+            
             "event_date_iso": exact_date_str,
-            "event_date_exact": exact_date_str,
             "persistent_attendees": persistent_attendees_dict if has_attendance else [],
             "is_did_not_meet": (date_status == "did_not_meet"),
             "checked_in_count": weekly_attendance,
             "total_headcounts": manual_headcount,
-            "captured_by_leader_at_12": is_disciples_leader,
+            "is_ticketed": is_ticketed,
             "statistics": {
                 "total_associated": total_associated,
                 "weekly_attendance": weekly_attendance,
@@ -6011,7 +6000,6 @@ async def submit_attendance(
             }
         }
         
-        # Prepare update fields - these are common for all event types
         cell_update_fields = {
             "updated_at": now,
             "last_attendance_count": weekly_attendance,
@@ -6035,6 +6023,7 @@ async def submit_attendance(
                 "total": total_decisions,
                 "date": exact_date_str,
             }
+            #  last_attendance_data also gets ticket fields via checked_in_attendees
             cell_update_fields["last_attendance_data"] = {
                 "attendees": checked_in_attendees,
                 "count": weekly_attendance,
@@ -6043,10 +6032,10 @@ async def submit_attendance(
             }
         
         if persistent_attendees_dict:
+            #  Top-level persistent_attendees now has ticket fields too
             cell_update_fields["persistent_attendees"] = persistent_attendees_dict
             cell_update_fields["total_associated_count"] = len(persistent_attendees_dict)
         
-        # Also update the event status field
         cell_update_fields["status"] = date_status
         
         update_data = {
@@ -6080,8 +6069,8 @@ async def submit_attendance(
         raise
     except Exception as e:
         print(f"Error submitting attendance: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") 
+
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),
@@ -6104,7 +6093,12 @@ async def update_persistent_attendees(
                     "email": attendee.get("email", ""),
                     "phone": attendee.get("phone", ""),
                     "leader12": attendee.get("leader12", ""),
-                    "leader144": attendee.get("leader144", "")
+                    "leader144": attendee.get("leader144", ""),
+                    # Ticket fields — always preserve, harmless when empty
+                    "priceName": attendee.get("priceName", ""),
+                    "price": attendee.get("price", 0),
+                    "ageGroup": attendee.get("ageGroup", ""),
+                    "paymentMethod": attendee.get("paymentMethod", ""),
                 })
         
         result = await events_collection.update_one(
@@ -6133,33 +6127,134 @@ async def update_persistent_attendees(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
     event_id: str = Path(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get persistent attendees for an event"""
     try:
-        if not ObjectId.is_valid(event_id):
+        actual_event_id = event_id.split("_")[0] if "_" in event_id else event_id
+        date_from_id = event_id.split("_")[1] if "_" in event_id else None
+
+        if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
         
         event = await events_collection.find_one(
-            {"_id": ObjectId(event_id)},
-            {"persistent_attendees": 1, "Event Name": 1}
+            {"_id": ObjectId(actual_event_id)},
+            {
+                "persistent_attendees": 1,
+                "Event Name": 1,
+                "eventName": 1,
+                "isTicketed": 1,
+                "priceTiers": 1,
+                "attendance": 1,
+                "status": 1,
+                "date": 1,
+                "total_headcounts": 1,
+            }
         )
         
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
+        raw_persistent = event.get("persistent_attendees", [])
+        cleaned = []
+        for p in raw_persistent:
+            if isinstance(p, dict):
+                cleaned.append({
+                    "id": str(p.get("id", p.get("_id", ""))),
+                    "name": p.get("fullName") or p.get("name", ""),
+                    "fullName": p.get("fullName") or p.get("name", ""),
+                    "email": p.get("email", ""),
+                    "phone": p.get("phone", ""),
+                    "leader12": p.get("leader12", ""),
+                    "leader144": p.get("leader144", ""),
+                    "priceName": p.get("priceName", ""),
+                    "price": p.get("price", 0),
+                    "ageGroup": p.get("ageGroup", ""),
+                    "paymentMethod": p.get("paymentMethod", ""),
+                })
+        
+        attendance_map = event.get("attendance", {})
+
+        if date_from_id:
+            event_date = date_from_id
+        else:
+            event_date = event.get("date", "")
+            if isinstance(event_date, datetime):
+                event_date = event_date.date().isoformat()
+            elif isinstance(event_date, str):
+                event_date = event_date.split("T")[0].split(" ")[0].strip()
+
+        print(f" event_date looking for: {event_date}")
+        print(f" attendance_map keys: {list(attendance_map.keys()) if isinstance(attendance_map, dict) else 'NOT A DICT'}")
+
+        checked_in_attendees = []
+        headcount = 0
+        attendance_status = "incomplete"
+
+        if isinstance(attendance_map, dict) and attendance_map:
+            date_entry = attendance_map.get(event_date, {})
+
+            print(f" date_entry found: {bool(date_entry)}")
+
+            # ✅ BUG 1 FIX: if exact date not found, search all keys for matching date
+            if not date_entry:
+                for key, value in attendance_map.items():
+                    if isinstance(value, dict):
+                        if (value.get("event_date_iso") == event_date or
+                            value.get("event_date_exact") == event_date or
+                            key == event_date):
+                            date_entry = value
+                            print(f" Found date_entry via fallback key: {key}")
+                            break
+
+            if isinstance(date_entry, dict) and date_entry:
+                raw_attendees = date_entry.get("attendees", [])
+                headcount = date_entry.get("total_headcounts", 0)
+                attendance_status = date_entry.get("status", "incomplete")
+
+                print(f" attendance_status from date_entry: {attendance_status}")
+                print(f" raw_attendees count: {len(raw_attendees)}")
+
+                for a in raw_attendees:
+                    if isinstance(a, dict):
+                        checked_in_attendees.append({
+                            "id": a.get("id", ""),
+                            "name": a.get("fullName") or a.get("name", ""),
+                            "fullName": a.get("fullName") or a.get("name", ""),
+                            "email": a.get("email", ""),
+                            "phone": a.get("phone", ""),
+                            "leader12": a.get("leader12", ""),
+                            "leader144": a.get("leader144", ""),
+                            "checked_in": True,
+                            "decision": a.get("decision", ""),
+                            "priceName": a.get("priceName", ""),
+                            "price": a.get("price", 0),
+                            "ageGroup": a.get("ageGroup", ""),
+                            "paymentMethod": a.get("paymentMethod", ""),
+                        })
+            else:
+                # ✅ BUG 2 FIX: was returning early inside else, cutting off the final return
+                attendance_status = "incomplete"
+                checked_in_attendees = []
+                headcount = 0
+
+        # ✅ Single return at the end — always reached
         return {
-            "persistent_attendees": event.get("persistent_attendees", []),
-            "event_name": event.get("Event Name", "Unknown")
+            "persistent_attendees": cleaned,
+            "checked_in_attendees": checked_in_attendees,
+            "attendance_status": attendance_status,
+            "total_headcounts": headcount,
+            "event_name": event.get("eventName") or event.get("Event Name", "Unknown"),
+            "is_ticketed": event.get("isTicketed", False),
+            "price_tiers": event.get("priceTiers", []),
         }
         
     except Exception as e:
         print(f"Error getting persistent attendees: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(
     event_id: str = Path(...),
@@ -6373,7 +6468,6 @@ async def get_leader_cells(email: str):
     - Leader @144 sees their own cells + their Leader @12 + Leader @1
     """
     try:
-        # STEP 1: Find the user in the people database
         person = await people_collection.find_one({"Email": {"$regex": f"^{email}$", "$options": "i"}})
         if not person:
             return {"error": "Person not found", "email": email}
@@ -6381,7 +6475,6 @@ async def get_leader_cells(email: str):
         user_name = f"{person.get('Name','')} {person.get('Surname','')}".strip()
         user_gender = (person.get("Gender") or "").lower().strip()
 
-        # Helper function to get Leader @1 based on gender
         async def leader_at_1_for(name: str) -> str:
             if not name:
                 return ""
@@ -6833,42 +6926,40 @@ def format_user_response(user):
         "profile_picture": user.get("profile_picture", ""),
     }
 
-# Debug endpoint
-@app.put("/profile/{user_id}/debug")
-async def debug_profile_update(
-    user_id: str,
-    request: Request,
-    current_user: dict = Depends(get_current_user)
-):
-    """Debug endpoint to see what's happening"""
-    try:
-        body = await request.body()
-        body_str = body.decode('utf-8')
+# @app.put("/profile/{user_id}/debug")
+# async def debug_profile_update(
+#     user_id: str,
+#     request: Request,
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """Debug endpoint to see what's happening"""
+#     try:
+#         body = await request.body()
+#         body_str = body.decode('utf-8')
        
-        return {
-            "message": "Debug info",
-            "user_id_from_url": user_id,
-            "user_id_from_token": current_user.get("user_id"),
-            "authorized": current_user.get("user_id") == user_id,
-            "raw_body": body_str,
-            "current_user_email": current_user.get("email")
-        }
-    except Exception as e:
-        return {"error": str(e)}
+#         return {
+#             "message": "Debug info",
+#             "user_id_from_url": user_id,
+#             "user_id_from_token": current_user.get("user_id"),
+#             "authorized": current_user.get("user_id") == user_id,
+#             "raw_body": body_str,
+#             "current_user_email": current_user.get("email")
+#         }
+#     except Exception as e:
+#         return {"error": str(e)}
 
-# Test endpoint
-@app.get("/profile/{user_id}/test")
-async def test_profile_access(
-    user_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Test if profile access works"""
-    return {
-        "message": "Profile test",
-        "user_id": user_id,
-        "current_user": current_user.get("user_id"),
-        "authorized": current_user.get("user_id") == user_id
-    }
+# @app.get("/profile/{user_id}/test")
+# async def test_profile_access(
+#     user_id: str,
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """Test if profile access works"""
+#     return {
+#         "message": "Profile test",
+#         "user_id": user_id,
+#         "current_user": current_user.get("user_id"),
+#         "authorized": current_user.get("user_id") == user_id
+#     }
    
 
 @app.post("/users/{user_id}/avatar")
@@ -6990,7 +7081,7 @@ async def get_people(
 
         # Construct the query based on provided parameters
         if name:
-            query["Name"] = {"$regex": name, "$options": "i"}
+            query["$or"] = [{"Name":{"$regex": name, "$options": "i"}},{"Surname":{"$regex": name, "$options": "i"}}]
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
@@ -7054,6 +7145,71 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@app.get("/people/search-fast")
+async def search_people_fast(
+    query: str = Query(..., min_length=2),
+    limit: int = Query(25, le=50)
+):
+    """
+    FAST search endpoint for autocomplete - optimized for signup form
+    Uses simple regex matching and returns minimal fields
+    """
+    try:
+        if not query or len(query) < 2:
+            return {"results": []}
+       
+        # Simple regex search on name fields - much faster than complex queries
+        search_regex = {"$regex": query.strip(), "$options": "i"}
+       
+        # Only fetch essential fields for autocomplete
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Phone": 1,
+            "Leader @1": 1,
+            "Leader @12": 1,
+            "Leader @144": 1,
+            "Leader @1728": 1
+        }
+       
+        cursor = people_collection.find({
+            "$or": [
+                {"Name": search_regex},
+                {"Surname": search_regex},
+                {"Email": search_regex},
+                {"$expr": {
+                    "$regexMatch": {
+                        "input": {"$concat": ["$Name", " ", "$Surname"]},
+                        "regex": query.strip(),
+                        "options": "i"
+                    }
+                }}
+            ]
+        }, projection).limit(limit)
+       
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+       
+        return {"results": results}
+       
+    except Exception as e:
+        print(f"Error in fast search: {e}")
+        return {"results": []}
+       
 
 @app.get("/people/{person_id}")
 async def get_person_by_id(person_id: str = Path(...)):
@@ -7584,70 +7740,6 @@ async def delete_person_with_cache_invalidation(
         print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/search-fast")
-async def search_people_fast(
-    query: str = Query(..., min_length=2),
-    limit: int = Query(25, le=50)
-):
-    """
-    FAST search endpoint for autocomplete - optimized for signup form
-    Uses simple regex matching and returns minimal fields
-    """
-    try:
-        if not query or len(query) < 2:
-            return {"results": []}
-       
-        # Simple regex search on name fields - much faster than complex queries
-        search_regex = {"$regex": query.strip(), "$options": "i"}
-       
-        # Only fetch essential fields for autocomplete
-        projection = {
-            "_id": 1,
-            "Name": 1,
-            "Surname": 1,
-            "Email": 1,
-            "Phone": 1,
-            "Leader @1": 1,
-            "Leader @12": 1,
-            "Leader @144": 1,
-            "Leader @1728": 1
-        }
-       
-        cursor = people_collection.find({
-            "$or": [
-                {"Name": search_regex},
-                {"Surname": search_regex},
-                {"Email": search_regex},
-                {"$expr": {
-                    "$regexMatch": {
-                        "input": {"$concat": ["$Name", " ", "$Surname"]},
-                        "regex": query.strip(),
-                        "options": "i"
-                    }
-                }}
-            ]
-        }, projection).limit(limit)
-       
-        results = []
-        async for person in cursor:
-            results.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
-            })
-       
-        return {"results": results}
-       
-    except Exception as e:
-        print(f"Error in fast search: {e}")
-        return {"results": []}
-
 @app.get("/people/all-minimal")
 async def get_all_people_minimal():
     """
@@ -7893,6 +7985,47 @@ async def create_task_type(task: TaskTypeIn):
         return task_type_serializer(created)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+class TaskTypeUpdate(BaseModel):
+    name: str
+
+@app.put("/tasktypes/{tasktype_id}")
+async def update_task_type(tasktype_id: str, update_data: TaskTypeUpdate):
+    try:
+        oid = ObjectId(tasktype_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+    updated = await tasktypes_collection.find_one_and_update(
+        {"_id": oid},
+        {"$set": {"name": update_data.name.strip()}},
+        return_document=True  # important – return the updated doc
+    )
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Task type not found")
+
+    # Convert ObjectId to string for frontend
+    updated["_id"] = str(updated["_id"])
+    return {"message": "Task type updated", "taskType": updated}
+
+
+@app.delete("/tasktypes/{tasktype_id}")
+async def delete_task_type(tasktype_id: str):
+    try:
+        oid = ObjectId(tasktype_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+    deleted = await tasktypes_collection.find_one_and_delete(
+        {"_id": oid}
+    )
+    print(deleted)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task type not found")
+
+    return {"message": "Task type deleted successfully"}       
 
 # Helper to convert ObjectId to string
 def serialize_doc(doc):
@@ -8313,14 +8446,30 @@ async def create_user(
     
 @app.get("/admin/users", response_model=UserList)
 async def get_all_users(current_user: dict = Depends(get_current_user)):
-    """Get all users - Admin only"""
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+
+    projection = {
+        "name": 1,
+        "surname": 1,
+        "email": 1,
+        "role": 1,
+        "date_of_birth": 1,
+        "phone_number": 1,
+        "address": 1,
+        "gender": 1,
+        "invitedBy": 1,
+        "leader12": 1,
+        "leader144": 1,
+        "leader1728": 1,
+        "stage": 1,
+        "created_at": 1
+    }
+
     try:
         users = []
-        cursor = users_collection.find({})
-       
+        cursor = users_collection.find({}, projection).batch_size(1000)
+
         async for user in cursor:
             users.append(UserListResponse(
                 id=str(user["_id"]),
@@ -8339,13 +8488,10 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
                 stage=user.get("stage"),
                 created_at=user.get("created_at")
             ))
-       
+
         return UserList(users=users)
-       
+
     except Exception as e:
-        import traceback
-        print(f"ERROR: {str(e)}")
-        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
   
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)

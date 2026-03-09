@@ -41,7 +41,7 @@ class Attendee(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     decision: Optional[str] = None
-    
+    priceName: Optional[str] = None
     priceTier: Optional[str] = None
     price: Optional[float] = None
     ageGroup: Optional[str] = None
@@ -50,10 +50,10 @@ class Attendee(BaseModel):
     paid: Optional[float] = None
     owing: Optional[float] = None
 
-    @field_validator("fullName", mode="before")
-    def set_fullname(cls, v, info):
-        if not v and info.data.get("name"):
-            return info.data.get("name")
+    @field_validator("priceName", mode="before")
+    def set_price_name(cls, v, info):
+        if not v and info.data.get("priceTier"):
+            return info.data.get("priceTier")
         return v
 
 # ===== IMPROVED AttendanceSubmission Model =====
@@ -122,7 +122,7 @@ class EventBase(BaseModel):
     eventLeader: Optional[str] = None
     description: Optional[str] = None
     isTicketed: bool = False
-    price: Optional[float] = None
+    priceTiers: List[dict] = Field(default_factory=list)
     userEmail: Optional[str] = None
     isGlobal: Optional[bool] = None  
     hasPersonSteps: Optional[bool] = None  
@@ -164,7 +164,6 @@ class EventUpdate(BaseModel):
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
     deactivation_reason: Optional[str] = None
-
 class CellDeactivateRequest(BaseModel):
     weeks: int = Field(1, ge=1, le=12, description="Number of weeks to deactivate (1-12)")
     reason: Optional[str] = Field(None, max_length=200, description="Reason for deactivation")
