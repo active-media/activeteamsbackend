@@ -10314,7 +10314,8 @@ async def get_dashboard_comprehensive(
                                 "$and": [
                                     {"$ne": ["$followup_date", None]},
                                     {"$gte": ["$followup_date", start]},
-                                    {"$lte": ["$followup_date", end]}
+                                    {"$lte": ["$followup_date", end]},
+                                    {"$not": "$is_completed"}
                                 ]
                             },
                             True,
@@ -10591,6 +10592,8 @@ async def get_dashboard_comprehensive(
             "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
             "total_unique_task_types": len(unique_task_types_found),
             "note": f"'no answer' and 'Awaiting Call' task types are excluded from completed counts"
+
+            
         }
 
         return {
@@ -10652,7 +10655,8 @@ async def get_dashboard_quick_stats(
 
         
         tasks_due_in_period = await tasks_collection.count_documents({
-            "followup_date": {"$gte": start, "$lte": end}
+            "followup_date": {"$gte": start, "$lte": end},
+            "status": {"$nin": ["completed", "done", "closed", "finished"]}
         })
 
         
@@ -10662,6 +10666,13 @@ async def get_dashboard_quick_stats(
             "taskType": {"$nin": EXCLUDED_TASK_TYPES_FROM_COMPLETED}
         })
 
+        total_tasks_in_period = await tasks_collection.count_documents({
+    "$or": [
+        {"followup_date": {"$gte": start, "$lte": end}},
+        {"completedAt": {"$gte": start, "$lte": end}},
+        {"createdAt": {"$gte": start, "$lte": end}}
+    ]
+})
         
         total_completed = await tasks_collection.count_documents({
             "status": {"$in": ["completed", "done", "closed", "finished"]},
