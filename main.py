@@ -6776,6 +6776,7 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "profile_picture": user.get("profile_picture", ""),
     }
 
+# Updating profile screen - only accessible by the user themselves, requires auth token with user_id
 @app.put("/profile/{user_id}")
 async def update_profile(
     user_id: str,
