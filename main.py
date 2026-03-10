@@ -2526,29 +2526,6 @@ async def get_other_events(
         print(f"[eventsdata] Outer error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch events")
 
-
-# Helper to keep the endpoint clean
-# def _clean_persistent(persistent_attendees):
-#     if not isinstance(persistent_attendees, list):
-#         return []
-#     cleaned = []
-#     for p in persistent_attendees:
-#         if isinstance(p, dict):
-#             cleaned.append({
-#                 "id": str(p.get("id", p.get("_id", ""))),
-#                 "fullName": p.get("fullName") or p.get("name", ""),
-#                 "name": p.get("fullName") or p.get("name", ""),
-#                 "email": p.get("email", ""),
-#                 "phone": p.get("phone", ""),
-#                 "leader12": p.get("leader12", ""),
-#                 "leader144": p.get("leader144", ""),
-#             })
-#     return cleaned
-
-#     except Exception as e:
-#         print(f"Failed to clean persistent: {e}")
-#         raise HTTPException(status_code=500, detail="Failed clean events")
-
 @app.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
     """
