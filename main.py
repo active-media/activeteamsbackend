@@ -7065,18 +7065,28 @@ async def change_password(
 @app.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
-    perPage: int = Query(100, ge=0),  # Allow 0 to fetch all
+    perPage: int = Query(100, ge=0),
     name: Optional[str] = None,
     gender: Optional[str] = None,
     dob: Optional[str] = None,
     location: Optional[str] = None,
     leader: Optional[str] = None,
-    stage: Optional[str] = None
+    stage: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
 ):
     try:
-        query = {}
+        org_id = (
+            current_user.get("org_id") or
+            current_user.get("organization", "").lower().replace(" ", "-") or
+            "active-teams"
+        )
 
-        # Construct the query based on provided parameters
+        # Get org config to know hierarchy fields
+        org_config = await org_config_collection.find_one({"_id": org_id})
+        hierarchy = org_config.get("hierarchy", []) if org_config else []
+        hierarchy_fields = [h.get("field") for h in hierarchy if h.get("field")]
+
+        query = {"org_id": org_id}
         if name:
             query["Name"] = {"$regex": name, "$options": "i"}
         if gender:
@@ -7091,24 +7101,24 @@ async def get_people(
                 {"Leader @12": {"$regex": leader, "$options": "i"}},
                 {"Leader @144": {"$regex": leader, "$options": "i"}},
                 {"Leader @1728": {"$regex": leader, "$options": "i"}}
+            ] + [
+                {field: {"$regex": leader, "$options": "i"}}
+                for field in hierarchy_fields
             ]
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
-        # Handle pagination or fetch all
         if perPage == 0:
-            # Fetch all documents
             cursor = people_collection.find(query)
         else:
-            # Paginated fetch
             skip = (page - 1) * perPage
             cursor = people_collection.find(query).skip(skip).limit(perPage)
 
         people_list = []
         async for person in cursor:
             person["_id"] = str(person["_id"])
-           
-            # Map to consistent field names with all leader fields included
+
+            # Base fields
             mapped = {
                 "_id": person["_id"],
                 "Name": person.get("Name", ""),
@@ -7119,30 +7129,160 @@ async def get_people(
                 "Gender": person.get("Gender", ""),
                 "Birthday": person.get("Birthday", ""),
                 "InvitedBy": person.get("InvitedBy", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", ""),
                 "Stage": person.get("Stage", "Win"),
+                "org_id": person.get("org_id", ""),
                 "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
             }
+
+            # Dynamically add all hierarchy fields from the person document
+            for h in hierarchy:
+                field = h.get("field")
+                label = h.get("label")
+                if field:
+                    mapped[field] = person.get(field, "")
+                if label:
+                    mapped[label] = person.get(label, "") or person.get(field, "")
+
+            # Always include standard fields for backward compat
+            mapped["Leader @1"] = person.get("Leader @1", "") or person.get(hierarchy_fields[0], "") if hierarchy_fields else ""
+            mapped["Leader @12"] = person.get("Leader @12", "") or person.get(hierarchy_fields[1], "") if len(hierarchy_fields) > 1 else ""
+            mapped["Leader @144"] = person.get("Leader @144", "") or person.get(hierarchy_fields[2], "") if len(hierarchy_fields) > 2 else ""
+
             people_list.append(mapped)
 
-        # Get total count for pagination metadata
         total_count = await people_collection.count_documents(query)
-
         return {
             "page": page,
             "perPage": perPage,
             "total": total_count,
             "results": people_list
         }
-       
+
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+@app.post("/people")
+async def create_person_with_cache_invalidation(
+    person_data: PersonCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        org_id = (
+            current_user.get("org_id") or
+            current_user.get("organization", "").lower().replace(" ", "-") or
+            "active-teams"
+        )
+
+        email = person_data.email.lower().strip()
+
+        if email:
+            existing_person = await people_collection.find_one({"Email": email, "org_id": org_id})
+            if existing_person:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"A person with email '{email}' already exists"
+                )
+
+        leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
+        leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
+        leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
+        leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
+
+        person_doc = {
+            "Name": person_data.name.strip(),
+            "Surname": person_data.surname.strip(),
+            "Email": email,
+            "Number": person_data.number.strip(),
+            "Address": person_data.address.strip(),
+            "Gender": person_data.gender.strip(),
+            "Birthday": person_data.dob.strip(),
+            "InvitedBy": person_data.invitedBy.strip(),
+            "Leader @1": leader1,
+            "Leader @12": leader12,
+            "Leader @144": leader144,
+            "Leader @1728": leader1728,
+            "Stage": person_data.stage or "Win",
+            "org_id": org_id,
+            "Date Created": datetime.utcnow().isoformat(),
+            "UpdatedAt": datetime.utcnow().isoformat()
+        }
+
+        result = await people_collection.insert_one(person_doc)
+        inserted_id = str(result.inserted_id)
+
+        if people_cache["data"] is not None:
+            try:
+                new_cache_entry = {
+                    "_id": inserted_id,
+                    "FullName": f"{person_doc['Name']} {person_doc['Surname']}".strip(),
+                    "Name": person_doc["Name"],
+                    "Surname": person_doc["Surname"],
+                    "Email": person_doc["Email"],
+                    "Number": person_doc["Number"],
+                    "Gender": person_doc["Gender"],
+                    "Birthday": person_doc["Birthday"],
+                    "Address": person_doc["Address"],
+                    "InvitedBy": person_doc["InvitedBy"],
+                    "Leader @1": person_doc["Leader @1"],
+                    "Leader @12": person_doc["Leader @12"],
+                    "Leader @144": person_doc["Leader @144"],
+                    "Leader @1728": person_doc["Leader @1728"],
+                    "Stage": person_doc["Stage"],
+                    "org_id": person_doc["org_id"],
+                    "Date Created": person_doc["Date Created"],
+                    "UpdatedAt": person_doc["UpdatedAt"]
+                }
+                people_cache["data"].append(new_cache_entry)
+            except Exception as cache_error:
+                print(f"Warning: Failed to add person to cache: {cache_error}")
+
+        await invalidate_people_cache("create", {
+            "person_id": inserted_id,
+            "email": person_doc["Email"],
+            "full_name": f"{person_doc['Name']} {person_doc['Surname']}".strip()
+        })
+
+        created_person = {
+            "_id": inserted_id,
+            "Name": person_doc["Name"],
+            "Surname": person_doc["Surname"],
+            "Email": person_doc["Email"],
+            "Number": person_doc["Number"],
+            "Gender": person_doc["Gender"],
+            "Birthday": person_doc["Birthday"],
+            "Address": person_doc["Address"],
+            "InvitedBy": person_doc["InvitedBy"],
+            "Leader @1": person_doc["Leader @1"],
+            "Leader @12": person_doc["Leader @12"],
+            "Leader @144": person_doc["Leader @144"],
+            "Leader @1728": person_doc["Leader @1728"],
+            "Stage": person_doc["Stage"],
+            "org_id": person_doc["org_id"],
+            "Date Created": person_doc["Date Created"],
+            "UpdatedAt": person_doc["UpdatedAt"]
+        }
+
+        return {
+            "success": True,
+            "message": "Person created successfully",
+            "id": inserted_id,
+            "_id": inserted_id,
+            "person": created_person,
+            "cache_invalidated": True,
+            "cache_refresh_triggered": people_cache["pending_refresh"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating person: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal Server Error: {str(e)}"
+        )
+    
 @app.get("/people/search-fast")
 async def search_people_fast(
     query: str = Query(..., min_length=2),
