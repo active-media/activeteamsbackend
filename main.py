@@ -10410,15 +10410,34 @@ async def get_dashboard_comprehensive(
             formatted_overdue_cells.append(cell)
 
         
-        user_map = {}
+            user_map = {}
         for user in users:
             uid = str(user["_id"])
             email = user.get("email", "").lower()
-            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip() or email.split("@")[0]
-
+            
+            # Try to find the person in people collection by email or user_id
+            person = await people_collection.find_one({
+                "$or": [
+                    {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                    {"user_id": uid}
+                ]
+            })
+            
+            if person:
+                # Get name from people collection (has the correct Gia Katuu)
+                person_name = person.get("Name", "").strip()
+                person_surname = person.get("Surname", "").strip()
+                full_name = f"{person_name} {person_surname}".strip()
+            else:
+                # Fall back to users collection
+                full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+            
+            # If still empty, use email username
+            if not full_name:
+                full_name = email.split("@")[0]
+            
             user_map[email] = {"_id": uid, "email": email, "fullName": full_name}
             user_map[uid] = user_map[email]
-
         
         grouped_tasks = []
         all_tasks_list = []
