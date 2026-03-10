@@ -10164,19 +10164,16 @@ async def get_dashboard_comprehensive(
         print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, User: {current_user.get('email')}")
         print(f"[DASHBOARD] Excluding task types from completed count: {EXCLUDED_TASK_TYPES_FROM_COMPLETED}")
 
-        
         start, end = get_period_range(period)
         start_date_str = start.date().isoformat()
         end_date_str = end.date().isoformat()
         print(f"[DASHBOARD] Date range: {start_date_str} → {end_date_str}")
 
-        
         task_types_cursor = tasktypes_collection.find({}, {"name": 1})
         task_types_list = await task_types_cursor.to_list(length=None)
         all_task_types = [tt.get("name") for tt in task_types_list if tt.get("name")]
         print(f"[DASHBOARD] Found {len(all_task_types)} task types in database: {all_task_types}")
 
-        
         overdue_cells_pipeline = [
             {
                 "$match": {
@@ -10232,7 +10229,6 @@ async def get_dashboard_comprehensive(
             }
         ]
 
-        
         tasks_pipeline = [
             {
                 "$match": {
@@ -10245,11 +10241,9 @@ async def get_dashboard_comprehensive(
             },
             {
                 "$addFields": {
-                    
                     "task_type_label": {
                         "$ifNull": ["$taskType", "Uncategorized"]
                     },
-                    
                     "is_excluded_type": {
                         "$cond": [
                             {
@@ -10262,7 +10256,6 @@ async def get_dashboard_comprehensive(
                             False
                         ]
                     },
-                    
                     "is_completed": {
                         "$cond": [
                             {
@@ -10293,7 +10286,6 @@ async def get_dashboard_comprehensive(
                             False
                         ]
                     },
-                    
                     "completed_in_period": {
                         "$cond": [
                             {
@@ -10327,7 +10319,6 @@ async def get_dashboard_comprehensive(
                             False
                         ]
                     },
-                    
                     "is_due_in_period": {
                         "$cond": [
                             {
@@ -10372,27 +10363,22 @@ async def get_dashboard_comprehensive(
                             "description": "$description"
                         }
                     },
-                    
                     "total_tasks": {"$sum": 1},
-                    
                     "completed_tasks": {
                         "$sum": {
                             "$cond": ["$is_completed", 1, 0]
                         }
                     },
-                    
                     "completed_in_period": {
                         "$sum": {
                             "$cond": ["$completed_in_period", 1, 0]
                         }
                     },
-                    
                     "due_in_period": {
                         "$sum": {
                             "$cond": ["$is_due_in_period", 1, 0]
                         }
                     },
-                    
                     "task_type_counts": {
                         "$push": {
                             "task_type": "$task_type_label",
@@ -10408,7 +10394,6 @@ async def get_dashboard_comprehensive(
             {"$sort": {"_id": 1}}
         ]
 
-        
         overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
         tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
         users_cursor = users_collection.find(
@@ -10422,7 +10407,6 @@ async def get_dashboard_comprehensive(
             users_cursor.to_list(limit),
         )
 
-        
         formatted_overdue_cells = []
         for cell in overdue_cells:
             cell["_id"] = str(cell["_id"])
@@ -10430,28 +10414,52 @@ async def get_dashboard_comprehensive(
                 cell["date"] = cell["date"].isoformat()
             formatted_overdue_cells.append(cell)
 
-        
-        user_map = {}
-        for user in users:
-            uid = str(user["_id"])
-            email = user.get("email", "").lower()
-            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip() or email.split("@")[0]
+        # ===== FIX: Define all_users_map HERE before using it =====
+        all_users_map = {}
+        try:
+            # Fetch ALL users from the database
+            all_users_cursor = users_collection.find({}, {"_id": 1, "email": 1, "name": 1, "surname": 1})
+            async for user in all_users_cursor:
+                uid = str(user["_id"])
+                email = user.get("email", "").lower()
+                
+                if not email:
+                    continue
+                    
+                person = await people_collection.find_one({
+                    "$or": [
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"user_id": uid}
+                    ]
+                })
+                
+                if person:
+                    person_name = person.get("Name", "").strip()
+                    person_surname = person.get("Surname", "").strip()
+                    full_name = f"{person_name} {person_surname}".strip()
+                else:
+                    full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+                
+                if not full_name:
+                    full_name = email.split("@")[0]
+                
+                all_users_map[email] = {"_id": uid, "email": email, "fullName": full_name}
+                all_users_map[uid] = all_users_map[email]
+                
+            print(f"[DASHBOARD] Built comprehensive user map with {len(all_users_map)} entries")
+            
+        except Exception as e:
+            print(f"[DASHBOARD] Error building user map: {e}")
+            # all_users_map is already defined as empty dict
 
-            user_map[email] = {"_id": uid, "email": email, "fullName": full_name}
-            user_map[uid] = user_map[email]
-
-        
+        # Now process task groups using the complete map
         grouped_tasks = []
         all_tasks_list = []
-        
-        
         global_total_tasks = 0
         global_completed_tasks = 0
         global_completed_in_period = 0
         global_due_in_period = 0
         global_incomplete_due = 0
-        
-        
         task_type_stats = {}
 
         for task_group in task_groups:
@@ -10459,14 +10467,14 @@ async def get_dashboard_comprehensive(
             if not email:
                 email = "unassigned@example.com"
 
-            user_info = user_map.get(email.lower(), {
+            # all_users_map is now defined and available here
+            user_info = all_users_map.get(email.lower(), {
                 "_id": f"unknown_{email}",
                 "email": email,
                 "fullName": email.split("@")[0]
             })
 
             tasks_list = task_group["tasks"]
-            
             
             task_types_in_group = set()
             for task in tasks_list:
@@ -10477,7 +10485,6 @@ async def get_dashboard_comprehensive(
             if task_types_in_group:
                 print(f"[DASHBOARD DEBUG] Task types for {email}: {task_types_in_group}")
             
-            
             for task in tasks_list:
                 task["_id"] = str(task["_id"])
                 
@@ -10485,10 +10492,8 @@ async def get_dashboard_comprehensive(
                     if isinstance(task.get(date_field), datetime):
                         task[date_field] = task[date_field].isoformat()
                 
-                
                 task_type = task.get("taskType") or "Uncategorized"
                 is_excluded = task.get("is_excluded_type", False)
-                
                 
                 if task_type not in task_type_stats:
                     task_type_stats[task_type] = {
@@ -10500,7 +10505,6 @@ async def get_dashboard_comprehensive(
                         "is_excluded": is_excluded
                     }
                 
-                
                 task_type_stats[task_type]["total"] += 1
                 if task.get("is_completed"):
                     task_type_stats[task_type]["completed"] += 1
@@ -10511,12 +10515,10 @@ async def get_dashboard_comprehensive(
                 if task.get("is_due_in_period") and not task.get("is_completed"):
                     task_type_stats[task_type]["incomplete_due"] += 1
 
-            
             total_for_user = task_group["total_tasks"]
             completed_all = task_group["completed_tasks"]
             completed_in_period = task_group["completed_in_period"]
             due_in_period = task_group["due_in_period"]
-            
             
             incomplete_due = sum(
                 1 for t in tasks_list 
@@ -10525,7 +10527,6 @@ async def get_dashboard_comprehensive(
             
             incomplete_all = total_for_user - completed_all
 
-            
             global_total_tasks += total_for_user
             global_completed_tasks += completed_all
             global_completed_in_period += completed_in_period
@@ -10547,8 +10548,6 @@ async def get_dashboard_comprehensive(
             all_tasks_list.extend(tasks_list)
 
         grouped_tasks.sort(key=lambda x: x["user"]["fullName"].lower())
-
-        
         
         completion_rate_due = (
             round((global_completed_in_period / global_due_in_period * 100), 2)
@@ -10560,37 +10559,26 @@ async def get_dashboard_comprehensive(
             if global_total_tasks > 0 else 0
         )
 
-        
         unique_task_types_found = list(task_type_stats.keys())
-        
         
         print(f"[DASHBOARD DEBUG] Task type stats:")
         for task_type, stats in task_type_stats.items():
             print(f"  - {task_type}: total={stats['total']}, completed={stats['completed']}, is_excluded={stats.get('is_excluded', False)}")
 
         overview = {
-            
             "total_attendance": sum(len(c.get("attendees", [])) for c in formatted_overdue_cells),
             "outstanding_cells": len(formatted_overdue_cells),
-            
-            
             "outstanding_tasks": global_incomplete_due,
             "tasks_due_in_period": global_due_in_period,
             "tasks_completed_in_period": global_completed_in_period,  
             "total_tasks_in_period": global_total_tasks,
             "total_tasks_completed": global_completed_tasks,  
             "total_tasks_incomplete": global_total_tasks - global_completed_tasks,
-            
-            
             "consolidation_tasks": task_type_stats.get("consolidation", {}).get("total", 0),
             "consolidation_completed": task_type_stats.get("consolidation", {}).get("completed", 0),
             "consolidation_completed_in_period": task_type_stats.get("consolidation", {}).get("completed_in_period", 0),
-            
-            
             "people_behind": len([g for g in grouped_tasks if g["incompleteDueInPeriodCount"] > 0]),
             "total_users": len(users),
-            
-            
             "completion_rate_due_tasks": completion_rate_due,
             "completion_rate_overall": completion_rate_overall,
             "consolidation_completion_rate": (
@@ -10598,40 +10586,34 @@ async def get_dashboard_comprehensive(
                       task_type_stats.get("consolidation", {}).get("total", 1) * 100), 2)
                 if task_type_stats.get("consolidation", {}).get("total", 0) > 0 else 0
             ),
-            
-            
             "task_type_breakdown": task_type_stats,
-            
-            
             "users_with_tasks": len(grouped_tasks),
             "users_without_tasks": len(users) - len(grouped_tasks),
-            
-            
             "available_task_types": all_task_types,
             "task_types_found": unique_task_types_found,
             "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
             "total_unique_task_types": len(unique_task_types_found),
             "note": f"'no answer' and 'Awaiting Call' task types are excluded from completed counts"
-
-            
         }
+
+        # Build allUsers list from all_users_map
+        all_users_list = []
+        for user_info in all_users_map.values():
+            if isinstance(user_info, dict) and "_id" in user_info and not user_info["_id"].startswith("unknown_"):
+                all_users_list.append({
+                    "_id": user_info["_id"],
+                    "email": user_info["email"],
+                    "name": user_info["fullName"].split()[0] if user_info["fullName"] else "",
+                    "surname": " ".join(user_info["fullName"].split()[1:]) if len(user_info["fullName"].split()) > 1 else "",
+                    "fullName": user_info["fullName"]
+                })
 
         return {
             "overview": overview,
             "overdueCells": formatted_overdue_cells,
             "groupedTasks": grouped_tasks,
             "allTasks": all_tasks_list,
-            "allUsers": [
-                {
-                    "_id": str(u["_id"]),
-                    "email": u.get("email", ""),
-                    "name": u.get("name", ""),
-                    "surname": u.get("surname", ""),
-                    "fullName": f"{u.get('name', '')} {u.get('surname', '')}".strip()
-                        or u.get("email", "").split("@")[0]
-                }
-                for u in users
-            ],
+            "allUsers": all_users_list,
             "period": period,
             "date_range": {"start": start_date_str, "end": end_date_str},
             "task_type_stats": task_type_stats,
@@ -10645,8 +10627,6 @@ async def get_dashboard_comprehensive(
         import traceback
         traceback.print_exc()
         raise HTTPException(500, f"Error fetching comprehensive stats: {str(e)}")
-
-
 @app.get("/stats/dashboard-quick")
 async def get_dashboard_quick_stats(
     period: str = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
