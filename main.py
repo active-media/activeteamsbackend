@@ -891,7 +891,6 @@ async def signup(user: UserCreate):
         "confirm_password": hashed,
         "role": "user",
         "organization": organization,
-        "org_tag": org_tag,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat()
     }
@@ -1010,7 +1009,6 @@ async def signup(user: UserCreate):
         "Leader @144": leader144,
         "Leader @1728": leader1728,
         "Organization": organization,
-        "OrgTag": org_tag,
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
@@ -1040,7 +1038,7 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
    
-    return {"message": "User created successfully", "organization": organization, "org_tag": org_tag}
+    return {"message": "User created successfully", "organization": organization,}
 
 # ---------------- Login ----------------
 @app.post("/login")
@@ -1098,7 +1096,6 @@ async def login(user: UserLogin):
         "gender": existing.get("gender", ""),
         "invited_by": existing.get("invited_by", ""),
         "organization": existing.get("organization", ""),
-        "org_tag": existing.get("org_tag", ""),
     },
     "leaders":{
         'leaderAt1':person.get("Leader @1",""),
@@ -1271,7 +1268,7 @@ async def create_organization(data: dict = Body(...)):
     if not name:
         raise HTTPException(status_code=400, detail="Organization name is required")
 
-    # Enforce uniqueness (case-insensitive)
+    
     existing = await organizations_collection.find_one(
         {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
     )
@@ -1330,7 +1327,7 @@ async def update_organization(org_id: str, data: dict = Body(...)):
         new_name = update_fields.get("name", old_name)
         await users_collection.update_many(
             {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
-            {"$set": {"organization": new_name, "org_tag": new_tag}}
+            {"$set": {"organization": new_name}}
         )
         logger.info(f"Propagated org update: '{old_name}' → '{new_name}' (tag={new_tag}) to all users")
 
@@ -6973,7 +6970,6 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
         "organization": user.get("organization", ""),
-        "org_tag": user.get("org_tag", ""),
     }
 
 @app.put("/profile/{user_id}")
@@ -7069,7 +7065,7 @@ async def update_profile(
                 update_payload["leader1"] = ""
                 update_payload["leader12"] = ""
                 update_payload["leader144"] = ""
-                update_payload["Leader @1"] = ""   # Also clear for person record if applicable
+                update_payload["Leader @1"] = ""   
                 update_payload["Leader @12"] = ""
                 update_payload["Leader @144"] = ""
                 update_payload["Leader @1728"] = ""
@@ -7143,7 +7139,6 @@ def format_user_response(user):
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
         "organization": user.get("organization", ""),
-        "org_tag": user.get("org_tag", ""),
     }
 
 # @app.put("/profile/{user_id}/debug")
