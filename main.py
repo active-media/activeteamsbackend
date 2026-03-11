@@ -7779,18 +7779,21 @@ async def delete_person_with_cache_invalidation(
 
 @app.get("/people/search-fast")
 async def search_people_fast(
-    query: str = Query(..., min_length=2),
-    limit: int = Query(25, le=50)
+    query: str = Query(..., min_length=2, description="Search query (minimum 2 characters)"),
+    limit: int = Query(25, ge=1, le=50, description="Maximum number of results to return")
 ):
     """
     FAST search endpoint for autocomplete - optimized for signup form
     Uses simple regex matching and returns minimal fields
     """
     try:
+        print(f"Search-fast called with query: '{query}', limit: {limit}")
+        
         if not query or len(query) < 2:
+            print("   Query too short, returning empty results")
             return {"results": []}
        
-        # Simple regex search on name fields - much faster than complex queries
+        # Simple regex search on name fields - it's much faster than the other complex queries
         search_regex = {"$regex": query.strip(), "$options": "i"}
        
         # Only fetch essential fields for autocomplete
@@ -7799,18 +7802,22 @@ async def search_people_fast(
             "Name": 1,
             "Surname": 1,
             "Email": 1,
-            "Phone": 1,
+            "Number": 1,
+            "Gender": 1,
             "Leader @1": 1,
             "Leader @12": 1,
             "Leader @144": 1,
             "Leader @1728": 1
         }
        
+        print(f"   Searching with regex: {search_regex}")
+        
         cursor = people_collection.find({
             "$or": [
                 {"Name": search_regex},
                 {"Surname": search_regex},
                 {"Email": search_regex},
+                {"Number": search_regex},
                 {"$expr": {
                     "$regexMatch": {
                         "input": {"$concat": ["$Name", " ", "$Surname"]},
@@ -7828,18 +7835,26 @@ async def search_people_fast(
                 "Name": person.get("Name", ""),
                 "Surname": person.get("Surname", ""),
                 "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
+                "Number": person.get("Number", ""),
+                "Gender": person.get("Gender", ""),
                 "Leader @1": person.get("Leader @1", ""),
                 "Leader @12": person.get("Leader @12", ""),
                 "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
+                "Leader @1728": person.get("Leader @1728", ""),
+                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
             })
        
+        print(f"   Found {len(results)} results")
         return {"results": results}
        
     except Exception as e:
-        print(f"Error in fast search: {e}")
-        return {"results": []}
+        print(f"Theres an error in fast search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "results": [],
+            "error": str(e)
+        }
 
 @app.get("/people/all-minimal")
 async def get_all_people_minimal():
