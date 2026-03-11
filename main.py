@@ -546,7 +546,8 @@ async def background_load_all_people():
         people_cache["last_error"] = str(e)
         print(f"BACKGROUND: Failed to load people: {str(e)}")
 
-# Update your cache endpoint to return the expected structure
+
+
 @app.get("/cache/people")
 async def get_cached_people():
     """
@@ -665,6 +666,8 @@ async def get_cached_people():
             "cached_data": [],
             "total_count": 0
         }
+
+
 
 @app.get("/health")
 async def health_check():
@@ -11769,6 +11772,7 @@ async def cleanup_orphaned_tasks(
 # ─────────────────────────────────────────────────────────────
 # ORG CONFIG ENDPOINTS
 # ─────────────────────────────────────────────────────────────
+
 @app.get("/org-config")
 async def get_org_config(current_user: dict = Depends(get_current_user)):
     try:
