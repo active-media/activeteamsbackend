@@ -2130,6 +2130,7 @@ async def get_weekly_attendance(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/events/eventsdata")
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
@@ -2211,22 +2212,21 @@ async def get_other_events(
         if event_type and event_type.lower() != 'all':
             print(f"Filtering by event type: '{event_type}'")
            
-            event_type_query = {
-        if event_type and event_type.lower() not in ["all", "cells"]:
-            event_type_filter = {
-                "$or": [
-                    {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
-                    {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
-                    {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
-                ]
-            }
-           
-            if "$or" in query:
-                query = {"$and": [query, event_type_query]}
-            else:
-                query["$or"] = event_type_query["$or"]
-           
-            print(f"Event type filter applied: {event_type_query}")
+            if event_type.lower() not in ["all", "cells"]:
+                event_type_query = {
+                    "$or": [
+                        {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
+                        {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
+                        {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
+                    ]
+                }
+               
+                if "$or" in query:
+                    query = {"$and": [query, event_type_query]}
+                else:
+                    query["$or"] = event_type_query["$or"]
+               
+                print(f"Event type filter applied: {event_type_query}")
 
         if search and search.strip():
             search_term = search.strip()
@@ -2361,295 +2361,6 @@ async def get_other_events(
                
                 other_events.append(instance)
                 print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status})")
-        # Day name -> weekday index mapping (same as cells endpoint)
-        day_mapping = {
-            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-            'friday': 4, 'saturday': 5, 'sunday': 6
-        }
-
-        for e in raw_events:
-            try:
-                if e.get("is_active") is False:
-                    continue
-
-                raw_global = e.get("isGlobal")
-                is_global = raw_global is True or str(raw_global).lower() == "true"
-                raw_ticketed = e.get("isTicketed")
-                is_ticketed = raw_ticketed is True or str(raw_ticketed).lower() == "true"
-
-                recurring_days = e.get("recurring_day", [])
-                if not isinstance(recurring_days, list):
-                    recurring_days = [recurring_days] if recurring_days else []
-
-                # ── RECURRING EVENT: generate one instance per day per week ──
-                if recurring_days:
-                    # Monday of the current week
-                    days_since_monday = today.weekday()
-                    week_start = today - timedelta(days=days_since_monday)
-
-                    for day_name_raw in recurring_days:
-                        day_key = str(day_name_raw).strip().lower()
-                        target_weekday = day_mapping.get(day_key)
-                        if target_weekday is None:
-                            continue
-
-                        # Generate up to 4 past weeks + current week
-                        for week_back in range(0, 4):
-                            instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
-
-                            if instance_date > today:
-                                continue
-                            if instance_date < start_dt or instance_date > end_dt:
-                                continue
-
-                            exact_date_str = instance_date.isoformat()
-                            attendance_data = e.get("attendance", {})
-                            if not isinstance(attendance_data, dict):
-                                attendance_data = {}
-
-                            # Look up attendance for this specific date
-                            date_attendance = attendance_data.get(exact_date_str, {})
-                            if not isinstance(date_attendance, dict):
-                                date_attendance = {}
-
-                            # For the very first week (original date), also check root-level attendees
-                            # so already-captured data isn't lost
-                            original_date_str = None
-                            dt_raw = e.get("date") or e.get("Date Of Event") or e.get("eventDate")
-                            if isinstance(dt_raw, datetime):
-                                original_date_str = dt_raw.date().isoformat()
-                            elif isinstance(dt_raw, str):
-                                try:
-                                    if "T" in dt_raw:
-                                        original_date_str = datetime.fromisoformat(dt_raw.replace("Z", "+00:00")).date().isoformat()
-                                    else:
-                                        original_date_str = dt_raw[:10]
-                                except:
-                                    pass
-
-                            # If no date_attendance found but this matches the original captured date,
-                            # fall back to root-level attendees (backwards compatibility)
-                            root_attendees = e.get("attendees", [])
-                            if not isinstance(root_attendees, list):
-                                root_attendees = []
-
-                            if not date_attendance and exact_date_str == original_date_str and root_attendees:
-                                # Migrate root-level data into attendance dict structure
-                                date_attendance = {
-                                    "attendees": root_attendees,
-                                    "status": str(e.get("status", "")).lower(),
-                                    "new_people": e.get("new_people", []),
-                                    "consolidations": e.get("consolidations", []),
-                                }
-
-                            # Determine instance status
-                            if date_attendance:
-                                att_status = str(date_attendance.get("status", "")).lower()
-                                att_attendees = date_attendance.get("attendees", [])
-                                if att_status == "did_not_meet" or date_attendance.get("is_did_not_meet"):
-                                    ev_status = "did_not_meet"
-                                elif att_status in ["complete", "closed"] or len(att_attendees) > 0:
-                                    ev_status = "complete"
-                                else:
-                                    ev_status = "incomplete"
-                            else:
-                                ev_status = "incomplete"
-
-                            if status and status != ev_status:
-                                continue
-
-                            attendees_list = date_attendance.get("attendees", [])
-                            if not isinstance(attendees_list, list):
-                                attendees_list = []
-
-                            new_people_list = date_attendance.get("new_people", e.get("new_people", []))
-                            if not isinstance(new_people_list, list):
-                                new_people_list = []
-
-                            consolidations_list = date_attendance.get("consolidations", e.get("consolidations", []))
-                            if not isinstance(consolidations_list, list):
-                                consolidations_list = []
-
-                            persistent_attendees = e.get("persistent_attendees", [])
-                            cleaned_persistent = _clean_persistent(persistent_attendees)
-
-                            date_stats = date_attendance.get("statistics", {})
-                            if not isinstance(date_stats, dict):
-                                date_stats = {}
-
-                            instance = {
-                                "_id": f"{str(e['_id'])}_{exact_date_str}",
-                                "original_event_id": str(e["_id"]),
-                                "UUID": e.get("UUID", ""),
-                                "eventName": e.get("eventName") or e.get("Event Name", ""),
-                                "status": ev_status,
-                                "isGlobal": is_global,
-                                "isTicketed": is_ticketed,
-                                "priceTiers": e.get("priceTiers", []),
-                                "date": exact_date_str,
-                                "day": day_name_raw,
-                                "time": e.get("time") or e.get("Time", ""),
-                                "location": e.get("location") or e.get("Location", ""),
-                                "description": e.get("description", ""),
-                                "eventType": e.get("eventTypeName") or e.get("eventType") or e.get("Event Type", "Global Events"),
-                                "eventLeaderName": e.get("eventLeaderName") or e.get("Leader", ""),
-                                "eventLeaderEmail": e.get("eventLeaderEmail") or e.get("Email", ""),
-                                "leader1": e.get("leader1", ""),
-                                "leader12": e.get("Leader @12") or e.get("Leader at 12", ""),
-                                "is_recurring": True,
-                                "recurring_days": recurring_days,
-                                "persistent_attendees": cleaned_persistent,
-                                "total_associated_count": len(cleaned_persistent),
-                                "attendance": attendance_data,
-                                "attendees": attendees_list,
-                                "attendance_data": date_attendance,
-                                "new_people": new_people_list,
-                                "consolidations": consolidations_list,
-                                "total_attendance": len(attendees_list),
-                                "new_people_count": len(new_people_list),
-                                "consolidation_count": len(consolidations_list),
-                                "checked_in_count": date_attendance.get("checked_in_count", len(attendees_list)),
-                                "decisions": date_stats.get("decisions", {}),
-                                "total_associated": date_stats.get("total_associated", len(cleaned_persistent)),
-                                "last_attendance_count": e.get("last_attendance_count", 0),
-                                "last_decisions_count": e.get("last_decisions_count", 0),
-                                "last_attendance_breakdown": e.get("last_attendance_breakdown", {}),
-                                "is_today": instance_date == today,
-                                "is_past": instance_date < today,
-                                "has_attendance": bool(attendees_list),
-                                "_sort_date": exact_date_str,
-                            }
-                            results.append(instance)
-
-                # ── NON-RECURRING EVENT: original single-instance logic ──
-                else:
-                    dt_raw = e.get("date") or e.get("Date Of Event") or e.get("eventDate") or e.get("startDate")
-                    event_date = None
-
-                    if isinstance(dt_raw, datetime):
-                        event_date = dt_raw.date()
-                    elif isinstance(dt_raw, str):
-                        try:
-                            if "T" in dt_raw:
-                                event_date = datetime.fromisoformat(dt_raw.replace("Z", "+00:00")).date()
-                            else:
-                                event_date = datetime.strptime(dt_raw, "%Y-%m-%d").date()
-                        except:
-                            continue
-                    else:
-                        continue
-
-                    if not event_date or event_date > today:
-                        continue
-                    if event_date < start_dt or event_date > end_dt:
-                        continue
-
-                    exact_date_str = event_date.isoformat()
-                    attendance_data = e.get("attendance", {})
-                    if not isinstance(attendance_data, dict):
-                        attendance_data = {}
-                    date_attendance = attendance_data.get(exact_date_str, {})
-                    if not isinstance(date_attendance, dict):
-                        date_attendance = {}
-
-                    main_status = str(e.get("status", "")).lower().strip()
-
-                    if is_global:
-                        if main_status in ["complete", "closed"]:
-                            ev_status = "complete"
-                        elif main_status == "cancelled":
-                            ev_status = "cancelled"
-                        elif main_status == "did_not_meet":
-                            ev_status = "did_not_meet"
-                        else:
-                            ev_status = "incomplete"
-                    else:
-                        ev_status = "incomplete"
-                        if date_attendance:
-                            att_status = str(date_attendance.get("status", "")).lower()
-                            if att_status == "did_not_meet" or date_attendance.get("is_did_not_meet"):
-                                ev_status = "did_not_meet"
-                            elif att_status in ["complete", "closed"] or len(date_attendance.get("attendees", [])) > 0:
-                                ev_status = "complete"
-                        else:
-                            if main_status in ["complete", "closed"]:
-                                ev_status = "complete"
-                            elif main_status == "did_not_meet":
-                                ev_status = "did_not_meet"
-
-                    if status and status != ev_status:
-                        continue
-
-                    attendees_list = e.get("attendees", [])
-                    if not isinstance(attendees_list, list):
-                        attendees_list = []
-                    if not attendees_list and date_attendance:
-                        attendees_list = date_attendance.get("attendees", [])
-
-                    persistent_attendees = e.get("persistent_attendees", [])
-                    cleaned_persistent = _clean_persistent(persistent_attendees)
-
-                    new_people_list = e.get("new_people", [])
-                    if not isinstance(new_people_list, list):
-                        new_people_list = []
-                    consolidations_list = e.get("consolidations", [])
-                    if not isinstance(consolidations_list, list):
-                        consolidations_list = []
-
-                    day_name_raw = e.get("Day") or e.get("day") or e.get("eventDay") or ""
-                    day_name = str(day_name_raw).strip()
-                    if not day_name:
-                        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-                        day_name = days[event_date.weekday()]
-
-                    date_stats = date_attendance.get("statistics", {})
-                    if not isinstance(date_stats, dict):
-                        date_stats = {}
-
-                    result_item = {
-                        "_id": str(e["_id"]),
-                        "original_event_id": str(e["_id"]),
-                        "UUID": e.get("UUID", ""),
-                        "eventName": e.get("eventName") or e.get("Event Name", ""),
-                        "status": ev_status,
-                        "isGlobal": is_global,
-                        "isTicketed": is_ticketed,
-                        "priceTiers": e.get("priceTiers", []),
-                        "date": exact_date_str,
-                        "day": day_name,
-                        "time": e.get("time") or e.get("Time", ""),
-                        "location": e.get("location") or e.get("Location", ""),
-                        "description": e.get("description", ""),
-                        "eventType": e.get("eventTypeName") or e.get("eventType") or e.get("Event Type", "Global Events"),
-                        "eventLeaderName": e.get("eventLeaderName") or e.get("Leader", ""),
-                        "eventLeaderEmail": e.get("eventLeaderEmail") or e.get("Email", ""),
-                        "leader1": e.get("leader1", ""),
-                        "leader12": e.get("Leader @12") or e.get("Leader at 12", ""),
-                        "is_recurring": False,
-                        "recurring_days": [],
-                        "persistent_attendees": cleaned_persistent,
-                        "total_associated_count": len(cleaned_persistent),
-                        "attendance": attendance_data,
-                        "attendees": attendees_list,
-                        "attendance_data": date_attendance,
-                        "new_people": new_people_list,
-                        "consolidations": consolidations_list,
-                        "total_attendance": len(attendees_list),
-                        "new_people_count": len(new_people_list),
-                        "consolidation_count": len(consolidations_list),
-                        "checked_in_count": date_attendance.get("checked_in_count", len(attendees_list)),
-                        "decisions": date_stats.get("decisions", {}),
-                        "total_associated": date_stats.get("total_associated", len(cleaned_persistent)),
-                        "last_attendance_count": e.get("last_attendance_count", 0),
-                        "last_decisions_count": e.get("last_decisions_count", 0),
-                        "last_attendance_breakdown": e.get("last_attendance_breakdown", {}),
-                        "is_today": event_date == today,
-                        "is_past": event_date < today,
-                        "has_attendance": bool(attendees_list),
-                        "_sort_date": exact_date_str,
-                    }
-                    results.append(result_item)
-
             except Exception as e:
                 print(f"Error processing other event: {str(e)}")
                 continue
@@ -2658,11 +2369,7 @@ async def get_other_events(
        
         total_count = len(other_events)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-        results.sort(key=lambda x: x["_sort_date"], reverse=True)
-        for item in results:
-            item.pop("_sort_date", None)
 
-        total = len(results)
         skip = (page - 1) * limit
         paginated_events = other_events[skip:skip + limit]
 
@@ -6403,6 +6110,7 @@ async def submit_attendance(
         persistent_attendees = submission.get('persistent_attendees', [])
         did_not_meet = submission.get('did_not_meet', False)
         manual_headcount = submission.get('headcount', 0)
+        is_ticketed = submission.get('is_ticketed', False)
         
         try:
             manual_headcount = int(manual_headcount) if manual_headcount else 0
@@ -6540,14 +6248,16 @@ async def submit_attendance(
         
         # Also update the event status field
         cell_update_fields["status"] = date_status
-       
-            #  Top-level persistent_attendees now has ticket fields too
+        
+        # Top-level persistent_attendees now has ticket fields too
+        if persistent_attendees_dict:
             cell_update_fields["persistent_attendees"] = persistent_attendees_dict
             cell_update_fields["total_associated_count"] = len(persistent_attendees_dict)
         
         recurring_days = event.get("recurring_day", [])
         is_recurring = isinstance(recurring_days, list) and len(recurring_days) > 0
-         # After the status fix, also prevent root-level attendees from being set on recurring events
+        
+        # After the status fix, also prevent root-level attendees from being set on recurring events
         if not is_recurring:
             if date_status == "complete":
                 cell_update_fields["attendees"] = checked_in_attendees
@@ -6555,12 +6265,10 @@ async def submit_attendance(
                 cell_update_fields["consolidations"] = submission.get("consolidations", [])
                 cell_update_fields["total_attendance"] = weekly_attendance
 
-        if persistent_attendees_dict:
-        
-            update_data = {
-                **cell_update_fields,
-                f"attendance.{exact_date_str}": weekly_attendance_entry
-            }
+        update_data = {
+            **cell_update_fields,
+            f"attendance.{exact_date_str}": weekly_attendance_entry
+        }
         
         result = await events_collection.update_one(
             {"_id": ObjectId(actual_event_id)},
@@ -6588,8 +6296,8 @@ async def submit_attendance(
         raise
     except Exception as e:
         print(f"Error submitting attendance: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") 
+
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),
