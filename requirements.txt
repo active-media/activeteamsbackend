@@ -48,3 +48,5 @@ requests
 resend
 # deactive schedulers 
 apscheduler==3.10.4
+pandas
+openpyxl
