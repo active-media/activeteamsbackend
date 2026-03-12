@@ -137,20 +137,26 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     payload = decode_access_token(token.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token payload")
-    
-    # Always fetch fresh role from DB
+
+    # Always fetch fresh user data from DB (including Organization)
     user = await users_collection.find_one({"_id": ObjectId(payload["user_id"])})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    
-    payload["role"] = user.get("role", "user")
-    payload["_id"] = user["_id"]
-    return payload
 
+    organization = user.get("Organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
 
-
-
-
+    # Return enhanced payload with Organization (exactly as you requested)
+    return {
+        "email": user["email"],
+        "name": user.get("name"),
+        "surname": user.get("surname"),
+        "role": user.get("role", "user"),
+        "_id": str(user["_id"]),           # keep original payload style
+        "user_id": payload.get("user_id"),
+        "Organization": organization       # ← This is now available in EVERY endpoint
+    }
 
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):

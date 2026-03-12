@@ -7,7 +7,7 @@ import re
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile, AttendanceSubmission
+from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel,TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile, AttendanceSubmission
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
@@ -7976,78 +7976,54 @@ async def get_leaders_only():
 # Tasks Management
 # -------------------------
 
-# POST /tasks
+# ====================== POST /tasks ======================
 
 from fastapi.encoders import jsonable_encoder
 
 @app.post("/tasks")
 async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
-    try:
-        # Convert Pydantic model to dict
-        new_task_dict = task.dict()
-        # Attach the creator's email for backward compatibility
-        new_task_dict["assignedfor"] = current_user["email"]
+    new_task_dict = task.dict()
+    new_task_dict["assignedfor"] = current_user["email"]
+    new_task_dict["Organization"] = current_user["Organization"]  
 
-        # Insert into MongoDB
-        result = await db["tasks"].insert_one(new_task_dict)
+    result = await db["tasks"].insert_one(new_task_dict)
+    return {"status": "success", "task": jsonable_encoder({**new_task_dict, "_id": str(result.inserted_id)})}
 
-        # Add the MongoDB _id as a string for the response
-        new_task_dict["_id"] = str(result.inserted_id)
-
-        # Encode safely for JSON response
-        return {"status": "success", "task": jsonable_encoder(new_task_dict)}
-
-    except Exception as e:
-        return {"status": "failed", "error": str(e)}
-
-# Retrieve all tasks
-
-# GET /tasks
+# ====================== GET /tasks ======================
 
 @app.get("/tasks")
 async def get_user_tasks(
-    email: str = Query(None),
-    userId: str = Query(None),
     view_all: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Role check
-        is_leader = current_user.get("role") in ["admin", "leader", "manager"]
+        org_name = current_user.get("Organization")
+        if not org_name:
+            raise HTTPException(status_code=403, detail="You don't have access to this church's data.")
 
-        # Resolve user email
-        user_email = None
+        is_super_admin = current_user.get("role") == "super_admin"
+        is_leader = current_user.get("role") in ["admin", "leader", "manager", "org_admin"]
 
-        if email:
-            user_email = email
-        elif userId:
-            user = await users_collection.find_one({"_id": ObjectId(userId)})
-            if user:
-                user_email = user.get("email")
-        else:
-            user_email = current_user.get("email")
-
-        if not user_email and not (is_leader and view_all):
-            return {"error": "User email not found", "status": "failed"}
-
-        # Build leader full name (used in task matching)
-        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-
-        timezone = pytz.timezone("Africa/Johannesburg")
-
-        # Query logic
-        if is_leader and view_all:
-            query = {}
+        # === MULTI-TENANT QUERY (exactly as XMind plan + your DB) ===
+        if is_super_admin and view_all:
+            query = {}                                      # super admin sees everything
+        elif is_leader and view_all:
+            query = {"Organization": org_name}              # leader sees only their church
         else:
             query = {
+                "Organization": org_name,
                 "$or": [
-                    {"assignedfor": user_email},
-                    {"assigned_to_email": user_email},
-                    {"assignedfor": user_name},
-                    {"leader_assigned": user_name},
-                    {"leader_name": user_name},
+                    {"assignedfor": current_user["email"]},
+                    {"assigned_to_email": current_user["email"]},
+                    {"assignedfor": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
+                    {"leader_assigned": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
+                    {"leader_name": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
                 ]
             }
+
+        # Build leader full name (kept from your original)
+        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        timezone = pytz.timezone("Africa/Johannesburg")
 
         cursor = tasks_collection.find(query)
         all_tasks = []
@@ -8055,7 +8031,6 @@ async def get_user_tasks(
         async for task in cursor:
             task_date_str = task.get("followup_date")
             task_datetime = None
-
             if task_date_str:
                 if isinstance(task_date_str, datetime):
                     task_datetime = task_date_str.astimezone(timezone)
@@ -8087,22 +8062,33 @@ async def get_user_tasks(
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
 
         return {
-            "user_email": "all_users" if (is_leader and view_all) else user_email,
+            "user_email": "all_users" if (is_leader and view_all) else current_user.get("email"),
             "total_tasks": len(all_tasks),
             "tasks": all_tasks,
             "status": "success",
-            "is_leader_view": is_leader and view_all
+            "is_leader_view": is_leader and view_all,
+            "Organization": org_name
         }
 
     except Exception as e:
         logging.error(f"Error in get_user_tasks: {e}")
         return {"error": str(e), "status": "failed"}
-     
-# --- GET all task types ---
+
+# ====================== GET /tasktypes (NOW FETCHES BY ORGANIZATION) ======================
+
 @app.get("/tasktypes", response_model=List[TaskTypeOut])
-async def get_task_types():
+async def get_task_types(current_user: dict = Depends(get_current_user)):
     try:
-        cursor = tasktypes_collection.find().sort("name", 1)
+        org_name = current_user.get("Organization")
+        if not org_name:
+            raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+        is_super_admin = current_user.get("role") == "super_admin"
+
+        # Multi-tenant filter - exactly like /tasks
+        query = {} if is_super_admin else {"Organization": org_name}
+
+        cursor = tasktypes_collection.find(query).sort("name", 1)
         types = []
         async for t in cursor:
             types.append(task_type_serializer(t))
@@ -8111,29 +8097,142 @@ async def get_task_types():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- POST new task type ---
-@app.post("/tasktypes", response_model=TaskTypeOut)
-async def create_task_type(task: TaskTypeIn):
-    try:
-        # Check if already exists
-        existing = await tasktypes_collection.find_one({"name": task.name})
-        if existing:
-            raise HTTPException(status_code=400, detail="Task type already exists.")
+# ====================== POST /tasktypes (CREATES WITH ORGANIZATION) ======================
 
-        new_task = {"name": task.name}
+@app.post("/tasktypes", response_model=TaskTypeOut)
+async def create_task_type(task: TaskTypeIn, current_user: dict = Depends(get_current_user)):
+    try:
+        # Only admins can create (same as your frontend)
+        if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
+            raise HTTPException(status_code=403, detail="Only admins can create task types.")
+
+        org_name = current_user.get("Organization")
+        if not org_name:
+            raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+        # Check if already exists in THIS organization
+        existing = await tasktypes_collection.find_one({
+            "name": task.name,
+            "Organization": org_name
+        })
+        if existing:
+            raise HTTPException(status_code=400, detail="Task type already exists in this organization.")
+
+        # Create with Organization tag
+        new_task = {
+            "name": task.name,
+            "Organization": org_name
+        }
         result = await tasktypes_collection.insert_one(new_task)
         created = await tasktypes_collection.find_one({"_id": result.inserted_id})
+
         return task_type_serializer(created)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Helper to convert ObjectId to string
+
+# ====================== Helper (keep exactly as before) ======================
 def serialize_doc(doc):
     if doc and "_id" in doc:
         doc["_id"] = str(doc["_id"])
     return doc
 
-# --- Update route ---
+# ====================== PUT /tasktypes/{tasktype_id} ======================
+
+@app.put("/tasktypes/{tasktype_id}")
+async def update_task_type(
+    tasktype_id: str,
+    update_data: TaskTypeUpdate,         
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        # Admin-only check
+        if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
+            raise HTTPException(status_code=403, detail="Only admins can edit task types.")
+
+        org_name = current_user.get("Organization")
+        if not org_name:
+            raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+        try:
+            oid = ObjectId(tasktype_id)
+        except:
+            raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+        # Check ownership
+        existing = await tasktypes_collection.find_one({"_id": oid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Task type not found")
+
+        # Cross-tenant protection
+        if existing.get("Organization") != org_name and current_user.get("role") != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have access to this church's data."
+            )
+
+        # Update
+        updated = await tasktypes_collection.find_one_and_update(
+            {"_id": oid},
+            {"$set": {"name": update_data.name.strip()}},
+            return_document=True
+        )
+
+        if not updated:
+            raise HTTPException(status_code=404, detail="Task type not found")
+
+        updated["_id"] = str(updated["_id"])
+        return {"message": "Task type updated", "taskType": updated}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ====================== DELETE /tasktypes/{tasktype_id} ======================
+
+@app.delete("/tasktypes/{tasktype_id}")
+async def delete_task_type(
+    tasktype_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        # Admin-only check
+        if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
+            raise HTTPException(status_code=403, detail="Only admins can delete task types.")
+
+        org_name = current_user.get("Organization")
+        if not org_name:
+            raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+        try:
+            oid = ObjectId(tasktype_id)
+        except:
+            raise HTTPException(status_code=400, detail="Invalid task type ID")
+
+        # Check ownership
+        existing = await tasktypes_collection.find_one({"_id": oid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Task type not found")
+
+        # Cross-tenant protection
+        if existing.get("Organization") != org_name and current_user.get("role") != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have access to this church's data."
+            )
+
+        deleted = await tasktypes_collection.find_one_and_delete({"_id": oid})
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Task type not found")
+
+        return {"message": "Task type deleted successfully"}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ====================== PUT /taskS ======================
+
 @app.put("/tasks/{task_id}")
 async def update_task(task_id: str, updated_task: dict):
     try:
