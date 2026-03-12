@@ -6218,7 +6218,6 @@ async def update_persistent_attendees(
                     "phone": attendee.get("phone", ""),
                     "leader12": attendee.get("leader12", ""),
                     "leader144": attendee.get("leader144", ""),
-                    # Ticket fields — always preserve, harmless when empty
                     "priceName": attendee.get("priceName", ""),
                     "price": attendee.get("price", 0),
                     "ageGroup": attendee.get("ageGroup", ""),
@@ -6250,7 +6249,6 @@ async def update_persistent_attendees(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
