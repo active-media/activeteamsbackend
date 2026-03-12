@@ -20,6 +20,7 @@ class UserCreate(BaseModel):
     date_of_birth: str
     home_address: str
     invited_by: str
+    invited_by_id: Optional[str] = None  # People._id (stringified ObjectId) when selected from autocomplete
     phone_number: str
     email: EmailStr
     gender: str

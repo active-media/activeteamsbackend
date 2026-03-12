@@ -352,6 +352,8 @@ async def background_refresh_people_cache(stale_data: list = None):
                     "Email": 1,
                     "Number": 1,
                     "Gender": 1,
+                    "LeaderId": 1,
+                    "LeaderPath": 1,
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
@@ -374,6 +376,8 @@ async def background_refresh_people_cache(stale_data: list = None):
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
                         "Gender": person.get("Gender", ""),
+                        "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                        "LeaderPath": [str(x) for x in person.get("LeaderPath", [])] if isinstance(person.get("LeaderPath"), list) else [],
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
@@ -877,7 +881,7 @@ async def signup(user: UserCreate):
         else:
             org_tag = organization  # fallback: use name as tag if not found
 
-    # Create user document
+    # Create base user document (leader fields will be added after hierarchy is calculated)
     user_dict = {
         "name": user.name,
         "surname": user.surname,
@@ -889,24 +893,82 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
+        # Default role for all new signups so route guards recognize them
         "role": "user",
         "organization": organization,
         "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.utcnow().isoformat(),
     }
-   
-    # Insert user into Users collection
-    user_result = await db["Users"].insert_one(user_dict)
-    logger.info(f"User created successfully: {email}")
-   
+
     inviter_full_name = user.invited_by.strip()
+    inviter_person = None
+    inviter_person_id: Optional[ObjectId] = None
     leader1 = ""
     leader12 = ""
     leader144 = ""
     leader1728 = ""
+
+    async def _find_person_by_full_name(full_name: str):
+        full_name = (full_name or "").strip()
+        if not full_name:
+            return None
+        parts = [p for p in full_name.split(" ") if p]
+        first = parts[0]
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        if last:
+            return await people_collection.find_one(
+                {
+                    "Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"},
+                    "Surname": {"$regex": f"^{re.escape(last)}$", "$options": "i"},
+                },
+                {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+            )
+
+        return await people_collection.find_one(
+            {"Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}},
+            {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+        )
+
+    def _normalize_object_id_list(value):
+        if not isinstance(value, list):
+            return []
+        out = []
+        for v in value:
+            if isinstance(v, ObjectId):
+                out.append(v)
+            elif isinstance(v, str):
+                try:
+                    out.append(ObjectId(v))
+                except Exception:
+                    continue
+        return out
+
+    def _build_leader_path_from_leader_doc(leader_doc):
+        if not leader_doc or not leader_doc.get("_id"):
+            return []
+        leader_id = leader_doc["_id"]
+        base_path = _normalize_object_id_list(leader_doc.get("LeaderPath"))
+        if not base_path or base_path[-1] != leader_id:
+            base_path.append(leader_id)
+        return base_path
    
     if inviter_full_name:
         print(f"Looking for inviter in background cache: '{inviter_full_name}'")
+
+        # Prefer the inviter's ObjectId if the frontend provided it.
+        if getattr(user, "invited_by_id", None):
+            try:
+                inviter_person = await people_collection.find_one(
+                    {"_id": ObjectId(user.invited_by_id)},
+                    {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1, "Gender": 1,
+                     "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1},
+                )
+                if inviter_person:
+                    inviter_person_id = inviter_person["_id"]
+            except Exception:
+                inviter_person = None
+                inviter_person_id = None
        
         # Search in background-loaded cache (contains ALL people)
         cached_inviter = None
@@ -979,6 +1041,12 @@ async def signup(user: UserCreate):
         else:
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
+
+        # If we didn't resolve inviter by id, try resolve by name (best-effort).
+        if inviter_person is None:
+            inviter_person = await _find_person_by_full_name(inviter_full_name)
+            if inviter_person:
+                inviter_person_id = inviter_person["_id"]
    
     # ---- Dynamic Leadership Logic: ONLY for Active Church ----
     if organization and organization.lower() != "active church":
@@ -988,12 +1056,37 @@ async def signup(user: UserCreate):
         leader144 = ""
         leader1728 = ""
     elif not organization:
-        # Default to Active Church if no organization specified? 
-        # Or should we assume no org means no church?
-        # Given the context, usually No Org implies Active Church or NO church.
-        # But if the user wants it to be dynamic, let's stick to the explicit "Active Church" check.
+        # Default to Active Church if no organization specified.
         pass
-   
+
+    # ---- ObjectId-based leader hierarchy (LeaderId + LeaderPath) ----
+    leader_id_obj: Optional[ObjectId] = None
+    leader_path: list[ObjectId] = []
+
+    if organization and organization.lower() != "active church":
+        leader_id_obj = None
+        leader_path = []
+    else:
+        # Prefer the selected inviter as the direct leader when available.
+        if inviter_person_id:
+            leader_id_obj = inviter_person_id
+            leader_path = _build_leader_path_from_leader_doc(inviter_person) if inviter_person else [inviter_person_id]
+        else:
+            # Fall back to resolving the computed Leader @1 full name to a People ObjectId.
+            if leader1:
+                leader1_doc = await _find_person_by_full_name(leader1)
+                if leader1_doc and leader1_doc.get("_id"):
+                    leader_id_obj = leader1_doc["_id"]
+                    leader_path = _build_leader_path_from_leader_doc(leader1_doc)
+
+    # Attach ObjectId-based leader fields onto the user record before inserting.
+    user_dict["LeaderId"] = leader_id_obj
+    user_dict["LeaderPath"] = leader_path
+
+    # Insert user into Users collection (now includes LeaderId + LeaderPath)
+    user_result = await db["Users"].insert_one(user_dict)
+    logger.info(f"User created successfully: {email}")
+
     # Create corresponding person record in People collection
     person_doc = {
         "Name": user.name.strip(),
@@ -1008,6 +1101,8 @@ async def signup(user: UserCreate):
         "Leader @12": leader12,
         "Leader @144": leader144,
         "Leader @1728": leader1728,
+        "LeaderId": leader_id_obj,
+        "LeaderPath": leader_path,
         "Organization": organization,
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
