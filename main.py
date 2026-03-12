@@ -282,24 +282,23 @@ PEOPLE_PROJECTION = {
 
 
 def transform_person(person: dict) -> dict:
-    """
-    Transform a raw MongoDB person document into the standardised shape
-    returned by all API endpoints.
-
-    Handles both old documents (that may still carry Leader @N fields) and
-    new documents that use LeaderId / LeaderPath / Org_id / Organisation.
-    """
     raw_leader_path = (
         person.get("LeaderPath")
         or person.get("leader_path")
         or []
     )
-    # Normalise to list
     if isinstance(raw_leader_path, str):
         try:
             raw_leader_path = json.loads(raw_leader_path)
         except Exception:
             raw_leader_path = [raw_leader_path] if raw_leader_path else []
+
+    # ✅ Stringify any ObjectIds lurking in the path array
+    raw_leader_path = [
+        str(item) if isinstance(item, ObjectId) else item
+        for item in raw_leader_path
+        if item is not None
+    ]
 
     raw_leader_id = (
         person.get("LeaderId")
@@ -323,7 +322,6 @@ def transform_person(person: dict) -> dict:
         "Email": person.get("Email", ""),
         "Number": person.get("Number", ""),
         "Gender": person.get("Gender", ""),
-        # New schema fields
         "LeaderId": raw_leader_id,
         "LeaderPath": raw_leader_path,
         "Org_id": org_id,
@@ -333,7 +331,6 @@ def transform_person(person: dict) -> dict:
             if isinstance(person.get("UpdatedAt"), datetime)
             else person.get("UpdatedAt", "")
         ),
-        # Optional biographical fields
         "InvitedBy": person.get("InvitedBy", ""),
         "DateCreated": (
             person["DateCreated"].isoformat()
@@ -342,10 +339,8 @@ def transform_person(person: dict) -> dict:
         ),
         "Address": person.get("Address", ""),
         "Birthday": person.get("Birthday", ""),
-        # Convenience
         "FullName": f"{name} {surname}".strip(),
     }
-
 # ---------------------------------------------------------------------------
 
 
