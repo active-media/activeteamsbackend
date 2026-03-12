@@ -2130,7 +2130,6 @@ async def get_weekly_attendance(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/events/eventsdata")
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
@@ -2140,7 +2139,7 @@ async def get_other_events(
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
-    start_date: Optional[str] = Query('2025-10-10'),
+    start_date: Optional[str] = Query('2024-10-10'),
     end_date: Optional[str] = Query(None)
 ):
     """
@@ -2151,16 +2150,14 @@ async def get_other_events(
         print(f"Query params - status: {status}, personal: {personal}, search: {search}")
 
         user_role = current_user.get("role", "user").lower()
-        
         user_email = current_user.get("email", "").lower().strip()
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-        email = user_email  
+        email = user_email
 
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
 
-       
         try:
             start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime("2000-01-01", "%Y-%m-%d").date()
             end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today + timedelta(days=365)
@@ -2180,7 +2177,6 @@ async def get_other_events(
             ]
         }
 
-        # Allow admin, leaderat12, and registrant to see all events
         # Role-based visibility
         if user_role not in ["admin", "leaderat12", "registrant"]:
             visibility_filter = {
@@ -2211,7 +2207,6 @@ async def get_other_events(
 
         if event_type and event_type.lower() != 'all':
             print(f"Filtering by event type: '{event_type}'")
-           
             if event_type.lower() not in ["all", "cells"]:
                 event_type_query = {
                     "$or": [
@@ -2220,12 +2215,10 @@ async def get_other_events(
                         {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
                     ]
                 }
-               
                 if "$or" in query:
                     query = {"$and": [query, event_type_query]}
                 else:
                     query["$or"] = event_type_query["$or"]
-               
                 print(f"Event type filter applied: {event_type_query}")
 
         if search and search.strip():
@@ -2250,17 +2243,8 @@ async def get_other_events(
         print(f"Final query: {query}")
 
         cursor = events_collection.find(query)
-        events = await cursor.to_list(length=1000)
-       
+        events = await cursor.to_list(length=3000)
         print(f"Found {len(events)} other events")
-
-        if events and event_type and event_type.lower() != 'all':
-            found_event_types = set()
-            for event in events:
-                found_event_types.add(event.get("Event Type"))
-                found_event_types.add(event.get("eventType"))
-                found_event_types.add(event.get("eventTypeName"))
-            print(f"Event types found in results: {found_event_types}")
 
         other_events = []
 
@@ -2268,7 +2252,7 @@ async def get_other_events(
             try:
                 event_name = event.get("Event Name") or event.get("eventName", "")
                 event_type_value = event.get("Event Type") or event.get("eventType", "Event")
-               
+
                 day_name_raw = event.get("Day") or event.get("day") or event.get("eventDay") or ""
                 day_name = str(day_name_raw).strip()
 
@@ -2287,7 +2271,7 @@ async def get_other_events(
                 else:
                     continue
 
-                # If no day is stored, calculate it from the date
+                # Calculate day name from date if not stored
                 if not day_name:
                     try:
                         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -2302,37 +2286,68 @@ async def get_other_events(
                 if event_date < start_date_obj or event_date > end_date_obj:
                     continue
 
-                attendance_data = event.get("attendance", {})
-                event_date_iso = event_date.isoformat()
-                event_attendance = attendance_data.get(event_date_iso, {})
-               
-                did_not_meet = event_attendance.get("status") == "did_not_meet"
-                weekly_attendees = event_attendance.get("attendees", [])
+                # Hide future events
+                if event_date > today:
+                    continue
+
+                # ── Attendees ──────────────────────────────────────────────
+                # First try direct attendees array on the event
+                weekly_attendees = event.get("attendees", [])
+                if not isinstance(weekly_attendees, list):
+                    weekly_attendees = []
+
+                # Fallback to nested attendance[date][attendees] structure
+                if not weekly_attendees:
+                    attendance_data = event.get("attendance", {})
+                    if isinstance(attendance_data, dict):
+                        event_date_iso = event_date.isoformat()
+                        event_attendance = attendance_data.get(event_date_iso, {})
+                        weekly_attendees = event_attendance.get("attendees", [])
+                        if not isinstance(weekly_attendees, list):
+                            weekly_attendees = []
+
                 has_weekly_attendees = len(weekly_attendees) > 0
-               
+
+                # ── New People ─────────────────────────────────────────────
+                new_people = event.get("new_people", [])
+                if not isinstance(new_people, list):
+                    new_people = []
+
+                # ── Consolidations ─────────────────────────────────────────
+                consolidations = event.get("consolidations", [])
+                if not isinstance(consolidations, list):
+                    consolidations = []
+
+                # ── Status ─────────────────────────────────────────────────────────────────
                 main_event_status = event.get("status", "").lower()
                 main_event_did_not_meet = event.get("did_not_meet", False)
                 main_event_complete = event.get("Status", "").lower() == "complete"
-               
-                if did_not_meet or main_event_did_not_meet or main_event_status == "did_not_meet":
+
+                # If explicitly reopened/open, respect that and don't override
+                if main_event_status in ["open", "incomplete", "reopened", "active"]:
+                    event_status = "incomplete"
+                elif main_event_did_not_meet or main_event_status == "did_not_meet":
                     event_status = "did_not_meet"
                 elif has_weekly_attendees or main_event_complete or main_event_status == "complete":
                     event_status = "complete"
                 else:
                     event_status = "incomplete"
-               
-                print(f"Event '{event_name}' status - weekly: {event_attendance.get('status')}, main: {main_event_status}, final: {event_status}")
+
+                print(f"Event '{event_name}' - attendees: {len(weekly_attendees)}, new_people: {len(new_people)}, consolidations: {len(consolidations)}, status: {event_status}")
 
                 if status and status != event_status:
                     continue
 
                 recurring_days = event.get("recurring_day", [])
+                if not isinstance(recurring_days, list):
+                    recurring_days = []
+                is_recurring = len(recurring_days) > 0
 
-                is_recurring = bool(recurring_days) and len(recurring_days) > 0
-                # HIDE future recurring events until the actual day
-                # Show event only if it is today
-                if event_date > today:
-                    continue
+                # Prefer stored total_attendance, fall back to array length
+                total_attendance = event.get("total_attendance")
+                if not isinstance(total_attendance, int) or total_attendance == 0:
+                    total_attendance = len(weekly_attendees)
+
                 instance = {
                     "_id": str(event.get("_id")),
                     "UUID": event.get("UUID", ""),
@@ -2345,36 +2360,43 @@ async def get_other_events(
                     "day": actual_day_value,
                     "date": event_date.isoformat(),
                     "location": event.get("Location") or event.get("location", ""),
-                    "attendees": weekly_attendees,
                     "hasPersonSteps": False,
                     "status": event_status,
                     "Status": event_status.replace("_", " ").title(),
                     "_is_overdue": event_date < today and event_status == "incomplete",
                     "is_recurring": is_recurring,
                     "recurring_days": recurring_days,
-                    "original_event_id": str(event.get("_id"))
+                    "original_event_id": str(event.get("_id")),
+                    "isGlobal": event.get("isGlobal", False),
+                    "closed_by": event.get("closed_by", ""),
+                    "closed_at": str(event.get("closed_at", "")),
+                    "created_at": str(event.get("created_at", "")),
+                    "updated_at": str(event.get("updated_at", "") or event.get("updatedAt", "")),
+                    "attendees": weekly_attendees,
+                    "new_people": new_people,
+                    "consolidations": consolidations,
+                    "total_attendance": total_attendance,
+                    "new_people_count": len(new_people),
+                    "consolidation_count": len(consolidations),
                 }
 
-               
-                if "persistent_attendees" in event:
-                    print(f"Removing persistent_attendees from non-cell event: {event_name}")
-               
                 other_events.append(instance)
-                print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status})")
+                print(f"Other event: {event_name} on {event_date} (Day: {actual_day_value}, Status: {event_status}, Attendance: {total_attendance}, New: {len(new_people)}, Consolidated: {len(consolidations)})")
+
             except Exception as e:
                 print(f"Error processing other event: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
 
         other_events.sort(key=lambda x: x['date'], reverse=True)
-       
+
         total_count = len(other_events)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-
         skip = (page - 1) * limit
         paginated_events = other_events[skip:skip + limit]
 
         print(f"Returning {len(paginated_events)} other events (page {page}/{total_pages})")
-        print(f"Status breakdown for other events:")
         status_counts = {}
         for event in other_events:
             status_counts[event['status']] = status_counts.get(event['status'], 0) + 1
@@ -2394,7 +2416,7 @@ async def get_other_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
+    
 @app.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
     """
