@@ -1,631 +1,275 @@
-# from datetime import datetime
-# from typing import Optional
-# from bson import ObjectId
-# from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends
-# from auth.models import PersonCreate
-# from auth.utils import get_current_user
-# from database import db, people_collection
+"""
+leader_id_diagnostic.py
+=======================
+Run this script ONCE to:
+  1. Inspect what values are actually stored in LeaderId across your people collection
+  2. Try to match those values to real users in the users collection
+  3. Print a clear report so you can decide the migration strategy
+  4. Optionally run the migration to replace name/email LeaderId values
+     with the actual MongoDB ObjectId of the matching user
 
-# router = APIRouter()
+HOW TO RUN:
+  python leader_id_diagnostic.py --diagnose        # just inspect, no changes
+  python leader_id_diagnostic.py --migrate         # inspect + fix matched records
+  python leader_id_diagnostic.py --migrate --dry-run  # show what would change, no writes
+"""
 
-# def normalize_person_data(data: dict) -> dict:
-#     """Normalize person data for database operations"""
-#     return {
-#         "Name": data.get("Name") or data.get("name", ""),
-#         "Surname": data.get("Surname") or data.get("surname", ""),
-#         "Number": data.get("Number") or data.get("number", ""),
-#         "Email": data.get("Email") or data.get("email", ""),
-#         "Address": data.get("Address") or data.get("address", ""),
-#         "Birthday": data.get("Birthday") or data.get("birthday") or data.get("dob", ""),
-#         "Gender": data.get("Gender") or data.get("gender", ""),
-#         "InvitedBy": data.get("InvitedBy") or data.get("invitedBy", ""),
-#         "Leader @1": data.get("Leader @1") or data.get("leader1", ""),
-#         "Leader @12": data.get("Leader @12") or data.get("leader12", ""),
-#         "Leader @144": data.get("Leader @144") or data.get("leader144", ""),
-#         "Leader @1728": data.get("Leader @1728") or data.get("leader1728", ""),
-#         "Stage": data.get("Stage") or data.get("stage", "Win"),
-#         "UpdatedAt": datetime.utcnow().isoformat()
-#     }
-
-# @router.get("/people")
-# async def get_people(
-#     page: int = Query(1, ge=1),
-#     perPage: int = Query(100, ge=0),  
-#     name: Optional[str] = None,
-#     gender: Optional[str] = None,
-#     dob: Optional[str] = None,
-#     location: Optional[str] = None,
-#     leader: Optional[str] = None,
-#     stage: Optional[str] = None,
-#     email: Optional[str] = None  
-# ):
-#     """Get people with optional filtering and pagination"""
-#     try:
-#         query = {}
-
-#         if name:
-#             query["$or"] = [
-#                 {"Name": {"$regex": name, "$options": "i"}},
-#                 {"Surname": {"$regex": name, "$options": "i"}},
-#                 {"Email": {"$regex": name, "$options": "i"}}
-#             ]
-#         if email:
-#             query["Email"] = {"$regex": email, "$options": "i"}
-#         if gender:
-#             query["Gender"] = {"$regex": gender, "$options": "i"}
-#         if dob:
-#             query["Birthday"] = dob
-#         if location:
-#             query["Address"] = {"$regex": location, "$options": "i"}
-#         if leader:
-#             query["$or"] = [
-#                 {"Leader @1": {"$regex": leader, "$options": "i"}},
-#                 {"Leader @12": {"$regex": leader, "$options": "i"}},
-#                 {"Leader @144": {"$regex": leader, "$options": "i"}},
-#                 {"Leader @1728": {"$regex": leader, "$options": "i"}}
-#             ]
-#         if stage:
-#             query["Stage"] = {"$regex": stage, "$options": "i"}
-
-#         # Handle pagination or fetch all
-#         if perPage == 0:
-#             cursor = people_collection.find(query)
-#         else:
-#             skip = (page - 1) * perPage
-#             cursor = people_collection.find(query).skip(skip).limit(perPage)
-
-#         people_list = []
-#         async for person in cursor:
-#             person["_id"] = str(person["_id"])
-            
-#             # Map to consistent field names
-#             mapped = {
-#                 "_id": person["_id"],
-#                 "Name": person.get("Name", ""),
-#                 "Surname": person.get("Surname", ""),
-#                 "Number": person.get("Number", ""),
-#                 "Email": person.get("Email", ""),
-#                 "Address": person.get("Address", ""),
-#                 "Gender": person.get("Gender", ""),
-#                 "Birthday": person.get("Birthday", ""),
-#                 "InvitedBy": person.get("InvitedBy", ""),
-#                 "Leader @1": person.get("Leader @1", ""),
-#                 "Leader @12": person.get("Leader @12", ""),
-#                 "Leader @144": person.get("Leader @144", ""),
-#                 "Leader @1728": person.get("Leader @1728", ""),
-#                 "Stage": person.get("Stage", "Win"),
-#                 "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
-#                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-#             }
-#             people_list.append(mapped)
-
-#         # Get total count for pagination metadata
-#         total_count = await people_collection.count_documents(query)
-
-#         return {
-#             "page": page,
-#             "perPage": perPage,
-#             "total": total_count,
-#             "results": people_list
-#         }
-        
-#     except Exception as e:
-#         print(f"Error fetching people: {e}")
-#         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-# # ========== SEARCH & AUTOCOMPLETE ENDPOINTS - MUST COME BEFORE {person_id} ==========
-
-# @router.get("/people/search-fast")
-# async def search_people_fast(
-#     query: str = Query(..., min_length=2),
-#     limit: int = Query(25, le=50)
-# ):
-#     """
-#     FAST search endpoint for autocomplete - optimized for signup form
-#     Uses simple regex matching and returns minimal fields
-#     """
-#     try:
-#         if not query or len(query) < 2:
-#             return {"results": []}
-        
-#         # Simple regex search on name fields
-#         search_regex = {"$regex": query.strip(), "$options": "i"}
-        
-#         # Only fetch essential fields for autocomplete
-#         projection = {
-#             "_id": 1,
-#             "Name": 1,
-#             "Surname": 1, 
-#             "Email": 1,
-#             "Number": 1,
-#             "Leader @1": 1,
-#             "Leader @12": 1,
-#             "Leader @144": 1,
-#             "Leader @1728": 1
-#         }
-        
-#         cursor = people_collection.find({
-#             "$or": [
-#                 {"Name": search_regex},
-#                 {"Surname": search_regex},
-#                 {"Email": search_regex},
-#                 {"$expr": {
-#                     "$regexMatch": {
-#                         "input": {"$concat": ["$Name", " ", "$Surname"]},
-#                         "regex": query.strip(),
-#                         "options": "i"
-#                     }
-#                 }}
-#             ]
-#         }, projection).limit(limit)
-        
-#         results = []
-#         async for person in cursor:
-#             results.append({
-#                 "_id": str(person["_id"]),
-#                 "Name": person.get("Name", ""),
-#                 "Surname": person.get("Surname", ""),
-#                 "Email": person.get("Email", ""),
-#                 "Number": person.get("Number", ""),
-#                 "Leader @1": person.get("Leader @1", ""),
-#                 "Leader @12": person.get("Leader @12", ""),
-#                 "Leader @144": person.get("Leader @144", ""),
-#                 "Leader @1728": person.get("Leader @1728", "")
-#             })
-        
-#         return {"results": results}
-        
-#     except Exception as e:
-#         print(f"Error in fast search: {e}")
-#         return {"results": []}
-
-# @router.get("/people/all-minimal")
-# async def get_all_people_minimal():
-#     """
-#     Get all people with minimal fields for client-side caching
-#     Much faster than full document fetch
-#     """
-#     try:
-#         projection = {
-#             "_id": 1,
-#             "Name": 1,
-#             "Surname": 1,
-#             "Email": 1,
-#             "Number": 1
-#         }
-        
-#         cursor = people_collection.find({}, projection).limit(1000)
-        
-#         people = []
-#         async for person in cursor:
-#             people.append({
-#                 "_id": str(person["_id"]),
-#                 "Name": person.get("Name", ""),
-#                 "Surname": person.get("Surname", ""),
-#                 "Email": person.get("Email", ""),
-#                 "Number": person.get("Number", "")
-#             })
-        
-#         return {"people": people}
-        
-#     except Exception as e:
-#         print(f"Error fetching minimal people: {e}")
-#         return {"people": []}
-
-# @router.get("/people/leaders-only")
-# async def get_leaders_only():
-#     """
-#     Get only people who are leaders (have people under them)
-#     Optimized for signup form where we mostly need leaders
-#     """
-#     try:
-#         # Find people who appear as leaders
-#         pipeline = [
-#             {
-#                 "$match": {
-#                     "$or": [
-#                         {"Leader @1": {"$exists": True, "$ne": ""}},
-#                         {"Leader @12": {"$exists": True, "$ne": ""}},
-#                         {"Leader @144": {"$exists": True, "$ne": ""}},
-#                         {"Leader @1728": {"$exists": True, "$ne": ""}}
-#                     ]
-#                 }
-#             },
-#             {
-#                 "$project": {
-#                     "_id": 1,
-#                     "Name": 1,
-#                     "Surname": 1,
-#                     "Email": 1,
-#                     "Number": 1,
-#                     "Leader @1": 1,
-#                     "Leader @12": 1,
-#                     "Leader @144": 1,
-#                     "Leader @1728": 1
-#                 }
-#             },
-#             {"$limit": 500}
-#         ]
-        
-#         cursor = people_collection.aggregate(pipeline)
-#         leaders = []
-        
-#         async for person in cursor:
-#             leaders.append({
-#                 "_id": str(person["_id"]),
-#                 "Name": person.get("Name", ""),
-#                 "Surname": person.get("Surname", ""),
-#                 "Email": person.get("Email", ""),
-#                 "Number": person.get("Number", ""),
-#                 "Leader @1": person.get("Leader @1", ""),
-#                 "Leader @12": person.get("Leader @12", ""),
-#                 "Leader @144": person.get("Leader @144", ""),
-#                 "Leader @1728": person.get("Leader @1728", "")
-#             })
-        
-#         return {"leaders": leaders}
-        
-#     except Exception as e:
-#         print(f"Error fetching leaders: {e}")
-#         return {"leaders": []}
-
-# # ========== SPECIFIC PERSON ROUTES - MUST COME AFTER SEARCH ROUTES ==========
-
-# @router.get("/people/{person_id}")
-# async def get_person_by_id(person_id: str = Path(...)):
-#     """Get a single person by ID"""
-#     try:
-#         person = await people_collection.find_one({"_id": ObjectId(person_id)})
-#         if not person:
-#             raise HTTPException(status_code=404, detail="Person not found")
-        
-#         person["_id"] = str(person["_id"])
-#         mapped = {
-#             "_id": person["_id"],
-#             "Name": person.get("Name", ""),
-#             "Surname": person.get("Surname", ""),
-#             "Number": person.get("Number", ""),
-#             "Email": person.get("Email", ""),
-#             "Address": person.get("Address", ""),
-#             "Gender": person.get("Gender", ""),
-#             "Birthday": person.get("Birthday", ""),
-#             "InvitedBy": person.get("InvitedBy", ""),
-#             "Leader @1": person.get("Leader @1", ""),
-#             "Leader @12": person.get("Leader @12", ""),
-#             "Leader @144": person.get("Leader @144", ""),
-#             "Leader @1728": person.get("Leader @1728", ""),
-#             "Stage": person.get("Stage", "Win"),
-#             "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
-#             "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-#         }
-#         return mapped
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         print(f"Error fetching person by ID: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
-
-# @router.post("/people")
-# async def create_person(person_data: PersonCreate):
-#     """Create a new person"""
-#     try:
-#         # Normalize email
-#         email = person_data.email.lower().strip()
-
-#         # Check if email already exists
-#         if email:
-#             existing_person = await people_collection.find_one({"Email": email})
-#             if existing_person:
-#                 raise HTTPException(
-#                     status_code=400,
-#                     detail=f"A person with email '{email}' already exists"
-#                 )
-
-#         # Extract leader fields from the list
-#         leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
-#         leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
-#         leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
-#         leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
-
-#         # Prepare the document
-#         person_doc = {
-#             "Name": person_data.name.strip(),
-#             "Surname": person_data.surname.strip(),
-#             "Email": email,
-#             "Number": person_data.number.strip(),
-#             "Address": person_data.address.strip(),
-#             "Gender": person_data.gender.strip(),
-#             "Birthday": person_data.dob.strip(),
-#             "InvitedBy": person_data.invitedBy.strip(),
-#             "Leader @1": leader1,
-#             "Leader @12": leader12,
-#             "Leader @144": leader144,
-#             "Leader @1728": leader1728,
-#             "Stage": person_data.stage or "Win",
-#             "Date Created": datetime.utcnow().isoformat(),
-#             "UpdatedAt": datetime.utcnow().isoformat()
-#         }
-
-#         # Insert into MongoDB
-#         result = await people_collection.insert_one(person_doc)
-
-#         # Return the created person object
-#         created_person = {
-#             "_id": str(result.inserted_id),
-#             "Name": person_doc["Name"],
-#             "Surname": person_doc["Surname"],
-#             "Email": person_doc["Email"],
-#             "Number": person_doc["Number"],
-#             "Gender": person_doc["Gender"],
-#             "Birthday": person_doc["Birthday"],
-#             "Address": person_doc["Address"],
-#             "InvitedBy": person_doc["InvitedBy"],
-#             "Leader @1": person_doc["Leader @1"],
-#             "Leader @12": person_doc["Leader @12"],
-#             "Leader @144": person_doc["Leader @144"],
-#             "Leader @1728": person_doc["Leader @1728"],
-#             "Stage": person_doc["Stage"],
-#             "Date Created": person_doc["Date Created"],
-#             "UpdatedAt": person_doc["UpdatedAt"]
-#         }
-
-#         return {
-#             "message": "Person created successfully",
-#             "id": str(result.inserted_id),
-#             "_id": str(result.inserted_id),
-#             "person": created_person
-#         }
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         print(f"Error creating person: {e}")
-#         raise HTTPException(status_code=500, detail="Internal Server Error")
-
-# @router.patch("/people/{person_id}")
-# async def update_person(person_id: str = Path(...), update_data: dict = Body(...)):
-#     """Update a person's information"""
-#     try:
-#         normalized_data = normalize_person_data(update_data)
-        
-#         result = await people_collection.update_one(
-#             {"_id": ObjectId(person_id)},
-#             {"$set": normalized_data}
-#         )
-#         if result.matched_count == 0:
-#             raise HTTPException(status_code=404, detail="Person not found")
-
-#         # Fetch the updated person document
-#         updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
-#         if not updated_person:
-#             raise HTTPException(status_code=404, detail="Person not found after update")
-
-#         # Return the updated person in the same format as GET
-#         updated_person["_id"] = str(updated_person["_id"])
-#         mapped = {
-#             "_id": updated_person["_id"],
-#             "Name": updated_person.get("Name", ""),
-#             "Surname": updated_person.get("Surname", ""),
-#             "Number": updated_person.get("Number", ""),
-#             "Email": updated_person.get("Email", ""),
-#             "Address": updated_person.get("Address", ""),
-#             "Gender": updated_person.get("Gender", ""),
-#             "Birthday": updated_person.get("Birthday", ""),
-#             "InvitedBy": updated_person.get("InvitedBy", ""),
-#             "Leader @1": updated_person.get("Leader @1", ""),
-#             "Leader @12": updated_person.get("Leader @12", ""),
-#             "Leader @144": updated_person.get("Leader @144", ""),
-#             "Leader @1728": updated_person.get("Leader @1728", ""),
-#             "Stage": updated_person.get("Stage", "Win"),
-#             "UpdatedAt": updated_person.get("UpdatedAt"),
-#         }
-#         return mapped
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         print(f"Error updating person: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
-
-# @router.delete("/people/{person_id}")
-# async def delete_person(person_id: str = Path(...)):
-#     """Delete a person"""
-#     try:
-#         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
-#         if result.deleted_count == 0:
-#             raise HTTPException(status_code=404, detail="Person not found")
-#         return {"message": "Person deleted successfully"}
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         print(f"Error deleting person: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
 import asyncio
-import logging
-from datetime import datetime, timezone
-from motor.motor_asyncio import AsyncIOMotorClient
+import argparse
+import os
+import re
+from collections import Counter, defaultdict
 from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
-# ── CONFIG ──────────────────────────────────────────────────────────────
-MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
-DB_NAME = "test-data-active-teams"
+load_dotenv()
 
-DRY_RUN = False
-# ─────────────────────────────────────────────────────────────────────────
+MONGO_URI = os.getenv("MONGODB_URI")
+DB_NAME   = os.getenv("DB_NAME", "test-data-active-teams")
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-log = logging.getLogger(__name__)
+if not MONGO_URI:
+    raise SystemExit(
+        "\n❌  MONGODB_URI is not set.\n"
+        "    Make sure your .env file exists and contains:\n"
+        "    MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/dbname\n"
+        "    Then re-run the script from the same directory as your .env file.\n"
+    )
 
+print(f"Connecting to: {MONGO_URI[:40]}...")  # only print first 40 chars for safety
+client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+db     = client[DB_NAME]
 
-def build_full_name(name: str, surname: str) -> str:
-    parts = [p.strip() for p in [name, surname] if p and p.strip()]
-    return " ".join(parts)
-
-
-def get_deepest_leader(raw_path):
-    """
-    Returns the most direct leader (last non-empty name).
-    Since hierarchy is:
-    Leader@1 → Leader@12 → Leader@144 → Leader@1728
-    the deepest leader will usually be Leader@1728.
-    """
-    for name in reversed(raw_path):
-        if name and name.strip():
-            return name.strip()
-    return None
+people_collection = db["people"]
+users_collection  = db["users"]
 
 
-async def migrate():
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    client = AsyncIOMotorClient(MONGO_URI)
-    db = client[DB_NAME]
-    people_col = db["People"]
+def looks_like_object_id(val: str) -> bool:
+    return bool(re.match(r'^[a-f0-9]{24}$', (val or '').strip().lower()))
 
-    # ── Fetch org doc inside the async function ──────────────────────────
-    org_doc = await db["OrgConfig"].find_one({"org_id": "Active Church"})
+def looks_like_email(val: str) -> bool:
+    return bool(re.match(r'^[^@]+@[^@]+\.[^@]+$', (val or '').strip().lower()))
 
-    if not org_doc:
-        log.error("OrgConfig document for 'Active Church' not found. Aborting.")
-        client.close()
+def classify_value(val: str) -> str:
+    if not val or val.strip() == '':
+        return 'empty'
+    if looks_like_object_id(val):
+        return 'objectid'
+    if looks_like_email(val):
+        return 'email'
+    # Looks like a name if it has a space or is a single word with capitals
+    return 'name_string'
+
+
+# ─── Step 1: Diagnose ─────────────────────────────────────────────────────────
+
+async def diagnose():
+    print("\n" + "="*60)
+    print("STEP 1: Inspecting LeaderId values in people collection")
+    print("="*60)
+
+    total = await people_collection.count_documents({})
+    print(f"Total people: {total}")
+
+    # Sample LeaderId values
+    cursor = people_collection.find(
+        {}, {"_id": 1, "Name": 1, "Surname": 1, "LeaderId": 1, "leader_id": 1}
+    )
+    docs = await cursor.to_list(length=None)
+
+    type_counts = Counter()
+    sample_by_type = defaultdict(list)
+    all_leader_id_values = set()
+
+    for doc in docs:
+        raw = doc.get("LeaderId") or doc.get("leader_id") or ""
+        val = str(raw).strip() if raw else ""
+        t = classify_value(val)
+        type_counts[t] += 1
+        if len(sample_by_type[t]) < 5:
+            sample_by_type[t].append({
+                "person": f"{doc.get('Name','')} {doc.get('Surname','')}".strip(),
+                "LeaderId": val
+            })
+        if val:
+            all_leader_id_values.add(val)
+
+    print(f"\nLeaderId value types found:")
+    for t, count in type_counts.most_common():
+        print(f"  {t:20s}: {count:6d} records")
+
+    print(f"\nSample values per type:")
+    for t, samples in sample_by_type.items():
+        print(f"\n  [{t}]")
+        for s in samples:
+            print(f"    Person: {s['person']!r:30s}  LeaderId: {s['LeaderId']!r}")
+
+    # ── Step 2: Check which leaders exist as users ───────────────────────────
+    print("\n" + "="*60)
+    print("STEP 2: Matching LeaderId values to users collection")
+    print("="*60)
+
+    # Build user lookup maps
+    users_cursor = users_collection.find(
+        {}, {"_id": 1, "name": 1, "surname": 1, "email": 1}
+    )
+    all_users = await users_cursor.to_list(length=None)
+
+    user_by_id    = {str(u["_id"]): u for u in all_users}
+    user_by_email = {(u.get("email") or "").lower().strip(): u for u in all_users}
+    user_by_name  = {}
+    user_name_collisions = set()  # names shared by >1 user — CANNOT match safely
+
+    for u in all_users:
+        full = f"{u.get('name','')} {u.get('surname','')}".strip().lower()
+        if full in user_by_name:
+            user_name_collisions.add(full)  # duplicate — unsafe to match
+        else:
+            user_by_name[full] = u
+
+    print(f"\nUsers in system:          {len(all_users)}")
+    print(f"Unique names (safe):      {len(user_by_name) - len(user_name_collisions)}")
+    print(f"Duplicate names (UNSAFE): {len(user_name_collisions)}")
+    if user_name_collisions:
+        print("  Duplicates:", list(user_name_collisions)[:10])
+
+    # Try matching each unique LeaderId value
+    matched_to_user    = {}   # leader_id_value → user doc
+    unmatched_values   = []
+    collision_values   = []   # name matched but multiple users share it
+
+    for val in all_leader_id_values:
+        t = classify_value(val)
+        if t == 'objectid':
+            u = user_by_id.get(val)
+            if u:
+                matched_to_user[val] = u
+            else:
+                unmatched_values.append((val, t, "no user with this _id"))
+        elif t == 'email':
+            u = user_by_email.get(val.lower())
+            if u:
+                matched_to_user[val] = u
+            else:
+                unmatched_values.append((val, t, "no user with this email"))
+        elif t == 'name_string':
+            norm = val.lower().strip()
+            if norm in user_name_collisions:
+                collision_values.append(val)
+            elif norm in user_by_name:
+                matched_to_user[val] = user_by_name[norm]
+            else:
+                unmatched_values.append((val, t, "no user with this name"))
+
+    print(f"\nLeaderId values that match a user:  {len(matched_to_user)}")
+    print(f"LeaderId values with no user match: {len(unmatched_values)}")
+    print(f"LeaderId values with name collision: {len(collision_values)} (UNSAFE — skipped)")
+
+    if matched_to_user:
+        print("\nSample matches (LeaderId value → user):")
+        for val, u in list(matched_to_user.items())[:8]:
+            print(f"  {val!r:35s} → {u.get('name','')} {u.get('surname','')} ({str(u['_id'])})")
+
+    if unmatched_values:
+        print(f"\nSample unmatched values:")
+        for val, t, reason in unmatched_values[:8]:
+            print(f"  {val!r:35s} ({t}) — {reason}")
+
+    if collision_values:
+        print(f"\nCollision values (skipped — cannot safely resolve):")
+        for val in collision_values[:8]:
+            print(f"  {val!r}")
+
+    return matched_to_user, collision_values, unmatched_values, type_counts
+
+
+# ─── Step 3: Migrate ─────────────────────────────────────────────────────────
+
+async def migrate(dry_run: bool = False):
+    matched_to_user, collision_values, unmatched_values, type_counts = await diagnose()
+
+    # Skip migration if LeaderIds are already all ObjectIds
+    already_objectid = type_counts.get('objectid', 0)
+    total_non_empty  = sum(v for k, v in type_counts.items() if k != 'empty')
+    if already_objectid == total_non_empty:
+        print("\n✅ All non-empty LeaderId values are already ObjectIds. No migration needed.")
         return
 
-    org_object_id = org_doc["_id"]   # Mongo ObjectId
-    org_id_str    = org_doc["org_id"]  # "Active Church"
-    org_name      = org_doc["organisation"]  # "Active Church"
-    # ─────────────────────────────────────────────────────────────────────
+    print("\n" + "="*60)
+    print(f"STEP 3: {'DRY RUN — ' if dry_run else ''}Migrating matched LeaderId values to ObjectIds")
+    print("="*60)
 
-    log.info("=== ActiveTeams People Migration (Reversed Hierarchy) ===")
-    log.info(f"DRY_RUN = {DRY_RUN}")
-    log.info(f"Org: {org_name} ({org_id_str})")
-    log.info("Loading people for name → ObjectId lookup...")
+    # For each matched value, update all people records that have it
+    updated_total  = 0
+    skipped_total  = 0
 
-    # Build lookup map
-    name_to_id = {}
+    for old_val, user in matched_to_user.items():
+        if looks_like_object_id(old_val):
+            # Already an ObjectId string — check it points to a valid user
+            continue
 
-    all_people = await people_col.find(
-        {},
-        {"_id": 1, "Name": 1, "Surname": 1}
-    ).to_list(length=None)
-
-    for p in all_people:
-        full = build_full_name(p.get("Name", ""), p.get("Surname", "")).lower()
-        if full:
-            name_to_id[full] = p["_id"]
-
-    log.info(f"Loaded {len(name_to_id)} people into lookup map.")
-
-    def resolve_id(leader_name):
-        if not leader_name or not leader_name.strip():
-            return None
-        key = leader_name.strip().lower()
-        return name_to_id.get(key)
-
-    cursor = people_col.find({})
-    total = await people_col.count_documents({})
-
-    migrated = 0
-    skipped = 0
-    errors = 0
-
-    log.info(f"Migrating {total} documents...")
-
-    async for doc in cursor:
-
-        doc_id = doc["_id"]
-
-        try:
-
-            # Skip if already migrated
-            if "FullName" in doc:
-                skipped += 1
-                continue
-
-            name = (doc.get("Name") or "").strip()
-            surname = (doc.get("Surname") or "").strip()
-
-            # ── NEW ORDER (Top → Direct)
-            leader_fields = [
-                "Leader @1",
-                "Leader @12",
-                "Leader @144",
-                "Leader @1728",
+        new_val = str(user["_id"])
+        filter_ = {
+            "$or": [
+                {"LeaderId": old_val},
+                {"leader_id": old_val},
             ]
+        }
 
-            leader_names_ordered = [
-                doc.get(field, "") or ""
-                for field in leader_fields
-            ]
+        count = await people_collection.count_documents(filter_)
+        if count == 0:
+            continue
 
-            # Convert leader names to ObjectIds
-            leader_path_ids = []
-            seen = set()
+        print(f"\n  {old_val!r:35s} → {new_val}  ({count} people affected)")
 
-            for leader_name in leader_names_ordered:
-                oid = resolve_id(leader_name)
-                if oid and oid not in seen:
-                    leader_path_ids.append(oid)
-                    seen.add(oid)
-
-            # Direct leader
-            deepest_name = get_deepest_leader(leader_names_ordered)
-            leader_id = resolve_id(deepest_name)
-
-            # DateCreated handling
-            date_created = (
-                doc.get("Date Created")
-                or doc.get("DateCreated")
-                or None
+        if not dry_run:
+            result = await people_collection.update_many(
+                filter_,
+                {"$set": {"LeaderId": new_val, "leader_id": new_val}}
             )
+            updated_total += result.modified_count
+            print(f"    ✅ Updated {result.modified_count} records")
+        else:
+            print(f"    [DRY RUN] Would update {count} records")
+            updated_total += count
 
-            new_fields = {
-                "FullName": build_full_name(name, surname),
-                "Org_id": org_doc["org_id"],
-                "Organisation": org_doc["organisation"],
-                "InvitedBy": (doc.get("InvitedBy") or "").strip(),
-                "LeaderId": leader_id,
-                "LeaderPath": leader_path_ids,
-                "DateCreated": date_created,
-                "UpdatedAt": datetime.now(timezone.utc),
-            }
+    # Summary
+    print(f"\n{'='*60}")
+    if dry_run:
+        print(f"DRY RUN complete. Would have updated ~{updated_total} people records.")
+        print(f"Skipped {len(collision_values)} collision values and {len(unmatched_values)} unmatched values.")
+        print("\nRun without --dry-run to apply changes.")
+    else:
+        print(f"Migration complete. Updated {updated_total} people records.")
+        print(f"Skipped {len(collision_values)} collision values (duplicate names — manual fix needed).")
+        print(f"Skipped {len(unmatched_values)} unmatched values (no user found).")
 
-            unset_fields = {
-                "Leader @1": "",
-                "Leader @12": "",
-                "Leader @144": "",
-                "Leader @1728": "",
-                "Date Created": "",
-            }
+    if collision_values or unmatched_values:
+        print("\n⚠️  Some records could not be automatically migrated.")
+        print("   Run --diagnose again and manually assign correct ObjectIds for:")
+        for val in collision_values[:5]:
+            print(f"     [name collision] {val!r}")
+        for val, t, reason in unmatched_values[:5]:
+            print(f"     [unmatched] {val!r} — {reason}")
 
-            if DRY_RUN:
-                log.info(
-                    f"[DRY] {doc_id} | {name} {surname} "
-                    f"→ LeaderId={leader_id} "
-                    f"| LeaderPath={leader_path_ids}"
-                )
-            else:
-                await people_col.update_one(
-                    {"_id": doc_id},
-                    {
-                        "$set": new_fields,
-                        "$unset": unset_fields,
-                    },
-                )
 
-            migrated += 1
+# ─── Entry point ─────────────────────────────────────────────────────────────
 
-        except Exception as e:
-            log.error(f"Error on doc {doc_id}: {e}")
-            errors += 1
+async def main():
+    parser = argparse.ArgumentParser(description="LeaderId diagnostic and migration tool")
+    parser.add_argument("--diagnose",  action="store_true", help="Inspect LeaderId values only")
+    parser.add_argument("--migrate",   action="store_true", help="Migrate LeaderId values to ObjectIds")
+    parser.add_argument("--dry-run",   action="store_true", help="Show what would change without writing")
+    args = parser.parse_args()
 
-    log.info("=== Migration Complete ===")
-    log.info(f"Migrated : {migrated}")
-    log.info(f"Skipped  : {skipped}")
-    log.info(f"Errors   : {errors}")
-
-    if DRY_RUN:
-        log.info("*** DRY RUN — no changes written ***")
+    if args.migrate:
+        await migrate(dry_run=args.dry_run)
+    else:
+        await diagnose()
 
     client.close()
 
-
 if __name__ == "__main__":
-    asyncio.run(migrate())
+    asyncio.run(main())
