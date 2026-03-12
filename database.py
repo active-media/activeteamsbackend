@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv() 
 
 MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
-DB_NAME = "active-teams-db"
+DB_NAME = "test-data-active-teams-db"
 client = AsyncIOMotorClient(MONGO_URI)
 
 db = client[DB_NAME]
