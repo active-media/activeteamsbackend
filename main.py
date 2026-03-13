@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import time
 from bson import ObjectId
 import re
@@ -29,6 +29,7 @@ from apscheduler.schedulers.background import BackgroundScheduler, BlockingSched
 from pydantic import BaseModel
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
+
 app = FastAPI()
 
 app.add_middleware(
@@ -232,7 +233,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-# Enhanced cache storage with background loading
 people_cache = {
     "data": [],
     "last_updated": None,
@@ -251,13 +251,6 @@ people_cache = {
 
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
-
-# ---------------------------------------------------------------------------
-# NEW SCHEMA: projection and transform helpers
-# ---------------------------------------------------------------------------
-
-# Projection used for all people queries — uses the updated field names.
-# Old fields (Leader @1, Leader @12, Leader @144, Leader @1728) are removed.
 PEOPLE_PROJECTION = {
     "_id": 1,
     "Name": 1,
@@ -268,7 +261,6 @@ PEOPLE_PROJECTION = {
     "church_id": 1,
     "leader_id": 1,
     "leader_path": 1,
-    # New top-level fields present in updated documents
     "LeaderId": 1,
     "LeaderPath": 1,
     "Org_id": 1,
@@ -280,69 +272,65 @@ PEOPLE_PROJECTION = {
     "Birthday": 1,
 }
 
-
-def transform_person(person: dict) -> dict:
-    raw_leader_path = (
-        person.get("LeaderPath")
-        or person.get("leader_path")
-        or []
-    )
-    if isinstance(raw_leader_path, str):
-        try:
-            raw_leader_path = json.loads(raw_leader_path)
-        except Exception:
-            raw_leader_path = [raw_leader_path] if raw_leader_path else []
-
-    # ✅ Stringify any ObjectIds lurking in the path array
-    raw_leader_path = [
-        str(item) if isinstance(item, ObjectId) else item
-        for item in raw_leader_path
-        if item is not None
-    ]
-
-    raw_leader_id = (
-        person.get("LeaderId")
-        or person.get("leader_id")
-        or ""
-    )
-    if isinstance(raw_leader_id, ObjectId):
-        raw_leader_id = str(raw_leader_id)
-
-    org_id = person.get("Org_id") or person.get("church_id") or ""
-    if isinstance(org_id, ObjectId):
-        org_id = str(org_id)
-
-    name = person.get("Name", "")
-    surname = person.get("Surname", "")
-
-    return {
-        "_id": str(person["_id"]),
-        "Name": name,
-        "Surname": surname,
-        "Email": person.get("Email", ""),
-        "Number": person.get("Number", ""),
-        "Gender": person.get("Gender", ""),
-        "LeaderId": raw_leader_id,
-        "LeaderPath": raw_leader_path,
-        "Org_id": org_id,
-        "Organisation": person.get("Organisation", ""),
-        "UpdatedAt": (
-            person["UpdatedAt"].isoformat()
-            if isinstance(person.get("UpdatedAt"), datetime)
-            else person.get("UpdatedAt", "")
-        ),
-        "InvitedBy": person.get("InvitedBy", ""),
-        "DateCreated": (
-            person["DateCreated"].isoformat()
-            if isinstance(person.get("DateCreated"), datetime)
-            else person.get("DateCreated", "")
-        ),
-        "Address": person.get("Address", ""),
-        "Birthday": person.get("Birthday", ""),
-        "FullName": f"{name} {surname}".strip(),
+def transform_person(person, id_to_name: dict = None):
+    """Convert a raw MongoDB person doc to a serialisable dict.
+    
+    If id_to_name is provided, LeaderName and LeaderPathNames are resolved
+    from the lookup dict.  Otherwise only ObjectId → string conversion
+    is done (safe fallback for single-doc fetches without a batch map).
+    """
+    if not person:
+        return None
+ 
+    def oid(v):
+        return str(v) if v else None
+ 
+    result = {
+        "_id":         oid(person.get("_id")),
+        "Name":        person.get("Name"),
+        "Surname":     person.get("Surname"),
+        "Email":       person.get("Email"),
+        "Number":      person.get("Number"),
+        "Gender":      person.get("Gender"),
+        "church_id":   oid(person.get("church_id")),
+        "leader_id":   oid(person.get("leader_id")),
+        "leader_path": [oid(x) for x in person.get("leader_path", []) if x],
+        "Org_id":      oid(person.get("Org_id")) if person.get("Org_id") and not isinstance(person.get("Org_id"), str) else person.get("Org_id"),
+        "Organisation":person.get("Organisation"),
+        "UpdatedAt":   person.get("UpdatedAt"),
+        "InvitedBy":   person.get("InvitedBy"),
+        "DateCreated": person.get("DateCreated"),
+        "Address":     person.get("Address"),
+        "Birthday":    person.get("Birthday"),
     }
-# ---------------------------------------------------------------------------
+ 
+    raw_leader_id   = person.get("LeaderId")
+    raw_leader_path = person.get("LeaderPath", [])
+ 
+    leader_id_str  = oid(raw_leader_id)
+    leader_path_strs = [oid(x) for x in raw_leader_path if x]
+ 
+    result["LeaderId"]   = leader_id_str
+    result["LeaderPath"] = leader_path_strs
+ 
+    if id_to_name is not None:
+        result["LeaderName"]      = id_to_name.get(leader_id_str) if leader_id_str else None
+        result["LeaderPathNames"] = [id_to_name.get(pid) for pid in leader_path_strs]
+    else:
+        result["LeaderName"]      = None
+        result["LeaderPathNames"] = []
+ 
+    return result
 
+def build_id_to_name_map(people_docs: list) -> dict:
+    """Return {str(ObjectId): 'First Last'} for every person doc in the list."""
+    mapping = {}
+    for p in people_docs:
+        pid = str(p.get("_id", ""))
+        if pid:
+            name = f"{p.get('Name', '')} {p.get('Surname', '')}".strip()
+            mapping[pid] = name
+    return mapping
 
 async def invalidate_people_cache(operation_type: str, details: dict = None):
     """
@@ -476,75 +464,58 @@ async def startup_event():
     asyncio.create_task(background_refresh_people_cache())
 
 async def background_load_all_people():
-    """
-    Background task to load ALL people from the database using updated schema.
-    Uses PEOPLE_PROJECTION and transform_person() for consistency.
-    """
+    """Load all people from DB into the in-memory cache with resolved leader names."""
+    global people_cache
     try:
-        await asyncio.sleep(BACKGROUND_LOAD_DELAY)
-       
-        if people_cache["is_loading"]:
-            return
-           
         people_cache["is_loading"] = True
-        people_cache["last_error"] = None
-        start_time = time.time()
-       
-        print("BACKGROUND: Starting to load ALL people...")
-       
-        all_people_data = []
-        total_count = await people_collection.count_documents({})
-        people_cache["total_in_database"] = total_count
-        print(f"BACKGROUND: Total people in database: {total_count}")
-       
-        batch_size = 5000
-        page = 1
-        total_loaded = 0
-       
-        while True:
-            try:
-                skip = (page - 1) * batch_size
-                cursor = people_collection.find({}, PEOPLE_PROJECTION).skip(skip).limit(batch_size)
-                batch_data = await cursor.to_list(length=batch_size)
-               
-                if not batch_data:
-                    break
-               
-                transformed_batch = [transform_person(p) for p in batch_data]
-               
-                all_people_data.extend(transformed_batch)
-                total_loaded += len(transformed_batch)
-               
-                progress = (total_loaded / total_count) * 100 if total_count > 0 else 100
-                people_cache["load_progress"] = round(progress, 1)
-                people_cache["total_loaded"] = total_loaded
-               
-                print(f"BACKGROUND: Batch {page} - {len(transformed_batch)} people (Total: {total_loaded}/{total_count}, Progress: {progress:.1f}%)")
-               
-                page += 1
-                await asyncio.sleep(0.1)
-               
-            except Exception as batch_error:
-                print(f"BACKGROUND: Error in batch {page}: {str(batch_error)}")
-                break
-       
-        people_cache["data"] = all_people_data
-        people_cache["last_updated"] = datetime.utcnow().isoformat()
-        people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
-        people_cache["is_loading"] = False
-        people_cache["load_progress"] = 100
-       
-        end_time = time.time()
-        duration = end_time - start_time
-       
-        print(f"BACKGROUND: Successfully loaded ALL {len(all_people_data)} people in {duration:.2f} seconds")
-        print(f"BACKGROUND: Cache ready with {len(all_people_data)} people")
-       
+        logger.info("Loading all people into cache...")
+ 
+        cursor = people_collection.find({}, PEOPLE_PROJECTION)
+        raw_docs = await cursor.to_list(length=None)
+ 
+        id_to_name = build_id_to_name_map(raw_docs)
+ 
+        transformed = [transform_person(doc, id_to_name=id_to_name) for doc in raw_docs]
+ 
+        people_cache["data"]         = transformed
+        people_cache["last_updated"] = datetime.now(timezone.utc)
+        people_cache["expires_at"]   = datetime.now(timezone.utc) + timedelta(minutes=CACHE_DURATION_MINUTES)
+        people_cache["is_loading"]   = False
+        people_cache["is_valid"]     = True
+ 
+        logger.info(f"People cache loaded: {len(transformed)} records")
     except Exception as e:
         people_cache["is_loading"] = False
-        people_cache["last_error"] = str(e)
-        print(f"BACKGROUND: Failed to load people: {str(e)}")
+        logger.error(f"Error loading people cache: {e}")
+        raise
 
+async def background_refresh_people_cache():
+    """Refresh the people cache (called by scheduler / background task)."""
+    global people_cache
+    try:
+        people_cache["is_loading"] = True
+        logger.info("Refreshing people cache...")
+ 
+        cursor = people_collection.find({}, PEOPLE_PROJECTION)
+        raw_docs = await cursor.to_list(length=None)
+ 
+        id_to_name  = build_id_to_name_map(raw_docs)
+        transformed = [transform_person(doc, id_to_name=id_to_name) for doc in raw_docs]
+ 
+        people_cache["data"]         = transformed
+        people_cache["last_updated"] = datetime.now(timezone.utc)
+        people_cache["expires_at"]   = datetime.now(timezone.utc) + timedelta(minutes=CACHE_DURATION_MINUTES)
+        people_cache["is_loading"]   = False
+        people_cache["is_valid"]     = True
+        people_cache["pending_refresh"] = False
+        people_cache["version"]     += 1
+ 
+        logger.info(f"People cache refreshed: {len(transformed)} records, version {people_cache['version']}")
+    except Exception as e:
+        people_cache["is_loading"] = False
+        logger.error(f"Error refreshing people cache: {e}")
+        raise
+    
 @app.get("/cache/people")
 async def get_cached_people():
     """
@@ -552,12 +523,12 @@ async def get_cached_people():
     All records are shaped using the updated schema (LeaderId, LeaderPath, Org_id, Organisation).
     """
     try:
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
        
         if (people_cache["data"] and
             people_cache["is_valid"] and
             people_cache["expires_at"] and
-            current_time < datetime.fromisoformat(people_cache["expires_at"])):
+            current_time < people_cache["expires_at"]):
            
             print(f"CACHE HIT: Returning {len(people_cache['data'])} people")
             return {
@@ -773,7 +744,6 @@ async def search_people(
     try:
         search_term = query.lower().strip()
 
-        # ── fast path: search in-memory cache ──────────────────────────────
         if people_cache["data"]:
             results = []
             for person in people_cache["data"]:
@@ -794,7 +764,6 @@ async def search_people(
                 "source": "cache"
             }
 
-        # ── fallback: live MongoDB search when cache is not ready ───────────
         print("Cache empty during search — falling back to live MongoDB query")
         regex = {"$regex": re.escape(search_term), "$options": "i"}
         cursor = people_collection.find(
@@ -7192,86 +7161,36 @@ async def search_people_fast(
        
 
 @app.get("/people/{person_id}")
-async def get_person_by_id(person_id: str = Path(...)):
-    """
-    Get complete person data by ID - ENHANCED to include ALL fields
-    """
+async def get_person(person_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        if not ObjectId.is_valid(person_id):
-            raise HTTPException(status_code=400, detail="Invalid person ID")
-        
-        # Fetch the person with NO projection to get ALL fields
-        person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        
-        if not person:
-            raise HTTPException(status_code=404, detail="Person not found")
-        
-        # Convert ObjectId to string
-        person["_id"] = str(person["_id"])
-        
-        # Build comprehensive response with ALL fields
-        # Handle both capitalized and lowercase field names
-        complete_person = {
-            # Core identification
-            "_id": person["_id"],
-            "Name": person.get("Name", ""),
-            "Surname": person.get("Surname", ""),
-            "Email": person.get("Email", ""),
-            "Number": person.get("Number", ""),
-            
-            # Personal information - CRITICAL: Include Birthday/DOB
-            "Birthday": person.get("Birthday", ""),
-            "dob": person.get("Birthday", ""),  # Alias for frontend compatibility
-            "Gender": person.get("Gender", ""),
-            "Address": person.get("Address", ""),
-            
-            # Invitation and leadership
-            "InvitedBy": person.get("InvitedBy", ""),
-            "Leader @1": person.get("Leader @1", ""),
-            "Leader @12": person.get("Leader @12", ""),
-            "Leader @144": person.get("Leader @144", ""),
-            "Leader @1728": person.get("Leader @1728", ""),
-            
-            # Stage and status
-            "Stage": person.get("Stage", "Win"),
-            
-            # Timestamps
-            "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
-            "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-            
-            # Additional fields that might exist
-            "user_id": person.get("user_id", ""),
-            "DecisionType": person.get("DecisionType", ""),
-            "DecisionDate": person.get("DecisionDate", ""),
-            "DecisionHistory": person.get("DecisionHistory", []),
-            "FirstDecisionDate": person.get("FirstDecisionDate", ""),
-            "LastDecisionDate": person.get("LastDecisionDate", ""),
-            "TotalRecommitments": person.get("TotalRecommitments", 0),
-            
-            # Lowercase aliases for frontend compatibility
-            "name": person.get("Name", ""),
-            "surname": person.get("Surname", ""),
-            "email": person.get("Email", ""),
-            "number": person.get("Number", ""),
-            "gender": person.get("Gender", ""),
-            "address": person.get("Address", ""),
-            "invitedBy": person.get("InvitedBy", ""),
-            "leader1": person.get("Leader @1", ""),
-            "leader12": person.get("Leader @12", ""),
-            "leader144": person.get("Leader @144", ""),
-            "leader1728": person.get("Leader @1728", ""),
-            "stage": person.get("Stage", "Win"),
-        }
-        return complete_person
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error fetching person by ID: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error fetching person: {str(e)}")
-
+        oid = ObjectId(person_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid person ID")
+ 
+    person = await people_collection.find_one({"_id": oid}, PEOPLE_PROJECTION)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+ 
+    # Collect the IDs we need to resolve (LeaderPath + LeaderId)
+    ids_to_resolve = set()
+    if person.get("LeaderId"):
+        ids_to_resolve.add(person["LeaderId"])
+    for pid in person.get("LeaderPath", []):
+        if pid:
+            ids_to_resolve.add(pid)
+ 
+    id_to_name = {}
+    if ids_to_resolve:
+        cursor = people_collection.find(
+            {"_id": {"$in": list(ids_to_resolve)}},
+            {"_id": 1, "Name": 1, "Surname": 1}
+        )
+        async for doc in cursor:
+            sid  = str(doc["_id"])
+            name = f"{doc.get('Name', '')} {doc.get('Surname', '')}".strip()
+            id_to_name[sid] = name
+ 
+    return transform_person(person, id_to_name=id_to_name)
 
 @app.patch("/people/{person_id}")
 async def update_person_with_cache_invalidation_enhanced(
