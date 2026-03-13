@@ -8274,15 +8274,12 @@ async def update_task(task_id: str, updated_task: dict):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid task ID")
    
-    # Check if task exists
     task = await db["tasks"].find_one({"_id": obj_id})
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
    
-    # Prepare update data - only include fields that should be updated
     update_data = {}
    
-    # Map frontend fields to backend fields
     if "name" in updated_task:
         update_data["name"] = updated_task["name"]
    
@@ -8293,28 +8290,39 @@ async def update_task(task_id: str, updated_task: dict):
         update_data["contacted_person"] = updated_task["contacted_person"]
    
     if "followup_date" in updated_task:
-        # Ensure it's a proper datetime string or convert it
+        # Store as proper datetime object, not string
         try:
-            if isinstance(updated_task["followup_date"], str):
-                update_data["followup_date"] = updated_task["followup_date"]
+            raw = updated_task["followup_date"]
+            if isinstance(raw, str):
+                update_data["followup_date"] = datetime.fromisoformat(
+                    raw.replace("Z", "+00:00")
+                )
             else:
-                update_data["followup_date"] = updated_task["followup_date"]
+                update_data["followup_date"] = raw
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
    
     if "status" in updated_task:
-        update_data["status"] = updated_task["status"]
-   
+        # Always normalize status to lowercase
+        normalized_status = updated_task["status"].lower()
+        update_data["status"] = normalized_status
+        
+        if normalized_status in ["completed", "done", "closed", "finished"]:
+            # Always overwrite completedAt so it reflects when it was actually completed
+            update_data["completedAt"] = datetime.utcnow()
+        elif normalized_status in ["open", "pending", "incomplete"]:
+            # Clear completedAt if task is re-opened
+            update_data["completedAt"] = None
+
     if "type" in updated_task:
         update_data["type"] = updated_task["type"]
    
     if "assignedfor" in updated_task:
         update_data["assignedfor"] = updated_task["assignedfor"]
    
-    # Add updated timestamp
-    update_data["updated_at"] = datetime.utcnow().isoformat()
+    # Store updated_at as proper datetime object too, not string
+    update_data["updated_at"] = datetime.utcnow()
    
-    # Update the task
     try:
         result = await db["tasks"].update_one(
             {"_id": obj_id},
@@ -8322,20 +8330,17 @@ async def update_task(task_id: str, updated_task: dict):
         )
        
         if result.modified_count == 0:
-            # Check if task actually exists but nothing changed
             if result.matched_count > 0:
-                # Task exists but no changes were made
                 updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
                 return {"updatedTask": serialize_doc(updated_task_in_db)}
             else:
                 raise HTTPException(status_code=404, detail="Task not found")
        
-        # Fetch and return the updated task
         updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
         return {"updatedTask": serialize_doc(updated_task_in_db)}
        
     except Exception as e:
-        print(f"Error updating task: {str(e)}")  # Log the error
+        print(f"Error updating task: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 from collections import defaultdict
@@ -10403,169 +10408,191 @@ async def get_dashboard_comprehensive(
         ]
 
         tasks_pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"followup_date": {"$gte": start, "$lte": end}},
-                        {"completedAt": {"$gte": start, "$lte": end}},
-                        {"createdAt": {"$gte": start, "$lte": end}}
-                    ]
+    # Step 1: Convert all date fields from string to Date if needed
+    {
+        "$addFields": {
+            "followup_date_conv": {
+                "$cond": {
+                    "if": {"$eq": [{"$type": "$followup_date"}, "string"]},
+                    "then": {"$dateFromString": {"dateString": "$followup_date", "onError": None, "onNull": None}},
+                    "else": "$followup_date"
                 }
             },
-            {
-                "$addFields": {
-                    "task_type_label": {
-                        "$ifNull": ["$taskType", "Uncategorized"]
-                    },
-                    "is_excluded_type": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$taskType", None]},
-                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                ]
-                            },
-                            True,
-                            False
+            "createdAt_conv": {
+                "$cond": {
+                    "if": {"$eq": [{"$type": "$createdAt"}, "string"]},
+                    "then": {"$dateFromString": {"dateString": "$createdAt", "onError": None, "onNull": None}},
+                    "else": "$createdAt"
+                }
+            },
+            "completedAt_conv": {
+                "$cond": {
+                    "if": {"$eq": [{"$type": "$completedAt"}, "string"]},
+                    "then": {"$dateFromString": {"dateString": "$completedAt", "onError": None, "onNull": None}},
+                    "else": "$completedAt"
+                }
+            }
+        }
+    },
+    # Step 2: Match tasks that fall in the period by any date field
+    {
+        "$match": {
+            "$or": [
+                {"followup_date_conv": {"$gte": start, "$lte": end}},
+                {"createdAt_conv": {"$gte": start, "$lte": end}},
+                {"completedAt_conv": {"$gte": start, "$lte": end}}
+            ]
+        }
+    },
+    # Step 3: Compute flags using converted date fields
+    {
+        "$addFields": {
+            "task_type_label": {
+                "$ifNull": ["$taskType", "Uncategorized"]
+            },
+            "is_excluded_type": {
+                "$cond": [
+                    {
+                        "$and": [
+                            {"$ne": ["$taskType", None]},
+                            {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
                         ]
                     },
-                    "is_completed": {
-                        "$cond": [
+                    True,
+                    False
+                ]
+            },
+            "is_completed": {
+                "$cond": [
+                    {
+                        "$and": [
                             {
-                                "$and": [
-                                    {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
-                                        ]
-                                    },
-                                    {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                                    ]
-                                                },
-                                                True,
-                                                False
+                                "$in": [
+                                    {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                    ["completed", "done", "closed", "finished"]
+                                ]
+                            },
+                            {
+                                "$not": {
+                                    "$cond": [
+                                        {
+                                            "$and": [
+                                                {"$ne": ["$taskType", None]},
+                                                {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
                                             ]
-                                        }
-                                    }
-                                ]
-                            },
-                            True,
-                            False
+                                        },
+                                        True,
+                                        False
+                                    ]
+                                }
+                            }
                         ]
                     },
-                    "completed_in_period": {
-                        "$cond": [
+                    True,
+                    False
+                ]
+            },
+            "completed_in_period": {
+                "$cond": [
+                    {
+                        "$and": [
+                            {"$ne": ["$completedAt_conv", None]},
+                            {"$gte": ["$completedAt_conv", start]},
+                            {"$lte": ["$completedAt_conv", end]},
                             {
-                                "$and": [
-                                    {"$ne": ["$completedAt", None]},
-                                    {"$gte": ["$completedAt", start]},
-                                    {"$lte": ["$completedAt", end]},
-                                    {
-                                        "$in": [
-                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
-                                            ["completed", "done", "closed", "finished"]
-                                        ]
-                                    },
-                                    {
-                                        "$not": {
-                                            "$cond": [
-                                                {
-                                                    "$and": [
-                                                        {"$ne": ["$taskType", None]},
-                                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                                    ]
-                                                },
-                                                True,
-                                                False
+                                "$in": [
+                                    {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                    ["completed", "done", "closed", "finished"]
+                                ]
+                            },
+                            {
+                                "$not": {
+                                    "$cond": [
+                                        {
+                                            "$and": [
+                                                {"$ne": ["$taskType", None]},
+                                                {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
                                             ]
-                                        }
-                                    }
-                                ]
-                            },
-                            True,
-                            False
+                                        },
+                                        True,
+                                        False
+                                    ]
+                                }
+                            }
                         ]
                     },
-                    "is_due_in_period": {
-                        "$cond": [
-                            {
-                                "$and": [
-                                    {"$ne": ["$followup_date", None]},
-                                    {"$gte": ["$followup_date", start]},
-                                    {"$lte": ["$followup_date", end]},
-                                    {"$not": "$is_completed"}
-                                ]
-                            },
-                            True,
-                            False
+                    True,
+                    False
+                ]
+            },
+            "is_due_in_period": {
+                "$cond": [
+                    {
+                        "$and": [
+                            {"$ne": ["$followup_date_conv", None]},
+                            {"$gte": ["$followup_date_conv", start]},
+                            {"$lte": ["$followup_date_conv", end]}
                         ]
-                    }
+                    },
+                    True,
+                    False
+                ]
+            }
+        }
+    },
+    # Step 4: Group by user
+    {
+        "$group": {
+            "_id": "$assignedfor",
+            "tasks": {
+                "$push": {
+                    "_id": "$_id",
+                    "name": "$name",
+                    "taskType": "$taskType",
+                    "task_type_label": "$task_type_label",
+                    "followup_date": "$followup_date_conv",
+                    "due_date": "$followup_date_conv",
+                    "completedAt": "$completedAt_conv",
+                    "createdAt": "$createdAt_conv",
+                    "status": "$status",
+                    "assignedfor": "$assignedfor",
+                    "type": "$type",
+                    "contacted_person": "$contacted_person",
+                    "isRecurring": {
+                        "$cond": [{"$ifNull": ["$recurring_day", False]}, True, False]
+                    },
+                    "priority": "$priority",
+                    "is_completed": "$is_completed",
+                    "is_due_in_period": "$is_due_in_period",
+                    "completed_in_period": "$completed_in_period",
+                    "is_excluded_type": "$is_excluded_type",
+                    "description": "$description"
                 }
             },
-            {
-                "$group": {
-                    "_id": "$assignedfor",
-                    "tasks": {
-                        "$push": {
-                            "_id": "$_id",
-                            "name": "$name",
-                            "taskType": "$taskType",
-                            "task_type_label": "$task_type_label",
-                            "followup_date": "$followup_date",
-                            "due_date": "$followup_date",
-                            "completedAt": "$completedAt",
-                            "createdAt": "$createdAt",
-                            "status": "$status",
-                            "assignedfor": "$assignedfor",
-                            "type": "$type",
-                            "contacted_person": "$contacted_person",
-                            "isRecurring": {
-                                "$cond": [{"$ifNull": ["$recurring_day", False]}, True, False]
-                            },
-                            "priority": "$priority",
-                            "is_completed": "$is_completed",
-                            "is_due_in_period": "$is_due_in_period",
-                            "completed_in_period": "$completed_in_period",
-                            "is_excluded_type": "$is_excluded_type",
-                            "description": "$description"
-                        }
-                    },
-                    "total_tasks": {"$sum": 1},
-                    "completed_tasks": {
-                        "$sum": {
-                            "$cond": ["$is_completed", 1, 0]
-                        }
-                    },
-                    "completed_in_period": {
-                        "$sum": {
-                            "$cond": ["$completed_in_period", 1, 0]
-                        }
-                    },
-                    "due_in_period": {
-                        "$sum": {
-                            "$cond": ["$is_due_in_period", 1, 0]
-                        }
-                    },
-                    "task_type_counts": {
-                        "$push": {
-                            "task_type": "$task_type_label",
-                            "is_completed": "$is_completed",
-                            "completed_in_period": "$completed_in_period",
-                            "is_due_in_period": "$is_due_in_period",
-                            "is_excluded_type": "$is_excluded_type"
-                        }
-                    }
-                }
+            "total_tasks": {"$sum": 1},
+            "completed_tasks": {
+                "$sum": {"$cond": ["$is_completed", 1, 0]}
             },
-            {"$match": {"total_tasks": {"$gt": 0}}},
-            {"$sort": {"_id": 1}}
-        ]
+            "completed_in_period": {
+                "$sum": {"$cond": ["$completed_in_period", 1, 0]}
+            },
+            "due_in_period": {
+                "$sum": {"$cond": ["$is_due_in_period", 1, 0]}
+            },
+            "task_type_counts": {
+                "$push": {
+                    "task_type": "$task_type_label",
+                    "is_completed": "$is_completed",
+                    "completed_in_period": "$completed_in_period",
+                    "is_due_in_period": "$is_due_in_period",
+                    "is_excluded_type": "$is_excluded_type"
+                }
+            }
+        }
+    },
+    {"$match": {"total_tasks": {"$gt": 0}}},
+    {"$sort": {"_id": 1}}
+]
 
         overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
         tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
