@@ -2027,7 +2027,7 @@ async def get_cell_events(
                         "status": event_status,
                         "Status": event_status.replace("_", " ").title(),
                         "did_not_meet": did_not_meet,
-                        "_is_overdue": is_overdue,
+                        "_is_overdue": most_recent_occurrence < today_date and event_status == "incomplete",
                         "is_recurring": True,
                         "original_event_id": str(event.get("_id")),
                         "attendance": attendance,
@@ -4053,7 +4053,7 @@ async def get_registrant_events(
                     "did_not_meet": did_not_meet,
                     "status": cell_status,
                     "Status": cell_status.replace("_", " ").title(),
-                    "_is_overdue": most_recent_occurrence < today_date
+                    "_is_overdue": most_recent_occurrence < today_date and event_status == "incomplete",
                 }
                
                 processed_events.append(final_event)
@@ -5370,7 +5370,7 @@ async def get_user_cell_events_fixed_future(
                     "did_not_meet": did_not_meet,
                     "status": status_val,
                     "Status": status_val.replace("_", " ").title(),
-                    "_is_overdue": next_occurrence < today_date
+                    "_is_overdue": next_occurrence < today_date and event_status == "incomplete",
                 }
                
                 processed_events.append(final_event)
@@ -6266,9 +6266,14 @@ async def submit_attendance(
                 cell_update_fields["total_attendance"] = weekly_attendance
 
         update_data = {
-            **cell_update_fields,
-            f"attendance.{exact_date_str}": weekly_attendance_entry
+        **cell_update_fields,
+        f"attendance.{exact_date_str}": weekly_attendance_entry
         }
+
+        await events_collection.update_one(
+        {"_id": ObjectId(actual_event_id)},
+        {"$set": update_data}
+        )
         
         result = await events_collection.update_one(
             {"_id": ObjectId(actual_event_id)},
