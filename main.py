@@ -11,7 +11,7 @@ from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCrea
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection
+from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection
 from auth.email_utils import send_reset_email
 from typing import Optional, List,  Optional,  Dict
 from collections import Counter
@@ -270,6 +270,44 @@ people_cache = {
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
 
+# Lightweight cache for organizations (used by /organizations)
+organizations_cache = {
+    "data": [],
+    "last_loaded": None,
+    "expires_at": None,
+}
+
+ORGANIZATIONS_CACHE_TTL_MINUTES = 10
+
+async def get_organizations_cached() -> list[dict]:
+    """Return organizations from a short-lived in-memory cache for fast lookups."""
+    now = datetime.utcnow()
+
+    # Fast path: cache still valid
+    expires_at = organizations_cache.get("expires_at")
+    if organizations_cache["data"] and expires_at:
+        try:
+            if now < datetime.fromisoformat(expires_at):
+                return organizations_cache["data"]
+        except Exception:
+            # If parsing fails, fall through and reload
+            pass
+
+    # Slow path: load from MongoDB
+    cursor = organizations_collection.find(
+        {},
+        {"_id": 1, "name": 1, "tag": 1, "description": 1, "created_at": 1},
+    ).sort("name", 1)
+    orgs = await cursor.to_list(length=500)
+    for org in orgs:
+        org["_id"] = str(org["_id"])
+
+    organizations_cache["data"] = orgs
+    organizations_cache["last_loaded"] = now.isoformat()
+    organizations_cache["expires_at"] = (now + timedelta(minutes=ORGANIZATIONS_CACHE_TTL_MINUTES)).isoformat()
+
+    return orgs
+
 async def invalidate_people_cache(operation_type: str, details: dict = None):
     """
     Invalidate the people cache and trigger background rehydration
@@ -352,6 +390,8 @@ async def background_refresh_people_cache(stale_data: list = None):
                     "Email": 1,
                     "Number": 1,
                     "Gender": 1,
+                    "LeaderId": 1,
+                    "LeaderPath": 1,
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
@@ -374,6 +414,8 @@ async def background_refresh_people_cache(stale_data: list = None):
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
                         "Gender": person.get("Gender", ""),
+                        "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                        "LeaderPath": [str(x) for x in person.get("LeaderPath", [])] if isinstance(person.get("LeaderPath"), list) else [],
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
@@ -864,7 +906,20 @@ async def signup(user: UserCreate):
     # Hash password
     hashed = hash_password(user.password)
    
-    # Create user document
+
+    # ---- Resolve organization & org_tag dynamically from DB ----
+    organization = (user.organization or "").strip()
+    org_tag = ""
+    if organization:
+        org_doc = await organizations_collection.find_one(
+            {"name": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}}
+        )
+        if org_doc:
+            org_tag = org_doc.get("tag", organization)
+        else:
+            org_tag = organization  # fallback: use name as tag if not found
+
+    # Create base user document (leader fields will be added after hierarchy is calculated)
     user_dict = {
         "name": user.name,
         "surname": user.surname,
@@ -876,23 +931,82 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
+        # Default role for all new signups so route guards recognize them
         "role": "user",
+        "organization": organization,
         "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.utcnow().isoformat(),
     }
-   
-    # Insert user into Users collection
-    user_result = await db["Users"].insert_one(user_dict)
-    logger.info(f"User created successfully: {email}")
-   
+
     inviter_full_name = user.invited_by.strip()
+    inviter_person = None
+    inviter_person_id: Optional[ObjectId] = None
     leader1 = ""
     leader12 = ""
     leader144 = ""
     leader1728 = ""
+
+    async def _find_person_by_full_name(full_name: str):
+        full_name = (full_name or "").strip()
+        if not full_name:
+            return None
+        parts = [p for p in full_name.split(" ") if p]
+        first = parts[0]
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        if last:
+            return await people_collection.find_one(
+                {
+                    "Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"},
+                    "Surname": {"$regex": f"^{re.escape(last)}$", "$options": "i"},
+                },
+                {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+            )
+
+        return await people_collection.find_one(
+            {"Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}},
+            {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+        )
+
+    def _normalize_object_id_list(value):
+        if not isinstance(value, list):
+            return []
+        out = []
+        for v in value:
+            if isinstance(v, ObjectId):
+                out.append(v)
+            elif isinstance(v, str):
+                try:
+                    out.append(ObjectId(v))
+                except Exception:
+                    continue
+        return out
+
+    def _build_leader_path_from_leader_doc(leader_doc):
+        if not leader_doc or not leader_doc.get("_id"):
+            return []
+        leader_id = leader_doc["_id"]
+        base_path = _normalize_object_id_list(leader_doc.get("LeaderPath"))
+        if not base_path or base_path[-1] != leader_id:
+            base_path.append(leader_id)
+        return base_path
    
     if inviter_full_name:
         print(f"Looking for inviter in background cache: '{inviter_full_name}'")
+
+        # Prefer the inviter's ObjectId if the frontend provided it.
+        if getattr(user, "invited_by_id", None):
+            try:
+                inviter_person = await people_collection.find_one(
+                    {"_id": ObjectId(user.invited_by_id)},
+                    {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1, "Gender": 1,
+                     "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1},
+                )
+                if inviter_person:
+                    inviter_person_id = inviter_person["_id"]
+            except Exception:
+                inviter_person = None
+                inviter_person_id = None
        
         # Search in background-loaded cache (contains ALL people)
         cached_inviter = None
@@ -963,11 +1077,54 @@ async def signup(user: UserCreate):
                
                 logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
         else:
-            print("6")
-            print(f"Inviter '{inviter_full_name}' not found in background cache")
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
+
+        # If we didn't resolve inviter by id, try resolve by name (best-effort).
+        if inviter_person is None:
+            inviter_person = await _find_person_by_full_name(inviter_full_name)
+            if inviter_person:
+                inviter_person_id = inviter_person["_id"]
    
+    # ---- Dynamic Leadership Logic: ONLY for Active Church ----
+    if organization and organization.lower() != "active church":
+        logger.info(f"Organization '{organization}' is not 'Active Church'. Clearing leadership hierarchy for {email}.")
+        leader1 = ""
+        leader12 = ""
+        leader144 = ""
+        leader1728 = ""
+    elif not organization:
+        # Default to Active Church if no organization specified.
+        pass
+
+    # ---- ObjectId-based leader hierarchy (LeaderId + LeaderPath) ----
+    leader_id_obj: Optional[ObjectId] = None
+    leader_path: list[ObjectId] = []
+
+    if organization and organization.lower() != "active church":
+        leader_id_obj = None
+        leader_path = []
+    else:
+        # Prefer the selected inviter as the direct leader when available.
+        if inviter_person_id:
+            leader_id_obj = inviter_person_id
+            leader_path = _build_leader_path_from_leader_doc(inviter_person) if inviter_person else [inviter_person_id]
+        else:
+            # Fall back to resolving the computed Leader @1 full name to a People ObjectId.
+            if leader1:
+                leader1_doc = await _find_person_by_full_name(leader1)
+                if leader1_doc and leader1_doc.get("_id"):
+                    leader_id_obj = leader1_doc["_id"]
+                    leader_path = _build_leader_path_from_leader_doc(leader1_doc)
+
+    # Attach ObjectId-based leader fields onto the user record before inserting.
+    user_dict["LeaderId"] = leader_id_obj
+    user_dict["LeaderPath"] = leader_path
+
+    # Insert user into Users collection (now includes LeaderId + LeaderPath)
+    user_result = await db["Users"].insert_one(user_dict)
+    logger.info(f"User created successfully: {email}")
+
     # Create corresponding person record in People collection
     person_doc = {
         "Name": user.name.strip(),
@@ -982,6 +1139,9 @@ async def signup(user: UserCreate):
         "Leader @12": leader12,
         "Leader @144": leader144,
         "Leader @1728": leader1728,
+        "LeaderId": leader_id_obj,
+        "LeaderPath": leader_path,
+        "Organization": organization,
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
@@ -1011,7 +1171,7 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
    
-    return {"message": "User created successfully"}
+    return {"message": "User created successfully", "organization": organization,}
 
 # ---------------- Login ----------------
 @app.post("/login")
@@ -1067,7 +1227,8 @@ async def login(user: UserLogin):
         "home_address": existing.get("home_address", ""),
         "phone_number": existing.get("phone_number", ""),
         "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", "")
+        "invited_by": existing.get("invited_by", ""),
+        "organization": existing.get("organization", ""),
     },
     "leaders":{
         'leaderAt1':person.get("Leader @1",""),
@@ -1198,7 +1359,143 @@ async def logout(user_id: str = Body(..., embed=True)):
     logger.info(f"User logged out: {user_id}")
     return {"message": "Logged out successfully"}
 
-# EVENTS ENDPOINTS-----------------------------------------------------------------
+
+# ====================================================================
+# ORGANIZATIONS ENDPOINTS  (dynamic orgs & tags for churches)
+# ====================================================================
+
+@app.get("/organizations")
+async def list_organizations():
+    """Return all organizations stored in the database."""
+    try:
+        # Use in-memory cache for very fast responses
+        orgs = await get_organizations_cached()
+        return {"success": True, "organizations": orgs, "total": len(orgs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch organizations: {str(e)}")
+
+
+@app.get("/organizations/{org_id}")
+async def get_organization(org_id: str):
+    """Return a single organization by ID."""
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org["_id"] = str(org["_id"])
+    return {"success": True, "organization": org}
+
+
+@app.post("/organizations")
+async def create_organization(data: dict = Body(...)):
+    """
+    Create a new organization.
+    Body: { "name": "City Church", "tag": "City Church", "description": "..." }
+    - 'name'  is the display name (must be unique, case-insensitive)
+    - 'tag'   is the badge label shown on user profiles (defaults to name)
+    """
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name is required")
+
+    
+    existing = await organizations_collection.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Organization '{name}' already exists")
+
+    tag = (data.get("tag") or name).strip()
+    doc = {
+        "name": name,
+        "tag": tag,
+        "description": (data.get("description") or "").strip(),
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    result = await organizations_collection.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    logger.info(f"Organization created: {name} (tag={tag})")
+    # Invalidate org cache so new org appears immediately
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+    return {"success": True, "message": "Organization created", "organization": doc}
+
+
+@app.put("/organizations/{org_id}")
+async def update_organization(org_id: str, data: dict = Body(...)):
+    """
+    Update an existing organization's name, tag, or description.
+    Updating the name/tag will also re-derive org_tag on existing users
+    (for the updated org only — a background sweep option is also available).
+    """
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    existing = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    update_fields: dict = {}
+    if "name" in data and data["name"]:
+        update_fields["name"] = data["name"].strip()
+    if "tag" in data and data["tag"]:
+        update_fields["tag"] = data["tag"].strip()
+    elif "name" in update_fields and "tag" not in data:
+        # Auto-sync tag to new name if tag not explicitly provided
+        update_fields["tag"] = update_fields["name"]
+    if "description" in data:
+        update_fields["description"] = (data["description"] or "").strip()
+
+    if not update_fields:
+        return {"success": False, "message": "No fields to update"}
+
+    update_fields["updated_at"] = datetime.utcnow().isoformat()
+    await organizations_collection.update_one({"_id": ObjectId(org_id)}, {"$set": update_fields})
+
+    # If name or tag changed, propagate new org_tag to all affected users
+    old_name = existing.get("name", "")
+    new_tag = update_fields.get("tag", existing.get("tag", old_name))
+    if "name" in update_fields or "tag" in update_fields:
+        new_name = update_fields.get("name", old_name)
+        await users_collection.update_many(
+            {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
+            {"$set": {"organization": new_name}}
+        )
+        logger.info(f"Propagated org update: '{old_name}' → '{new_name}' (tag={new_tag}) to all users")
+
+    updated = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    updated["_id"] = str(updated["_id"])
+
+    # Invalidate org cache so changes are reflected
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+
+    return {"success": True, "message": "Organization updated", "organization": updated}
+
+
+@app.delete("/organizations/{org_id}")
+async def delete_organization(org_id: str):
+    """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    logger.info(f"Organization deleted: {org_id}")
+
+    # Invalidate org cache so deletions are reflected
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+
+    return {"success": True, "message": "Organization deleted"}
+
+
+
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
    
 def is_recurring_event(event: dict) -> bool:
@@ -6901,6 +7198,7 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "gender": user.get("gender", ""),
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
+        "organization": user.get("organization", ""),
     }
 
 @app.put("/profile/{user_id}")
@@ -6958,6 +7256,7 @@ async def update_profile(
             "invited_by": "invited_by",
             "gender": "gender",
             "profile_picture": "profile_picture",
+            "organization": "organization",
            
             # Alternative field names from frontend
             "dob": "date_of_birth",
@@ -6980,6 +7279,25 @@ async def update_profile(
 
         # Add update timestamp
         update_payload["updated_at"] = datetime.utcnow().isoformat()
+
+        # ---- If organization changed, re-resolve org_tag from DB ----
+        if "organization" in update_payload:
+            new_org = update_payload["organization"]
+            org_doc = await organizations_collection.find_one(
+                {"name": {"$regex": f"^{re.escape(new_org)}$", "$options": "i"}}
+            )
+            update_payload["org_tag"] = org_doc.get("tag", new_org) if org_doc else new_org
+            
+            # CLEAR LEADERSHIP IF NOT ACTIVE CHURCH
+            if new_org.lower() != "active church":
+                print(f" Organization changed to {new_org}. Clearing leadership.")
+                update_payload["leader1"] = ""
+                update_payload["leader12"] = ""
+                update_payload["leader144"] = ""
+                update_payload["Leader @1"] = ""   
+                update_payload["Leader @12"] = ""
+                update_payload["Leader @144"] = ""
+                update_payload["Leader @1728"] = ""
        
         print(f" FINAL UPDATE PAYLOAD: {update_payload}")
 
@@ -7049,6 +7367,7 @@ def format_user_response(user):
         "gender": normalize_gender_value(user.get("gender", "")),
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
+        "organization": user.get("organization", ""),
     }
 
 # Debug endpoint
