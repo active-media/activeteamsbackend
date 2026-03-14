@@ -312,6 +312,7 @@ class UserListResponse(BaseModel):
     leader144: Optional[str] = None
     leader1728: Optional[str] = None
     stage: Optional[str] = None
+    organization: Optional[str] = None  
     created_at: Optional[datetime] = None
 
 class UserList(BaseModel):
@@ -347,6 +348,7 @@ class UserCreater(BaseModel):
     leader1728: Optional[str] = None
     stage: Optional[str] = "Win"
     role: str = "user"
+    organization: Optional[str] = None 
 
 class DecisionType(str, Enum):
     FIRST_TIME = "first_time"
@@ -379,4 +381,47 @@ class ConsolidationTask(TaskModel):
     person_name: str
     person_surname: str
     decision_type: str
+
+# ===== NEW: Organization Models =====
+class OrganizationCreate(BaseModel):
+    name: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: EmailStr
+
+class OrganizationUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+
+class OrganizationResponse(BaseModel):
+    id: str
+    name: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    user_count: int
+    created_at: Optional[datetime] = None
+
+class OrganizationList(BaseModel):
+    organizations: List[OrganizationResponse]
+
+# ===== People Response Model =====
+class PeopleResponse(BaseModel):
+    id: str
+    name: str
+    surname: str
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    invitedBy: Optional[str] = None
+    organisation: Optional[str] = None
+    leaderId: Optional[str] = None
+    created_at: Optional[str] = None
+
+class PeopleList(BaseModel):
+    people: List[PeopleResponse]
+
+
+
 

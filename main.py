@@ -7,13 +7,13 @@ import re
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile, AttendanceSubmission
+from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile,  OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection
 from auth.email_utils import send_reset_email
-from typing import Optional, List,  Optional,  Dict
+from typing import  List,  Optional,  Dict
 from collections import Counter
 import logging
 import pytz
@@ -8811,116 +8811,261 @@ async def create_user(
     user_data: UserCreater,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create a new user - Admin only"""
-    if current_user.get("role") != "admin":
+    """Create a new user - Admin only (uses lowercase 'organization' for new users)"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+    
     try:
         existing_user = await users_collection.find_one({"email": user_data.email})
         if existing_user:
             raise HTTPException(status_code=400, detail="User with this email already exists")
-       
-        # ADD leaderAt12 to valid roles
-        if user_data.role not in ["admin", "leader", "leaderAt12", "user", "registrant"]:
+        
+        # Validate role
+        valid_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        if user_data.role not in valid_roles:
             raise HTTPException(status_code=400, detail="Invalid role")
-       
+        
+        # Regular admins cannot create other admins
+        if not is_supreme and user_data.role == "admin":
+            raise HTTPException(status_code=403, detail="Cannot create admin users")
+        
         from passlib.context import CryptContext
         pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
         hashed_password = pwd_context.hash(user_data.password)
-       
+        
+        # Use lowercase 'organization' for all new users (consistency)
         user_doc = {
             "name": user_data.name,
             "surname": user_data.surname,
             "email": user_data.email,
             "password": hashed_password,
             "phone_number": user_data.phone_number,
-            "date_of_birth": user_data.date_of_birth,
-            "address": user_data.address,
+            "date_of_birth": user_data.date_of_birth.isoformat() if user_data.date_of_birth else None,
+            "home_address": user_data.address,
             "gender": user_data.gender,
-            "invitedBy": user_data.invitedBy,
+            "invited_by": user_data.invitedBy,
             "leader12": user_data.leader12,
             "leader144": user_data.leader144,
             "leader1728": user_data.leader1728,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
+            "organization": current_user.get("organization"),  # Always use lowercase for new users
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
-       
+        
         result = await users_collection.insert_one(user_doc)
-       
+        
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="USER_CREATED",
             details=f"Created new user: {user_data.name} {user_data.surname} ({user_data.role})"
         )
-       
+        
         return MessageResponse(message=f"User {user_data.name} {user_data.surname} created successfully")
-       
+        
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
-    
+SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+
+ROLE_HIERARCHY = {
+    "registrant": 1,
+    "user": 2,
+    "leader": 3,
+    "leaderAt12": 4,
+    "admin": 5,
+    "supreme_admin": 6
+}
+
 @app.get("/admin/users", response_model=UserList)
-async def get_all_users(current_user: dict = Depends(get_current_user)):
-    """Get all users - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-   
+async def get_all_users(
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all users - Filtered by organization (supports both 'organization' and 'Organization' fields)"""
     try:
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        
+        if not is_supreme and current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Build query to handle both field names
+        query = {}
+        
+        print(f"Current user: {current_user.get('email')}")
+        print(f"Is supreme: {is_supreme}")
+        print(f"Selected organization param: {organization}")
+        
+        # Determine which organization to filter by
+        org_filter = None
+        if is_supreme and organization:
+            org_filter = organization
+            print(f"Filtering by organization param: {organization}")
+        elif not is_supreme:
+            org_filter = current_user.get("organization")
+            print(f"Regular admin filtering by their org: {current_user.get('organization')}")
+        
+        # If we have an organization to filter by, create a query that checks both field names
+        if org_filter:
+            query["$or"] = [
+                {"Organization": org_filter},  # Check capital O
+                {"organization": org_filter}    # Check lowercase o
+            ]
+            print(f"Filter query: {query}")
+        
         users = []
-        cursor = users_collection.find({})
-       
+        cursor = users_collection.find(query)
+        
         async for user in cursor:
+            # Get the organization value from whichever field exists (prioritize lowercase for consistency)
+            user_org = user.get("organization") or user.get("Organization") or "Unknown"
+            print(f"Found user: {user.get('name')} - Org: {user_org}")
+            
+            # Handle date_of_birth conversion
+            dob = user.get("date_of_birth")
+            if dob and not isinstance(dob, str):
+                if hasattr(dob, 'isoformat'):
+                    dob = dob.isoformat()
+                else:
+                    dob = str(dob)
+            
             users.append(UserListResponse(
                 id=str(user["_id"]),
                 name=user.get("name", ""),
                 surname=user.get("surname", ""),
                 email=user.get("email", ""),
                 role=user.get("role", "user"),
-                date_of_birth=user.get("date_of_birth"),
+                date_of_birth=dob,
                 phone_number=user.get("phone_number"),
-                address=user.get("address"),
+                address=user.get("home_address"),
                 gender=user.get("gender"),
-                invitedBy=user.get("invitedBy"),
-                leader12=user.get("leader12"),
-                leader144=user.get("leader144"),
-                leader1728=user.get("leader1728"),
+                invitedBy=user.get("invited_by"),
+                leader12=str(user.get("leader12")) if user.get("leader12") else None,
+                leader144=str(user.get("leader144")) if user.get("leader144") else None,
+                leader1728=str(user.get("leader1728")) if user.get("leader1728") else None,
                 stage=user.get("stage"),
+                organization=user_org,  # Return the organization value
                 created_at=user.get("created_at")
             ))
-       
+        
+        print(f"Total users found: {len(users)}")
         return UserList(users=users)
-       
+        
     except Exception as e:
+        print(f"ERROR in get_all_users: {str(e)}")
         import traceback
-        print(f"ERROR: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
-  
+    
+@app.get("/admin/stats")
+async def get_admin_stats(
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get statistics for admin dashboard - Filtered by organization (supports both field names)"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Determine which organization to filter by
+        org_filter = None
+        if is_supreme and organization:
+            org_filter = organization
+        elif not is_supreme:
+            org_filter = current_user.get("organization")
+        
+        # Build base query that handles both field names
+        base_query = {}
+        if org_filter:
+            base_query["$or"] = [
+                {"Organization": org_filter},
+                {"organization": org_filter}
+            ]
+        
+        # Helper function to add role filter to base query
+        def add_role_filter(role):
+            if base_query:
+                return {"$and": [base_query, {"role": role}]}
+            return {"role": role}
+        
+        # Get counts from Users collection
+        total_users = await users_collection.count_documents(base_query)
+        admin_count = await users_collection.count_documents(add_role_filter("admin"))
+        leader_count = await users_collection.count_documents(add_role_filter("leader"))
+        leader_at_12_count = await users_collection.count_documents(add_role_filter("leaderAt12"))
+        registrant_count = await users_collection.count_documents(add_role_filter("registrant"))
+        user_count = await users_collection.count_documents(add_role_filter("user"))
+        
+        # People collection query - they use "Organisation" (different spelling!)
+        people_query = {}
+        if org_filter:
+            people_query["Organisation"] = org_filter
+            
+        total_people = await people_collection.count_documents(people_query)
+        
+        return {
+            "total_users": total_users + total_people,
+            "administrators": admin_count,
+            "leaders": leader_count,
+            "leaders_at_12": leader_at_12_count,
+            "registrants": registrant_count,
+            "regular_users": user_count
+        }
+        
+    except Exception as e:
+        print(f"Error fetching stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")   
+
+
+
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(
     user_id: str,
     role_update: RoleUpdate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Update user role - Admin only"""
-    if current_user.get("role") != "admin":
+    """Update user role - With hierarchy enforcement and organization checks"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+    
     try:
-        # ADD leaderAt12 to valid roles
-        if role_update.role not in ["admin", "leader", "leaderAt12", "user", "registrant"]:
+        # Validate role
+        valid_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        if role_update.role not in valid_roles:
             raise HTTPException(status_code=400, detail="Invalid role")
-       
+        
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-       
+        
+        # Check organization access
+        if not is_supreme and user.get("organization") != current_user.get("organization"):
+            raise HTTPException(status_code=403, detail="Cannot access users from other organizations")
+        
         old_role = user.get("role", "user")
-       
+        
+        # Role hierarchy enforcement
+        current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
+        target_user_level = ROLE_HIERARCHY.get(old_role, 0)
+        new_role_level = ROLE_HIERARCHY.get(role_update.role, 0)
+        
+        # Can only modify users with lower role level
+        if not is_supreme and target_user_level >= current_user_role_level:
+            raise HTTPException(status_code=403, detail="Cannot modify users with equal or higher role")
+        
+        # Can only assign roles lower than your own
+        if not is_supreme and new_role_level >= current_user_role_level:
+            raise HTTPException(status_code=403, detail="Cannot assign role equal to or higher than your own")
+        
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {
@@ -8930,23 +9075,24 @@ async def update_user_role(
                 }
             }
         )
-       
+        
         if result.modified_count == 0:
             raise HTTPException(status_code=400, detail="Failed to update user role")
-       
+        
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="ROLE_UPDATED",
             details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {role_update.role}"
         )
-       
+        
         return MessageResponse(message=f"User role updated to {role_update.role}")
-       
+        
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error updating role: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
+
 
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
@@ -9084,6 +9230,203 @@ async def get_activity_logs(
         print(f"Error fetching activity logs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
    
+# GETTING  ORGS FOR ADMIN USER 
+@app.get("/admin/organizations", response_model=OrganizationList)
+async def get_all_organizations(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all organizations - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        organizations = []
+        cursor = organizations_collection.find({})
+        
+        async for org in cursor:
+            # Get user count for this organization
+            user_count = await users_collection.count_documents({"organization": org["name"]})
+            people_count = await people_collection.count_documents({"Organisation": org["name"]})
+            
+            organizations.append(OrganizationResponse(
+                id=str(org["_id"]),
+                name=org.get("name"),
+                address=org.get("address"),
+                phone=org.get("phone"),
+                email=org.get("email"),
+                user_count=user_count + people_count,
+                created_at=org.get("created_at")
+            ))
+        
+        return OrganizationList(organizations=organizations)
+        
+    except Exception as e:
+        print(f"Error fetching organizations: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching organizations: {str(e)}")
+
+# ===== 6. NEW: POST /admin/organizations =====
+@app.post("/admin/organizations", response_model=MessageResponse)
+async def create_organization(
+    org_data: OrganizationCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a new organization - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        # Check if organization already exists
+        existing_org = await organizations_collection.find_one({"name": org_data.name})
+        if existing_org:
+            raise HTTPException(status_code=400, detail="Organization already exists")
+        
+        org_doc = {
+            "name": org_data.name,
+            "address": org_data.address,
+            "phone": org_data.phone,
+            "email": org_data.email,
+            "created_at": datetime.utcnow(),
+            "created_by": str(current_user.get("_id"))
+        }
+        
+        result = await organizations_collection.insert_one(org_doc)
+        
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ORGANIZATION_CREATED",
+            details=f"Created new organization: {org_data.name}"
+        )
+        
+        return MessageResponse(message=f"Organization {org_data.name} created successfully")
+        
+    except Exception as e:
+        print(f"Error creating organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating organization: {str(e)}")
+
+# ===== 7. NEW: PUT /admin/organizations/{org_id} =====
+@app.put("/admin/organizations/{org_id}", response_model=MessageResponse)
+async def update_organization(
+    org_id: str,
+    org_data: OrganizationUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update organization - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        update_data = {k: v for k, v in org_data.dict().items() if v is not None}
+        update_data["updated_at"] = datetime.utcnow()
+        
+        result = await organizations_collection.update_one(
+            {"_id": ObjectId(org_id)},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to update organization")
+        
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ORGANIZATION_UPDATED",
+            details=f"Updated organization: {org['name']}"
+        )
+        
+        return MessageResponse(message="Organization updated successfully")
+        
+    except Exception as e:
+        print(f"Error updating organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating organization: {str(e)}")
+
+# ===== 8. NEW: DELETE /admin/organizations/{org_id} =====
+@app.delete("/admin/organizations/{org_id}", response_model=MessageResponse)
+async def delete_organization(
+    org_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete organization - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        # Check if there are users in this organization
+        user_count = await users_collection.count_documents({"organization": org["name"]})
+        people_count = await people_collection.count_documents({"Organisation": org["name"]})
+        
+        if user_count + people_count > 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot delete organization with {user_count + people_count} members. Reassign them first."
+            )
+        
+        result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to delete organization")
+        
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ORGANIZATION_DELETED",
+            details=f"Deleted organization: {org['name']}"
+        )
+        
+        return MessageResponse(message="Organization deleted successfully")
+        
+    except Exception as e:
+        print(f"Error deleting organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting organization: {str(e)}")
+
+# ===== 9. NEW: GET /admin/people with organization filtering =====
+@app.get("/admin/people", response_model=PeopleList)
+async def get_all_people(
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all people from People collection - Filtered by organization"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Build query
+        query = {}
+        if not is_supreme:
+            query["Organisation"] = current_user.get("organization")
+        elif organization:
+            query["Organisation"] = organization
+        
+        people = []
+        cursor = people_collection.find(query)
+        
+        async for person in cursor:
+            people.append(PeopleResponse(
+                id=str(person["_id"]),
+                name=person.get("Name", ""),
+                surname=person.get("Surname", ""),
+                email=person.get("Email", ""),
+                phone=person.get("Number", ""),
+                invitedBy=person.get("InvitedBy", ""),
+                organisation=person.get("Organisation", ""),
+                leaderId=person.get("LeaderId", ""),
+                created_at=person.get("DateCreated")
+            ))
+        
+        return PeopleList(people=people)
+        
+    except Exception as e:
+        print(f"Error fetching people: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
+
 
 async def get_event_summary_stats(event_id: str):
     """Get consolidation and new people statistics for an event"""
