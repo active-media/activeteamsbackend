@@ -8741,11 +8741,11 @@ async def get_people_capture_stats():
                 }
             },
             {
-                "$sort": {"people_captured_count": -1}  # Sort by most captures first
+                "$sort": {"people_captured_count": -1} 
             }
         ]
        
-        results = list(db.people.aggregate(pipeline))  # Query the PEOPLE collection
+        results = list(db.people.aggregate(pipeline))  
        
         if not results:
             return {
@@ -9041,6 +9041,10 @@ async def get_distinct_roles(
         else:
             raise HTTPException(status_code=400, detail="Organization required")
         
+        # Define Active Church
+        ACTIVE_CHURCH_NAME = "Active Church"
+        system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        
         # Build query for this organization
         query = {}
         if org_filter:
@@ -9051,7 +9055,13 @@ async def get_distinct_roles(
         
         # Filter out None/empty and sort
         roles = [r for r in distinct_roles if r]
-        roles.sort()
+        
+        # For Active Church, ONLY show system roles (even if somehow custom roles exist)
+        if org_filter == ACTIVE_CHURCH_NAME:
+            roles = [r for r in roles if r in system_roles]
+        else:
+            # For other churches, show all roles but sort system roles first
+            roles.sort(key=lambda x: (x not in system_roles, x))
         
         # Get count for each role
         roles_with_counts = []
@@ -9060,21 +9070,32 @@ async def get_distinct_roles(
             count = await users_collection.count_documents(count_query)
             
             # Determine if it's a system role or custom
-            is_system = role in ["admin", "leader", "leaderAt12", "user", "registrant"]
+            is_system = role in system_roles
+            
+            # Get a consistent color for this role
+            color = get_role_color(role)
             
             roles_with_counts.append({
                 "name": role,
                 "count": count,
                 "is_system": is_system,
-                "color": get_role_color(role)  # You can define this function
+                "color": color,
+                # Add flag to indicate if new roles can be created for this org
+                "can_create_custom": org_filter != ACTIVE_CHURCH_NAME
             })
         
-        return {"roles": roles_with_counts}
+        return {
+            "roles": roles_with_counts,
+            "organization": org_filter,
+            "can_create_custom_roles": org_filter != ACTIVE_CHURCH_NAME
+        }
         
     except Exception as e:
         print(f"Error fetching distinct roles: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 # Helper function for role colors
 def get_role_color(role):
     role_colors = {
@@ -9099,11 +9120,7 @@ async def update_user_role(
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        # Validate role
-        valid_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
-        if role_update.role not in valid_roles:
-            raise HTTPException(status_code=400, detail="Invalid role")
-        
+        # Get the user to update
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -9113,25 +9130,84 @@ async def update_user_role(
             raise HTTPException(status_code=403, detail="Cannot access users from other organizations")
         
         old_role = user.get("role", "user")
+        new_role = role_update.role
         
-        # Role hierarchy enforcement
-        current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
-        target_user_level = ROLE_HIERARCHY.get(old_role, 0)
-        new_role_level = ROLE_HIERARCHY.get(role_update.role, 0)
+        # Get the organization of the user being updated
+        user_org = user.get("organization") or user.get("Organization")
         
-        # Can only modify users with lower role level
-        if not is_supreme and target_user_level >= current_user_role_level:
-            raise HTTPException(status_code=403, detail="Cannot modify users with equal or higher role")
+        # Define Active Church
+        ACTIVE_CHURCH_NAME = "Active Church"
+        system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
         
-        # Can only assign roles lower than your own
-        if not is_supreme and new_role_level >= current_user_role_level:
-            raise HTTPException(status_code=403, detail="Cannot assign role equal to or higher than your own")
+        # CASE 1: This is Active Church - ONLY allow system roles
+        if user_org == ACTIVE_CHURCH_NAME:
+            if new_role not in system_roles:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Active Church only supports standard roles: {', '.join(system_roles)}"
+                )
+            
+            # Apply hierarchy enforcement for Active Church
+            current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
+            target_user_level = ROLE_HIERARCHY.get(old_role, 0)
+            new_role_level = ROLE_HIERARCHY.get(new_role, 0)
+            
+            # Can only modify users with lower role level
+            if not is_supreme and target_user_level >= current_user_role_level:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Cannot modify users with equal or higher role"
+                )
+            
+            # Can only assign roles lower than your own
+            if not is_supreme and new_role_level >= current_user_role_level:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Cannot assign role equal to or higher than your own"
+                )
         
+        # CASE 2: This is another church - Allow custom roles
+        else:
+            # Still prevent assigning admin if not supreme admin
+            if new_role == "admin" and not is_supreme:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Cannot assign admin role"
+                )
+            
+            # Optional: You might still want some hierarchy for basic roles
+            # But custom roles can be anything
+            if new_role in system_roles and not is_supreme:
+                # If assigning a system role in another church, still enforce hierarchy
+                current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
+                new_role_level = ROLE_HIERARCHY.get(new_role, 0)
+                
+                if new_role_level >= current_user_role_level:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Cannot assign system role equal to or higher than your own"
+                    )
+            
+            # Log when a new custom role is created
+            if new_role not in system_roles:
+                # Check if this is the first time this custom role is used in this org
+                existing_count = await users_collection.count_documents({
+                    "role": new_role,
+                    "$or": [
+                        {"organization": user_org},
+                        {"Organization": user_org}
+                    ]
+                })
+                
+                if existing_count == 0:
+                    print(f"📝 New custom role '{new_role}' created in {user_org}")
+        
+        # Update the user's role
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {
                 "$set": {
-                    "role": role_update.role,
+                    "role": new_role,
                     "updated_at": datetime.utcnow()
                 }
             }
@@ -9140,21 +9216,24 @@ async def update_user_role(
         if result.modified_count == 0:
             raise HTTPException(status_code=400, detail="Failed to update user role")
         
+        # Log the activity
+        role_type = "custom" if new_role not in system_roles and user_org != ACTIVE_CHURCH_NAME else "system"
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="ROLE_UPDATED",
-            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {role_update.role}"
+            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {new_role} ({role_type} role in {user_org})"
         )
         
-        return MessageResponse(message=f"User role updated to {role_update.role}")
+        return MessageResponse(message=f"User role updated to {new_role}")
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error updating role: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
-
-
+    
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
