@@ -2115,7 +2115,7 @@ async def get_weekly_attendance(
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(25, ge=1, le=500),
     status: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -2124,7 +2124,8 @@ async def get_other_events(
     end_date: Optional[str] = Query(None)
 ):
     """
-    Get Global Events and other non-cell events with their actual dates
+    Get Global Events and other non-cell events with their actual dates.
+    Supports both recurring (per-week instances) and non-recurring events.
     """
     try:
         print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}")
@@ -2149,7 +2150,7 @@ async def get_other_events(
 
         print(f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}")
 
-        # Base query: exclude cells
+        # ── Base query: exclude cells ──────────────────────────────────────
         query = {
             "$nor": [
                 {"Event Type": {"$regex": "Cells", "$options": "i"}},
@@ -2158,7 +2159,7 @@ async def get_other_events(
             ]
         }
 
-        # Role-based visibility
+        # ── Role-based visibility ──────────────────────────────────────────
         if user_role not in ["admin", "leaderat12", "registrant"]:
             visibility_filter = {
                 "$or": [
@@ -2227,7 +2228,7 @@ async def get_other_events(
         events = await cursor.to_list(length=3000)
         print(f"Found {len(events)} other events")
 
-        # ── Day mapping for recurring logic ───────────────────────────────
+        # ── Day mapping for recurring logic ────────────────────────────────
         day_mapping = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
             'friday': 4, 'saturday': 5, 'sunday': 6
@@ -2245,7 +2246,7 @@ async def get_other_events(
                     recurring_days = []
                 is_recurring = len(recurring_days) > 0
 
-                # ── RECURRING: generate one instance per day per week ─────
+                # ── RECURRING: generate one instance per day per week ──────
                 if is_recurring:
                     days_since_monday = today.weekday()
                     week_start = today - timedelta(days=days_since_monday)
@@ -2259,21 +2260,17 @@ async def get_other_events(
                         for week_back in range(0, 4):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
 
-                            # Skip future dates
                             if instance_date > today:
                                 continue
-
-                            # Date range filter
                             if instance_date < start_date_obj or instance_date > end_date_obj:
                                 continue
 
                             exact_date_str = instance_date.isoformat()
 
-                            # Calculate day name from instance date
                             days_list = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
                             actual_day_value = days_list[instance_date.weekday()]
 
-                            # ── Attendance: read from attendance[exact_date] ──
+                            # ── Attendance: prefer nested attendance[date] ──
                             attendance_data = event.get("attendance", {})
                             if not isinstance(attendance_data, dict):
                                 attendance_data = {}
@@ -2281,8 +2278,7 @@ async def get_other_events(
                             if not isinstance(date_attendance, dict):
                                 date_attendance = {}
 
-                            # Backwards compat: if this matches original event date,
-                            # fall back to root-level attendees
+                            # Backwards compat: fall back to root-level attendees
                             original_date_str = None
                             event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
                             if isinstance(event_date_field, datetime):
@@ -2308,13 +2304,13 @@ async def get_other_events(
                                     "consolidations": event.get("consolidations", []),
                                 }
 
-                            # ── Attendees ────────────────────────────────────
+                            # ── Attendees ─────────────────────────────────
                             weekly_attendees = date_attendance.get("attendees", [])
                             if not isinstance(weekly_attendees, list):
                                 weekly_attendees = []
                             has_weekly_attendees = len(weekly_attendees) > 0
 
-                            # ── New people & consolidations ──────────────────
+                            # ── New people & consolidations ───────────────
                             new_people = date_attendance.get("new_people", [])
                             if not isinstance(new_people, list):
                                 new_people = []
@@ -2322,12 +2318,15 @@ async def get_other_events(
                             if not isinstance(consolidations, list):
                                 consolidations = []
 
-                            # ── Status ───────────────────────────────────────
+                            # ── Status: explicit status always wins ───────
                             att_status = str(date_attendance.get("status", "")).lower()
                             is_did_not_meet = date_attendance.get("is_did_not_meet", False)
 
                             if is_did_not_meet or att_status == "did_not_meet":
                                 event_status = "did_not_meet"
+                            elif att_status in ["open", "incomplete", "reopened", "active"]:
+                                # Explicit open/incomplete always wins, even if attendees exist
+                                event_status = "incomplete"
                             elif has_weekly_attendees or att_status in ["complete", "closed"]:
                                 event_status = "complete"
                             else:
@@ -2358,8 +2357,8 @@ async def get_other_events(
                                 "recurring_days": recurring_days,
                                 "original_event_id": str(event.get("_id")),
                                 "isGlobal": event.get("isGlobal", False),
-                                "closed_by": event.get("closed_by", ""),
-                                "closed_at": str(event.get("closed_at", "")),
+                                "closed_by": date_attendance.get("closed_by") or event.get("closed_by", ""),
+                                "closed_at": str(date_attendance.get("closed_at") or event.get("closed_at", "")),
                                 "created_at": str(event.get("created_at", "")),
                                 "updated_at": str(event.get("updated_at", "") or event.get("updatedAt", "")),
                                 "attendees": weekly_attendees,
@@ -2373,7 +2372,7 @@ async def get_other_events(
                             other_events.append(instance)
                             print(f"Recurring instance: {event_name} on {exact_date_str} (Status: {event_status}, Attendance: {total_attendance})")
 
-                # ── NON-RECURRING: original logic untouched ───────────────
+                # ── NON-RECURRING ──────────────────────────────────────────
                 else:
                     day_name_raw = event.get("Day") or event.get("day") or event.get("eventDay") or ""
                     day_name = str(day_name_raw).strip()
@@ -2406,7 +2405,6 @@ async def get_other_events(
 
                     if event_date < start_date_obj or event_date > end_date_obj:
                         continue
-
                     if event_date > today:
                         continue
 
@@ -2436,16 +2434,17 @@ async def get_other_events(
                     if not isinstance(consolidations, list):
                         consolidations = []
 
-                    # ── Status ────────────────────────────────────────────
+                    # ── Status: explicit status always wins ───────────────
                     main_event_status = event.get("status", "").lower()
                     main_event_did_not_meet = event.get("did_not_meet", False)
                     main_event_complete = event.get("Status", "").lower() == "complete"
 
-                    if main_event_status in ["open", "incomplete", "reopened", "active"]:
-                        event_status = "incomplete"
-                    elif main_event_did_not_meet or main_event_status == "did_not_meet":
+                    if main_event_did_not_meet or main_event_status == "did_not_meet":
                         event_status = "did_not_meet"
-                    elif has_weekly_attendees or main_event_complete or main_event_status == "complete":
+                    elif main_event_status in ["open", "incomplete", "reopened", "active"]:
+                        # Explicit open/incomplete always wins, even if attendees exist
+                        event_status = "incomplete"
+                    elif has_weekly_attendees or main_event_complete or main_event_status in ["complete", "closed"]:
                         event_status = "complete"
                     else:
                         event_status = "incomplete"
@@ -2475,8 +2474,8 @@ async def get_other_events(
                         "status": event_status,
                         "Status": event_status.replace("_", " ").title(),
                         "_is_overdue": event_date < today and event_status == "incomplete",
-                        "is_recurring": is_recurring,
-                        "recurring_days": recurring_days,
+                        "is_recurring": False,
+                        "recurring_days": [],
                         "original_event_id": str(event.get("_id")),
                         "isGlobal": event.get("isGlobal", False),
                         "closed_by": event.get("closed_by", ""),
@@ -2527,6 +2526,7 @@ async def get_other_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
     
 @app.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
@@ -11126,108 +11126,89 @@ async def toggle_event_status(
     event_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Toggle event status between complete/incomplete
-    Can only reopen events that occurred today
-    """
     try:
-        print(f"Toggling event status: {event_id}")
-        
-        if not ObjectId.is_valid(event_id):
+        parts = event_id.split("_")
+        base_event_id = parts[0]
+        instance_date = parts[1] if len(parts) > 1 else None
+
+        print(f"Toggling event status: {base_event_id} (instance date: {instance_date})")
+
+        if not ObjectId.is_valid(base_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        current_status = event.get("status", "").lower()
-        event_date = event.get("date")
-        
-        # If trying to reopen (unsave) an event
+
+        if instance_date:
+            attendance_data = event.get("attendance", {})
+            date_attendance = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
+            current_status = str(date_attendance.get("status", "")).lower() or event.get("status", "").lower()
+        else:
+            current_status = event.get("status", "").lower()
+
+        # Reopening
         if current_status in ["complete", "closed"]:
-            # Check if event date is today
-            if event_date:
-                try:
-                    # Parse event date
-                    if isinstance(event_date, str):
-                        event_datetime = datetime.fromisoformat(event_date.replace('Z', '+00:00'))
-                    else:
-                        event_datetime = event_date
-                    
-                    # Get today's date (start of day)
-                    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-                    event_day = event_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
-                    
-                    # Only allow reopening if event is today
-                    if event_day < today:
-                        raise HTTPException(
-                            status_code=403, 
-                            detail="Cannot reopen events from past dates. Only today's events can be reopened."
-                        )
-                except ValueError as ve:
-                    print(f"Error parsing date: {ve}")
-                    raise HTTPException(status_code=400, detail="Invalid event date format")
-            
-            # Reopen the event
-            update_data = {
-                "status": "incomplete",
-                "updated_at": datetime.utcnow().isoformat(),
+            new_status = "incomplete"
+            action_msg = "reopened"
+            log_action = "EVENT_REOPENED"
+            status_fields = {
                 "reopened_by": current_user.get("email", ""),
                 "reopened_at": datetime.utcnow().isoformat()
             }
-            action_msg = "reopened"
-            log_action = "EVENT_REOPENED"
-        
-        elif current_status in ["open", "incomplete", ""]:
-            update_data = {
-                "status": "complete",
-                "updated_at": datetime.utcnow().isoformat(),
-                "closed_by": current_user.get("email", ""),
-                "closed_at": datetime.utcnow().isoformat()
-            }
-            action_msg = "closed"
-            log_action = "EVENT_CLOSED"
-        
+
+        # Closing
         else:
-            # Default to closing behavior with warning
-            print(f"Unexpected status '{current_status}', defaulting to close action")
-            update_data = {
-                "status": "complete",
-                "updated_at": datetime.utcnow().isoformat(),
+            new_status = "complete"
+            action_msg = "closed"
+            log_action = "EVENT_CLOSED"
+            status_fields = {
                 "closed_by": current_user.get("email", ""),
                 "closed_at": datetime.utcnow().isoformat()
             }
-            action_msg = "closed"
-            log_action = "EVENT_CLOSED"
+
+        update_data = {
+            "updated_at": datetime.utcnow().isoformat(),
+            **status_fields
+        }
+
+        if instance_date:
+            update_data[f"attendance.{instance_date}.status"] = new_status
+            update_data[f"attendance.{instance_date}.closed_by"] = current_user.get("email", "")
+            update_data[f"attendance.{instance_date}.closed_at"] = datetime.utcnow().isoformat()
+            update_data["status"] = new_status
+            update_data["closed_by"] = current_user.get("email", "")
+            update_data["closed_at"] = datetime.utcnow().isoformat()
+        else:
+            update_data["status"] = new_status
 
         result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
+            {"_id": ObjectId(base_event_id)},
             {"$set": update_data}
         )
 
         if result.modified_count == 0:
             raise HTTPException(status_code=500, detail="Failed to update event status")
 
-        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        
         await log_activity(
             user_id=current_user.get("_id"),
             action=log_action,
-            details=f"{action_msg.capitalize()} event: {event.get('eventName', 'Unknown')} (ID: {event_id})"
+            details=f"{action_msg.capitalize()} event: {event.get('eventName', 'Unknown')} (ID: {base_event_id}, date: {instance_date})"
         )
 
         print(f"Event {event.get('eventName')} {action_msg} successfully")
 
         return {
             "success": True,
+            "already_closed": False,
             "message": f"Event '{event.get('eventName', 'Unknown')}' {action_msg} successfully",
-            "event_id": event_id,
+            "event_id": base_event_id,
             "event_name": event.get("eventName", "Unknown"),
             "previous_status": current_status,
-            "new_status": update_data["status"],
+            "new_status": new_status,
             "action": action_msg,
             "actioned_by": current_user.get("email", ""),
-            "actioned_at": update_data.get("closed_at") or update_data.get("reopened_at")
+            "actioned_at": status_fields.get("closed_at") or status_fields.get("reopened_at")
         }
 
     except HTTPException:
@@ -11235,7 +11216,7 @@ async def toggle_event_status(
     except Exception as e:
         print(f"❌ Error toggling event status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
-    
+     
 # ==================== CREATE CONSOLIDATION (UPDATED) ====================
 @app.post("/service-checkin/create-consolidation")
 async def create_consolidation(
