@@ -8885,54 +8885,37 @@ ROLE_HIERARCHY = {
 @app.get("/admin/users", response_model=UserList)
 async def get_all_users(
     organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=500, description="Number of records to return"),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all users - Filtered by organization (supports both 'organization' and 'Organization' fields)"""
+    """Get all users (ONLY from users collection) with pagination for faster loading"""
     try:
         is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
         
-        # Build query to handle both field names
+        # Build query for users collection ONLY
         query = {}
-        
-        print(f"Current user: {current_user.get('email')}")
-        print(f"Is supreme: {is_supreme}")
-        print(f"Selected organization param: {organization}")
-        
-        # Determine which organization to filter by
-        org_filter = None
         if is_supreme and organization:
-            org_filter = organization
-            print(f"Filtering by organization param: {organization}")
+            query["$or"] = [{"Organization": organization}, {"organization": organization}]
         elif not is_supreme:
-            org_filter = current_user.get("organization")
-            print(f"Regular admin filtering by their org: {current_user.get('organization')}")
+            query["$or"] = [{"Organization": current_user.get("organization")}, 
+                           {"organization": current_user.get("organization")}]
         
-        # If we have an organization to filter by, create a query that checks both field names
-        if org_filter:
-            query["$or"] = [
-                {"Organization": org_filter},  # Check capital O
-                {"organization": org_filter}    # Check lowercase o
-            ]
-            print(f"Filter query: {query}")
+        print(f"Query: {query}")
+        
+        # Get total count for pagination
+        total = await users_collection.count_documents(query)
+        print(f"Total users found: {total}")
+        
+        # Get paginated results - MUCH FASTER with skip/limit
+        cursor = users_collection.find(query).skip(skip).limit(limit)
         
         users = []
-        cursor = users_collection.find(query)
-        
         async for user in cursor:
-            # Get the organization value from whichever field exists (prioritize lowercase for consistency)
             user_org = user.get("organization") or user.get("Organization") or "Unknown"
-            print(f"Found user: {user.get('name')} - Org: {user_org}")
-            
-            # Handle date_of_birth conversion
-            dob = user.get("date_of_birth")
-            if dob and not isinstance(dob, str):
-                if hasattr(dob, 'isoformat'):
-                    dob = dob.isoformat()
-                else:
-                    dob = str(dob)
             
             users.append(UserListResponse(
                 id=str(user["_id"]),
@@ -8940,90 +8923,168 @@ async def get_all_users(
                 surname=user.get("surname", ""),
                 email=user.get("email", ""),
                 role=user.get("role", "user"),
-                date_of_birth=dob,
+                date_of_birth=user.get("date_of_birth"),
                 phone_number=user.get("phone_number"),
-                address=user.get("home_address"),
+                address=user.get("home_address") or user.get("address"),
                 gender=user.get("gender"),
-                invitedBy=user.get("invited_by"),
+                invitedBy=user.get("invited_by") or user.get("invitedBy"),
                 leader12=str(user.get("leader12")) if user.get("leader12") else None,
                 leader144=str(user.get("leader144")) if user.get("leader144") else None,
                 leader1728=str(user.get("leader1728")) if user.get("leader1728") else None,
                 stage=user.get("stage"),
-                organization=user_org,  # Return the organization value
-                created_at=user.get("created_at")
+                organization=user_org,
+                created_at=user.get("created_at") or user.get("updated_at")
             ))
         
-        print(f"Total users found: {len(users)}")
-        return UserList(users=users)
+        # Return with total count for pagination
+        return {
+            "users": users,
+            "total": total,
+            "skip": skip,
+            "limit": limit
+        }
         
     except Exception as e:
         print(f"ERROR in get_all_users: {str(e)}")
         import traceback
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
-    
+
 @app.get("/admin/stats")
 async def get_admin_stats(
     organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get statistics for admin dashboard - Filtered by organization (supports both field names)"""
+    """Get statistics - ONLY from users collection"""
     is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
     
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
     try:
-        # Determine which organization to filter by
+        # Build query
+        query = {}
+        if is_supreme and organization:
+            query["$or"] = [{"Organization": organization}, {"organization": organization}]
+        elif not is_supreme:
+            query["$or"] = [{"Organization": current_user.get("organization")}, 
+                           {"organization": current_user.get("organization")}]
+        
+        # Use aggregation for faster counts - GROUP BY ROLE
+        pipeline = [
+            {"$match": query},
+            {"$group": {
+                "_id": "$role",
+                "count": {"$sum": 1}
+            }}
+        ]
+        
+        results = await users_collection.aggregate(pipeline).to_list(length=100)
+        print(f"Aggregation results: {results}")
+        
+        # Format response
+        stats = {
+            "total_users": 0,
+            "administrators": 0,
+            "leaders": 0,
+            "leaders_at_12": 0,
+            "registrants": 0,
+            "regular_users": 0,
+            "custom_roles": {}  # For church-specific roles
+        }
+        
+        for item in results:
+            role = item["_id"] or "unknown"
+            count = item["count"]
+            stats["total_users"] += count
+            
+            # Map to standard roles
+            if role == "admin":
+                stats["administrators"] = count
+            elif role == "leader":
+                stats["leaders"] = count
+            elif role == "leaderAt12":
+                stats["leaders_at_12"] = count
+            elif role == "registrant":
+                stats["registrants"] = count
+            elif role == "user":
+                stats["regular_users"] = count
+            else:
+                # This is a custom role unique to a church
+                stats["custom_roles"][role] = count
+        
+        # Also get all unique roles for this organization
+        distinct_roles = await users_collection.distinct("role", query)
+        stats["all_roles"] = [r for r in distinct_roles if r]  # Filter out None/empty
+        
+        return stats
+        
+    except Exception as e:
+        print(f"Error fetching stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")
+
+@app.get("/admin/roles/distinct")
+async def get_distinct_roles(
+    organization: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all distinct roles for an organization from the users collection"""
+    try:
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        
+        # Determine organization
         org_filter = None
         if is_supreme and organization:
             org_filter = organization
         elif not is_supreme:
             org_filter = current_user.get("organization")
+        else:
+            raise HTTPException(status_code=400, detail="Organization required")
         
-        # Build base query that handles both field names
-        base_query = {}
+        # Build query for this organization
+        query = {}
         if org_filter:
-            base_query["$or"] = [
-                {"Organization": org_filter},
-                {"organization": org_filter}
-            ]
+            query["$or"] = [{"Organization": org_filter}, {"organization": org_filter}]
         
-        # Helper function to add role filter to base query
-        def add_role_filter(role):
-            if base_query:
-                return {"$and": [base_query, {"role": role}]}
-            return {"role": role}
+        # Get all distinct roles
+        distinct_roles = await users_collection.distinct("role", query)
         
-        # Get counts from Users collection
-        total_users = await users_collection.count_documents(base_query)
-        admin_count = await users_collection.count_documents(add_role_filter("admin"))
-        leader_count = await users_collection.count_documents(add_role_filter("leader"))
-        leader_at_12_count = await users_collection.count_documents(add_role_filter("leaderAt12"))
-        registrant_count = await users_collection.count_documents(add_role_filter("registrant"))
-        user_count = await users_collection.count_documents(add_role_filter("user"))
+        # Filter out None/empty and sort
+        roles = [r for r in distinct_roles if r]
+        roles.sort()
         
-        # People collection query - they use "Organisation" (different spelling!)
-        people_query = {}
-        if org_filter:
-            people_query["Organisation"] = org_filter
+        # Get count for each role
+        roles_with_counts = []
+        for role in roles:
+            count_query = {"$and": [query, {"role": role}]} if query else {"role": role}
+            count = await users_collection.count_documents(count_query)
             
-        total_people = await people_collection.count_documents(people_query)
+            # Determine if it's a system role or custom
+            is_system = role in ["admin", "leader", "leaderAt12", "user", "registrant"]
+            
+            roles_with_counts.append({
+                "name": role,
+                "count": count,
+                "is_system": is_system,
+                "color": get_role_color(role)  # You can define this function
+            })
         
-        return {
-            "total_users": total_users + total_people,
-            "administrators": admin_count,
-            "leaders": leader_count,
-            "leaders_at_12": leader_at_12_count,
-            "registrants": registrant_count,
-            "regular_users": user_count
-        }
+        return {"roles": roles_with_counts}
         
     except Exception as e:
-        print(f"Error fetching stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")   
+        print(f"Error fetching distinct roles: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
+# Helper function for role colors
+def get_role_color(role):
+    role_colors = {
+        "admin": "#f44336",
+        "leader": "#2196f3",
+        "leaderAt12": "#9c27b0", 
+        "user": "#4caf50",
+        "registrant": "#ff9800"
+    }
+    return role_colors.get(role, "#9c27b0")  # Default purple for custom roles
 
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(

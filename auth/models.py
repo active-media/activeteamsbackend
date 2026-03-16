@@ -318,6 +318,22 @@ class UserListResponse(BaseModel):
 class UserList(BaseModel):
     users: List[UserListResponse]
 
+class RoleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    permissions: List[str] = []
+    color: Optional[str] = None  # For UI display
+
+class RoleResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    permissions: List[str] = []
+    color: Optional[str] = None
+    organization: str
+    created_at: datetime
+    user_count: int = 0
+
 class RoleUpdate(BaseModel):
     role: str
 
