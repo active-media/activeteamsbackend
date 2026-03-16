@@ -8951,9 +8951,6 @@ async def create_consolidation(
     consolidation: ConsolidationCreate,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Create a new consolidation record and associated task assigned to the leader
-    """
     try:
         consolidation_id = str(ObjectId())
        
@@ -9068,25 +9065,23 @@ async def create_consolidation(
             people_cache["data"].append(new_person_cache_entry)
             print(f"Added to cache: {new_person_cache_entry['FullName']}")
 
-        # 2. IMPROVED LEADER EMAIL RESOLUTION
+        # 2. Resolve leader email
         leader_email = consolidation.assigned_to_email
         leader_user_id = None
        
         if not leader_email:
             print(f"Searching for leader email: {consolidation.assigned_to}")
             
-            # Parse leader name
             leader_parts = consolidation.assigned_to.strip().split()
             first_name = leader_parts[0] if leader_parts else ""
             surname = " ".join(leader_parts[1:]) if len(leader_parts) > 1 else ""
             
-            # Try people collection with multiple variations
             leader_person = await people_collection.find_one({
                 "$or": [
                     {"$expr": {"$eq": [{"$concat": ["$Name", " ", "$Surname"]}, consolidation.assigned_to]}},
                     {"Name": first_name, "Surname": surname},
                     {"$expr": {"$eq": [
-                        {"$toLower": {"$concat": ["$Name", " ", "$Surname"]}}, 
+                        {"$toLower": {"$concat": ["$Name", " ", "$Surname"]}},
                         consolidation.assigned_to.lower()
                     ]}}
                 ]
@@ -9096,13 +9091,12 @@ async def create_consolidation(
                 leader_email = leader_person.get("Email")
                 print(f"Found leader email from people: {leader_email}")
             
-            # Try users collection if not found
             if not leader_email and first_name:
                 leader_user = await users_collection.find_one({
                     "$or": [
                         {"name": first_name, "surname": surname},
                         {"$expr": {"$eq": [
-                            {"$toLower": {"$concat": ["$name", " ", "$surname"]}}, 
+                            {"$toLower": {"$concat": ["$name", " ", "$surname"]}},
                             consolidation.assigned_to.lower()
                         ]}}
                     ]
@@ -9122,14 +9116,11 @@ async def create_consolidation(
             print(f"Could not find email for leader: {consolidation.assigned_to}")
 
         decision_display_name = "First Time Decision" if consolidation.decision_type == DecisionType.FIRST_TIME else "Recommitment"
-       
-        # Get consolidation source
         consolidation_source = getattr(consolidation, 'source', 'manual')
         source_display = "Service" if consolidation_source == "service_consolidation" else "Event" if consolidation_source == "event_consolidation" else "Manual"
-       
-        # Prefer email over name for assignedfor
         assigned_for = leader_email if leader_email else consolidation.assigned_to
        
+        # 3. Create task
         task_doc = {
             "memberID": leader_user_id if leader_user_id else None,
             "name": f"Consolidation: {consolidation.person_name} {consolidation.person_surname} ({decision_display_name})",
@@ -9165,37 +9156,71 @@ async def create_consolidation(
         task_result = await tasks_collection.insert_one(task_doc)
         task_id = str(task_result.inserted_id)
 
-        # 4. Add to event consolidations
-        if consolidation.event_id and ObjectId.is_valid(consolidation.event_id):
-            consolidation_record = {
-                "id": consolidation_id,
-                "person_id": person_id,
-                "person_name": consolidation.person_name,
-                "person_surname": consolidation.person_surname,
-                "person_email": person_email,
-                "person_phone": consolidation.person_phone or "",
-                "decision_type": consolidation.decision_type.value,
-                "decision_display_name": decision_display_name,
-                "assigned_to": consolidation.assigned_to,
-                "assigned_to_email": leader_email,
-                "created_at": datetime.utcnow().isoformat(),
-                "type": "consolidation",
-                "status": "active",
-                "notes": consolidation.notes,
-                "source": consolidation_source,
-                "source_display": source_display
-            }
+        # 4. Build consolidation record
+        consolidation_record = {
+            "id": consolidation_id,
+            "person_id": person_id,
+            "person_name": consolidation.person_name,
+            "person_surname": consolidation.person_surname,
+            "person_email": person_email,
+            "person_phone": consolidation.person_phone or "",
+            "decision_type": consolidation.decision_type.value,
+            "decision_display_name": decision_display_name,
+            "assigned_to": consolidation.assigned_to,
+            "assigned_to_email": leader_email,
+            "created_at": datetime.utcnow().isoformat(),
+            "type": "consolidation",
+            "status": "active",
+            "notes": consolidation.notes,
+            "source": consolidation_source,
+            "source_display": source_display,
+            "task_id": task_id,
+        }
 
-            await events_collection.update_one(
-                {"_id": ObjectId(consolidation.event_id)},
-                {
-                    "$push": {"consolidations": consolidation_record},
-                    "$set": {"updated_at": datetime.utcnow().isoformat()}
-                }
-            )
-            print(f"Added to event consolidations: {consolidation.event_id}")
+        # 5. Add to event — strip date suffix before ObjectId lookup
+        if consolidation.event_id:
+            parts = consolidation.event_id.split("_")
+            base_event_id = parts[0]
+            instance_date = parts[1] if len(parts) > 1 else None
 
-        # 5. Create consolidation record
+            if ObjectId.is_valid(base_event_id):
+                event_for_cons = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+                is_recurring_event = bool(event_for_cons.get("recurring_day")) if event_for_cons else False
+
+                if is_recurring_event:
+                    if not instance_date:
+                        timezone = pytz.timezone("Africa/Johannesburg")
+                        instance_date = datetime.now(timezone).date().isoformat()
+
+                    await events_collection.update_one(
+                        {"_id": ObjectId(base_event_id)},
+                        {
+                            "$push": {f"attendance.{instance_date}.consolidations": consolidation_record},
+                            "$set": {"updated_at": datetime.utcnow().isoformat()}
+                        }
+                    )
+                    print(f"Added consolidation to recurring event attendance[{instance_date}]")
+                else:
+                    await events_collection.update_one(
+                        {"_id": ObjectId(base_event_id)},
+                        {
+                            "$push": {"consolidations": consolidation_record},
+                            "$set": {"updated_at": datetime.utcnow().isoformat()}
+                        }
+                    )
+                    print(f"Added consolidation to non-recurring event root")
+
+                # Verify write
+                verification = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+                if is_recurring_event:
+                    att = verification.get("attendance", {}).get(instance_date, {})
+                    print(f"VERIFY: attendance[{instance_date}].consolidations = {len(att.get('consolidations', []))}")
+                else:
+                    print(f"VERIFY: root consolidations = {len(verification.get('consolidations', []))}")
+            else:
+                print(f"Invalid base event ID: {base_event_id}")
+
+        # 6. Save to consolidations collection
         consolidation_doc = {
             "_id": ObjectId(consolidation_id),
             "person_id": person_id,
@@ -9242,10 +9267,8 @@ async def create_consolidation(
         print(f"Error creating consolidation: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
-
-# === ADD THIS AT THE END OF main.py (no import needed) ===
-
+        raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")   
+    
 @app.get("/api/users")
 async def get_all_users():
     try:
@@ -9692,32 +9715,49 @@ async def get_event_new_people(event_id: str = Path(...)):
    
 @app.get("/service-checkin/real-time-data")
 async def get_service_checkin_real_time_data(
-    event_id: str = Query(..., description="Event ID to get real-time data for"),
+    event_id: str = Query(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Get real-time data for service check-in with all three data types
-    - FIXED: Returns ACTUAL counts from database
-    """
     try:
-        if not ObjectId.is_valid(event_id):
+        parts = event_id.split("_")
+        base_event_id = parts[0]
+        instance_date = parts[1] if len(parts) > 1 else None
+
+        if not ObjectId.is_valid(base_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        # Get the event FRESH from database
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        # Extract the three data types from the event - COUNT PROPERLY
-        attendees = event.get("attendees", [])
-        new_people = event.get("new_people", [])
-        consolidations = event.get("consolidations", [])
+        is_recurring = bool(event.get("recurring_day"))
 
-        # Counts for stats cards - COUNT ACTUAL CHECKED-IN PEOPLE
-        present_count = len([a for a in attendees if a.get("checked_in", False) or a.get("is_checked_in", False)])
-        new_people_count = len(new_people)
-        consolidation_count = len(consolidations)
+        if is_recurring:
+            if not instance_date:
+                timezone = pytz.timezone("Africa/Johannesburg")
+                instance_date = datetime.now(timezone).date().isoformat()
 
+            attendance_data = event.get("attendance", {})
+            date_data = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
+
+            attendees = date_data.get("attendees", [])
+            new_people = date_data.get("new_people", [])
+            consolidations = date_data.get("consolidations", [])
+
+            print(f"Recurring [{instance_date}]: {len(attendees)} att, {len(new_people)} new, {len(consolidations)} cons")
+        else:
+            attendees = event.get("attendees", [])
+            new_people = event.get("new_people", [])
+            consolidations = event.get("consolidations", [])
+
+        attendees = attendees if isinstance(attendees, list) else []
+        new_people = new_people if isinstance(new_people, list) else []
+        consolidations = consolidations if isinstance(consolidations, list) else []
+
+        print(f"Real-time data returning: {len(attendees)} attendees, {len(new_people)} new, {len(consolidations)} consolidations")
+        print(f"Instance date used: {instance_date}")
+        print(f"Is recurring: {is_recurring}")
+        
         return {
             "success": True,
             "event_id": event_id,
@@ -9725,13 +9765,15 @@ async def get_service_checkin_real_time_data(
             "present_attendees": attendees,
             "new_people": new_people,
             "consolidations": consolidations,
-            "present_count": present_count,  # ACTUAL COUNT FROM DB
-            "new_people_count": new_people_count,  # ACTUAL COUNT FROM DB
-            "consolidation_count": consolidation_count,  # ACTUAL COUNT FROM DB
+            "present_count": len(attendees),
+            "new_people_count": len(new_people),
+            "consolidation_count": len(consolidations),
             "total_attendance": len(attendees),
             "refreshed_at": datetime.utcnow().isoformat()
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error getting real-time data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
@@ -9793,11 +9835,6 @@ async def service_checkin_person(
     checkin_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Service Check-in
-    - Atomic attendee check-in (no duplicates possible)
-    - Returns ACTUAL counts after operation
-    """
     try:
         event_id = checkin_data.get("event_id")
         person_data = checkin_data.get("person_data", {})
@@ -9810,24 +9847,23 @@ async def service_checkin_person(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
+
+        # For recurring events, determine today's instance date
+        instance_date = None
+        if is_recurring:
+            timezone = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(timezone).date().isoformat()
 
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
             if not person_id or not ObjectId.is_valid(person_id):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Valid person ID is required for attendee check-in"
-                )
+                raise HTTPException(status_code=400, detail="Valid person ID is required")
 
-            existing = await people_collection.find_one(
-                {"_id": ObjectId(person_id)}
-            )
+            existing = await people_collection.find_one({"_id": ObjectId(person_id)})
             if not existing:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Person does not exist — add them first using /people"
-                )
+                raise HTTPException(status_code=404, detail="Person does not exist")
 
             attendee_record = {
                 "id": str(existing["_id"]),
@@ -9840,30 +9876,43 @@ async def service_checkin_person(
                 "type": "attendee"
             }
 
-            result = await events_collection.update_one(
-                {
-                    "_id": ObjectId(event_id),
-                    "attendees.id": {"$ne": attendee_record["id"]}
-                },
-                {
-                    "$push": {"attendees": attendee_record},
-                    "$inc": {"total_attendance": 1},
-                    "$set": {"updated_at": now}
-                }
-            )
-
-            if result.modified_count == 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{existing.get('Name')} is already checked in"
+            if is_recurring:
+                # Write to attendance[date].attendees, prevent duplicates
+                result = await events_collection.update_one(
+                    {
+                        "_id": ObjectId(event_id),
+                        f"attendance.{instance_date}.attendees.id": {"$ne": attendee_record["id"]}
+                    },
+                    {
+                        "$push": {f"attendance.{instance_date}.attendees": attendee_record},
+                        "$set": {
+                            f"attendance.{instance_date}.updated_at": now,
+                            "updated_at": now
+                        }
+                    }
+                )
+            else:
+                result = await events_collection.update_one(
+                    {
+                        "_id": ObjectId(event_id),
+                        "attendees.id": {"$ne": attendee_record["id"]}
+                    },
+                    {
+                        "$push": {"attendees": attendee_record},
+                        "$inc": {"total_attendance": 1},
+                        "$set": {"updated_at": now}
+                    }
                 )
 
-            updated_event = await events_collection.find_one(
-                {"_id": ObjectId(event_id)}
-            )
-            present_count = len(
-                [a for a in updated_event.get("attendees", []) if a.get("checked_in")]
-            )
+            if result.modified_count == 0:
+                raise HTTPException(status_code=400, detail=f"{existing.get('Name')} is already checked in")
+
+            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+            if is_recurring:
+                date_data = updated_event.get("attendance", {}).get(instance_date, {})
+                present_count = len(date_data.get("attendees", []))
+            else:
+                present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in")])
 
             return {
                 "message": f"{existing.get('Name')} checked in",
@@ -9875,7 +9924,6 @@ async def service_checkin_person(
 
         elif checkin_type == "new_person":
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
-
             new_person_record = {
                 "id": new_person_id,
                 "name": person_data.get("name", ""),
@@ -9886,77 +9934,40 @@ async def service_checkin_person(
                 "invitedBy": person_data.get("invitedBy", ""),
                 "added_at": now,
                 "type": "new_person",
-                "needs_database_entry": True,
-                "is_checked_in": True,
-                "notes": "Visitor - add to database later if needed"
+                "is_checked_in": True
             }
 
-            await events_collection.update_one(
-                {"_id": ObjectId(event_id)},
-                {
-                    "$push": {"new_people": new_person_record},
-                    "$set": {"updated_at": now}
-                }
-            )
+            if is_recurring:
+                await events_collection.update_one(
+                    {"_id": ObjectId(event_id)},
+                    {
+                        "$push": {f"attendance.{instance_date}.new_people": new_person_record},
+                        "$set": {f"attendance.{instance_date}.updated_at": now, "updated_at": now}
+                    }
+                )
+            else:
+                await events_collection.update_one(
+                    {"_id": ObjectId(event_id)},
+                    {"$push": {"new_people": new_person_record}, "$set": {"updated_at": now}}
+                )
 
-            updated_event = await events_collection.find_one(
-                {"_id": ObjectId(event_id)}
-            )
+            updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+            if is_recurring:
+                date_data = updated_event.get("attendance", {}).get(instance_date, {})
+                count = len(date_data.get("new_people", []))
+            else:
+                count = len(updated_event.get("new_people", []))
 
             return {
                 "message": "Visitor added to event",
                 "type": "new_person",
                 "new_person": new_person_record,
-                "new_people_count": len(updated_event.get("new_people", [])),
-                "success": True
-            }
-
-        # ============================================================
-        # 3️⃣ CONSOLIDATION
-        # ============================================================
-        elif checkin_type == "consolidation":
-            consolidation_id = f"con_{secrets.token_urlsafe(8)}"
-
-            consolidation_record = {
-                "id": consolidation_id,
-                "person_name": person_data.get("person_name", ""),
-                "person_surname": person_data.get("person_surname", ""),
-                "person_email": person_data.get("person_email", ""),
-                "person_phone": person_data.get("person_phone", ""),
-                "decision_type": person_data.get("decision_type", "first_time"),
-                "decision_display_name": person_data.get("decision_display_name", ""),
-                "assigned_to": person_data.get("assigned_to", ""),
-                "notes": person_data.get("notes", ""),
-                "created_at": now,
-                "type": "consolidation",
-                "status": "active"
-            }
-
-            await events_collection.update_one(
-                {"_id": ObjectId(event_id)},
-                {
-                    "$push": {"consolidations": consolidation_record},
-                    "$set": {"updated_at": now}
-                }
-            )
-
-            updated_event = await events_collection.find_one(
-                {"_id": ObjectId(event_id)}
-            )
-
-            return {
-                "message": "Decision recorded",
-                "type": "consolidation",
-                "consolidation": consolidation_record,
-                "consolidation_count": len(updated_event.get("consolidations", [])),
+                "new_people_count": count,
                 "success": True
             }
 
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid type — must be attendee, new_person, or consolidation"
-            )
+            raise HTTPException(status_code=400, detail="Invalid type — must be attendee or new_person")
 
     except HTTPException:
         raise
@@ -9969,16 +9980,10 @@ async def remove_from_service_checkin(
     removal_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Remove a person from any of the three data types in an event
-    - attendees, new_people, or consolidations
-    """
     try:
         event_id = removal_data.get("event_id")
         person_id = removal_data.get("person_id")
-        data_type = removal_data.get("type")  
-
-        print(f" Removing from service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
+        data_type = removal_data.get("type")
 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
@@ -9990,33 +9995,47 @@ async def remove_from_service_checkin(
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
 
-        # Build the update query
-        update_query = {
-            "$pull": {data_type: {"id": person_id}},
-            "$set": {"updated_at": datetime.utcnow().isoformat()}
-        }
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
 
-        # If removing from attendees, also decrement total_attendance
-        if data_type == "attendees":
-            update_query["$inc"] = {"total_attendance": -1}
+        is_recurring = bool(event.get("recurring_day"))
+        now = datetime.utcnow().isoformat()
 
-        result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
-            update_query
-        )
+        if is_recurring:
+            timezone = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(timezone).date().isoformat()
+
+            result = await events_collection.update_one(
+                {"_id": ObjectId(event_id)},
+                {
+                    "$pull": {f"attendance.{instance_date}.{data_type}": {"id": person_id}},
+                    "$set": {f"attendance.{instance_date}.updated_at": now, "updated_at": now}
+                }
+            )
+        else:
+            update_query = {
+                "$pull": {data_type: {"id": person_id}},
+                "$set": {"updated_at": now}
+            }
+            if data_type == "attendees":
+                update_query["$inc"] = {"total_attendance": -1}
+            result = await events_collection.update_one({"_id": ObjectId(event_id)}, update_query)
 
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found in specified list")
 
-        print(f" Successfully removed from {data_type}")
-
-        # Get updated counts for real-time sync
         updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-       
-        # Calculate updated counts
-        present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in", False)])
-        new_people_count = len(updated_event.get("new_people", []))
-        consolidation_count = len(updated_event.get("consolidations", []))
+
+        if is_recurring:
+            date_data = updated_event.get("attendance", {}).get(instance_date, {})
+            present_count = len(date_data.get("attendees", []))
+            new_people_count = len(date_data.get("new_people", []))
+            consolidation_count = len(date_data.get("consolidations", []))
+        else:
+            present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in", False)])
+            new_people_count = len(updated_event.get("new_people", []))
+            consolidation_count = len(updated_event.get("consolidations", []))
 
         return {
             "success": True,
@@ -10031,7 +10050,7 @@ async def remove_from_service_checkin(
     except HTTPException:
         raise
     except Exception as e:
-        print(f" Error removing from service check-in: {str(e)}")
+        print(f"Error removing from service check-in: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error removing person: {str(e)}")
    
 @app.put("/service-checkin/update")
@@ -11387,46 +11406,46 @@ async def create_consolidation(
             detail=f"Internal server error: {str(e)}"
         )
 
-# ==================== REMOVE CONSOLIDATION (FIXED) ====================
+
 @app.delete("/service-checkin/remove-consolidation")
 async def remove_consolidation(
-    event_id: str = Query(..., description="Event ID"),
-    consolidation_id: str = Query(..., description="Consolidation ID"),
-    keep_person_in_attendees: bool = Query(True, description="Keep person in attendees list if present"),
+    event_id: str = Query(...),
+    consolidation_id: str = Query(...),
+    keep_person_in_attendees: bool = Query(True),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Remove a consolidation completely:
-    - Removes from event.consolidations array
-    - Deletes from consolidations collection
-    - Deletes associated task using consolidation_id
-    - Deletes from user-specific task collection
-    - Updates event statistics
-    """
-
     try:
-        logger.info(f"Removing consolidation: event={event_id}, consolidation={consolidation_id}")
+        # Strip date suffix to get base ObjectId
+        parts = event_id.split("_")
+        base_event_id = parts[0]
+        instance_date = parts[1] if len(parts) > 1 else None
 
-        # Validate IDs
-        if not ObjectId.is_valid(event_id):
+        if not ObjectId.is_valid(base_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
 
-        if not consolidation_id:
-            raise HTTPException(status_code=400, detail="Consolidation ID required")
-
-        # Get event
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        event_name = event.get("eventName", "Unknown Event")
+        is_recurring = bool(event.get("recurring_day"))
+        now = datetime.utcnow().isoformat()
 
-        # Remove consolidation from event array
-        updated_consolidations = []
+        # Determine instance date for recurring events
+        if is_recurring and not instance_date:
+            timezone = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(timezone).date().isoformat()
+
+        # Find the consolidation in the right place
+        if is_recurring:
+            attendance_data = event.get("attendance", {})
+            date_data = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
+            consolidations_list = date_data.get("consolidations", [])
+        else:
+            consolidations_list = event.get("consolidations", [])
+
         consolidation_to_remove = None
-
-        for c in event.get("consolidations", []):
-            # Match safely whether stored as id or _id
+        updated_consolidations = []
+        for c in consolidations_list:
             c_id = c.get("id") or c.get("_id")
             if str(c_id) == consolidation_id:
                 consolidation_to_remove = c
@@ -11434,131 +11453,93 @@ async def remove_consolidation(
                 updated_consolidations.append(c)
 
         if not consolidation_to_remove:
-            raise HTTPException(
-                status_code=404,
-                detail="Consolidation not found in event"
-            )
+            raise HTTPException(status_code=404, detail="Consolidation not found in event")
 
-        person_email = consolidation_to_remove.get("person_email")
         person_name = consolidation_to_remove.get("person_name", "")
         person_surname = consolidation_to_remove.get("person_surname", "")
 
-        # Prepare event update
-        update_data = {
-            "consolidations": updated_consolidations,
-            "updated_at": datetime.utcnow().isoformat(),
-            "last_updated_by": {
-                "email": current_user.get("email", "unknown"),
-                "action": "removed_consolidation",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        }
-
-        # Optional: remove from attendees
-        if not keep_person_in_attendees and person_email:
-            updated_attendees = []
-            removed_from_attendees = False
-            total_attendance = event.get("total_attendance", 0)
-
-            for attendee in event.get("attendees", []):
-                email = attendee.get("email") or attendee.get("person_email")
-                if email and email.lower() == person_email.lower():
-                    removed_from_attendees = True
-                    if attendee.get("checked_in"):
-                        total_attendance = max(0, total_attendance - 1)
-                else:
-                    updated_attendees.append(attendee)
-
-            update_data["attendees"] = updated_attendees
-            update_data["total_attendance"] = total_attendance
-
-        # Update event
-        await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
-            {"$set": update_data}
-        )
-
-        # ================================
-        # DELETE FROM CONSOLIDATIONS COLLECTION
-        # ================================
-        consolidations_collection = db["consolidations"]
-
-        if ObjectId.is_valid(consolidation_id):
-            await consolidations_collection.delete_one(
-                {"_id": ObjectId(consolidation_id)}
+        # Write updated consolidations back to the right place
+        if is_recurring:
+            await events_collection.update_one(
+                {"_id": ObjectId(base_event_id)},
+                {
+                    "$set": {
+                        f"attendance.{instance_date}.consolidations": updated_consolidations,
+                        f"attendance.{instance_date}.updated_at": now,
+                        "updated_at": now
+                    }
+                }
             )
         else:
-            await consolidations_collection.delete_one(
-                {"_id": consolidation_id}
+            await events_collection.update_one(
+                {"_id": ObjectId(base_event_id)},
+                {"$set": {"consolidations": updated_consolidations, "updated_at": now}}
             )
 
-        # ================================
-        # DELETE ASSOCIATED TASK (SAFER METHOD)
-        # ================================
+        # Delete from consolidations collection
+        consolidations_col = db["consolidations"]
+        if ObjectId.is_valid(consolidation_id):
+            await consolidations_col.delete_one({"_id": ObjectId(consolidation_id)})
+        await consolidations_col.delete_one({"id": consolidation_id})
+
+        # Delete associated task
         task_deleted = False
         deleted_task_ids = []
 
-        # Find task using consolidation_id
-        task = await tasks_collection.find_one({
-            "consolidation_id": consolidation_id
-        })
+        # Try by consolidation_id first, then by task_id stored in the record
+        task = await tasks_collection.find_one({"consolidation_id": consolidation_id})
+        if not task:
+            task_id_from_record = consolidation_to_remove.get("task_id")
+            if task_id_from_record and ObjectId.is_valid(task_id_from_record):
+                task = await tasks_collection.find_one({"_id": ObjectId(task_id_from_record)})
 
         if task:
-            task_id = str(task["_id"])
-
-            # Delete from main tasks collection
-            await tasks_collection.delete_one({
-                "_id": task["_id"]
-            })
-
+            await tasks_collection.delete_one({"_id": task["_id"]})
             task_deleted = True
-            deleted_task_ids.append(task_id)
+            deleted_task_ids.append(str(task["_id"]))
+            print(f"Deleted task: {task['_id']}")
 
-            # Delete from user-specific collection
-            assignedfor = task.get("assignedfor")
-            if assignedfor:
-                user_collection_name = f"tasks_{assignedfor.replace('@', '_').replace('.', '_')}"
-                user_tasks_collection = db.get_collection(user_collection_name)
-                await user_tasks_collection.delete_one({
-                    "_id": task["_id"]
-                })
+        # Get updated stats
+        updated_event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+        if is_recurring:
+            date_data = updated_event.get("attendance", {}).get(instance_date, {})
+            stats = {
+                "consolidations_count": len(date_data.get("consolidations", [])),
+                "new_people_count": len(date_data.get("new_people", [])),
+                "total_attendance": len(date_data.get("attendees", []))
+            }
+        else:
+            stats = {
+                "consolidations_count": len(updated_event.get("consolidations", [])),
+                "new_people_count": len(updated_event.get("new_people", [])),
+                "total_attendance": updated_event.get("total_attendance", 0)
+            }
 
-        # ================================
-        # LOG ACTIVITY
-        # ================================
         try:
             await log_activity(
                 user_id=current_user.get("email"),
                 action="CONSOLIDATION_REMOVED",
-                details=f"Removed consolidation for {person_name} {person_surname} from {event_name}"
+                details=f"Removed consolidation for {person_name} {person_surname}"
             )
         except Exception as log_error:
-            logger.warning(f"Activity log failed: {log_error}")
-
-        # Get updated event
-        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+            print(f"Activity log failed: {log_error}")
 
         return {
             "success": True,
             "message": "Consolidation removed successfully",
-            "task_deleted": task_deleted,
-            "deleted_task_ids": deleted_task_ids,
-            "updated_statistics": {
-                "consolidations_count": len(updated_event.get("consolidations", [])),
-                "total_attendance": updated_event.get("total_attendance", 0),
-                "total_attendees": len(updated_event.get("attendees", []))
+            "task_deletion": {
+                "deleted": task_deleted,
+                "count": len(deleted_task_ids)
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "updated_statistics": stats,
+            "timestamp": now
         }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error removing consolidation: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error"
-        )
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/service-checkin/migrate-consolidations")
 async def migrate_consolidations(
