@@ -27,10 +27,11 @@ from urllib.parse import unquote
 import traceback
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
+from supreme_admin import router as supreme_admin_router
 app = FastAPI()
+app.include_router(supreme_admin_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1176,6 +1177,78 @@ async def signup(user: UserCreate):
 # ---------------- Login ----------------
 @app.post("/login")
 async def login(user: UserLogin):
+    logger.info(f"Login attempt: {user.email}")
+    existing = await users_collection.find_one({"email": user.email})
+    if not existing or not verify_password(user.password, existing["password"]):
+        logger.warning(f"Login failed: {user.email}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    person = await people_collection.find_one({"Email":user.email}) or {}
+
+    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
+    print("FULL NAME",full_name)
+    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
+    is_Leader = bool(is_Leader)
+    if not person:
+        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
+    
+    # Check if user is supreme admin
+    SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+    is_supreme = False
+    if user.email == SUPREME_ADMIN_EMAIL:
+        is_supreme = True
+    else:
+        is_supreme = existing.get("is_supreme_admin", False)
+
+    # Include is_supreme_admin in the JWT token
+    access_token = create_access_token({
+        "user_id": str(existing["_id"]), 
+        "email": existing["email"], 
+        "role": existing.get("role", "user"),
+        "is_supreme_admin": is_supreme  # ADD THIS
+    })
+
+    refresh_token_id = secrets.token_urlsafe(16)
+    refresh_plain = secrets.token_urlsafe(32)
+    refresh_hash = hash_password(refresh_plain)
+    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    await users_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {
+            "refresh_token_id": refresh_token_id,
+            "refresh_token_hash": refresh_hash,
+            "refresh_token_expires": refresh_expires,
+        }}
+    )
+
+    logger.info(f"Login successful: {user.email}")
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token_id": refresh_token_id,
+        "refresh_token": refresh_plain,
+        "user": {
+            "id": str(existing["_id"]),
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "registrant"),
+            "date_of_birth": existing.get("date_of_birth", ""),
+            "home_address": existing.get("home_address", ""),
+            "phone_number": existing.get("phone_number", ""),
+            "gender": existing.get("gender", ""),
+            "invited_by": existing.get("invited_by", ""),
+            "organization": existing.get("organization", ""),
+            "is_supreme_admin": is_supreme  # ADD THIS
+        },
+        "leaders":{
+            'leaderAt1':person.get("Leader @1",""),
+            'leaderAt12':person.get("Leader @12",""),
+            'leaderAt144':person.get("Leader @144",""),
+        },
+        "isLeader": is_Leader
+    }
+
     logger.info(f"Login attempt: {user.email}")
     existing = await users_collection.find_one({"email": user.email})
     if not existing or not verify_password(user.password, existing["password"]):
@@ -8943,6 +9016,7 @@ ROLE_HIERARCHY = {
     "supreme_admin": 6
 }
 
+
 @app.get("/admin/users", response_model=UserList)
 async def get_all_users(
     organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
@@ -8952,26 +9026,42 @@ async def get_all_users(
 ):
     """Get all users (ONLY from users collection) with pagination for faster loading"""
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        # Check if user is supreme admin (either by email OR is_supreme_admin flag)
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+        
+        print(f"User: {current_user.get('email')}, is_supreme: {is_supreme}")
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
         
         # Build query for users collection ONLY
         query = {}
-        if is_supreme and organization:
-            query["$or"] = [{"Organization": organization}, {"organization": organization}]
-        elif not is_supreme:
-            query["$or"] = [{"Organization": current_user.get("organization")}, 
-                           {"organization": current_user.get("organization")}]
         
-        print(f"Query: {query}")
+        # If supreme admin and organization specified, filter by that organization
+        if is_supreme and organization:
+            query["$or"] = [
+                {"Organization": organization}, 
+                {"organization": organization}
+            ]
+            print(f"Supreme admin filtering by: {organization}")
+        
+        # If not supreme admin, filter by their own organization
+        elif not is_supreme:
+            user_org = current_user.get("organization")
+            if user_org:
+                query["$or"] = [
+                    {"Organization": user_org}, 
+                    {"organization": user_org}
+                ]
+                print(f"Regular admin filtering by their org: {user_org}")
+        
+        print(f"Final Query: {query}")
         
         # Get total count for pagination
         total = await users_collection.count_documents(query)
         print(f"Total users found: {total}")
         
-        # Get paginated results - MUCH FASTER with skip/limit
+        # Get paginated results
         cursor = users_collection.find(query).skip(skip).limit(limit)
         
         users = []
@@ -8996,6 +9086,8 @@ async def get_all_users(
                 organization=user_org,
                 created_at=user.get("created_at") or user.get("updated_at")
             ))
+        
+        print(f"Returning {len(users)} users for org: {organization or 'all'}")
         
         # Return with total count for pagination
         return {
@@ -9175,7 +9267,10 @@ async def update_user_role(
     current_user: dict = Depends(get_current_user)
 ):
     """Update user role - With hierarchy enforcement and organization checks"""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    # Check if user is supreme admin (either by email OR is_supreme_admin flag)
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+    
+    print(f"Updating role - User: {current_user.get('email')}, is_supreme: {is_supreme}")
     
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -9186,9 +9281,17 @@ async def update_user_role(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Check organization access
-        if not is_supreme and user.get("organization") != current_user.get("organization"):
-            raise HTTPException(status_code=403, detail="Cannot access users from other organizations")
+        # Check organization access - SUPREME ADMINS CAN ACCESS ANY ORGANIZATION
+        if not is_supreme:
+            # Only check organization for non-supreme admins
+            user_org = user.get("organization") or user.get("Organization")
+            current_user_org = current_user.get("organization")
+            
+            if user_org != current_user_org:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Cannot access users from other organizations. Your org: {current_user_org}, Target org: {user_org}"
+                )
         
         old_role = user.get("role", "user")
         new_role = role_update.role
@@ -9208,24 +9311,25 @@ async def update_user_role(
                     detail=f"Active Church only supports standard roles: {', '.join(system_roles)}"
                 )
             
-            # Apply hierarchy enforcement for Active Church
-            current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
-            target_user_level = ROLE_HIERARCHY.get(old_role, 0)
-            new_role_level = ROLE_HIERARCHY.get(new_role, 0)
-            
-            # Can only modify users with lower role level
-            if not is_supreme and target_user_level >= current_user_role_level:
-                raise HTTPException(
-                    status_code=403, 
-                    detail="Cannot modify users with equal or higher role"
-                )
-            
-            # Can only assign roles lower than your own
-            if not is_supreme and new_role_level >= current_user_role_level:
-                raise HTTPException(
-                    status_code=403, 
-                    detail="Cannot assign role equal to or higher than your own"
-                )
+            # Apply hierarchy enforcement for Active Church (only for non-supreme admins)
+            if not is_supreme:
+                current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
+                target_user_level = ROLE_HIERARCHY.get(old_role, 0)
+                new_role_level = ROLE_HIERARCHY.get(new_role, 0)
+                
+                # Can only modify users with lower role level
+                if target_user_level >= current_user_role_level:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Cannot modify users with equal or higher role"
+                    )
+                
+                # Can only assign roles lower than your own
+                if new_role_level >= current_user_role_level:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Cannot assign role equal to or higher than your own"
+                    )
         
         # CASE 2: This is another church - Allow custom roles
         else:
@@ -9293,8 +9397,7 @@ async def update_user_role(
         print(f"Error updating role: {str(e)}")
         import traceback
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")   
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
@@ -9626,8 +9729,6 @@ async def get_all_people(
     except Exception as e:
         print(f"Error fetching people: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
-
-
 
 async def get_event_summary_stats(event_id: str):
     """Get consolidation and new people statistics for an event"""

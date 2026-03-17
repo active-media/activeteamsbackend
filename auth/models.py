@@ -438,6 +438,20 @@ class PeopleResponse(BaseModel):
 class PeopleList(BaseModel):
     people: List[PeopleResponse]
 
+class SupremeAdminCreate(BaseModel):
+    email: EmailStr
 
+class SupremeAdminResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    surname: str
+    added_by: str
+    added_at: datetime
+    is_supreme_admin: bool
+
+class SupremeAdminList(BaseModel):
+    admins: List[SupremeAdminResponse]
+    total: int
 
 

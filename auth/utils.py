@@ -18,6 +18,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "replace_me_with_a_strong_secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
@@ -39,6 +40,10 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     now = datetime.utcnow()
     expire = now + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire, "iat": now})
+    
+    if "is_supreme_admin" not in to_encode:
+        to_encode["is_supreme_admin"] = False
+    
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def create_refresh_token() -> Dict[str, str]:
@@ -90,9 +95,20 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
     ):
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    new_access = create_access_token(
-        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "registrant")}
-    )
+    # Check if user is supreme admin
+    email = user.get("email", "")
+    is_supreme = False
+    if email == SUPREME_ADMIN_EMAIL:
+        is_supreme = True
+    else:
+        is_supreme = user.get("is_supreme_admin", False)
+
+    new_access = create_access_token({
+        "user_id": str(user["_id"]), 
+        "email": user["email"], 
+        "role": user.get("role", "user"),
+        "is_supreme_admin": is_supreme
+    })
 
     new_refresh = create_refresh_token()
     await users_collection.update_one(
@@ -109,7 +125,6 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         "refresh_token_id": new_refresh["id"],
         "refresh_token": new_refresh["plain"]
     }
-
 # ==============================
 # FORGOT / RESET PASSWORD
 # ==============================
@@ -128,11 +143,6 @@ def verify_password_reset_token(token: str) -> Optional[str]:
 # ==============================
 # FASTAPI DEPENDENCIES
 # ==============================
-# async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
-#     payload = decode_access_token(token.credentials)
-#     if not payload:
-#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-#     return payload
 async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
     payload = decode_access_token(token.credentials)
     if not payload:
@@ -143,23 +153,65 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     
-    payload["role"] = user.get("role", "user")
-    payload["_id"] = user["_id"]
+    email = user.get("email", "")
+    
+    # Check if user is supreme admin
+    is_supreme = False
+    if email == SUPREME_ADMIN_EMAIL:
+        is_supreme = True
+    else:
+        is_supreme = user.get("is_supreme_admin", False)
+    
+    # Get the role from DB
+    db_role = user.get("role", "user")
+    
+    # Update payload with fresh data
+    payload["role"] = db_role
+    payload["_id"] = str(user["_id"])
+    payload["organization"] = user.get("organization")
+    payload["is_supreme_admin"] = is_supreme
+    payload["email"] = email
+    payload["name"] = user.get("name", "")
+    payload["surname"] = user.get("surname", "")
+    
     return payload
-
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
         payload = decode_access_token(token.credentials)
         role = payload.get("role")
+        is_supreme = payload.get("is_supreme_admin", False)
+        
+        # Supreme admins have access to everything
+        if is_supreme:
+            return payload
+        
         if not role:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role not present in token")
+        
+        # Admin has access to everything
         if role == "admin":
             return payload
-        if role not in allowed_roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-        return payload
+        
+        # Check system roles
+        SYSTEM_ROLES = ['admin', 'leader', 'leaderAt12', 'user', 'registrant']
+        if role in SYSTEM_ROLES:
+            if role in allowed_roles:
+                return payload
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Insufficient permissions"
+            )
+        
+        # Custom roles
+        if 'user' in allowed_roles:
+            return payload
+        
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Insufficient permissions"
+        )
+        
     return _checker
-    
 def sanitize_document(doc: dict) -> dict:
     """
     Recursively convert ObjectId and other non-serializable fields.
