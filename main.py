@@ -1,4 +1,3 @@
-
 import os
 from datetime import datetime, timedelta, date
 import time
@@ -8119,7 +8118,11 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
         # Convert Pydantic model to dict
         new_task_dict = task.dict()
         # Attach the creator's email for backward compatibility
-        new_task_dict["assignedfor"] = current_user["email"]
+        new_task_dict["createdBy"] = current_user["email"]
+
+        # Who the task is assigned to (from frontend)
+        if "assignedTo" in new_task_dict and isinstance(new_task_dict["assignedTo"], dict):
+            new_task_dict["assigned_to_email"] = new_task_dict["assignedTo"].get("email")
 
         # Insert into MongoDB
         result = await db["tasks"].insert_one(new_task_dict)
@@ -8164,7 +8167,15 @@ async def get_user_tasks(
             return {"error": "User email not found", "status": "failed"}
 
         # Build leader full name (used in task matching)
-        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        # Use the resolved user's name, not always the token holder's name
+        if email and email != current_user.get("email"):
+            # Looking up tasks for a specific user — resolve their name from users collection
+            target_user = await users_collection.find_one(
+                {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+            )
+            user_name = f"{(target_user or {}).get('name', '')} {(target_user or {}).get('surname', '')}".strip() if target_user else ""
+        else:
+            user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
         timezone = pytz.timezone("Africa/Johannesburg")
 
@@ -8174,9 +8185,9 @@ async def get_user_tasks(
         else:
             query = {
                 "$or": [
-                    {"assignedfor": user_email},
                     {"assigned_to_email": user_email},
-                    {"assignedfor": user_name},
+                    {"assignedfor": user_email},
+                    {"assignedfor": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
                     {"leader_assigned": user_name},
                     {"leader_name": user_name},
                 ]
@@ -8319,6 +8330,9 @@ async def update_task(task_id: str, updated_task: dict):
    
     if "assignedfor" in updated_task:
         update_data["assignedfor"] = updated_task["assignedfor"]
+
+    if "assigned_to_email" in updated_task:
+        update_data["assigned_to_email"] = updated_task["assigned_to_email"]
    
     # Store updated_at as proper datetime object too, not string
     update_data["updated_at"] = datetime.utcnow()
@@ -10060,27 +10074,39 @@ async def update_service_checkin_person(
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
 
-        
+        # Build the update document correctly
         set_fields = {}
         for field, value in update_fields.items():
-            set_fields[f"{data_type}.$.{field}"] = value
+            # Use arrayFilters instead of positional operator for more reliable updates
+            set_fields[f"{data_type}.$[elem].{field}"] = value
 
         set_fields["updated_at"] = datetime.utcnow().isoformat()
 
+        # Use arrayFilters to target the specific element
         result = await events_collection.update_one(
             {
                 "_id": ObjectId(event_id),
-                f"{data_type}.id": person_id
+                f"{data_type}.id": person_id  # This helps with the array filter
             },
             {
                 "$set": set_fields
-            }
+            },
+            array_filters=[
+                {f"elem.id": person_id}  # This targets the specific element in the array
+            ]
         )
 
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found in event")
+        
         if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found or no changes made")
+            print(f"No changes made to person {person_id} in {data_type}")
+            return {
+                "success": True,
+                "message": f"No changes needed for person in {data_type}"
+            }
 
-        print(f"Successfully updated in {data_type}")
+        print(f"✅ Successfully updated in {data_type}")
 
         return {
             "success": True,
@@ -10090,9 +10116,8 @@ async def update_service_checkin_person(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error updating service check-in: {str(e)}")
+        print(f"❌ Error updating service check-in: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
-   
    
 @app.post("/events/{event_id}/initialize-structure")
 async def initialize_event_structure(
@@ -11834,7 +11859,4 @@ async def cleanup_orphaned_tasks(
         
     except Exception as e:
         logger.error(f"Error cleaning up orphaned tasks: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")     
-        
-        
-        
+        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")
