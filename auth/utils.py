@@ -147,11 +147,6 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     payload["_id"] = user["_id"]
     return payload
 
-
-
-
-
-
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
         payload = decode_access_token(token.credentials)

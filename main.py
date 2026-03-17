@@ -1427,9 +1427,8 @@ async def create_organization(data: dict = Body(...)):
 @app.put("/organizations/{org_id}")
 async def update_organization(org_id: str, data: dict = Body(...)):
     """
-    Update an existing organization's name, tag, or description.
-    Updating the name/tag will also re-derive org_tag on existing users
-    (for the updated org only — a background sweep option is also available).
+    Update an existing organization's name.
+    This will ALSO update all users with the old organization name to the new name.
     """
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
@@ -1438,44 +1437,106 @@ async def update_organization(org_id: str, data: dict = Body(...)):
     if not existing:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    update_fields: dict = {}
+    old_name = existing.get("name", "")
+    update_fields = {}
+    
+    # Only update name if provided
     if "name" in data and data["name"]:
         update_fields["name"] = data["name"].strip()
-    if "tag" in data and data["tag"]:
-        update_fields["tag"] = data["tag"].strip()
-    elif "name" in update_fields and "tag" not in data:
-        # Auto-sync tag to new name if tag not explicitly provided
-        update_fields["tag"] = update_fields["name"]
-    if "description" in data:
-        update_fields["description"] = (data["description"] or "").strip()
+    
+    # Also update other fields if provided
+    if "address" in data:
+        update_fields["address"] = data["address"].strip()
+    if "phone" in data:
+        update_fields["phone"] = data["phone"].strip()
+    if "email" in data:
+        update_fields["email"] = data["email"].strip()
 
     if not update_fields:
         return {"success": False, "message": "No fields to update"}
 
     update_fields["updated_at"] = datetime.utcnow().isoformat()
-    await organizations_collection.update_one({"_id": ObjectId(org_id)}, {"$set": update_fields})
+    
+    # Update the organization
+    await organizations_collection.update_one(
+        {"_id": ObjectId(org_id)}, 
+        {"$set": update_fields}
+    )
 
-    # If name or tag changed, propagate new org_tag to all affected users
-    old_name = existing.get("name", "")
-    new_tag = update_fields.get("tag", existing.get("tag", old_name))
-    if "name" in update_fields or "tag" in update_fields:
-        new_name = update_fields.get("name", old_name)
-        await users_collection.update_many(
-            {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
-            {"$set": {"organization": new_name}}
+    # IMPORTANT: If the name changed, update ALL users with this organization
+    if "name" in update_fields and update_fields["name"] != old_name:
+        new_name = update_fields["name"]
+        print(f"🔄 Organization name changed from '{old_name}' to '{new_name}'")
+        print(f"📝 Updating all users with organization '{old_name}' to '{new_name}'...")
+        
+        # Update users with the old organization name to the new name
+        # Check multiple variations to catch all users
+        update_result = await users_collection.update_many(
+            {
+                "$or": [
+                    # Exact match
+                    {"organization": old_name},
+                    {"Organization": old_name},
+                    
+                    # Case insensitive (lowercase)
+                    {"organization": old_name.lower()},
+                    {"Organization": old_name.lower()},
+                    
+                    # Case insensitive (uppercase)
+                    {"organization": old_name.upper()},
+                    {"Organization": old_name.upper()},
+                    
+                    # Partial matches with regex (case insensitive)
+                    {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
+                    {"Organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}}
+                ]
+            },
+            {
+                "$set": {
+                    "organization": new_name,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+            }
         )
-        logger.info(f"Propagated org update: '{old_name}' → '{new_name}' (tag={new_tag}) to all users")
+        
+        print(f" Updated {update_result.modified_count} users from '{old_name}' to '{new_name}'")
+        
+        # Also update any users that might have the organization in a different field
+        # Sometimes it might be stored as 'org' or 'church'
+        additional_update = await users_collection.update_many(
+            {
+                "$or": [
+                    {"org": old_name},
+                    {"church": old_name},
+                    {"org": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
+                    {"church": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}}
+                ]
+            },
+            {
+                "$set": {
+                    "organization": new_name,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+            }
+        )
+        
+        if additional_update.modified_count > 0:
+            print(f" Updated {additional_update.modified_count} additional users from other fields")
 
-    updated = await organizations_collection.find_one({"_id": ObjectId(org_id)})
-    updated["_id"] = str(updated["_id"])
-
-    # Invalidate org cache so changes are reflected
+    # Invalidate caches
     organizations_cache["data"] = []
     organizations_cache["last_loaded"] = None
     organizations_cache["expires_at"] = None
 
-    return {"success": True, "message": "Organization updated", "organization": updated}
+    # Get updated organization
+    updated = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    updated["_id"] = str(updated["_id"])
 
+    return {
+        "success": True, 
+        "message": "Organization updated successfully", 
+        "organization": updated
+    }
 
 @app.delete("/organizations/{org_id}")
 async def delete_organization(org_id: str):
