@@ -2256,7 +2256,7 @@ async def get_other_events(
                         if target_weekday is None:
                             continue
 
-                        for week_back in range(0, 2):
+                        for week_back in range(0, 1):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
 
                             # Skip future dates
