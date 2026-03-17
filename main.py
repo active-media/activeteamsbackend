@@ -1322,18 +1322,16 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
         logger.info(f"Forgot password - email not found: {payload.email}")
         return {"message": "If your email exists, a reset link has been sent."}
 
-    # Create a reset token valid for 1 hour
     reset_token = create_access_token(
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
    
     reset_link = f"https://teams.theactivechurch.org/reset-password?token={reset_token}"
-    recipient_name = user.get("name", "there")  # Default to "there" if name missing
+    recipient_name = user.get("name", "there") 
 
     logger.info(f"Reset link generated for {payload.email}")
 
-    # Add background task with all required arguments
     background_tasks.add_task(send_reset_email, payload.email, recipient_name, reset_link)
     logger.info(f"Reset email task scheduled for {payload.email}")
 
@@ -1434,7 +1432,7 @@ async def logout(user_id: str = Body(..., embed=True)):
 
 
 # ====================================================================
-# ORGANIZATIONS ENDPOINTS  (dynamic orgs & tags for churches)
+# ORGANIZATIONS ENDPOINTS  
 # ====================================================================
 
 @app.get("/organizations")
@@ -1513,11 +1511,9 @@ async def update_organization(org_id: str, data: dict = Body(...)):
     old_name = existing.get("name", "")
     update_fields = {}
     
-    # Only update name if provided
     if "name" in data and data["name"]:
         update_fields["name"] = data["name"].strip()
     
-    # Also update other fields if provided
     if "address" in data:
         update_fields["address"] = data["address"].strip()
     if "phone" in data:
@@ -1535,15 +1531,11 @@ async def update_organization(org_id: str, data: dict = Body(...)):
         {"_id": ObjectId(org_id)}, 
         {"$set": update_fields}
     )
-
-    # IMPORTANT: If the name changed, update ALL users with this organization
     if "name" in update_fields and update_fields["name"] != old_name:
         new_name = update_fields["name"]
-        print(f"🔄 Organization name changed from '{old_name}' to '{new_name}'")
-        print(f"📝 Updating all users with organization '{old_name}' to '{new_name}'...")
+        print(f" Organization name changed from '{old_name}' to '{new_name}'")
+        print(f" Updating all users with organization '{old_name}' to '{new_name}'...")
         
-        # Update users with the old organization name to the new name
-        # Check multiple variations to catch all users
         update_result = await users_collection.update_many(
             {
                 "$or": [
@@ -1551,11 +1543,9 @@ async def update_organization(org_id: str, data: dict = Body(...)):
                     {"organization": old_name},
                     {"Organization": old_name},
                     
-                    # Case insensitive (lowercase)
                     {"organization": old_name.lower()},
                     {"Organization": old_name.lower()},
                     
-                    # Case insensitive (uppercase)
                     {"organization": old_name.upper()},
                     {"Organization": old_name.upper()},
                     
@@ -1573,9 +1563,7 @@ async def update_organization(org_id: str, data: dict = Body(...)):
         )
         
         print(f" Updated {update_result.modified_count} users from '{old_name}' to '{new_name}'")
-        
-        # Also update any users that might have the organization in a different field
-        # Sometimes it might be stored as 'org' or 'church'
+ 
         additional_update = await users_collection.update_many(
             {
                 "$or": [
@@ -1596,7 +1584,6 @@ async def update_organization(org_id: str, data: dict = Body(...)):
         if additional_update.modified_count > 0:
             print(f" Updated {additional_update.modified_count} additional users from other fields")
 
-    # Invalidate caches
     organizations_cache["data"] = []
     organizations_cache["last_loaded"] = None
     organizations_cache["expires_at"] = None
@@ -1627,8 +1614,6 @@ async def delete_organization(org_id: str):
     organizations_cache["expires_at"] = None
 
     return {"success": True, "message": "Organization deleted"}
-
-
 
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
    
@@ -1795,9 +1780,7 @@ def get_monday(date_obj: datetime) -> datetime:
 
 # Events Section  ----------------------------------------------
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
-
 # South African timezone
-
 def normalize_time(time_value: str) -> str:
     """
     Normalize time to HH:MM.
@@ -2068,14 +2051,11 @@ def convert_event_for_display(event):
         sast_dt = parse_date_to_sast(event['date'])
         if sast_dt:
             event['display_date'] = format_display_date(sast_dt)
-    
-    # Times are already in SAST format (HH:MM), no conversion needed
-    # Just ensure both fields are populated
+
     if event.get('Time') and not event.get('time'):
         event['time'] = event['Time']
     elif event.get('time') and not event.get('Time'):
         event['Time'] = event['time']
-    
     return event
 
 @app.get("/events/cells")
@@ -2127,10 +2107,8 @@ async def get_cell_events(
                 user_name_from_db = leader_at_12_name.strip()
         else:
             user_name_from_db = ""
-
         user_name_from_token = current_user.get("name", "")
 
-        # Priority: frontend > database > token
         if user_name_from_frontend:
             user_name = user_name_from_frontend
         elif user_name_from_db:
@@ -2338,8 +2316,6 @@ async def get_cell_events(
                 target_weekday = day_mapping[day_name]
                 
                 max_weeks = 1 if status == "incomplete" else 4
-
-                # Resolve target weekday and compute current-week instance (Monday..Sunday)
                 target_weekday = day_mapping.get(day_name)
                 if target_weekday is None:
                     # invalid or missing day -> skip this event
