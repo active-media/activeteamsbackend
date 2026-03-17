@@ -9008,8 +9008,8 @@ async def create_user(
 SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
 
 ROLE_HIERARCHY = {
-    "registrant": 1,
-    "user": 2,
+    "registrant":2,
+    "user": 1,
     "leader": 3,
     "leaderAt12": 4,
     "admin": 5,
