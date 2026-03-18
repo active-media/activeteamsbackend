@@ -2257,7 +2257,7 @@ async def get_other_events(
                         if target_weekday is None:
                             continue
 
-                        for week_back in range(0, 4):
+                        for week_back in range(0, 1):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
 
                             if instance_date > today:
@@ -2370,7 +2370,7 @@ async def get_other_events(
                             }
 
                             other_events.append(instance)
-                            print(f"Recurring instance: {event_name} on {exact_date_str} (Status: {event_status}, Attendance: {total_attendance})")
+                            # print(f"Recurring instance: {event_name} on {exact_date_str} (Status: {event_status}, Attendance: {total_attendance})")
 
                 # ── NON-RECURRING ──────────────────────────────────────────
                 else:
@@ -10636,37 +10636,20 @@ async def get_dashboard_comprehensive(
         # ===== FIX: Define all_users_map HERE before using it =====
         all_users_map = {}
         try:
-            # Fetch ALL users from the database
-            all_users_cursor = users_collection.find({}, {"_id": 1, "email": 1, "name": 1, "surname": 1})
-            async for user in all_users_cursor:
+            async for user in users_collection.find({}, {"_id": 1, "email": 1, "name": 1, "surname": 1}):
                 uid = str(user["_id"])
                 email = user.get("email", "").lower()
-                
+
                 if not email:
                     continue
-                    
-                person = await people_collection.find_one({
-                    "$or": [
-                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                        {"user_id": uid}
-                    ]
-                })
-                
-                if person:
-                    person_name = person.get("Name", "").strip()
-                    person_surname = person.get("Surname", "").strip()
-                    full_name = f"{person_name} {person_surname}".strip()
-                else:
-                    full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
-                
+
+                full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
                 if not full_name:
                     full_name = email.split("@")[0]
-                
                 all_users_map[email] = {"_id": uid, "email": email, "fullName": full_name}
                 all_users_map[uid] = all_users_map[email]
                 
-            print(f"[DASHBOARD] Built comprehensive user map with {len(all_users_map)} entries")
-            
+            print(f"[DASHBOARD] Built comprehensive user map with {len(all_users_map)} entries")  
         except Exception as e:
             print(f"[DASHBOARD] Error building user map: {e}")
             # all_users_map is already defined as empty dict
@@ -10686,12 +10669,24 @@ async def get_dashboard_comprehensive(
             if not email:
                 email = "unassigned@example.com"
 
-            # all_users_map is now defined and available here
-            user_info = all_users_map.get(email.lower(), {
-                "_id": f"unknown_{email}",
-                "email": email,
-                "fullName": email.split("@")[0]
-            })
+        # Try email lookup first
+            user_info = all_users_map.get(email.lower() if email else "")
+            
+            # If not found by email, derive name from the tasks themselves
+            if not user_info:
+                tasks_list = task_group["tasks"]
+                # Get the capturer name from the first task's name field
+                capturer_name = ""
+                for t in tasks_list:
+                    if t.get("name") and "@" not in t.get("name", ""):
+                        capturer_name = t["name"]
+                        break
+                
+                user_info = {
+                    "_id": f"unknown_{email}",
+                    "email": email or "unknown",
+                    "fullName": capturer_name or (email.split("@")[0] if email else "Unknown")
+                }
 
             tasks_list = task_group["tasks"]
             
