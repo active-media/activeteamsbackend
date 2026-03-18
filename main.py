@@ -899,7 +899,7 @@ async def signup(user: UserCreate):
     email = user.email.lower().strip()
    
     # Check if user already exists in Users collection ONLY
-    existing = await db["Users"].find_one({"email": email})
+    existing = await users_collection.find_one({"email": email})
     if existing:
         logger.warning(f"Signup failed - email already registered: {email}")
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -934,7 +934,7 @@ async def signup(user: UserCreate):
         "confirm_password": hashed,
         # Default role for all new signups so route guards recognize them
         "role": "user",
-        "organization": organization,
+        "Organization": organization,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -1172,7 +1172,7 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
    
-    return {"message": "User created successfully", "organization": organization,}
+    return {"message": "User created successfully", "Organization": organization,}
 
 # ---------------- Login ----------------
 @app.post("/login")
@@ -1182,29 +1182,37 @@ async def login(user: UserLogin):
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email}) or {}
 
-    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
-    print("FULL NAME",full_name)
-    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
-    is_Leader = bool(is_Leader)
+    person = await people_collection.find_one({"Email": user.email}) or {}
+
     if not person:
-        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
-    
-    # Check if user is supreme admin
-    SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
-    is_supreme = False
-    if user.email == SUPREME_ADMIN_EMAIL:
-        is_supreme = True
-    else:
-        is_supreme = existing.get("is_supreme_admin", False)
+        person = await people_collection.find_one({
+            "Name": existing.get("name"), 
+            "Surname": existing.get("surname")
+        }) or {}
 
-    # Include is_supreme_admin in the JWT token
+    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}".strip()
+    print("FULL NAME", full_name)
+
+    is_Leader = await events_collection.find_one({
+        "$or": [
+            {"Email": user.email, "Event Type": "Cells"},
+            {"Leader": full_name, "Event Type": "Cells"}
+        ]
+    })
+    is_Leader = bool(is_Leader)
+
+    SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+    is_supreme = user.email == SUPREME_ADMIN_EMAIL or existing.get("is_supreme_admin", False)
+
+    organization = existing.get("Organization") or existing.get("organization", "")
+
     access_token = create_access_token({
-        "user_id": str(existing["_id"]), 
-        "email": existing["email"], 
+        "user_id": str(existing["_id"]),
+        "email": existing["email"],
         "role": existing.get("role", "user"),
-        "is_supreme_admin": is_supreme  # ADD THIS
+        "is_supreme_admin": is_supreme,
+        "Organization": organization
     })
 
     refresh_token_id = secrets.token_urlsafe(16)
@@ -1238,79 +1246,16 @@ async def login(user: UserLogin):
             "phone_number": existing.get("phone_number", ""),
             "gender": existing.get("gender", ""),
             "invited_by": existing.get("invited_by", ""),
-            "organization": existing.get("organization", ""),
-            "is_supreme_admin": is_supreme  # ADD THIS
+            "organization": organization,
+            "is_supreme_admin": is_supreme
         },
-        "leaders":{
-            'leaderAt1':person.get("Leader @1",""),
-            'leaderAt12':person.get("Leader @12",""),
-            'leaderAt144':person.get("Leader @144",""),
+        "leaders": {
+            "leaderAt1": person.get("Leader @1", ""),
+            "leaderAt12": person.get("Leader @12", ""),
+            "leaderAt144": person.get("Leader @144", ""),
         },
         "isLeader": is_Leader
     }
-
-    logger.info(f"Login attempt: {user.email}")
-    existing = await users_collection.find_one({"email": user.email})
-    if not existing or not verify_password(user.password, existing["password"]):
-        logger.warning(f"Login failed: {user.email}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email}) or {}
-
-
-    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
-    print("FULL NAME",full_name)
-    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
-    is_Leader = bool(is_Leader)
-    if not person:
-        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
-   
-
-    access_token = create_access_token(
-        {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
-        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
-    )
-
-    refresh_token_id = secrets.token_urlsafe(16)
-    refresh_plain = secrets.token_urlsafe(32)
-    refresh_hash = hash_password(refresh_plain)
-    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
-    await users_collection.update_one(
-        {"_id": existing["_id"]},
-        {"$set": {
-            "refresh_token_id": refresh_token_id,
-            "refresh_token_hash": refresh_hash,
-            "refresh_token_expires": refresh_expires,
-        }}
-    )
-
-    logger.info(f"Login successful: {user.email}")
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "refresh_token_id": refresh_token_id,
-        "refresh_token": refresh_plain,
-        "user": {
-        "id": str(existing["_id"]),
-        "email": existing["email"],
-        "name": existing.get("name", ""),
-        "surname": existing.get("surname", ""),
-        "role": existing.get("role", "registrant"),
-        "date_of_birth": existing.get("date_of_birth", ""),
-        "home_address": existing.get("home_address", ""),
-        "phone_number": existing.get("phone_number", ""),
-        "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", ""),
-        "organization": existing.get("organization", ""),
-    },
-    "leaders":{
-        'leaderAt1':person.get("Leader @1",""),
-        'leaderAt12':person.get("Leader @12",""),
-        'leaderAt144':person.get("Leader @144",""),
-    },
-    "isLeader": is_Leader
-    }
-
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     logger.info(f"Forgot password requested for email: {payload.email}")
@@ -9021,7 +8966,7 @@ async def get_all_users(
             print(f"Supreme admin filtering by: {organization}")
         
         elif not is_supreme:
-            user_org = current_user.get("Organization") or current_user.get("Organization")
+            user_org = current_user.get("Organization") or current_user.get("organization", "")
             if user_org:
                 query["Organization"] = user_org
                 print(f"Regular admin filtering by their org: {user_org}")
@@ -9254,7 +9199,7 @@ async def update_user_role(
         if not is_supreme:
             # Only check organization for non-supreme admins
             user_org = user.get("Organization") or user.get("Organization")
-            current_user_org = current_user.get("Organization")
+            user_org = current_user.get("Organization") or current_user.get("organization", "")
             
             if user_org != current_user_org:
                 raise HTTPException(

@@ -168,7 +168,7 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     # Update payload with fresh data
     payload["role"] = db_role
     payload["_id"] = str(user["_id"])
-    payload["organization"] = user.get("organization")
+    payload["organization"] = user.get("Organization") or user.get("organization", "")
     payload["is_supreme_admin"] = is_supreme
     payload["email"] = email
     payload["name"] = user.get("name", "")
