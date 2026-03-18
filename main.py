@@ -5069,8 +5069,6 @@ async def get_missing_leaders(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-   
 @app.on_event("startup")
 async def create_indexes_on_startup():
     print("Creating MongoDB indexes for faster queries...")
@@ -5096,11 +5094,15 @@ async def create_indexes_on_startup():
             [("Name", 1), ("Surname", 1), ("Gender", 1)],
             name="people_lookup_idx"
         )
+
+        # Indexes for faster admin user queries
+        await users_collection.create_index([("organization", 1)], name="users_org_idx")
+        await users_collection.create_index([("Organization", 1)], name="users_Org_idx")
+        await users_collection.create_index([("email", 1)], name="users_email_idx")
        
-        print(" Indexes created successfully")
+        print("Indexes created successfully")
     except Exception as e:
         print(f"Error creating indexes: {e}")
-   
 
 @app.put("/events/{event_id}")
 async def update_event(event_id: str, event_data: dict, current_user: dict = Depends(get_current_user)):
@@ -8961,7 +8963,7 @@ async def create_user(
             "leader1728": user_data.leader1728,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
-            "organization": current_user.get("organization"),  # Always use lowercase for new users
+            "organization": current_user.get("Organization"),  # Always use lowercase for new users
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -9015,34 +9017,26 @@ async def get_all_users(
         
         # If supreme admin and organization specified, filter by that organization
         if is_supreme and organization:
-            query["$or"] = [
-                {"Organization": organization}, 
-                {"organization": organization}
-            ]
+            query["Organization"] = organization
             print(f"Supreme admin filtering by: {organization}")
         
-        # If not supreme admin, filter by their own organization
         elif not is_supreme:
-            user_org = current_user.get("organization")
+            user_org = current_user.get("Organization") or current_user.get("Organization")
             if user_org:
-                query["$or"] = [
-                    {"Organization": user_org}, 
-                    {"organization": user_org}
-                ]
+                query["Organization"] = user_org
                 print(f"Regular admin filtering by their org: {user_org}")
         
         print(f"Final Query: {query}")
         
         # Get total count for pagination
-        total = await users_collection.count_documents(query)
-        print(f"Total users found: {total}")
-        
-        # Get paginated results
-        cursor = users_collection.find(query).skip(skip).limit(limit)
-        
+        total, users_raw = await asyncio.gather(
+            users_collection.count_documents(query),
+            users_collection.find(query).skip(skip).limit(limit).to_list(limit)
+        )
+
         users = []
-        async for user in cursor:
-            user_org = user.get("organization") or user.get("Organization") or "Unknown"
+        for user in users_raw:
+            org_value = user.get("Organization") or "Unknown"
             
             users.append(UserListResponse(
                 id=str(user["_id"]),
@@ -9059,7 +9053,7 @@ async def get_all_users(
                 leader144=str(user.get("leader144")) if user.get("leader144") else None,
                 leader1728=str(user.get("leader1728")) if user.get("leader1728") else None,
                 stage=user.get("stage"),
-                organization=user_org,
+                organization=org_value,
                 created_at=user.get("created_at") or user.get("updated_at")
             ))
         
@@ -9096,8 +9090,8 @@ async def get_admin_stats(
         if is_supreme and organization:
             query["$or"] = [{"Organization": organization}, {"organization": organization}]
         elif not is_supreme:
-            query["$or"] = [{"Organization": current_user.get("organization")}, 
-                           {"organization": current_user.get("organization")}]
+            query["$or"] = [{"Organization": current_user.get("Organization")}, 
+                           {"organization": current_user.get("Organization")}]
         
         # Use aggregation for faster counts - GROUP BY ROLE
         pipeline = [
@@ -9166,7 +9160,7 @@ async def get_distinct_roles(
         if is_supreme and organization:
             org_filter = organization
         elif not is_supreme:
-            org_filter = current_user.get("organization")
+            org_filter = current_user.get("Organization")
         else:
             raise HTTPException(status_code=400, detail="Organization required")
         
@@ -9179,7 +9173,6 @@ async def get_distinct_roles(
         if org_filter:
             query["$or"] = [{"Organization": org_filter}, {"organization": org_filter}]
         
-        # Get all distinct roles
         distinct_roles = await users_collection.distinct("role", query)
         
         # Filter out None/empty and sort
@@ -9234,7 +9227,7 @@ def get_role_color(role):
         "user": "#4caf50",
         "registrant": "#ff9800"
     }
-    return role_colors.get(role, "#9c27b0")  # Default purple for custom roles
+    return role_colors.get(role, "#9c27b0") 
 
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(
@@ -9260,8 +9253,8 @@ async def update_user_role(
         # Check organization access - SUPREME ADMINS CAN ACCESS ANY ORGANIZATION
         if not is_supreme:
             # Only check organization for non-supreme admins
-            user_org = user.get("organization") or user.get("Organization")
-            current_user_org = current_user.get("organization")
+            user_org = user.get("Organization") or user.get("Organization")
+            current_user_org = current_user.get("Organization")
             
             if user_org != current_user_org:
                 raise HTTPException(
@@ -9273,7 +9266,7 @@ async def update_user_role(
         new_role = role_update.role
         
         # Get the organization of the user being updated
-        user_org = user.get("organization") or user.get("Organization")
+        user_org = user.get("Organization") or user.get("Organization")
         
         # Define Active Church
         ACTIVE_CHURCH_NAME = "Active Church"
@@ -9680,7 +9673,7 @@ async def get_all_people(
         # Build query
         query = {}
         if not is_supreme:
-            query["Organisation"] = current_user.get("organization")
+            query["Organisation"] = current_user.get("Organization")
         elif organization:
             query["Organisation"] = organization
         
