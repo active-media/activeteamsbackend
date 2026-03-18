@@ -1990,7 +1990,7 @@ async def get_cell_events(
                     )
                     
                     instance = {
-                        "_id": f"{event.get('_id')}",
+                        "_id": f"{event.get('_id')}_{exact_date}",
                         "UUID": event.get("UUID", ""),
                         "eventName": event.get("Event Name") or event.get("eventName") or event.get("EventName", ""),
                         "eventType": "Cells",
