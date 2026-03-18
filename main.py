@@ -2357,6 +2357,7 @@ async def get_other_events(
                                 "recurring_days": recurring_days,
                                 "original_event_id": str(event.get("_id")),
                                 "isGlobal": event.get("isGlobal", False),
+                                "isTicketed": event.get("isTicketed", False),
                                 "closed_by": date_attendance.get("closed_by") or event.get("closed_by", ""),
                                 "closed_at": str(date_attendance.get("closed_at") or event.get("closed_at", "")),
                                 "created_at": str(event.get("created_at", "")),
@@ -4887,7 +4888,8 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
         updatable_fields = [
             'eventName', 'day', 'location', 'date',
             'status', 'renocaming', 'eventLeader',
-            'eventType', 'isTicketed', 'isGlobal'
+            'eventType', 'isTicketed', 'isGlobal',
+            'priceTiers'
         ]
        
         for field in updatable_fields:
