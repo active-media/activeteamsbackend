@@ -7,13 +7,13 @@ import re
 from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depends, BackgroundTasks, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel,TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile, AttendanceSubmission
+from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile,  OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection
+from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection
 from auth.email_utils import send_reset_email
-from typing import Optional, List,  Optional,  Dict
+from typing import  List,  Optional,  Dict
 from collections import Counter
 import logging
 import pytz
@@ -27,10 +27,11 @@ from urllib.parse import unquote
 import traceback
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
+from supreme_admin import router as supreme_admin_router
 app = FastAPI()
+app.include_router(supreme_admin_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -270,6 +271,44 @@ people_cache = {
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
 
+# Lightweight cache for organizations (used by /organizations)
+organizations_cache = {
+    "data": [],
+    "last_loaded": None,
+    "expires_at": None,
+}
+
+ORGANIZATIONS_CACHE_TTL_MINUTES = 10
+
+async def get_organizations_cached() -> list[dict]:
+    """Return organizations from a short-lived in-memory cache for fast lookups."""
+    now = datetime.utcnow()
+
+    # Fast path: cache still valid
+    expires_at = organizations_cache.get("expires_at")
+    if organizations_cache["data"] and expires_at:
+        try:
+            if now < datetime.fromisoformat(expires_at):
+                return organizations_cache["data"]
+        except Exception:
+            # If parsing fails, fall through and reload
+            pass
+
+    # Slow path: load from MongoDB
+    cursor = organizations_collection.find(
+        {},
+        {"_id": 1, "name": 1, "tag": 1, "description": 1, "created_at": 1},
+    ).sort("name", 1)
+    orgs = await cursor.to_list(length=500)
+    for org in orgs:
+        org["_id"] = str(org["_id"])
+
+    organizations_cache["data"] = orgs
+    organizations_cache["last_loaded"] = now.isoformat()
+    organizations_cache["expires_at"] = (now + timedelta(minutes=ORGANIZATIONS_CACHE_TTL_MINUTES)).isoformat()
+
+    return orgs
+
 async def invalidate_people_cache(operation_type: str, details: dict = None):
     """
     Invalidate the people cache and trigger background rehydration
@@ -352,6 +391,8 @@ async def background_refresh_people_cache(stale_data: list = None):
                     "Email": 1,
                     "Number": 1,
                     "Gender": 1,
+                    "LeaderId": 1,
+                    "LeaderPath": 1,
                     "Leader @1": 1,
                     "Leader @12": 1,
                     "Leader @144": 1,
@@ -374,6 +415,8 @@ async def background_refresh_people_cache(stale_data: list = None):
                         "Email": person.get("Email", ""),
                         "Number": person.get("Number", ""),
                         "Gender": person.get("Gender", ""),
+                        "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                        "LeaderPath": [str(x) for x in person.get("LeaderPath", [])] if isinstance(person.get("LeaderPath"), list) else [],
                         "Leader @1": person.get("Leader @1", ""),
                         "Leader @12": person.get("Leader @12", ""),
                         "Leader @144": person.get("Leader @144", ""),
@@ -864,7 +907,20 @@ async def signup(user: UserCreate):
     # Hash password
     hashed = hash_password(user.password)
    
-    # Create user document
+
+    # ---- Resolve organization & org_tag dynamically from DB ----
+    organization = (user.organization or "").strip()
+    org_tag = ""
+    if organization:
+        org_doc = await organizations_collection.find_one(
+            {"name": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}}
+        )
+        if org_doc:
+            org_tag = org_doc.get("tag", organization)
+        else:
+            org_tag = organization  # fallback: use name as tag if not found
+
+    # Create base user document (leader fields will be added after hierarchy is calculated)
     user_dict = {
         "name": user.name,
         "surname": user.surname,
@@ -876,23 +932,82 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
+        # Default role for all new signups so route guards recognize them
         "role": "user",
+        "organization": organization,
         "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "updated_at": datetime.utcnow().isoformat(),
     }
-   
-    # Insert user into Users collection
-    user_result = await db["Users"].insert_one(user_dict)
-    logger.info(f"User created successfully: {email}")
-   
+
     inviter_full_name = user.invited_by.strip()
+    inviter_person = None
+    inviter_person_id: Optional[ObjectId] = None
     leader1 = ""
     leader12 = ""
     leader144 = ""
     leader1728 = ""
+
+    async def _find_person_by_full_name(full_name: str):
+        full_name = (full_name or "").strip()
+        if not full_name:
+            return None
+        parts = [p for p in full_name.split(" ") if p]
+        first = parts[0]
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        if last:
+            return await people_collection.find_one(
+                {
+                    "Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"},
+                    "Surname": {"$regex": f"^{re.escape(last)}$", "$options": "i"},
+                },
+                {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+            )
+
+        return await people_collection.find_one(
+            {"Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}},
+            {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+        )
+
+    def _normalize_object_id_list(value):
+        if not isinstance(value, list):
+            return []
+        out = []
+        for v in value:
+            if isinstance(v, ObjectId):
+                out.append(v)
+            elif isinstance(v, str):
+                try:
+                    out.append(ObjectId(v))
+                except Exception:
+                    continue
+        return out
+
+    def _build_leader_path_from_leader_doc(leader_doc):
+        if not leader_doc or not leader_doc.get("_id"):
+            return []
+        leader_id = leader_doc["_id"]
+        base_path = _normalize_object_id_list(leader_doc.get("LeaderPath"))
+        if not base_path or base_path[-1] != leader_id:
+            base_path.append(leader_id)
+        return base_path
    
     if inviter_full_name:
         print(f"Looking for inviter in background cache: '{inviter_full_name}'")
+
+        # Prefer the inviter's ObjectId if the frontend provided it.
+        if getattr(user, "invited_by_id", None):
+            try:
+                inviter_person = await people_collection.find_one(
+                    {"_id": ObjectId(user.invited_by_id)},
+                    {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1, "Gender": 1,
+                     "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1},
+                )
+                if inviter_person:
+                    inviter_person_id = inviter_person["_id"]
+            except Exception:
+                inviter_person = None
+                inviter_person_id = None
        
         # Search in background-loaded cache (contains ALL people)
         cached_inviter = None
@@ -963,11 +1078,54 @@ async def signup(user: UserCreate):
                
                 logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
         else:
-            print("6")
-            print(f"Inviter '{inviter_full_name}' not found in background cache")
             # Fallback: set inviter as Leader @1
             leader1 = inviter_full_name
+
+        # If we didn't resolve inviter by id, try resolve by name (best-effort).
+        if inviter_person is None:
+            inviter_person = await _find_person_by_full_name(inviter_full_name)
+            if inviter_person:
+                inviter_person_id = inviter_person["_id"]
    
+    # ---- Dynamic Leadership Logic: ONLY for Active Church ----
+    if organization and organization.lower() != "active church":
+        logger.info(f"Organization '{organization}' is not 'Active Church'. Clearing leadership hierarchy for {email}.")
+        leader1 = ""
+        leader12 = ""
+        leader144 = ""
+        leader1728 = ""
+    elif not organization:
+        # Default to Active Church if no organization specified.
+        pass
+
+    # ---- ObjectId-based leader hierarchy (LeaderId + LeaderPath) ----
+    leader_id_obj: Optional[ObjectId] = None
+    leader_path: list[ObjectId] = []
+
+    if organization and organization.lower() != "active church":
+        leader_id_obj = None
+        leader_path = []
+    else:
+        # Prefer the selected inviter as the direct leader when available.
+        if inviter_person_id:
+            leader_id_obj = inviter_person_id
+            leader_path = _build_leader_path_from_leader_doc(inviter_person) if inviter_person else [inviter_person_id]
+        else:
+            # Fall back to resolving the computed Leader @1 full name to a People ObjectId.
+            if leader1:
+                leader1_doc = await _find_person_by_full_name(leader1)
+                if leader1_doc and leader1_doc.get("_id"):
+                    leader_id_obj = leader1_doc["_id"]
+                    leader_path = _build_leader_path_from_leader_doc(leader1_doc)
+
+    # Attach ObjectId-based leader fields onto the user record before inserting.
+    user_dict["LeaderId"] = leader_id_obj
+    user_dict["LeaderPath"] = leader_path
+
+    # Insert user into Users collection (now includes LeaderId + LeaderPath)
+    user_result = await db["Users"].insert_one(user_dict)
+    logger.info(f"User created successfully: {email}")
+
     # Create corresponding person record in People collection
     person_doc = {
         "Name": user.name.strip(),
@@ -982,6 +1140,9 @@ async def signup(user: UserCreate):
         "Leader @12": leader12,
         "Leader @144": leader144,
         "Leader @1728": leader1728,
+        "LeaderId": leader_id_obj,
+        "LeaderPath": leader_path,
+        "Organization": organization,
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
@@ -1011,11 +1172,83 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
    
-    return {"message": "User created successfully"}
+    return {"message": "User created successfully", "organization": organization,}
 
 # ---------------- Login ----------------
 @app.post("/login")
 async def login(user: UserLogin):
+    logger.info(f"Login attempt: {user.email}")
+    existing = await users_collection.find_one({"email": user.email})
+    if not existing or not verify_password(user.password, existing["password"]):
+        logger.warning(f"Login failed: {user.email}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    person = await people_collection.find_one({"Email":user.email}) or {}
+
+    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
+    print("FULL NAME",full_name)
+    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
+    is_Leader = bool(is_Leader)
+    if not person:
+        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
+    
+    # Check if user is supreme admin
+    SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+    is_supreme = False
+    if user.email == SUPREME_ADMIN_EMAIL:
+        is_supreme = True
+    else:
+        is_supreme = existing.get("is_supreme_admin", False)
+
+    # Include is_supreme_admin in the JWT token
+    access_token = create_access_token({
+        "user_id": str(existing["_id"]), 
+        "email": existing["email"], 
+        "role": existing.get("role", "user"),
+        "is_supreme_admin": is_supreme  # ADD THIS
+    })
+
+    refresh_token_id = secrets.token_urlsafe(16)
+    refresh_plain = secrets.token_urlsafe(32)
+    refresh_hash = hash_password(refresh_plain)
+    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    await users_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {
+            "refresh_token_id": refresh_token_id,
+            "refresh_token_hash": refresh_hash,
+            "refresh_token_expires": refresh_expires,
+        }}
+    )
+
+    logger.info(f"Login successful: {user.email}")
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token_id": refresh_token_id,
+        "refresh_token": refresh_plain,
+        "user": {
+            "id": str(existing["_id"]),
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "registrant"),
+            "date_of_birth": existing.get("date_of_birth", ""),
+            "home_address": existing.get("home_address", ""),
+            "phone_number": existing.get("phone_number", ""),
+            "gender": existing.get("gender", ""),
+            "invited_by": existing.get("invited_by", ""),
+            "organization": existing.get("organization", ""),
+            "is_supreme_admin": is_supreme  # ADD THIS
+        },
+        "leaders":{
+            'leaderAt1':person.get("Leader @1",""),
+            'leaderAt12':person.get("Leader @12",""),
+            'leaderAt144':person.get("Leader @144",""),
+        },
+        "isLeader": is_Leader
+    }
+
     logger.info(f"Login attempt: {user.email}")
     existing = await users_collection.find_one({"email": user.email})
     if not existing or not verify_password(user.password, existing["password"]):
@@ -1067,7 +1300,8 @@ async def login(user: UserLogin):
         "home_address": existing.get("home_address", ""),
         "phone_number": existing.get("phone_number", ""),
         "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", "")
+        "invited_by": existing.get("invited_by", ""),
+        "organization": existing.get("organization", ""),
     },
     "leaders":{
         'leaderAt1':person.get("Leader @1",""),
@@ -1088,18 +1322,16 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
         logger.info(f"Forgot password - email not found: {payload.email}")
         return {"message": "If your email exists, a reset link has been sent."}
 
-    # Create a reset token valid for 1 hour
     reset_token = create_access_token(
         {"user_id": str(user["_id"])},
         expires_delta=timedelta(hours=1)
     )
    
     reset_link = f"https://teams.theactivechurch.org/reset-password?token={reset_token}"
-    recipient_name = user.get("name", "there")  # Default to "there" if name missing
+    recipient_name = user.get("name", "there") 
 
     logger.info(f"Reset link generated for {payload.email}")
 
-    # Add background task with all required arguments
     background_tasks.add_task(send_reset_email, payload.email, recipient_name, reset_link)
     logger.info(f"Reset email task scheduled for {payload.email}")
 
@@ -1198,7 +1430,191 @@ async def logout(user_id: str = Body(..., embed=True)):
     logger.info(f"User logged out: {user_id}")
     return {"message": "Logged out successfully"}
 
-# EVENTS ENDPOINTS-----------------------------------------------------------------
+
+# ====================================================================
+# ORGANIZATIONS ENDPOINTS  
+# ====================================================================
+
+@app.get("/organizations")
+async def list_organizations():
+    """Return all organizations stored in the database."""
+    try:
+        # Use in-memory cache for very fast responses
+        orgs = await get_organizations_cached()
+        return {"success": True, "organizations": orgs, "total": len(orgs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch organizations: {str(e)}")
+
+
+@app.get("/organizations/{org_id}")
+async def get_organization(org_id: str):
+    """Return a single organization by ID."""
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org["_id"] = str(org["_id"])
+    return {"success": True, "organization": org}
+
+
+@app.post("/organizations")
+async def create_organization(data: dict = Body(...)):
+    """
+    Create a new organization.
+    Body: { "name": "City Church", "tag": "City Church", "description": "..." }
+    - 'name'  is the display name (must be unique, case-insensitive)
+    - 'tag'   is the badge label shown on user profiles (defaults to name)
+    """
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name is required")
+
+    
+    existing = await organizations_collection.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Organization '{name}' already exists")
+
+    tag = (data.get("tag") or name).strip()
+    doc = {
+        "name": name,
+        "tag": tag,
+        "description": (data.get("description") or "").strip(),
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    result = await organizations_collection.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    logger.info(f"Organization created: {name} (tag={tag})")
+    # Invalidate org cache so new org appears immediately
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+    return {"success": True, "message": "Organization created", "organization": doc}
+
+
+@app.put("/organizations/{org_id}")
+async def update_organization(org_id: str, data: dict = Body(...)):
+    """
+    Update an existing organization's name.
+    This will ALSO update all users with the old organization name to the new name.
+    """
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    existing = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    old_name = existing.get("name", "")
+    update_fields = {}
+    
+    if "name" in data and data["name"]:
+        update_fields["name"] = data["name"].strip()
+    
+    if "address" in data:
+        update_fields["address"] = data["address"].strip()
+    if "phone" in data:
+        update_fields["phone"] = data["phone"].strip()
+    if "email" in data:
+        update_fields["email"] = data["email"].strip()
+
+    if not update_fields:
+        return {"success": False, "message": "No fields to update"}
+
+    update_fields["updated_at"] = datetime.utcnow().isoformat()
+    
+    # Update the organization
+    await organizations_collection.update_one(
+        {"_id": ObjectId(org_id)}, 
+        {"$set": update_fields}
+    )
+    if "name" in update_fields and update_fields["name"] != old_name:
+        new_name = update_fields["name"]
+        print(f" Organization name changed from '{old_name}' to '{new_name}'")
+        print(f" Updating all users with organization '{old_name}' to '{new_name}'...")
+        
+        update_result = await users_collection.update_many(
+            {
+                "$or": [
+                    # Exact match
+                    {"organization": old_name},
+                    {"Organization": old_name},
+                    
+                    {"organization": old_name.lower()},
+                    {"Organization": old_name.lower()},
+                    
+                    {"organization": old_name.upper()},
+                    {"Organization": old_name.upper()},
+                    
+                    # Partial matches with regex (case insensitive)
+                    {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
+                    {"Organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}}
+                ]
+            },
+            {
+                "$set": {
+                    "organization": new_name,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+            }
+        )
+        
+        print(f" Updated {update_result.modified_count} users from '{old_name}' to '{new_name}'")
+ 
+        additional_update = await users_collection.update_many(
+            {
+                "$or": [
+                    {"org": old_name},
+                    {"church": old_name},
+                    {"org": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
+                    {"church": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}}
+                ]
+            },
+            {
+                "$set": {
+                    "organization": new_name,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+            }
+        )
+        
+        if additional_update.modified_count > 0:
+            print(f" Updated {additional_update.modified_count} additional users from other fields")
+
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+
+    # Get updated organization
+    updated = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    updated["_id"] = str(updated["_id"])
+
+    return {
+        "success": True, 
+        "message": "Organization updated successfully", 
+        "organization": updated
+    }
+
+@app.delete("/organizations/{org_id}")
+async def delete_organization(org_id: str):
+    """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
+    if not ObjectId.is_valid(org_id):
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    logger.info(f"Organization deleted: {org_id}")
+
+    # Invalidate org cache so deletions are reflected
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+
+    return {"success": True, "message": "Organization deleted"}
+
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
    
 def is_recurring_event(event: dict) -> bool:
@@ -1364,9 +1780,7 @@ def get_monday(date_obj: datetime) -> datetime:
 
 # Events Section  ----------------------------------------------
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
-
 # South African timezone
-
 def normalize_time(time_value: str) -> str:
     """
     Normalize time to HH:MM.
@@ -1637,14 +2051,11 @@ def convert_event_for_display(event):
         sast_dt = parse_date_to_sast(event['date'])
         if sast_dt:
             event['display_date'] = format_display_date(sast_dt)
-    
-    # Times are already in SAST format (HH:MM), no conversion needed
-    # Just ensure both fields are populated
+
     if event.get('Time') and not event.get('time'):
         event['time'] = event['Time']
     elif event.get('time') and not event.get('Time'):
         event['Time'] = event['time']
-    
     return event
 
 @app.get("/events/cells")
@@ -1696,10 +2107,8 @@ async def get_cell_events(
                 user_name_from_db = leader_at_12_name.strip()
         else:
             user_name_from_db = ""
-
         user_name_from_token = current_user.get("name", "")
 
-        # Priority: frontend > database > token
         if user_name_from_frontend:
             user_name = user_name_from_frontend
         elif user_name_from_db:
@@ -1907,8 +2316,6 @@ async def get_cell_events(
                 target_weekday = day_mapping[day_name]
                 
                 max_weeks = 1 if status == "incomplete" else 4
-
-                # Resolve target weekday and compute current-week instance (Monday..Sunday)
                 target_weekday = day_mapping.get(day_name)
                 if target_weekday is None:
                     # invalid or missing day -> skip this event
@@ -6901,6 +7308,7 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         "gender": user.get("gender", ""),
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
+        "organization": user.get("organization", ""),
     }
 
 @app.put("/profile/{user_id}")
@@ -6958,6 +7366,7 @@ async def update_profile(
             "invited_by": "invited_by",
             "gender": "gender",
             "profile_picture": "profile_picture",
+            "organization": "organization",
            
             # Alternative field names from frontend
             "dob": "date_of_birth",
@@ -6980,6 +7389,25 @@ async def update_profile(
 
         # Add update timestamp
         update_payload["updated_at"] = datetime.utcnow().isoformat()
+
+        # ---- If organization changed, re-resolve org_tag from DB ----
+        if "organization" in update_payload:
+            new_org = update_payload["organization"]
+            org_doc = await organizations_collection.find_one(
+                {"name": {"$regex": f"^{re.escape(new_org)}$", "$options": "i"}}
+            )
+            update_payload["org_tag"] = org_doc.get("tag", new_org) if org_doc else new_org
+            
+            # CLEAR LEADERSHIP IF NOT ACTIVE CHURCH
+            if new_org.lower() != "active church":
+                print(f" Organization changed to {new_org}. Clearing leadership.")
+                update_payload["leader1"] = ""
+                update_payload["leader12"] = ""
+                update_payload["leader144"] = ""
+                update_payload["Leader @1"] = ""   
+                update_payload["Leader @12"] = ""
+                update_payload["Leader @144"] = ""
+                update_payload["Leader @1728"] = ""
        
         print(f" FINAL UPDATE PAYLOAD: {update_payload}")
 
@@ -7049,6 +7477,7 @@ def format_user_response(user):
         "gender": normalize_gender_value(user.get("gender", "")),
         "role": user.get("role", "user"),
         "profile_picture": user.get("profile_picture", ""),
+        "organization": user.get("organization", ""),
     }
 
 # Debug endpoint
@@ -8521,11 +8950,11 @@ async def get_people_capture_stats():
                 }
             },
             {
-                "$sort": {"people_captured_count": -1}  # Sort by most captures first
+                "$sort": {"people_captured_count": -1} 
             }
         ]
        
-        results = list(db.people.aggregate(pipeline))  # Query the PEOPLE collection
+        results = list(db.people.aggregate(pipeline))  
        
         if not results:
             return {
@@ -8591,69 +9020,129 @@ async def create_user(
     user_data: UserCreater,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create a new user - Admin only"""
-    if current_user.get("role") != "admin":
+    """Create a new user - Admin only (uses lowercase 'organization' for new users)"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+    
     try:
         existing_user = await users_collection.find_one({"email": user_data.email})
         if existing_user:
             raise HTTPException(status_code=400, detail="User with this email already exists")
-       
-        # ADD leaderAt12 to valid roles
-        if user_data.role not in ["admin", "leader", "leaderAt12", "user", "registrant"]:
+        
+        # Validate role
+        valid_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        if user_data.role not in valid_roles:
             raise HTTPException(status_code=400, detail="Invalid role")
-       
+        
+        # Regular admins cannot create other admins
+        if not is_supreme and user_data.role == "admin":
+            raise HTTPException(status_code=403, detail="Cannot create admin users")
+        
         from passlib.context import CryptContext
         pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
         hashed_password = pwd_context.hash(user_data.password)
-       
+        
+        # Use lowercase 'organization' for all new users (consistency)
         user_doc = {
             "name": user_data.name,
             "surname": user_data.surname,
             "email": user_data.email,
             "password": hashed_password,
             "phone_number": user_data.phone_number,
-            "date_of_birth": user_data.date_of_birth,
-            "address": user_data.address,
+            "date_of_birth": user_data.date_of_birth.isoformat() if user_data.date_of_birth else None,
+            "home_address": user_data.address,
             "gender": user_data.gender,
-            "invitedBy": user_data.invitedBy,
+            "invited_by": user_data.invitedBy,
             "leader12": user_data.leader12,
             "leader144": user_data.leader144,
             "leader1728": user_data.leader1728,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
+            "organization": current_user.get("organization"),  # Always use lowercase for new users
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
-       
+        
         result = await users_collection.insert_one(user_doc)
-       
+        
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="USER_CREATED",
             details=f"Created new user: {user_data.name} {user_data.surname} ({user_data.role})"
         )
-       
+        
         return MessageResponse(message=f"User {user_data.name} {user_data.surname} created successfully")
-       
+        
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
-    
+SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+
+ROLE_HIERARCHY = {
+    "registrant":2,
+    "user": 1,
+    "leader": 3,
+    "leaderAt12": 4,
+    "admin": 5,
+    "supreme_admin": 6
+}
+
+
 @app.get("/admin/users", response_model=UserList)
-async def get_all_users(current_user: dict = Depends(get_current_user)):
-    """Get all users - Admin only"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-   
+async def get_all_users(
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=500, description="Number of records to return"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all users (ONLY from users collection) with pagination for faster loading"""
     try:
+        # Check if user is supreme admin (either by email OR is_supreme_admin flag)
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+        
+        print(f"User: {current_user.get('email')}, is_supreme: {is_supreme}")
+        
+        if not is_supreme and current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        # Build query for users collection ONLY
+        query = {}
+        
+        # If supreme admin and organization specified, filter by that organization
+        if is_supreme and organization:
+            query["$or"] = [
+                {"Organization": organization}, 
+                {"organization": organization}
+            ]
+            print(f"Supreme admin filtering by: {organization}")
+        
+        # If not supreme admin, filter by their own organization
+        elif not is_supreme:
+            user_org = current_user.get("organization")
+            if user_org:
+                query["$or"] = [
+                    {"Organization": user_org}, 
+                    {"organization": user_org}
+                ]
+                print(f"Regular admin filtering by their org: {user_org}")
+        
+        print(f"Final Query: {query}")
+        
+        # Get total count for pagination
+        total = await users_collection.count_documents(query)
+        print(f"Total users found: {total}")
+        
+        # Get paginated results
+        cursor = users_collection.find(query).skip(skip).limit(limit)
+        
         users = []
-        cursor = users_collection.find({})
-       
         async for user in cursor:
+            user_org = user.get("organization") or user.get("Organization") or "Unknown"
+            
             users.append(UserListResponse(
                 id=str(user["_id"]),
                 name=user.get("name", ""),
@@ -8662,72 +9151,328 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
                 role=user.get("role", "user"),
                 date_of_birth=user.get("date_of_birth"),
                 phone_number=user.get("phone_number"),
-                address=user.get("address"),
+                address=user.get("home_address") or user.get("address"),
                 gender=user.get("gender"),
-                invitedBy=user.get("invitedBy"),
-                leader12=user.get("leader12"),
-                leader144=user.get("leader144"),
-                leader1728=user.get("leader1728"),
+                invitedBy=user.get("invited_by") or user.get("invitedBy"),
+                leader12=str(user.get("leader12")) if user.get("leader12") else None,
+                leader144=str(user.get("leader144")) if user.get("leader144") else None,
+                leader1728=str(user.get("leader1728")) if user.get("leader1728") else None,
                 stage=user.get("stage"),
-                created_at=user.get("created_at")
+                organization=user_org,
+                created_at=user.get("created_at") or user.get("updated_at")
             ))
-       
-        return UserList(users=users)
-       
+        
+        print(f"Returning {len(users)} users for org: {organization or 'all'}")
+        
+        # Return with total count for pagination
+        return {
+            "users": users,
+            "total": total,
+            "skip": skip,
+            "limit": limit
+        }
+        
     except Exception as e:
+        print(f"ERROR in get_all_users: {str(e)}")
         import traceback
-        print(f"ERROR: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
-  
+
+@app.get("/admin/stats")
+async def get_admin_stats(
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get statistics - ONLY from users collection"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Build query
+        query = {}
+        if is_supreme and organization:
+            query["$or"] = [{"Organization": organization}, {"organization": organization}]
+        elif not is_supreme:
+            query["$or"] = [{"Organization": current_user.get("organization")}, 
+                           {"organization": current_user.get("organization")}]
+        
+        # Use aggregation for faster counts - GROUP BY ROLE
+        pipeline = [
+            {"$match": query},
+            {"$group": {
+                "_id": "$role",
+                "count": {"$sum": 1}
+            }}
+        ]
+        
+        results = await users_collection.aggregate(pipeline).to_list(length=100)
+        print(f"Aggregation results: {results}")
+        
+        # Format response
+        stats = {
+            "total_users": 0,
+            "administrators": 0,
+            "leaders": 0,
+            "leaders_at_12": 0,
+            "registrants": 0,
+            "regular_users": 0,
+            "custom_roles": {}  # For church-specific roles
+        }
+        
+        for item in results:
+            role = item["_id"] or "unknown"
+            count = item["count"]
+            stats["total_users"] += count
+            
+            # Map to standard roles
+            if role == "admin":
+                stats["administrators"] = count
+            elif role == "leader":
+                stats["leaders"] = count
+            elif role == "leaderAt12":
+                stats["leaders_at_12"] = count
+            elif role == "registrant":
+                stats["registrants"] = count
+            elif role == "user":
+                stats["regular_users"] = count
+            else:
+                # This is a custom role unique to a church
+                stats["custom_roles"][role] = count
+        
+        # Also get all unique roles for this organization
+        distinct_roles = await users_collection.distinct("role", query)
+        stats["all_roles"] = [r for r in distinct_roles if r]  # Filter out None/empty
+        
+        return stats
+        
+    except Exception as e:
+        print(f"Error fetching stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")
+
+@app.get("/admin/roles/distinct")
+async def get_distinct_roles(
+    organization: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all distinct roles for an organization from the users collection"""
+    try:
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        
+        # Determine organization
+        org_filter = None
+        if is_supreme and organization:
+            org_filter = organization
+        elif not is_supreme:
+            org_filter = current_user.get("organization")
+        else:
+            raise HTTPException(status_code=400, detail="Organization required")
+        
+        # Define Active Church
+        ACTIVE_CHURCH_NAME = "Active Church"
+        system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        
+        # Build query for this organization
+        query = {}
+        if org_filter:
+            query["$or"] = [{"Organization": org_filter}, {"organization": org_filter}]
+        
+        # Get all distinct roles
+        distinct_roles = await users_collection.distinct("role", query)
+        
+        # Filter out None/empty and sort
+        roles = [r for r in distinct_roles if r]
+        
+        # For Active Church, ONLY show system roles (even if somehow custom roles exist)
+        if org_filter == ACTIVE_CHURCH_NAME:
+            roles = [r for r in roles if r in system_roles]
+        else:
+            # For other churches, show all roles but sort system roles first
+            roles.sort(key=lambda x: (x not in system_roles, x))
+        
+        # Get count for each role
+        roles_with_counts = []
+        for role in roles:
+            count_query = {"$and": [query, {"role": role}]} if query else {"role": role}
+            count = await users_collection.count_documents(count_query)
+            
+            # Determine if it's a system role or custom
+            is_system = role in system_roles
+            
+            # Get a consistent color for this role
+            color = get_role_color(role)
+            
+            roles_with_counts.append({
+                "name": role,
+                "count": count,
+                "is_system": is_system,
+                "color": color,
+                # Add flag to indicate if new roles can be created for this org
+                "can_create_custom": org_filter != ACTIVE_CHURCH_NAME
+            })
+        
+        return {
+            "roles": roles_with_counts,
+            "organization": org_filter,
+            "can_create_custom_roles": org_filter != ACTIVE_CHURCH_NAME
+        }
+        
+    except Exception as e:
+        print(f"Error fetching distinct roles: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# Helper function for role colors
+def get_role_color(role):
+    role_colors = {
+        "admin": "#f44336",
+        "leader": "#2196f3",
+        "leaderAt12": "#9c27b0", 
+        "user": "#4caf50",
+        "registrant": "#ff9800"
+    }
+    return role_colors.get(role, "#9c27b0")  # Default purple for custom roles
+
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(
     user_id: str,
     role_update: RoleUpdate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Update user role - Admin only"""
-    if current_user.get("role") != "admin":
+    """Update user role - With hierarchy enforcement and organization checks"""
+    # Check if user is supreme admin (either by email OR is_supreme_admin flag)
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+    
+    print(f"Updating role - User: {current_user.get('email')}, is_supreme: {is_supreme}")
+    
+    if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+    
     try:
-        # ADD leaderAt12 to valid roles
-        if role_update.role not in ["admin", "leader", "leaderAt12", "user", "registrant"]:
-            raise HTTPException(status_code=400, detail="Invalid role")
-       
+        # Get the user to update
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-       
+        
+        # Check organization access - SUPREME ADMINS CAN ACCESS ANY ORGANIZATION
+        if not is_supreme:
+            # Only check organization for non-supreme admins
+            user_org = user.get("organization") or user.get("Organization")
+            current_user_org = current_user.get("organization")
+            
+            if user_org != current_user_org:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Cannot access users from other organizations. Your org: {current_user_org}, Target org: {user_org}"
+                )
+        
         old_role = user.get("role", "user")
-       
+        new_role = role_update.role
+        
+        # Get the organization of the user being updated
+        user_org = user.get("organization") or user.get("Organization")
+        
+        # Define Active Church
+        ACTIVE_CHURCH_NAME = "Active Church"
+        system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        
+        # CASE 1: This is Active Church - ONLY allow system roles
+        if user_org == ACTIVE_CHURCH_NAME:
+            if new_role not in system_roles:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Active Church only supports standard roles: {', '.join(system_roles)}"
+                )
+            
+            # Apply hierarchy enforcement for Active Church (only for non-supreme admins)
+            if not is_supreme:
+                current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
+                target_user_level = ROLE_HIERARCHY.get(old_role, 0)
+                new_role_level = ROLE_HIERARCHY.get(new_role, 0)
+                
+                # Can only modify users with lower role level
+                if target_user_level >= current_user_role_level:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Cannot modify users with equal or higher role"
+                    )
+                
+                # Can only assign roles lower than your own
+                if new_role_level >= current_user_role_level:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Cannot assign role equal to or higher than your own"
+                    )
+        
+        # CASE 2: This is another church - Allow custom roles
+        else:
+            # Still prevent assigning admin if not supreme admin
+            if new_role == "admin" and not is_supreme:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Cannot assign admin role"
+                )
+            
+            # Optional: You might still want some hierarchy for basic roles
+            # But custom roles can be anything
+            if new_role in system_roles and not is_supreme:
+                # If assigning a system role in another church, still enforce hierarchy
+                current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
+                new_role_level = ROLE_HIERARCHY.get(new_role, 0)
+                
+                if new_role_level >= current_user_role_level:
+                    raise HTTPException(
+                        status_code=403, 
+                        detail="Cannot assign system role equal to or higher than your own"
+                    )
+            
+            # Log when a new custom role is created
+            if new_role not in system_roles:
+                # Check if this is the first time this custom role is used in this org
+                existing_count = await users_collection.count_documents({
+                    "role": new_role,
+                    "$or": [
+                        {"organization": user_org},
+                        {"Organization": user_org}
+                    ]
+                })
+                
+                if existing_count == 0:
+                    print(f"📝 New custom role '{new_role}' created in {user_org}")
+        
+        # Update the user's role
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {
                 "$set": {
-                    "role": role_update.role,
+                    "role": new_role,
                     "updated_at": datetime.utcnow()
                 }
             }
         )
-       
+        
         if result.modified_count == 0:
             raise HTTPException(status_code=400, detail="Failed to update user role")
-       
+        
+        # Log the activity
+        role_type = "custom" if new_role not in system_roles and user_org != ACTIVE_CHURCH_NAME else "system"
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="ROLE_UPDATED",
-            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {role_update.role}"
+            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {new_role} ({role_type} role in {user_org})"
         )
-       
-        return MessageResponse(message=f"User role updated to {role_update.role}")
-       
+        
+        return MessageResponse(message=f"User role updated to {new_role}")
+        
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error updating role: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
-
+        import traceback
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")   
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
@@ -8864,6 +9609,201 @@ async def get_activity_logs(
         print(f"Error fetching activity logs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
    
+# GETTING  ORGS FOR ADMIN USER 
+@app.get("/admin/organizations", response_model=OrganizationList)
+async def get_all_organizations(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all organizations - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        organizations = []
+        cursor = organizations_collection.find({})
+        
+        async for org in cursor:
+            # Get user count for this organization
+            user_count = await users_collection.count_documents({"organization": org["name"]})
+            people_count = await people_collection.count_documents({"Organisation": org["name"]})
+            
+            organizations.append(OrganizationResponse(
+                id=str(org["_id"]),
+                name=org.get("name"),
+                address=org.get("address"),
+                phone=org.get("phone"),
+                email=org.get("email"),
+                user_count=user_count + people_count,
+                created_at=org.get("created_at")
+            ))
+        
+        return OrganizationList(organizations=organizations)
+        
+    except Exception as e:
+        print(f"Error fetching organizations: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching organizations: {str(e)}")
+
+# ===== 6. NEW: POST /admin/organizations =====
+@app.post("/admin/organizations", response_model=MessageResponse)
+async def create_organization(
+    org_data: OrganizationCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a new organization - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        # Check if organization already exists
+        existing_org = await organizations_collection.find_one({"name": org_data.name})
+        if existing_org:
+            raise HTTPException(status_code=400, detail="Organization already exists")
+        
+        org_doc = {
+            "name": org_data.name,
+            "address": org_data.address,
+            "phone": org_data.phone,
+            "email": org_data.email,
+            "created_at": datetime.utcnow(),
+            "created_by": str(current_user.get("_id"))
+        }
+        
+        result = await organizations_collection.insert_one(org_doc)
+        
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ORGANIZATION_CREATED",
+            details=f"Created new organization: {org_data.name}"
+        )
+        
+        return MessageResponse(message=f"Organization {org_data.name} created successfully")
+        
+    except Exception as e:
+        print(f"Error creating organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating organization: {str(e)}")
+
+# ===== 7. NEW: PUT /admin/organizations/{org_id} =====
+@app.put("/admin/organizations/{org_id}", response_model=MessageResponse)
+async def update_organization(
+    org_id: str,
+    org_data: OrganizationUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update organization - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        update_data = {k: v for k, v in org_data.dict().items() if v is not None}
+        update_data["updated_at"] = datetime.utcnow()
+        
+        result = await organizations_collection.update_one(
+            {"_id": ObjectId(org_id)},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to update organization")
+        
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ORGANIZATION_UPDATED",
+            details=f"Updated organization: {org['name']}"
+        )
+        
+        return MessageResponse(message="Organization updated successfully")
+        
+    except Exception as e:
+        print(f"Error updating organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating organization: {str(e)}")
+
+# ===== 8. NEW: DELETE /admin/organizations/{org_id} =====
+@app.delete("/admin/organizations/{org_id}", response_model=MessageResponse)
+async def delete_organization(
+    org_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete organization - Supreme Admin only"""
+    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Supreme admin access required")
+    
+    try:
+        org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        # Check if there are users in this organization
+        user_count = await users_collection.count_documents({"organization": org["name"]})
+        people_count = await people_collection.count_documents({"Organisation": org["name"]})
+        
+        if user_count + people_count > 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Cannot delete organization with {user_count + people_count} members. Reassign them first."
+            )
+        
+        result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to delete organization")
+        
+        await log_activity(
+            user_id=str(current_user.get("_id")),
+            action="ORGANIZATION_DELETED",
+            details=f"Deleted organization: {org['name']}"
+        )
+        
+        return MessageResponse(message="Organization deleted successfully")
+        
+    except Exception as e:
+        print(f"Error deleting organization: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting organization: {str(e)}")
+
+# ===== 9. NEW: GET /admin/people with organization filtering =====
+@app.get("/admin/people", response_model=PeopleList)
+async def get_all_people(
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all people from People collection - Filtered by organization"""
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    
+    if not is_supreme and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        # Build query
+        query = {}
+        if not is_supreme:
+            query["Organisation"] = current_user.get("organization")
+        elif organization:
+            query["Organisation"] = organization
+        
+        people = []
+        cursor = people_collection.find(query)
+        
+        async for person in cursor:
+            people.append(PeopleResponse(
+                id=str(person["_id"]),
+                name=person.get("Name", ""),
+                surname=person.get("Surname", ""),
+                email=person.get("Email", ""),
+                phone=person.get("Number", ""),
+                invitedBy=person.get("InvitedBy", ""),
+                organisation=person.get("Organisation", ""),
+                leaderId=person.get("LeaderId", ""),
+                created_at=person.get("DateCreated")
+            ))
+        
+        return PeopleList(people=people)
+        
+    except Exception as e:
+        print(f"Error fetching people: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
 
 async def get_event_summary_stats(event_id: str):
     """Get consolidation and new people statistics for an event"""
