@@ -934,7 +934,7 @@ async def signup(user: UserCreate):
         "confirm_password": hashed,
         # Default role for all new signups so route guards recognize them
         "role": "user",
-        "Organization": organization,
+        "organization": organization,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
