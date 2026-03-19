@@ -1894,8 +1894,8 @@ async def get_cell_events(
                         "attendance": attendance,
                         "is_active": event.get("is_active", ""),
                         # Include backfilled leader path data
-                        "leaderPersonId": str(event.get("leaderPersonId", "")),
-                        "leaderLeaderPath": [str(x) for x in event.get("leaderLeaderPath", [])],
+                        # "leaderPersonId": str(event.get("leaderPersonId", "")),
+                        # "leaderLeaderPath": [str(x) for x in event.get("leaderLeaderPath", [])],
                     }
                     if event.get("time"):
                         instance["time"] = event.get("time")
