@@ -8235,21 +8235,32 @@ from fastapi.encoders import jsonable_encoder
 @app.post("/tasks")
 async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
     try:
-        # Convert Pydantic model to dict
         new_task_dict = task.dict()
-        # Attach the creator's email for backward compatibility
-        new_task_dict["assignedfor"] = current_user["email"]
+        
+        print(f"[CREATE TASK] assignedfor from frontend: {new_task_dict.get('assignedfor')}")
+        print(f"[CREATE TASK] assigned_to_email from frontend: {new_task_dict.get('assigned_to_email')}")
+        print(f"[CREATE TASK] creator: {current_user.get('email')}")
+        
+        # NEVER overwrite assignedfor if frontend sent it
+        if not new_task_dict.get("assignedfor"):
+            new_task_dict["assignedfor"] = current_user["email"]
+            
+        if not new_task_dict.get("assigned_to_email"):
+            new_task_dict["assigned_to_email"] = new_task_dict["assignedfor"]
 
-        # Insert into MongoDB
+        # Always track creator separately
+        new_task_dict["created_by_email"] = current_user["email"]
+        new_task_dict["created_by_name"] = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        new_task_dict["createdAt"] = datetime.utcnow()
+
+        print(f"[CREATE TASK] Final assignedfor being saved: {new_task_dict.get('assignedfor')}")
+
         result = await db["tasks"].insert_one(new_task_dict)
-
-        # Add the MongoDB _id as a string for the response
         new_task_dict["_id"] = str(result.inserted_id)
-
-        # Encode safely for JSON response
         return {"status": "success", "task": jsonable_encoder(new_task_dict)}
 
     except Exception as e:
+        print(f"[CREATE TASK] Failed: {str(e)}")
         return {"status": "failed", "error": str(e)}
 
 # Retrieve all tasks
@@ -8295,13 +8306,21 @@ async def get_user_tasks(
                 "$or": [
                     {"assignedfor": user_email},
                     {"assigned_to_email": user_email},
-                    {"assignedfor": user_name},
-                    {"leader_assigned": user_name},
-                    {"leader_name": user_name},
-                    {"created_by_email": user_email},
+                    {
+                        "$and": [
+                            {"leader_name": user_name},
+                            {"is_consolidation_task": True}
+                        ]
+                    },
+                    {
+                        "$and": [
+                            {"leader_assigned": user_name},
+                            {"is_consolidation_task": True}
+                        ]
+                    }
                 ]
             }
-
+            
         cursor = tasks_collection.find(query)
         all_tasks = []
 
@@ -8320,21 +8339,22 @@ async def get_user_tasks(
                         continue
 
             all_tasks.append({
-                "_id": str(task["_id"]),
-                "name": task.get("name", "Unnamed Task"),
-                "taskType": task.get("taskType", ""),
-                "followup_date": task_datetime.isoformat() if task_datetime else None,
-                "status": task.get("status", "Open"),
-                "assignedfor": task.get("assignedfor", ""),
-                "assigned_to_email": task.get("assigned_to_email", ""),
-                "leader_name": task.get("leader_name", ""),
-                "type": task.get("type", "call"),
-                "contacted_person": task.get("contacted_person", {}),
-                "isRecurring": bool(task.get("recurring_day")),
-                "is_consolidation_task": bool(task.get("is_consolidation_task")),
-                "consolidation_source": task.get("consolidation_source", "manual"),
-                "source_display": task.get("source_display", "Manual")
-            })
+            "_id": str(task["_id"]),
+            "name": task.get("name", "Unnamed Task"),
+            "taskType": task.get("taskType", ""),
+            "followup_date": task_datetime.isoformat() if task_datetime else None,
+            "status": task.get("status", "Open"),
+            "assignedfor": task.get("assignedfor", ""),
+            "assigned_to_email": task.get("assigned_to_email", ""),
+            "created_by_email": task.get("created_by_email", ""),  # ADD THIS
+            "leader_name": task.get("leader_name", ""),
+            "type": task.get("type", "call"),
+            "contacted_person": task.get("contacted_person", {}),
+            "isRecurring": bool(task.get("recurring_day")),
+            "is_consolidation_task": bool(task.get("is_consolidation_task")),
+            "consolidation_source": task.get("consolidation_source", "manual"),
+            "source_display": task.get("source_display", "Manual")
+        })
 
         # Sort newest first
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
@@ -10528,7 +10548,7 @@ async def get_dashboard_comprehensive(
         ]
 
         tasks_pipeline = [
-    # Step 1: Convert all date fields from string to Date if needed
+    # Step 1: Convert dates AND normalize assignedfor
     {
         "$addFields": {
             "followup_date_conv": {
@@ -10551,6 +10571,9 @@ async def get_dashboard_comprehensive(
                     "then": {"$dateFromString": {"dateString": "$completedAt", "onError": None, "onNull": None}},
                     "else": "$completedAt"
                 }
+            },
+            "assignedfor_norm": {
+                "$toLower": {"$ifNull": ["$assignedfor", "unknown"]}
             }
         }
     },
@@ -10660,10 +10683,10 @@ async def get_dashboard_comprehensive(
             }
         }
     },
-    # Step 4: Group by user
+    # Step 4: Group by normalized assignedfor
     {
         "$group": {
-            "_id": "$assignedfor",
+            "_id": "$assignedfor_norm",
             "tasks": {
                 "$push": {
                     "_id": "$_id",
@@ -10675,7 +10698,7 @@ async def get_dashboard_comprehensive(
                     "completedAt": "$completedAt_conv",
                     "createdAt": "$createdAt_conv",
                     "status": "$status",
-                    "assignedfor": "$assignedfor",
+                    "assignedfor": "$assignedfor_norm",
                     "type": "$type",
                     "contacted_person": "$contacted_person",
                     "isRecurring": {
