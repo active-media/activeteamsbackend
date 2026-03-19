@@ -8939,84 +8939,69 @@ ROLE_HIERARCHY = {
     "supreme_admin": 6
 }
 
-
 @app.get("/admin/users", response_model=UserList)
 async def get_all_users(
-    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(50, ge=1, le=500, description="Number of records to return"),
+    organization: Optional[str] = Query(None, description="Filter by organization"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(5000, ge=1, le=10000),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all users (ONLY from users collection) with pagination for faster loading"""
     try:
-        # Check if user is supreme admin (either by email OR is_supreme_admin flag)
         is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
-        
-        print(f"User: {current_user.get('email')}, is_supreme: {is_supreme}")
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
         
-        # Build query for users collection ONLY
+        # Build query
         query = {}
         
-        # If supreme admin and organization specified, filter by that organization
+        # Determine organization filter
+        org_filter = None
         if is_supreme and organization:
-            query["Organization"] = organization
-            print(f"Supreme admin filtering by: {organization}")
-        
+            org_filter = organization
         elif not is_supreme:
-            user_org = current_user.get("Organization") or current_user.get("organization", "")
-            if user_org:
-                query["Organization"] = user_org
-                print(f"Regular admin filtering by their org: {user_org}")
+            org_filter = current_user.get("Organization") or current_user.get("organization")
         
-        print(f"Final Query: {query}")
+        # Apply organization filter
+        if org_filter:
+            query["$or"] = [
+                {"Organization": org_filter},
+                {"organization": org_filter}
+            ]
         
-        # Get total count for pagination
-        total, users_raw = await asyncio.gather(
-            users_collection.count_documents(query),
-            users_collection.find(query).skip(skip).limit(limit).to_list(limit)
-        )
+        # Get TOTAL count of ALL matching documents
+        total = await users_collection.count_documents(query)
+        print(f"Total users in database for this org: {total}")
+        
+        # Get results
+        cursor = users_collection.find(query).skip(skip).limit(limit)
+        users_raw = await cursor.to_list(length=limit)
 
         users = []
         for user in users_raw:
-            org_value = user.get("Organization") or "Unknown"
-            
-            users.append(UserListResponse(
-                id=str(user["_id"]),
-                name=user.get("name", ""),
-                surname=user.get("surname", ""),
-                email=user.get("email", ""),
-                role=user.get("role", "user"),
-                date_of_birth=user.get("date_of_birth"),
-                phone_number=user.get("phone_number"),
-                address=user.get("home_address") or user.get("address"),
-                gender=user.get("gender"),
-                invitedBy=user.get("invited_by") or user.get("invitedBy"),
-                leader12=str(user.get("leader12")) if user.get("leader12") else None,
-                leader144=str(user.get("leader144")) if user.get("leader144") else None,
-                leader1728=str(user.get("leader1728")) if user.get("leader1728") else None,
-                stage=user.get("stage"),
-                organization=org_value,
-                created_at=user.get("created_at") or user.get("updated_at")
-            ))
+            users.append({
+                "id": str(user["_id"]),
+                "name": user.get("name", ""),
+                "surname": user.get("surname", ""),
+                "email": user.get("email", ""),
+                "role": user.get("role", "user"),
+                "phone_number": user.get("phone_number"),
+                "organization": user.get("Organization") or user.get("organization") or "Unknown",
+                "created_at": user.get("created_at") or user.get("updated_at")
+            })
         
-        print(f"Returning {len(users)} users for org: {organization or 'all'}")
+        print(f"Returning {len(users)} users, total in DB: {total}")
         
-        # Return with total count for pagination
         return {
             "users": users,
-            "total": total,
+            "total": total, 
             "skip": skip,
             "limit": limit
         }
         
     except Exception as e:
-        print(f"ERROR in get_all_users: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
+        print(f"ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/stats")
 async def get_admin_stats(
