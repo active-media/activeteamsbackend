@@ -19,16 +19,12 @@ class UserCreate(BaseModel):
     surname: str
     date_of_birth: str
     home_address: str
-    invited_by: str
-    invited_by_id: Optional[str] = None  # People._id (stringified ObjectId) when selected from autocomplete
+    invited_by: Optional[str] = None  # Changed from "str" to "Optional[str] = None"
     phone_number: str
     email: EmailStr
     gender: str
     password: str
     role: Optional[str] = None
-    organization: Optional[str] = None  # e.g. "Active Church", "City Church"
-    org_tag: Optional[str] = None       # auto-resolved from organization if omitted
-
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
