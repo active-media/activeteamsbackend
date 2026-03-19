@@ -147,8 +147,7 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     payload = decode_access_token(token.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token payload")
-    
-    # Always fetch fresh role from DB
+
     user = await users_collection.find_one({"_id": ObjectId(payload["user_id"])})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")

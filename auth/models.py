@@ -276,6 +276,9 @@ class TaskModel(BaseModel):
         validate_by_name = True
         arbitrary_types_allowed = True
 
+class TaskTypeUpdate(BaseModel):
+    name: str
+
 class TaskTypeIn(BaseModel):
     name: str
 
