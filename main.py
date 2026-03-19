@@ -8411,12 +8411,21 @@ from fastapi.encoders import jsonable_encoder
 
 @app.post("/tasks")
 async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
-    new_task_dict = task.dict()
-    new_task_dict["assignedfor"] = current_user["email"]
-    new_task_dict["Organization"] = current_user["Organization"]  
+    try:
+        # === ROBUST ORGANIZATION LOOKUP (ignores case) ===
+        organization = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                organization = current_user[key]
+                break
+        new_task_dict = task.dict()
+        new_task_dict["assignedfor"] = current_user["email"]
+        new_task_dict["Organization"] = organization  
 
-    result = await db["tasks"].insert_one(new_task_dict)
-    return {"status": "success", "task": jsonable_encoder({**new_task_dict, "_id": str(result.inserted_id)})}
+        result = await db["tasks"].insert_one(new_task_dict)
+        return {"status": "success", "task": jsonable_encoder({**new_task_dict, "_id": str(result.inserted_id)})}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ====================== GET /tasks ======================
 
@@ -8426,7 +8435,13 @@ async def get_user_tasks(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        org_name = current_user.get("Organization")
+        # === ROBUST ORGANIZATION LOOKUP (ignores case - same as POST) ===
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
         if not org_name:
             raise HTTPException(status_code=403, detail="You don't have access to this church's data.")
 
@@ -8508,7 +8523,13 @@ async def get_user_tasks(
 @app.get("/tasktypes", response_model=List[TaskTypeOut])
 async def get_task_types(current_user: dict = Depends(get_current_user)):
     try:
-        org_name = current_user.get("Organization")
+        # === ROBUST ORGANIZATION LOOKUP (ignores case - same as POST) ===
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
         if not org_name:
             raise HTTPException(status_code=403, detail="Organization not associated with user")
 
@@ -8535,7 +8556,13 @@ async def create_task_type(task: TaskTypeIn, current_user: dict = Depends(get_cu
         if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
             raise HTTPException(status_code=403, detail="Only admins can create task types.")
 
-        org_name = current_user.get("Organization")
+        # === ROBUST ORGANIZATION LOOKUP (ignores case - same as POST) ===
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
         if not org_name:
             raise HTTPException(status_code=403, detail="Organization not associated with user")
 
@@ -8579,7 +8606,13 @@ async def update_task_type(
         if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
             raise HTTPException(status_code=403, detail="Only admins can edit task types.")
 
-        org_name = current_user.get("Organization")
+        # === ROBUST ORGANIZATION LOOKUP (ignores case - same as POST) ===
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
         if not org_name:
             raise HTTPException(status_code=403, detail="Organization not associated with user")
 
@@ -8629,7 +8662,13 @@ async def delete_task_type(
         if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
             raise HTTPException(status_code=403, detail="Only admins can delete task types.")
 
-        org_name = current_user.get("Organization")
+        # === ROBUST ORGANIZATION LOOKUP (ignores case - same as POST) ===
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
         if not org_name:
             raise HTTPException(status_code=403, detail="Organization not associated with user")
 
@@ -8663,74 +8702,84 @@ async def delete_task_type(
 # ====================== PUT /taskS ======================
 
 @app.put("/tasks/{task_id}")
-async def update_task(task_id: str, updated_task: dict):
+async def update_task(
+    task_id: str,
+    updated_task: dict,
+    current_user: dict = Depends(get_current_user)
+):
     try:
-        obj_id = ObjectId(task_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid task ID")
-   
-    # Check if task exists
-    task = await db["tasks"].find_one({"_id": obj_id})
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-   
-    # Prepare update data - only include fields that should be updated
-    update_data = {}
-   
-    # Map frontend fields to backend fields
-    if "name" in updated_task:
-        update_data["name"] = updated_task["name"]
-   
-    if "taskType" in updated_task:
-        update_data["taskType"] = updated_task["taskType"]
-   
-    if "contacted_person" in updated_task:
-        update_data["contacted_person"] = updated_task["contacted_person"]
-   
-    if "followup_date" in updated_task:
-        # Ensure it's a proper datetime string or convert it
+        # === ROBUST ORGANIZATION LOOKUP (ignores case) ===
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
+        # Convert task_id
         try:
-            if isinstance(updated_task["followup_date"], str):
-                update_data["followup_date"] = updated_task["followup_date"]
-            else:
-                update_data["followup_date"] = updated_task["followup_date"]
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
-   
-    if "status" in updated_task:
-        update_data["status"] = updated_task["status"]
-   
-    if "type" in updated_task:
-        update_data["type"] = updated_task["type"]
-   
-    if "assignedfor" in updated_task:
-        update_data["assignedfor"] = updated_task["assignedfor"]
-   
-    # Add updated timestamp
-    update_data["updated_at"] = datetime.utcnow().isoformat()
-   
-    # Update the task
-    try:
+            obj_id = ObjectId(task_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid task ID")
+
+        # Check if task exists
+        task = await db["tasks"].find_one({"_id": obj_id})
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # === CROSS-TENANT PROTECTION (exactly like XMind plan) ===
+        task_org = task.get("Organization")
+        if task_org and task_org.lower() != org_name.lower() and current_user.get("role") != "super_admin":
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have access to this church's data."
+            )
+
+        # Prepare update data
+        update_data = {}
+        if "name" in updated_task:
+            update_data["name"] = updated_task["name"]
+        if "taskType" in updated_task:
+            update_data["taskType"] = updated_task["taskType"]
+        if "contacted_person" in updated_task:
+            update_data["contacted_person"] = updated_task["contacted_person"]
+        if "followup_date" in updated_task:
+            try:
+                if isinstance(updated_task["followup_date"], str):
+                    update_data["followup_date"] = updated_task["followup_date"]
+                else:
+                    update_data["followup_date"] = updated_task["followup_date"]
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+        if "status" in updated_task:
+            update_data["status"] = updated_task["status"]
+        if "type" in updated_task:
+            update_data["type"] = updated_task["type"]
+        if "assignedfor" in updated_task:
+            update_data["assignedfor"] = updated_task["assignedfor"]
+
+        # Add updated timestamp
+        update_data["updated_at"] = datetime.utcnow().isoformat()
+
+        # Perform update
         result = await db["tasks"].update_one(
             {"_id": obj_id},
             {"$set": update_data}
         )
-       
+
         if result.modified_count == 0:
-            # Check if task actually exists but nothing changed
             if result.matched_count > 0:
                 # Task exists but no changes were made
                 updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
                 return {"updatedTask": serialize_doc(updated_task_in_db)}
             else:
                 raise HTTPException(status_code=404, detail="Task not found")
-       
-        # Fetch and return the updated task
+
+        # Return updated task
         updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
         return {"updatedTask": serialize_doc(updated_task_in_db)}
-       
+
     except Exception as e:
-        print(f"Error updating task: {str(e)}")  # Log the error
+        print(f"Error updating task: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 from collections import defaultdict
