@@ -899,7 +899,7 @@ async def signup(user: UserCreate):
     email = user.email.lower().strip()
    
     # Check if user already exists in Users collection ONLY
-    existing = await db["Users"].find_one({"email": email})
+    existing = await users_collection.find_one({"email": email})
     if existing:
         logger.warning(f"Signup failed - email already registered: {email}")
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -934,7 +934,7 @@ async def signup(user: UserCreate):
         "confirm_password": hashed,
         # Default role for all new signups so route guards recognize them
         "role": "user",
-        "organization": organization,
+        "Organization": organization,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -1172,7 +1172,7 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
    
-    return {"message": "User created successfully", "organization": organization,}
+    return {"message": "User created successfully", "Organization": organization,}
 
 # ---------------- Login ----------------
 @app.post("/login")
@@ -1182,29 +1182,37 @@ async def login(user: UserLogin):
     if not existing or not verify_password(user.password, existing["password"]):
         logger.warning(f"Login failed: {user.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email}) or {}
 
-    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
-    print("FULL NAME",full_name)
-    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
-    is_Leader = bool(is_Leader)
+    person = await people_collection.find_one({"Email": user.email}) or {}
+
     if not person:
-        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
-    
-    # Check if user is supreme admin
-    SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
-    is_supreme = False
-    if user.email == SUPREME_ADMIN_EMAIL:
-        is_supreme = True
-    else:
-        is_supreme = existing.get("is_supreme_admin", False)
+        person = await people_collection.find_one({
+            "Name": existing.get("name"), 
+            "Surname": existing.get("surname")
+        }) or {}
 
-    # Include is_supreme_admin in the JWT token
+    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}".strip()
+    print("FULL NAME", full_name)
+
+    is_Leader = await events_collection.find_one({
+        "$or": [
+            {"Email": user.email, "Event Type": "Cells"},
+            {"Leader": full_name, "Event Type": "Cells"}
+        ]
+    })
+    is_Leader = bool(is_Leader)
+
+    SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+    is_supreme = user.email == SUPREME_ADMIN_EMAIL or existing.get("is_supreme_admin", False)
+
+    organization = existing.get("Organization") or existing.get("organization", "")
+
     access_token = create_access_token({
-        "user_id": str(existing["_id"]), 
-        "email": existing["email"], 
+        "user_id": str(existing["_id"]),
+        "email": existing["email"],
         "role": existing.get("role", "user"),
-        "is_supreme_admin": is_supreme  # ADD THIS
+        "is_supreme_admin": is_supreme,
+        "Organization": organization
     })
 
     refresh_token_id = secrets.token_urlsafe(16)
@@ -1238,79 +1246,16 @@ async def login(user: UserLogin):
             "phone_number": existing.get("phone_number", ""),
             "gender": existing.get("gender", ""),
             "invited_by": existing.get("invited_by", ""),
-            "organization": existing.get("organization", ""),
-            "is_supreme_admin": is_supreme  # ADD THIS
+            "organization": organization,
+            "is_supreme_admin": is_supreme
         },
-        "leaders":{
-            'leaderAt1':person.get("Leader @1",""),
-            'leaderAt12':person.get("Leader @12",""),
-            'leaderAt144':person.get("Leader @144",""),
+        "leaders": {
+            "leaderAt1": person.get("Leader @1", ""),
+            "leaderAt12": person.get("Leader @12", ""),
+            "leaderAt144": person.get("Leader @144", ""),
         },
         "isLeader": is_Leader
     }
-
-    logger.info(f"Login attempt: {user.email}")
-    existing = await users_collection.find_one({"email": user.email})
-    if not existing or not verify_password(user.password, existing["password"]):
-        logger.warning(f"Login failed: {user.email}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    person = await people_collection.find_one({"Email":user.email}) or {}
-
-
-    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
-    print("FULL NAME",full_name)
-    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
-    is_Leader = bool(is_Leader)
-    if not person:
-        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
-   
-
-    access_token = create_access_token(
-        {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
-        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
-    )
-
-    refresh_token_id = secrets.token_urlsafe(16)
-    refresh_plain = secrets.token_urlsafe(32)
-    refresh_hash = hash_password(refresh_plain)
-    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
-    await users_collection.update_one(
-        {"_id": existing["_id"]},
-        {"$set": {
-            "refresh_token_id": refresh_token_id,
-            "refresh_token_hash": refresh_hash,
-            "refresh_token_expires": refresh_expires,
-        }}
-    )
-
-    logger.info(f"Login successful: {user.email}")
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "refresh_token_id": refresh_token_id,
-        "refresh_token": refresh_plain,
-        "user": {
-        "id": str(existing["_id"]),
-        "email": existing["email"],
-        "name": existing.get("name", ""),
-        "surname": existing.get("surname", ""),
-        "role": existing.get("role", "registrant"),
-        "date_of_birth": existing.get("date_of_birth", ""),
-        "home_address": existing.get("home_address", ""),
-        "phone_number": existing.get("phone_number", ""),
-        "gender": existing.get("gender", ""),
-        "invited_by": existing.get("invited_by", ""),
-        "organization": existing.get("organization", ""),
-    },
-    "leaders":{
-        'leaderAt1':person.get("Leader @1",""),
-        'leaderAt12':person.get("Leader @12",""),
-        'leaderAt144':person.get("Leader @144",""),
-    },
-    "isLeader": is_Leader
-    }
-
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     logger.info(f"Forgot password requested for email: {payload.email}")
@@ -5069,8 +5014,6 @@ async def get_missing_leaders(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-   
 @app.on_event("startup")
 async def create_indexes_on_startup():
     print("Creating MongoDB indexes for faster queries...")
@@ -5096,11 +5039,15 @@ async def create_indexes_on_startup():
             [("Name", 1), ("Surname", 1), ("Gender", 1)],
             name="people_lookup_idx"
         )
+
+        # Indexes for faster admin user queries
+        await users_collection.create_index([("organization", 1)], name="users_org_idx")
+        await users_collection.create_index([("Organization", 1)], name="users_Org_idx")
+        await users_collection.create_index([("email", 1)], name="users_email_idx")
        
-        print(" Indexes created successfully")
+        print("Indexes created successfully")
     except Exception as e:
         print(f"Error creating indexes: {e}")
-   
 
 @app.put("/events/{event_id}")
 async def update_event(event_id: str, event_data: dict, current_user: dict = Depends(get_current_user)):
@@ -9109,7 +9056,7 @@ async def create_user(
             "leader1728": user_data.leader1728,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
-            "organization": current_user.get("organization"),  # Always use lowercase for new users
+            "organization": current_user.get("Organization"),  # Always use lowercase for new users
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -9140,92 +9087,69 @@ ROLE_HIERARCHY = {
     "supreme_admin": 6
 }
 
-
 @app.get("/admin/users", response_model=UserList)
 async def get_all_users(
-    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(50, ge=1, le=500, description="Number of records to return"),
+    organization: Optional[str] = Query(None, description="Filter by organization"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(5000, ge=1, le=10000),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all users (ONLY from users collection) with pagination for faster loading"""
     try:
-        # Check if user is supreme admin (either by email OR is_supreme_admin flag)
         is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
-        
-        print(f"User: {current_user.get('email')}, is_supreme: {is_supreme}")
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
         
-        # Build query for users collection ONLY
+        # Build query
         query = {}
         
-        # If supreme admin and organization specified, filter by that organization
+        # Determine organization filter
+        org_filter = None
         if is_supreme and organization:
-            query["$or"] = [
-                {"Organization": organization}, 
-                {"organization": organization}
-            ]
-            print(f"Supreme admin filtering by: {organization}")
-        
-        # If not supreme admin, filter by their own organization
+            org_filter = organization
         elif not is_supreme:
-            user_org = current_user.get("organization")
-            if user_org:
-                query["$or"] = [
-                    {"Organization": user_org}, 
-                    {"organization": user_org}
-                ]
-                print(f"Regular admin filtering by their org: {user_org}")
+            org_filter = current_user.get("Organization") or current_user.get("organization")
         
-        print(f"Final Query: {query}")
+        # Apply organization filter
+        if org_filter:
+            query["$or"] = [
+                {"Organization": org_filter},
+                {"organization": org_filter}
+            ]
         
-        # Get total count for pagination
+        # Get TOTAL count of ALL matching documents
         total = await users_collection.count_documents(query)
-        print(f"Total users found: {total}")
+        print(f"Total users in database for this org: {total}")
         
-        # Get paginated results
+        # Get results
         cursor = users_collection.find(query).skip(skip).limit(limit)
-        
+        users_raw = await cursor.to_list(length=limit)
+
         users = []
-        async for user in cursor:
-            user_org = user.get("organization") or user.get("Organization") or "Unknown"
-            
-            users.append(UserListResponse(
-                id=str(user["_id"]),
-                name=user.get("name", ""),
-                surname=user.get("surname", ""),
-                email=user.get("email", ""),
-                role=user.get("role", "user"),
-                date_of_birth=user.get("date_of_birth"),
-                phone_number=user.get("phone_number"),
-                address=user.get("home_address") or user.get("address"),
-                gender=user.get("gender"),
-                invitedBy=user.get("invited_by") or user.get("invitedBy"),
-                leader12=str(user.get("leader12")) if user.get("leader12") else None,
-                leader144=str(user.get("leader144")) if user.get("leader144") else None,
-                leader1728=str(user.get("leader1728")) if user.get("leader1728") else None,
-                stage=user.get("stage"),
-                organization=user_org,
-                created_at=user.get("created_at") or user.get("updated_at")
-            ))
+        for user in users_raw:
+            users.append({
+                "id": str(user["_id"]),
+                "name": user.get("name", ""),
+                "surname": user.get("surname", ""),
+                "email": user.get("email", ""),
+                "role": user.get("role", "user"),
+                "phone_number": user.get("phone_number"),
+                "organization": user.get("Organization") or user.get("organization") or "Unknown",
+                "created_at": user.get("created_at") or user.get("updated_at")
+            })
         
-        print(f"Returning {len(users)} users for org: {organization or 'all'}")
+        print(f"Returning {len(users)} users, total in DB: {total}")
         
-        # Return with total count for pagination
         return {
             "users": users,
-            "total": total,
+            "total": total, 
             "skip": skip,
             "limit": limit
         }
         
     except Exception as e:
-        print(f"ERROR in get_all_users: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
+        print(f"ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/stats")
 async def get_admin_stats(
@@ -9244,8 +9168,8 @@ async def get_admin_stats(
         if is_supreme and organization:
             query["$or"] = [{"Organization": organization}, {"organization": organization}]
         elif not is_supreme:
-            query["$or"] = [{"Organization": current_user.get("organization")}, 
-                           {"organization": current_user.get("organization")}]
+            query["$or"] = [{"Organization": current_user.get("Organization")}, 
+                           {"organization": current_user.get("Organization")}]
         
         # Use aggregation for faster counts - GROUP BY ROLE
         pipeline = [
@@ -9314,7 +9238,7 @@ async def get_distinct_roles(
         if is_supreme and organization:
             org_filter = organization
         elif not is_supreme:
-            org_filter = current_user.get("organization")
+            org_filter = current_user.get("Organization")
         else:
             raise HTTPException(status_code=400, detail="Organization required")
         
@@ -9327,7 +9251,6 @@ async def get_distinct_roles(
         if org_filter:
             query["$or"] = [{"Organization": org_filter}, {"organization": org_filter}]
         
-        # Get all distinct roles
         distinct_roles = await users_collection.distinct("role", query)
         
         # Filter out None/empty and sort
@@ -9382,7 +9305,7 @@ def get_role_color(role):
         "user": "#4caf50",
         "registrant": "#ff9800"
     }
-    return role_colors.get(role, "#9c27b0")  # Default purple for custom roles
+    return role_colors.get(role, "#9c27b0") 
 
 @app.put("/admin/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(
@@ -9408,8 +9331,8 @@ async def update_user_role(
         # Check organization access - SUPREME ADMINS CAN ACCESS ANY ORGANIZATION
         if not is_supreme:
             # Only check organization for non-supreme admins
-            user_org = user.get("organization") or user.get("Organization")
-            current_user_org = current_user.get("organization")
+            user_org = user.get("Organization") or user.get("Organization")
+            user_org = current_user.get("Organization") or current_user.get("organization", "")
             
             if user_org != current_user_org:
                 raise HTTPException(
@@ -9421,7 +9344,7 @@ async def update_user_role(
         new_role = role_update.role
         
         # Get the organization of the user being updated
-        user_org = user.get("organization") or user.get("Organization")
+        user_org = user.get("Organization") or user.get("Organization")
         
         # Define Active Church
         ACTIVE_CHURCH_NAME = "Active Church"
@@ -9828,7 +9751,7 @@ async def get_all_people(
         # Build query
         query = {}
         if not is_supreme:
-            query["Organisation"] = current_user.get("organization")
+            query["Organisation"] = current_user.get("Organization")
         elif organization:
             query["Organisation"] = organization
         

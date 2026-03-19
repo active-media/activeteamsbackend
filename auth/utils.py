@@ -151,29 +151,29 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     user = await users_collection.find_one({"_id": ObjectId(payload["user_id"])})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-
-    # === SUPER ROBUST ORGANIZATION LOOKUP (any case) ===
-    organization = None
-    for key in user.keys():
-        if key.lower() == "organization":
-            organization = user[key]
-            break
-
-    # Final safety net
-    if not organization:
-        organization = "Active Church"
-        print(f"[WARNING] User {user.get('email')} had no Organization field - defaulted to Active Church")
-
-    return {
-        "email": user["email"],
-        "name": user.get("name"),
-        "surname": user.get("surname"),
-        "role": user.get("role", "user"),
-        "_id": str(user["_id"]),
-        "user_id": payload.get("user_id"),
-        "Organization": organization  
-    }
-
+    
+    email = user.get("email", "")
+    
+    # Check if user is supreme admin
+    is_supreme = False
+    if email == SUPREME_ADMIN_EMAIL:
+        is_supreme = True
+    else:
+        is_supreme = user.get("is_supreme_admin", False)
+    
+    # Get the role from DB
+    db_role = user.get("role", "user")
+    
+    # Update payload with fresh data
+    payload["role"] = db_role
+    payload["_id"] = str(user["_id"])
+    payload["organization"] = user.get("Organization") or user.get("organization", "")
+    payload["is_supreme_admin"] = is_supreme
+    payload["email"] = email
+    payload["name"] = user.get("name", "")
+    payload["surname"] = user.get("surname", "")
+    
+    return payload
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
         payload = decode_access_token(token.credentials)
