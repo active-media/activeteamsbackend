@@ -8298,6 +8298,7 @@ async def get_user_tasks(
                     {"assignedfor": user_name},
                     {"leader_assigned": user_name},
                     {"leader_name": user_name},
+                    {"created_by_email": user_email},
                 ]
             }
 
