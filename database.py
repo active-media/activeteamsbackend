@@ -16,6 +16,7 @@ people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]
 tasktypes_collection = db["TaskTypes"]
+org_config_collection = db["OrgConfig"]
 consolidations_collection=db["consolidations"]
 organizations_collection = db["organizations"]
 

@@ -19,6 +19,10 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+ORG_ID_MAP = {
+    "active-church": "active-teams",
+    "active church": "active-teams",
+}
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
@@ -95,19 +99,21 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
     ):
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    # Check if user is supreme admin
     email = user.get("email", "")
-    is_supreme = False
-    if email == SUPREME_ADMIN_EMAIL:
-        is_supreme = True
-    else:
-        is_supreme = user.get("is_supreme_admin", False)
+    is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
+
+    # Derive and normalize org_id
+    organization = user.get("Organization") or user.get("organization", "")
+    org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
+    org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
 
     new_access = create_access_token({
-        "user_id": str(user["_id"]), 
-        "email": user["email"], 
+        "user_id": str(user["_id"]),
+        "email": user["email"],
         "role": user.get("role", "user"),
-        "is_supreme_admin": is_supreme
+        "is_supreme_admin": is_supreme,
+        "org_id": org_id,
+        "Organization": organization,
     })
 
     new_refresh = create_refresh_token()
@@ -116,7 +122,8 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         {"$set": {
             "refresh_token_id": new_refresh["id"],
             "refresh_token_hash": new_refresh["hash"],
-            "refresh_token_expires": new_refresh["expires"]
+            "refresh_token_expires": new_refresh["expires"],
+            "org_id": org_id,
         }}
     )
 
@@ -147,33 +154,36 @@ async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_
     payload = decode_access_token(token.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token payload")
-
     user = await users_collection.find_one({"_id": ObjectId(payload["user_id"])})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    
+
     email = user.get("email", "")
-    
+
     # Check if user is supreme admin
-    is_supreme = False
-    if email == SUPREME_ADMIN_EMAIL:
-        is_supreme = True
-    else:
-        is_supreme = user.get("is_supreme_admin", False)
-    
+    is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
+
     # Get the role from DB
     db_role = user.get("role", "user")
-    
+
+    # Derive and normalize org_id
+    organization = user.get("Organization") or user.get("organization", "")
+    org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
+    org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+
     # Update payload with fresh data
     payload["role"] = db_role
     payload["_id"] = str(user["_id"])
-    payload["organization"] = user.get("Organization") or user.get("organization", "")
+    payload["organization"] = organization
+    payload["Organization"] = organization
+    payload["org_id"] = org_id
     payload["is_supreme_admin"] = is_supreme
     payload["email"] = email
     payload["name"] = user.get("name", "")
     payload["surname"] = user.get("surname", "")
-    
+
     return payload
+
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
         payload = decode_access_token(token.credentials)
