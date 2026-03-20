@@ -2338,7 +2338,7 @@ async def get_other_events(
                             total_attendance = len(weekly_attendees)
 
                             instance = {
-                                "_id": f"{str(event.get('_id'))}_{exact_date_str}",
+                                "_id": f"{str(event.get('_id'))}",
                                 "UUID": event.get("UUID", ""),
                                 "eventName": event_name,
                                 "eventType": event_type_value,
@@ -6440,8 +6440,86 @@ async def update_persistent_attendees(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
+        print(f"[PUT PERSISTENT ATTENDEES] Raw event_id received: {event_id}")
+        
+        # Extract date from compound ID if present
+        date_str = None
+        if "_" in event_id:
+            parts = event_id.split("_")
+            clean_id = parts[0]
+            date_str = parts[1] if len(parts) > 1 else None
+        else:
+            clean_id = event_id
+
+        print(f"[PUT PERSISTENT ATTENDEES] Clean ID: {clean_id}, Date: {date_str}")
+
+        if not ObjectId.is_valid(clean_id):
+            raise HTTPException(status_code=400, detail=f"Invalid event ID: {clean_id}")
+
+        persistent_attendees = data.get("persistent_attendees", [])
+
+        cleaned_attendees = []
+        for attendee in persistent_attendees:
+            if isinstance(attendee, dict):
+                cleaned_attendees.append({
+                    "id": attendee.get("id", ""),
+                    "name": attendee.get("name", "") or attendee.get("fullName", ""),
+                    "fullName": attendee.get("fullName", "") or attendee.get("name", ""),
+                    "email": attendee.get("email", ""),
+                    "phone": attendee.get("phone", ""),
+                    "leader12": attendee.get("leader12", ""),
+                    "leader144": attendee.get("leader144", ""),
+                    "isPersistent": True
+                })
+
+        update_fields = {
+            # Always update root-level persistent attendees
+            "persistent_attendees": cleaned_attendees,
+            "total_associated_count": len(cleaned_attendees),
+            "updated_at": datetime.utcnow()
+        }
+
+        # If date provided, also update that specific week's persistent attendees
+        if date_str:
+            event = await events_collection.find_one({"_id": ObjectId(clean_id)})
+            if event:
+                attendance = event.get("attendance", {})
+                week_data = attendance.get(date_str, {})
+                
+                # Update persistent_attendees inside the specific week
+                update_fields[f"attendance.{date_str}.persistent_attendees"] = cleaned_attendees
+                update_fields[f"attendance.{date_str}.total_associated"] = len(cleaned_attendees)
+                
+                print(f"[PUT PERSISTENT ATTENDEES] Updating week {date_str} with {len(cleaned_attendees)} attendees")
+
+        result = await events_collection.update_one(
+            {"_id": ObjectId(clean_id)},
+            {"$set": update_fields}
+        )
+
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        print(f"[PUT PERSISTENT ATTENDEES] Updated {len(cleaned_attendees)} attendees successfully")
+
+        return {
+            "success": True,
+            "message": "Persistent attendees updated successfully",
+            "count": len(cleaned_attendees),
+            "attendees": cleaned_attendees,
+            "date": date_str
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating persistent attendees: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    try:
+        clean_id = event_id.split("_")[0]
+        
+        if not ObjectId.is_valid(clean_id):
+            raise HTTPException(status_code=400, detail=f"Invalid event ID: {clean_id}")
         
         persistent_attendees = data.get("persistent_attendees", [])
         
@@ -6459,7 +6537,7 @@ async def update_persistent_attendees(
                 })
         
         result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
+            {"_id": ObjectId(clean_id)},
             {
                 "$set": {
                     "persistent_attendees": cleaned_attendees,
@@ -6489,24 +6567,65 @@ async def get_persistent_attendees(
     event_id: str = Path(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get persistent attendees for an event"""
     try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
+        print(f"[PERSISTENT ATTENDEES] Raw event_id received: {event_id}")
         
-        event = await events_collection.find_one(
-            {"_id": ObjectId(event_id)},
-            {"persistent_attendees": 1, "Event Name": 1}
-        )
+        # Extract date from compound ID if present
+        date_str = None
+        if "_" in event_id:
+            parts = event_id.split("_")
+            clean_id = parts[0]
+            date_str = parts[1] if len(parts) > 1 else None
+        else:
+            clean_id = event_id
+        
+        print(f"[PERSISTENT ATTENDEES] Clean ID: {clean_id}, Date: {date_str}")
+        
+        if not ObjectId.is_valid(clean_id):
+            raise HTTPException(status_code=400, detail=f"Invalid event ID: {clean_id}")
+        
+        event = await events_collection.find_one({"_id": ObjectId(clean_id)})
         
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
+        # If date provided, check that specific week's attendance first
+        if date_str:
+            attendance_data = event.get("attendance", {})
+            week_data = attendance_data.get(date_str, {})
+            
+            if week_data:
+                week_persistent = week_data.get("persistent_attendees", [])
+                week_checked_in = week_data.get("attendees", [])
+                week_status = week_data.get("status", "incomplete")
+                total_headcounts = week_data.get("total_headcounts", 0)
+                
+                print(f"[PERSISTENT ATTENDEES] Found week data for {date_str}: {len(week_persistent)} persistent, {len(week_checked_in)} checked in, status={week_status}")
+                
+                return {
+                    "persistent_attendees": week_persistent if week_persistent else event.get("persistent_attendees", []),
+                    "checked_in_attendees": week_checked_in,
+                    "attendance_status": week_status,
+                    "total_headcounts": total_headcounts,
+                    "event_name": event.get("Event Name", "Unknown"),
+                    "date": date_str
+                }
+        
+        # Fallback to root-level persistent attendees
+        root_persistent = event.get("persistent_attendees", [])
+        print(f"[PERSISTENT ATTENDEES] Using root persistent attendees: {len(root_persistent)}")
+        
         return {
-            "persistent_attendees": event.get("persistent_attendees", []),
-            "event_name": event.get("Event Name", "Unknown")
+            "persistent_attendees": root_persistent,
+            "checked_in_attendees": event.get("attendees", []),
+            "attendance_status": event.get("status", "incomplete"),
+            "total_headcounts": event.get("last_headcount", 0),
+            "event_name": event.get("Event Name", "Unknown"),
+            "date": date_str
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error getting persistent attendees: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -8118,21 +8237,32 @@ from fastapi.encoders import jsonable_encoder
 @app.post("/tasks")
 async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
     try:
-        # Convert Pydantic model to dict
         new_task_dict = task.dict()
-        # Attach the creator's email for backward compatibility
-        new_task_dict["assignedfor"] = current_user["email"]
+        
+        print(f"[CREATE TASK] assignedfor from frontend: {new_task_dict.get('assignedfor')}")
+        print(f"[CREATE TASK] assigned_to_email from frontend: {new_task_dict.get('assigned_to_email')}")
+        print(f"[CREATE TASK] creator: {current_user.get('email')}")
+        
+        # NEVER overwrite assignedfor if frontend sent it
+        if not new_task_dict.get("assignedfor"):
+            new_task_dict["assignedfor"] = current_user["email"]
+            
+        if not new_task_dict.get("assigned_to_email"):
+            new_task_dict["assigned_to_email"] = new_task_dict["assignedfor"]
 
-        # Insert into MongoDB
+        # Always track creator separately
+        new_task_dict["created_by_email"] = current_user["email"]
+        new_task_dict["created_by_name"] = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        new_task_dict["createdAt"] = datetime.utcnow()
+
+        print(f"[CREATE TASK] Final assignedfor being saved: {new_task_dict.get('assignedfor')}")
+
         result = await db["tasks"].insert_one(new_task_dict)
-
-        # Add the MongoDB _id as a string for the response
         new_task_dict["_id"] = str(result.inserted_id)
-
-        # Encode safely for JSON response
         return {"status": "success", "task": jsonable_encoder(new_task_dict)}
 
     except Exception as e:
+        print(f"[CREATE TASK] Failed: {str(e)}")
         return {"status": "failed", "error": str(e)}
 
 # Retrieve all tasks
@@ -8178,12 +8308,21 @@ async def get_user_tasks(
                 "$or": [
                     {"assignedfor": user_email},
                     {"assigned_to_email": user_email},
-                    {"assignedfor": user_name},
-                    {"leader_assigned": user_name},
-                    {"leader_name": user_name},
+                    {
+                        "$and": [
+                            {"leader_name": user_name},
+                            {"is_consolidation_task": True}
+                        ]
+                    },
+                    {
+                        "$and": [
+                            {"leader_assigned": user_name},
+                            {"is_consolidation_task": True}
+                        ]
+                    }
                 ]
             }
-
+            
         cursor = tasks_collection.find(query)
         all_tasks = []
 
@@ -8202,21 +8341,22 @@ async def get_user_tasks(
                         continue
 
             all_tasks.append({
-                "_id": str(task["_id"]),
-                "name": task.get("name", "Unnamed Task"),
-                "taskType": task.get("taskType", ""),
-                "followup_date": task_datetime.isoformat() if task_datetime else None,
-                "status": task.get("status", "Open"),
-                "assignedfor": task.get("assignedfor", ""),
-                "assigned_to_email": task.get("assigned_to_email", ""),
-                "leader_name": task.get("leader_name", ""),
-                "type": task.get("type", "call"),
-                "contacted_person": task.get("contacted_person", {}),
-                "isRecurring": bool(task.get("recurring_day")),
-                "is_consolidation_task": bool(task.get("is_consolidation_task")),
-                "consolidation_source": task.get("consolidation_source", "manual"),
-                "source_display": task.get("source_display", "Manual")
-            })
+            "_id": str(task["_id"]),
+            "name": task.get("name", "Unnamed Task"),
+            "taskType": task.get("taskType", ""),
+            "followup_date": task_datetime.isoformat() if task_datetime else None,
+            "status": task.get("status", "Open"),
+            "assignedfor": task.get("assignedfor", ""),
+            "assigned_to_email": task.get("assigned_to_email", ""),
+            "created_by_email": task.get("created_by_email", ""),  # ADD THIS
+            "leader_name": task.get("leader_name", ""),
+            "type": task.get("type", "call"),
+            "contacted_person": task.get("contacted_person", {}),
+            "isRecurring": bool(task.get("recurring_day")),
+            "is_consolidation_task": bool(task.get("is_consolidation_task")),
+            "consolidation_source": task.get("consolidation_source", "manual"),
+            "source_display": task.get("source_display", "Manual")
+        })
 
         # Sort newest first
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
@@ -10429,7 +10569,7 @@ async def get_dashboard_comprehensive(
         ]
 
         tasks_pipeline = [
-    # Step 1: Convert all date fields from string to Date if needed
+    # Step 1: Convert dates AND normalize assignedfor
     {
         "$addFields": {
             "followup_date_conv": {
@@ -10452,6 +10592,9 @@ async def get_dashboard_comprehensive(
                     "then": {"$dateFromString": {"dateString": "$completedAt", "onError": None, "onNull": None}},
                     "else": "$completedAt"
                 }
+            },
+            "assignedfor_norm": {
+                "$toLower": {"$ifNull": ["$assignedfor", "unknown"]}
             }
         }
     },
@@ -10561,10 +10704,10 @@ async def get_dashboard_comprehensive(
             }
         }
     },
-    # Step 4: Group by user
+    # Step 4: Group by normalized assignedfor
     {
         "$group": {
-            "_id": "$assignedfor",
+            "_id": "$assignedfor_norm",
             "tasks": {
                 "$push": {
                     "_id": "$_id",
@@ -10576,7 +10719,7 @@ async def get_dashboard_comprehensive(
                     "completedAt": "$completedAt_conv",
                     "createdAt": "$createdAt_conv",
                     "status": "$status",
-                    "assignedfor": "$assignedfor",
+                    "assignedfor": "$assignedfor_norm",
                     "type": "$type",
                     "contacted_person": "$contacted_person",
                     "isRecurring": {
