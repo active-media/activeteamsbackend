@@ -2472,7 +2472,7 @@ async def get_other_events(
                             total_attendance = len(weekly_attendees)
 
                             instance = {
-                                "_id": f"{str(event.get('_id'))}_{exact_date_str}",
+                                "_id": f"{str(event.get('_id'))}",
                                 "UUID": event.get("UUID", ""),
                                 "eventName": event_name,
                                 "eventType": event_type_value,
@@ -6640,7 +6640,7 @@ async def update_persistent_attendees(
                 })
 
         result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
+            {"_id": ObjectId(clean_id)},
             {
                 "$set": {
                     "persistent_attendees": cleaned_attendees,
@@ -8845,21 +8845,22 @@ async def get_user_tasks(
                         continue
 
             all_tasks.append({
-                "_id": str(task["_id"]),
-                "name": task.get("name", "Unnamed Task"),
-                "taskType": task.get("taskType", ""),
-                "followup_date": task_datetime.isoformat() if task_datetime else None,
-                "status": task.get("status", "Open"),
-                "assignedfor": task.get("assignedfor", ""),
-                "assigned_to_email": task.get("assigned_to_email", ""),
-                "leader_name": task.get("leader_name", ""),
-                "type": task.get("type", "call"),
-                "contacted_person": task.get("contacted_person", {}),
-                "isRecurring": bool(task.get("recurring_day")),
-                "is_consolidation_task": bool(task.get("is_consolidation_task")),
-                "consolidation_source": task.get("consolidation_source", "manual"),
-                "source_display": task.get("source_display", "Manual")
-            })
+            "_id": str(task["_id"]),
+            "name": task.get("name", "Unnamed Task"),
+            "taskType": task.get("taskType", ""),
+            "followup_date": task_datetime.isoformat() if task_datetime else None,
+            "status": task.get("status", "Open"),
+            "assignedfor": task.get("assignedfor", ""),
+            "assigned_to_email": task.get("assigned_to_email", ""),
+            "created_by_email": task.get("created_by_email", ""),  # ADD THIS
+            "leader_name": task.get("leader_name", ""),
+            "type": task.get("type", "call"),
+            "contacted_person": task.get("contacted_person", {}),
+            "isRecurring": bool(task.get("recurring_day")),
+            "is_consolidation_task": bool(task.get("is_consolidation_task")),
+            "consolidation_source": task.get("consolidation_source", "manual"),
+            "source_display": task.get("source_display", "Manual")
+        })
 
         # Sort newest first
         all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
