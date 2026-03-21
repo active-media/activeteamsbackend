@@ -677,46 +677,7 @@ async def get_cache_status():
         },
         "is_complete": cache_size >= total_in_db if total_in_db > 0 else True
     }
-
-
-@app.get("/people/search")
-async def search_people(
-    query: str = Query("", min_length=2),
-    limit: int = Query(50, ge=1, le=200)
-):
-    """Fast search through cached people data."""
-    try:
-        if not people_cache["data"]:
-            return {"success": False, "error": "Cache not ready", "results": []}
-
-        search_term = query.lower().strip()
-        results = []
-
-        for person in people_cache["data"]:
-            if (
-                search_term in person.get("FullName", "").lower()
-                or search_term in person.get("Email", "").lower()
-                or search_term in person.get("Number", "")
-                or search_term in person.get("Address", "").lower()
-                or search_term in person.get("Stage", "").lower()
-                or search_term in person.get("Organisation", "").lower()
-            ):
-                results.append(person)
-
-            if len(results) >= limit:
-                break
-
-        return {
-            "success": True,
-            "results": results,
-            "total_found": len(results),
-            "search_term": query,
-            "source": "cache"
-        }
-
-    except Exception as e:
-        return {"success": False, "error": str(e), "results": []}
-    
+  
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
     logger.info(f"Forgot password requested for email: {payload.email}")
@@ -833,6 +794,342 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         "refresh_token": new_refresh_plain,
     }
 
+
+# In login endpoint
+@app.post("/login")
+async def login(user: UserLogin):
+    logger.info(f"Login attempt: {user.email}")
+    existing = await users_collection.find_one({"email": user.email})
+    if not existing or not verify_password(user.password, existing["password"]):
+        logger.warning(f"Login failed: {user.email}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Ensure user ID is properly formatted
+    user_id = str(existing["_id"])
+    
+    # Get organization with proper case handling
+    organization = existing.get("Organization") or existing.get("organization", "")
+    
+    # Get or create org_id
+    org_id = existing.get("org_id")
+    if not org_id and organization:
+        org_id = organization.lower().replace(" ", "-")
+    if not org_id:
+        org_id = "active-teams"
+    
+    # Create token with user_id
+    access_token = create_access_token({
+        "user_id": user_id,  # Important: use "user_id" as key
+        "sub": user_id,      # Also include sub for compatibility
+        "email": existing["email"],
+        "role": existing.get("role", "user"),
+        "is_supreme_admin": existing.get("is_supreme_admin", False),
+        "Organization": organization,
+        "org_id": org_id
+    })
+    
+    logger.info(f"Token created for user {user_id}")
+    
+    # Return response with user ID
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user_id,
+            "_id": user_id,  # Include both for compatibility
+            "email": existing["email"],
+            "name": existing.get("name", ""),
+            "surname": existing.get("surname", ""),
+            "role": existing.get("role", "user"),
+            "organization": organization,
+            "org_id": org_id,
+            "is_supreme_admin": existing.get("is_supreme_admin", False)
+        }
+    }
+
+@app.post("/signup")
+async def signup(user: UserCreate):
+    logger.info(f"Signup attempt: {user.email}")
+   
+    # Normalize email
+    email = user.email.lower().strip()
+   
+    # Check if user already exists in Users collection ONLY
+    existing = await users_collection.find_one({"email": email})
+    if existing:
+        logger.warning(f"Signup failed - email already registered: {email}")
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Hash password
+    hashed = hash_password(user.password)
+   
+
+    # ---- Resolve organization & org_tag dynamically from DB ----
+    organization = (user.organization or "").strip()
+    org_tag = ""
+    if organization:
+        org_doc = await organizations_collection.find_one(
+            {"name": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}}
+        )
+        if org_doc:
+            org_tag = org_doc.get("tag", organization)
+        else:
+            org_tag = organization  # fallback: use name as tag if not found
+
+    # Create base user document (leader fields will be added after hierarchy is calculated)
+    user_dict = {
+        "name": user.name,
+        "surname": user.surname,
+        "date_of_birth": user.date_of_birth,
+        "home_address": user.home_address,
+        "phone_number": user.phone_number,
+        "email": email,
+        "gender": user.gender,
+        "password": hashed,
+        "confirm_password": hashed,
+        # Default role for all new signups so route guards recognize them
+        "role": "user",
+        "Organization": organization,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    inviter_full_name = user.invited_by.strip()
+    inviter_person = None
+    inviter_person_id: Optional[ObjectId] = None
+    leader1 = ""
+    leader12 = ""
+    leader144 = ""
+    leader1728 = ""
+
+    async def _find_person_by_full_name(full_name: str):
+        full_name = (full_name or "").strip()
+        if not full_name:
+            return None
+        parts = [p for p in full_name.split(" ") if p]
+        first = parts[0]
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        if last:
+            return await people_collection.find_one(
+                {
+                    "Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"},
+                    "Surname": {"$regex": f"^{re.escape(last)}$", "$options": "i"},
+                },
+                {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+            )
+
+        return await people_collection.find_one(
+            {"Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}},
+            {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1},
+        )
+
+    def _normalize_object_id_list(value):
+        if not isinstance(value, list):
+            return []
+        out = []
+        for v in value:
+            if isinstance(v, ObjectId):
+                out.append(v)
+            elif isinstance(v, str):
+                try:
+                    out.append(ObjectId(v))
+                except Exception:
+                    continue
+        return out
+
+    def _build_leader_path_from_leader_doc(leader_doc):
+        if not leader_doc or not leader_doc.get("_id"):
+            return []
+        leader_id = leader_doc["_id"]
+        base_path = _normalize_object_id_list(leader_doc.get("LeaderPath"))
+        if not base_path or base_path[-1] != leader_id:
+            base_path.append(leader_id)
+        return base_path
+   
+    if inviter_full_name:
+        print(f"Looking for inviter in background cache: '{inviter_full_name}'")
+
+        # Prefer the inviter's ObjectId if the frontend provided it.
+        if getattr(user, "invited_by_id", None):
+            try:
+                inviter_person = await people_collection.find_one(
+                    {"_id": ObjectId(user.invited_by_id)},
+                    {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1, "Gender": 1,
+                     "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1},
+                )
+                if inviter_person:
+                    inviter_person_id = inviter_person["_id"]
+            except Exception:
+                inviter_person = None
+                inviter_person_id = None
+       
+        # Search in background-loaded cache (contains ALL people)
+        cached_inviter = None
+        for person in people_cache["data"]:
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            if (full_name.lower() == inviter_full_name.lower() or
+                person.get('Name', '').lower() == inviter_full_name.lower()):
+                cached_inviter = person
+                break
+       
+        if cached_inviter:
+            print(f"Found inviter in background cache: {cached_inviter.get('FullName')}")
+            # checking if gender is matching so it's not it can just assign them a leader at 12
+            isGenderMatching = cached_inviter.get("Gender", "") == user.gender.capitalize()
+
+            print(cached_inviter)
+            print(isGenderMatching)
+            print(cached_inviter.get("Gender", ""),user.gender.capitalize())
+
+            if  not isGenderMatching:
+                if user.gender == "male":
+                    leader1 = "Gavin Enslin"
+                else:
+                    leader1 = "Vicky Enslin"
+                leader12 = ""  
+                leader144 = ""
+                leader1728 = ""    
+            else: #if gender is matching should go on as usual
+                # Get the inviter's leader hierarchy from cache
+                inviter_leader1 = cached_inviter.get("Leader @1", "")
+                inviter_leader12 = cached_inviter.get("Leader @12", "")
+                inviter_leader144 = cached_inviter.get("Leader @144", "")
+                inviter_leader1728 = cached_inviter.get("Leader @1728", "")
+                print(cached_inviter,inviter_leader1,inviter_leader12,inviter_leader144,inviter_leader1728)
+               
+               
+                # Determine what level the inviter is at and set leaders accordingly
+                if inviter_leader1728:
+                    print("1")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
+                elif inviter_leader144:
+                    print("2")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_leader144
+                    leader1728 = inviter_full_name
+                elif inviter_leader12:
+                    print("3")
+                    leader1 = inviter_leader1
+                    leader12 = inviter_leader12
+                    leader144 = inviter_full_name
+                    leader1728 = ""
+                elif inviter_leader1:
+                    print("4")
+                    leader1 = inviter_leader1
+                    leader12 = ""
+                    leader144 = ""
+                    leader1728 = ""
+                else:
+                    print("5")
+                    leader1 = inviter_leader1
+                    leader12 = ""
+                    leader144 = ""
+                    leader1728 = ""
+               
+                logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+        else:
+            # Fallback: set inviter as Leader @1
+            leader1 = inviter_full_name
+
+        # If we didn't resolve inviter by id, try resolve by name (best-effort).
+        if inviter_person is None:
+            inviter_person = await _find_person_by_full_name(inviter_full_name)
+            if inviter_person:
+                inviter_person_id = inviter_person["_id"]
+   
+    # ---- Dynamic Leadership Logic: ONLY for Active Church ----
+    if organization and organization.lower() != "active church":
+        logger.info(f"Organization '{organization}' is not 'Active Church'. Clearing leadership hierarchy for {email}.")
+        leader1 = ""
+        leader12 = ""
+        leader144 = ""
+        leader1728 = ""
+    elif not organization:
+        # Default to Active Church if no organization specified.
+        pass
+
+    # ---- ObjectId-based leader hierarchy (LeaderId + LeaderPath) ----
+    leader_id_obj: Optional[ObjectId] = None
+    leader_path: list[ObjectId] = []
+
+    if organization and organization.lower() != "active church":
+        leader_id_obj = None
+        leader_path = []
+    else:
+        # Prefer the selected inviter as the direct leader when available.
+        if inviter_person_id:
+            leader_id_obj = inviter_person_id
+            leader_path = _build_leader_path_from_leader_doc(inviter_person) if inviter_person else [inviter_person_id]
+        else:
+            # Fall back to resolving the computed Leader @1 full name to a People ObjectId.
+            if leader1:
+                leader1_doc = await _find_person_by_full_name(leader1)
+                if leader1_doc and leader1_doc.get("_id"):
+                    leader_id_obj = leader1_doc["_id"]
+                    leader_path = _build_leader_path_from_leader_doc(leader1_doc)
+
+    # Attach ObjectId-based leader fields onto the user record before inserting.
+    user_dict["LeaderId"] = leader_id_obj
+    user_dict["LeaderPath"] = leader_path
+
+    # Insert user into Users collection (now includes LeaderId + LeaderPath)
+    user_result = await db["Users"].insert_one(user_dict)
+    logger.info(f"User created successfully: {email}")
+
+    # Create corresponding person record in People collection
+    person_doc = {
+        "Name": user.name.strip(),
+        "Surname": user.surname.strip(),
+        "Email": email,
+        "Number": user.phone_number.strip(),
+        "Address": user.home_address.strip(),
+        "Gender": user.gender.strip(),
+        "Birthday": user.date_of_birth,
+        "InvitedBy": inviter_full_name,
+        "Leader @1": leader1,
+        "Leader @12": leader12,
+        "Leader @144": leader144,
+        "Leader @1728": leader1728,
+        "LeaderId": leader_id_obj,
+        "LeaderPath": leader_path,
+        "Organization": organization,
+        "Stage": "Win",
+        "Date Created": datetime.utcnow().isoformat(),
+        "UpdatedAt": datetime.utcnow().isoformat(),
+        "user_id": str(user_result.inserted_id)
+    }
+   
+    try:
+        person_result = await people_collection.insert_one(person_doc)
+        logger.info(f"Person record created successfully for: {email} (ID: {person_result.inserted_id})")
+       
+        # ADD THE NEW PERSON TO BACKGROUND CACHE
+        new_person_cache_entry = {
+            "_id": str(person_result.inserted_id),
+            "Name": user.name.strip(),
+            "Surname": user.surname.strip(),
+            "Email": email,
+            "Number": user.phone_number.strip(),
+            "Leader @1": leader1,
+            "Leader @12": "",
+            "Leader @144": "",
+            "Leader @1728": "",
+            "FullName": f"{user.name.strip()} {user.surname.strip()}".strip()
+        }
+        people_cache["data"].append(new_person_cache_entry)
+        print(f"Added new person to background cache: {new_person_cache_entry['FullName']}")
+       
+    except Exception as e:
+        logger.error(f"Failed to create person record for {email}: {e}")
+   
+    return {"message": "User created successfully", "Organization": organization,}
+
+
 # ---------------- Logout ----------------
 @app.post("/logout")
 async def logout(user_id: str = Body(..., embed=True)):
@@ -897,7 +1194,6 @@ async def create_organization(data: dict = Body(...)):
     tag = (data.get("tag") or name).strip()
     doc = {
         "name": name,
-        "tag": tag,
         "description": (data.get("description") or "").strip(),
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
@@ -6135,16 +6431,17 @@ async def submit_attendance(
         for attendee in persistent_attendees:
             if isinstance(attendee, dict):
                 persistent_attendees_dict.append({
-                    "id": attendee.get("id", ""),
-                    "name": attendee.get("name", ""),
-                    "fullName": attendee.get("fullName", attendee.get("name", "")),
-                    "email": attendee.get("email", ""),
-                    "phone": attendee.get("phone", ""),
-                    "leader12": attendee.get("leader12", ""),
-                    "leader144": attendee.get("leader144", ""),
-                    "isPersistent": True
-                })
-        
+                "id": attendee.get("id", ""),
+                "name": attendee.get("name", ""),
+                "fullName": attendee.get("fullName", attendee.get("name", "")),
+                "email": attendee.get("email", ""),
+                "phone": attendee.get("phone", ""),
+                "leader12": attendee.get("leader12", ""),
+                "leader144": attendee.get("leader144", ""),
+                "invitedBy": attendee.get("invitedBy", ""),
+                "isPersistent": True
+            })
+               
         checked_in_attendees = []
         first_time_count = 0
         recommitment_count = 0
@@ -6321,9 +6618,9 @@ async def update_persistent_attendees(
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-        
+
         persistent_attendees = data.get("persistent_attendees", [])
-        
+
         cleaned_attendees = []
         for attendee in persistent_attendees:
             if isinstance(attendee, dict):
@@ -6334,9 +6631,14 @@ async def update_persistent_attendees(
                     "email": attendee.get("email", ""),
                     "phone": attendee.get("phone", ""),
                     "leader12": attendee.get("leader12", ""),
-                    "leader144": attendee.get("leader144", "")
+                    "leader144": attendee.get("leader144", ""),
+                    "invitedBy": attendee.get("invitedBy", ""),
+                    "priceName": attendee.get("priceName", ""),
+                    "price": attendee.get("price", 0),
+                    "ageGroup": attendee.get("ageGroup", ""),
+                    "paymentMethod": attendee.get("paymentMethod", ""),
                 })
-        
+
         result = await events_collection.update_one(
             {"_id": ObjectId(event_id)},
             {
@@ -6347,40 +6649,54 @@ async def update_persistent_attendees(
                 }
             }
         )
-        
+
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+
         return {
             "success": True,
             "message": "Persistent attendees updated successfully",
             "count": len(cleaned_attendees),
             "attendees": cleaned_attendees
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
     event_id: str = Path(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get persistent attendees for an event"""
     try:
-        if not ObjectId.is_valid(event_id):
+        actual_event_id = event_id
+        date_from_id = None
+
+        if "_" in event_id:
+            parts = event_id.split("_")
+            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
+                actual_event_id = parts[0]
+                if len(parts) >= 2:
+                    try:
+                        date_from_id = parts[1]
+                        datetime.strptime(date_from_id, "%Y-%m-%d")
+                    except Exception:
+                        date_from_id = None
+
+        if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-        
+
         event = await events_collection.find_one(
-            {"_id": ObjectId(event_id)},
-            {"persistent_attendees": 1, "Event Name": 1}
+            {"_id": ObjectId(actual_event_id)},
+            {"persistent_attendees": 1, "attendance": 1, "Event Name": 1, "date": 1}
         )
-        
+
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+
         raw_persistent = event.get("persistent_attendees", [])
         cleaned = []
         for p in raw_persistent:
@@ -6393,12 +6709,13 @@ async def get_persistent_attendees(
                     "phone": p.get("phone", ""),
                     "leader12": p.get("leader12", ""),
                     "leader144": p.get("leader144", ""),
+                    "invitedBy": p.get("invitedBy", ""),
                     "priceName": p.get("priceName", ""),
                     "price": p.get("price", 0),
                     "ageGroup": p.get("ageGroup", ""),
                     "paymentMethod": p.get("paymentMethod", ""),
                 })
-        
+
         attendance_map = event.get("attendance", {})
 
         if date_from_id:
@@ -6410,8 +6727,8 @@ async def get_persistent_attendees(
             elif isinstance(event_date, str):
                 event_date = event_date.split("T")[0].split(" ")[0].strip()
 
-        print(f" event_date looking for: {event_date}")
-        print(f" attendance_map keys: {list(attendance_map.keys()) if isinstance(attendance_map, dict) else 'NOT A DICT'}")
+        print(f"event_date looking for: {event_date}")
+        print(f"attendance_map keys: {list(attendance_map.keys()) if isinstance(attendance_map, dict) else 'NOT A DICT'}")
 
         checked_in_attendees = []
         headcount = 0
@@ -6420,26 +6737,20 @@ async def get_persistent_attendees(
         if isinstance(attendance_map, dict) and attendance_map:
             date_entry = attendance_map.get(event_date, {})
 
-            print(f" date_entry found: {bool(date_entry)}")
-
-            # ✅ BUG 1 FIX: if exact date not found, search all keys for matching date
             if not date_entry:
                 for key, value in attendance_map.items():
                     if isinstance(value, dict):
                         if (value.get("event_date_iso") == event_date or
-                            value.get("event_date_exact") == event_date or
-                            key == event_date):
+                                value.get("event_date_exact") == event_date or
+                                key == event_date):
                             date_entry = value
-                            print(f" Found date_entry via fallback key: {key}")
+                            print(f"Found date_entry via fallback key: {key}")
                             break
 
             if isinstance(date_entry, dict) and date_entry:
                 raw_attendees = date_entry.get("attendees", [])
                 headcount = date_entry.get("total_headcounts", 0)
                 attendance_status = date_entry.get("status", "incomplete")
-
-                print(f" attendance_status from date_entry: {attendance_status}")
-                print(f" raw_attendees count: {len(raw_attendees)}")
 
                 for a in raw_attendees:
                     if isinstance(a, dict):
@@ -6451,6 +6762,7 @@ async def get_persistent_attendees(
                             "phone": a.get("phone", ""),
                             "leader12": a.get("leader12", ""),
                             "leader144": a.get("leader144", ""),
+                            "invitedBy": a.get("invitedBy", ""),
                             "checked_in": True,
                             "decision": a.get("decision", ""),
                             "priceName": a.get("priceName", ""),
@@ -6459,20 +6771,24 @@ async def get_persistent_attendees(
                             "paymentMethod": a.get("paymentMethod", ""),
                         })
             else:
-                # ✅ BUG 2 FIX: was returning early inside else, cutting off the final return
                 attendance_status = "incomplete"
                 checked_in_attendees = []
                 headcount = 0
 
         return {
-            "persistent_attendees": event.get("persistent_attendees", []),
+            "persistent_attendees": cleaned,
+            "checked_in_attendees": checked_in_attendees,
+            "attendance_status": attendance_status,
+            "total_headcounts": headcount,
             "event_name": event.get("Event Name", "Unknown")
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error getting persistent attendees: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+          
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(
     event_id: str = Path(...),
@@ -6970,83 +7286,96 @@ async def uncapture_person(data: UncaptureRequest):
 
 # --- PROFILE PICTURE ENDPOINTS ---
 
+# In main.py
 @app.get("/profile/{user_id}", response_model=UserProfile)
 async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
-    """Get user profile - uses consistent authentication"""
-    # Verify user owns this account
-    token_user_id = current_user.get("user_id")
-   
-    if not token_user_id or token_user_id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this profile")
+    try:
+        # Debug logging
+        print(f"Profile request - User ID from URL: {user_id}")
+        print(f"Current user data: {current_user}")
+        
+        token_user_id = current_user.get("user_id") or current_user.get("_id")
+        
+        if not token_user_id:
+            print("Error: No user_id in token")
+            raise HTTPException(status_code=401, detail="Invalid user ID in token")
+        
+        print(f"Token user ID: {token_user_id}")
+        
+        # Compare as strings to avoid type issues
+        if str(token_user_id) != str(user_id):
+            print(f"Authorization mismatch - Token: {token_user_id}, URL: {user_id}")
+            raise HTTPException(status_code=403, detail="Not authorized to access this profile")
+        
+        if not ObjectId.is_valid(user_id):
+            print(f"Invalid ObjectId format: {user_id}")
+            raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
+        
+        # Fetch user with all fields
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            print(f"User not found with ID: {user_id}")
+            raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
+        
+        print(f"User found: {user.get('email')}")
+        
+        # Build response with proper field mapping
+        response_data = {
+            "id": str(user["_id"]),
+            "name": user.get("name", ""),
+            "surname": user.get("surname", ""),
+            "date_of_birth": user.get("date_of_birth", ""),
+            "home_address": user.get("home_address", ""),
+            "invited_by": user.get("invited_by", ""),
+            "phone_number": user.get("phone_number", ""),
+            "email": user.get("email", ""),
+            "gender": user.get("gender", ""),
+            "role": user.get("role", "user"),
+            "profile_picture": user.get("profile_picture", ""),
+            "organization": user.get("organization", user.get("Organization", "")),  # Try both cases
+        }
+        
+        print(f"Returning profile data for {response_data['email']}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Profile fetch error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
 
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-
-    user = await users_collection.find_one({"_id": ObjectId(user_id)})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {
-        "id": str(user["_id"]),
-        "name": user.get("name", ""),
-        "surname": user.get("surname", ""),
-        "date_of_birth": user.get("date_of_birth", ""),
-        "home_address": user.get("home_address", ""),
-        "invited_by": user.get("invited_by", ""),
-        "phone_number": user.get("phone_number", ""),
-        "email": user.get("email", ""),
-        "gender": user.get("gender", ""),
-        "role": user.get("role", "user"),
-        "profile_picture": user.get("profile_picture", ""),
-        "organization": user.get("organization", ""),
-    }
-
+# In main.py
 @app.put("/profile/{user_id}")
 async def update_profile(
     user_id: str,
     request: Request,
     current_user: dict = Depends(get_current_user)
 ):
-    """Complete working profile update endpoint"""
     try:
-        print(f"PROFILE UPDATE ENDPOINT CALLED")
-        print(f"User ID from URL: {user_id}")
-        print(f"Current User ID from Token: {current_user.get('user_id')}")
-       
-        # Check authorization
-        token_user_id = current_user.get("user_id")
-        if not token_user_id or token_user_id != user_id:
-            print(f"AUTHORIZATION FAILED: {token_user_id} != {user_id}")
+        token_user_id = current_user.get("user_id") or current_user.get("_id")
+        if not token_user_id or str(token_user_id) != str(user_id):
             raise HTTPException(status_code=403, detail="Not authorized to update this profile")
 
         if not ObjectId.is_valid(user_id):
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        # Get and parse request body
-        body = await request.body()
-        body_str = body.decode('utf-8')
-        print(f"RAW REQUEST BODY: {body_str}")
-       
         try:
-            update_data = json.loads(body_str)
+            body = await request.body()
+            update_data = json.loads(body.decode('utf-8'))
+            print(f"Update data received: {update_data}")
         except json.JSONDecodeError as e:
-            print(f"JSON PARSE ERROR: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+            print(f"JSON decode error: {e}")
+            raise HTTPException(status_code=400, detail="Invalid JSON")
 
-        print(f"PARSED UPDATE DATA: {update_data}")
-
-        # Check if user exists
         existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not existing_user:
-            print(f"USER NOT FOUND: {user_id}")
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Build update payload - handle all possible field names
         update_payload = {}
-       
-        # Field mapping from frontend to database
+        
         field_mapping = {
-            # Direct mappings
             "name": "name",
             "surname": "surname",
             "email": "email",
@@ -7057,40 +7386,42 @@ async def update_profile(
             "gender": "gender",
             "profile_picture": "profile_picture",
             "organization": "organization",
-           
-            # Alternative field names from frontend
+            "Organization": "Organization",  # Preserve original case
             "dob": "date_of_birth",
             "address": "home_address",
             "invitedBy": "invited_by",
             "phone": "phone_number"
         }
-       
-        # Map all fields
+        
         for frontend_field, db_field in field_mapping.items():
             if frontend_field in update_data:
                 value = update_data[frontend_field]
                 if value is not None and value != "":
-                    # Normalize gender values
                     if db_field == "gender":
-                        value = normalize_gender_value(value)
-                   
+                        value = value.capitalize()
                     update_payload[db_field] = value
-                    print(f"Mapping {frontend_field} -> {db_field}: {value}")
 
-        # Add update timestamp
         update_payload["updated_at"] = datetime.utcnow().isoformat()
 
-        # ---- If organization changed, re-resolve org_tag from DB ----
+        # Handle organization changes
         if "organization" in update_payload:
             new_org = update_payload["organization"]
-            org_doc = await organizations_collection.find_one(
-                {"name": {"$regex": f"^{re.escape(new_org)}$", "$options": "i"}}
-            )
-            update_payload["org_tag"] = org_doc.get("tag", new_org) if org_doc else new_org
+            # Also update the capitalized version if needed
+            update_payload["Organization"] = new_org
             
-            # CLEAR LEADERSHIP IF NOT ACTIVE CHURCH
-            if new_org.lower() != "active church":
-                print(f" Organization changed to {new_org}. Clearing leadership.")
+            # Update org_id
+            update_payload["org_id"] = new_org.lower().replace(" ", "-")
+            
+            # Check if organization exists in organizations_collection
+            if organizations_collection:
+                org_doc = await organizations_collection.find_one(
+                    {"name": {"$regex": f"^{re.escape(new_org)}$", "$options": "i"}}
+                )
+                if org_doc:
+                    update_payload["org_tag"] = org_doc.get("tag", new_org)
+            
+            # Reset leaders if organization changes from Active Church
+            if new_org.lower() != "active church" and new_org.lower() != "active teams":
                 update_payload["leader1"] = ""
                 update_payload["leader12"] = ""
                 update_payload["leader144"] = ""
@@ -7098,14 +7429,17 @@ async def update_profile(
                 update_payload["Leader @12"] = ""
                 update_payload["Leader @144"] = ""
                 update_payload["Leader @1728"] = ""
-       
-        print(f" FINAL UPDATE PAYLOAD: {update_payload}")
 
         if not update_payload:
-            print("No fields to update")
             return {
                 "message": "No changes to update",
-                "user": format_user_response(existing_user)
+                "user": {
+                    "id": str(existing_user["_id"]),
+                    "name": existing_user.get("name", ""),
+                    "surname": existing_user.get("surname", ""),
+                    "email": existing_user.get("email", ""),
+                    "organization": existing_user.get("organization", existing_user.get("Organization", "")),
+                }
             }
 
         # Perform the update
@@ -7113,27 +7447,36 @@ async def update_profile(
             {"_id": ObjectId(user_id)},
             {"$set": update_payload}
         )
-
-        print(f"UPDATE RESULT - matched: {result.matched_count}, modified: {result.modified_count}")
-
-        # Fetch and return updated user
+        
+        if result.modified_count == 0:
+            print("No documents were modified")
+        
+        # Fetch updated user
         updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not updated_user:
-            raise HTTPException(status_code=404, detail="User not found after update")
-
-        response_data = format_user_response(updated_user)
-        print(f"UPDATE SUCCESSFUL: {response_data}")
-
-        return response_data
-
+        
+        return {
+            "id": str(updated_user["_id"]),
+            "name": updated_user.get("name", ""),
+            "surname": updated_user.get("surname", ""),
+            "date_of_birth": updated_user.get("date_of_birth", ""),
+            "home_address": updated_user.get("home_address", ""),
+            "invited_by": updated_user.get("invited_by", ""),
+            "phone_number": updated_user.get("phone_number", ""),
+            "email": updated_user.get("email", ""),
+            "gender": updated_user.get("gender", ""),
+            "role": updated_user.get("role", "user"),
+            "profile_picture": updated_user.get("profile_picture", ""),
+            "organization": updated_user.get("organization", updated_user.get("Organization", "")),
+        }
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"UNEXPECTED ERROR: {str(e)}")
+        print(f"Profile update error: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
+    
 def normalize_gender_value(gender):
     """Normalize gender values to consistent format"""
     if not gender:
@@ -7170,7 +7513,7 @@ def format_user_response(user):
         "organization": user.get("organization", ""),
     }
 
-# Debug endpoint
+# # Debug endpoint
 @app.put("/profile/{user_id}/debug")
 async def debug_profile_update(
     user_id: str,
@@ -7329,25 +7672,46 @@ async def get_people(
             current_user.get("organization", "").lower().replace(" ", "-") or
             "active-teams"
         )
+        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+        organization = current_user.get("Organization") or current_user.get("organization", "")
 
-        # Get org config to know hierarchy fields
         org_config = await org_config_collection.find_one({"_id": org_id})
         hierarchy = org_config.get("hierarchy", []) if org_config else []
         hierarchy_fields = [h.get("field") for h in hierarchy if h.get("field")]
 
-        # Build query - active-teams uses Org_id, others use org_id
-        query = {
-            "$or": [
-                {"org_id": org_id},
-                {"Org_id": {"$regex": f"^{org_id}$", "$options": "i"}},
-                {"Organisation": {"$regex": "active church", "$options": "i"}} if org_id == "active-teams" else {}
-            ]
-        }
-        # Clean empty dicts from $or
-        query["$or"] = [q for q in query["$or"] if q]
+        org_conditions = [
+            {"org_id": org_id},
+            {"Org_id": {"$regex": f"^{re.escape(org_id)}$", "$options": "i"}},
+        ]
+
+        if organization:
+            org_conditions.append({"Organization": {"$regex": re.escape(organization), "$options": "i"}})
+            org_conditions.append({"Organisation": {"$regex": re.escape(organization), "$options": "i"}})
+            org_id_from_name = organization.lower().replace(" ", "-")
+            if org_id_from_name != org_id:
+                org_conditions.append({"org_id": org_id_from_name})
+
+        org_name_from_id = org_id.replace("-", " ")
+        if org_name_from_id != org_id:
+            org_conditions.append({"Organization": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
+            org_conditions.append({"Organisation": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
+            org_conditions.append({"org_id": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
+
+        if org_id == "active-teams":
+            org_conditions.append({"Organisation": {"$regex": "active church", "$options": "i"}})
+            org_conditions.append({"Organization": {"$regex": "active church", "$options": "i"}})
+            org_conditions.append({"org_id": {"$exists": False}})
+
+        query = {"$or": org_conditions}
 
         if name:
-            query["Name"] = {"$regex": name, "$options": "i"}
+            query["$and"] = query.get("$and", [])
+            query["$and"].append({
+                "$or": [
+                    {"Name": {"$regex": re.escape(name), "$options": "i"}},
+                    {"Surname": {"$regex": re.escape(name), "$options": "i"}},
+                ]
+            })
         if gender:
             query["Gender"] = {"$regex": gender, "$options": "i"}
         if dob:
@@ -7355,7 +7719,7 @@ async def get_people(
         if location:
             query["Address"] = {"$regex": location, "$options": "i"}
         if leader:
-            query["$or"] = [
+            leader_conditions = [
                 {"Leader @1": {"$regex": leader, "$options": "i"}},
                 {"Leader @12": {"$regex": leader, "$options": "i"}},
                 {"Leader @144": {"$regex": leader, "$options": "i"}},
@@ -7364,6 +7728,8 @@ async def get_people(
                 {field: {"$regex": leader, "$options": "i"}}
                 for field in hierarchy_fields
             ]
+            query["$and"] = query.get("$and", [])
+            query["$and"].append({"$or": leader_conditions})
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
 
@@ -7373,20 +7739,16 @@ async def get_people(
             skip = (page - 1) * perPage
             cursor = people_collection.find(query).skip(skip).limit(perPage)
 
-        # Step 1: Load all people into list first
         people_list = []
         async for person in cursor:
-            person["_id"] = person["_id"]  # keep as ObjectId for now
             people_list.append(person)
 
-        # Step 2: Collect all unique LeaderPath IDs for bulk resolution
         all_leader_ids = set()
         for person in people_list:
             for lid in person.get("LeaderPath", []):
                 if lid:
                     all_leader_ids.add(lid)
 
-        # Step 3: Bulk fetch all leaders in ONE query
         name_map = {}
         if all_leader_ids:
             async for leader_doc in people_collection.find(
@@ -7395,12 +7757,10 @@ async def get_people(
             ):
                 name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
 
-        # Step 4: Map to final format with resolved leader names
         final_list = []
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
 
-            # Resolve leader names from LeaderPath (active-teams)
             resolved_leader_1   = name_map.get(leader_path[0], "") if len(leader_path) > 0 else ""
             resolved_leader_12  = name_map.get(leader_path[1], "") if len(leader_path) > 1 else ""
             resolved_leader_144 = name_map.get(leader_path[2], "") if len(leader_path) > 2 else ""
@@ -7417,19 +7777,18 @@ async def get_people(
                 "InvitedBy": person.get("InvitedBy", ""),
                 "Stage": person.get("Stage", "Win"),
                 "org_id": person.get("org_id") or person.get("Org_id", ""),
+                "Organization": person.get("Organization") or person.get("Organisation", ""),
                 "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
                 "LeaderPath": [str(lid) for lid in leader_path],
                 "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                # Leader names: resolved from LeaderPath OR plain text fields (other churches)
-                "Leader @1":   resolved_leader_1   or person.get("Leader @1", "")   or person.get(hierarchy_fields[0], "") if hierarchy_fields else resolved_leader_1 or person.get("Leader @1", ""),
-                "Leader @12":  resolved_leader_12  or person.get("Leader @12", "")  or person.get(hierarchy_fields[1], "") if len(hierarchy_fields) > 1 else resolved_leader_12 or person.get("Leader @12", ""),
-                "Leader @144": resolved_leader_144 or person.get("Leader @144", "") or person.get(hierarchy_fields[2], "") if len(hierarchy_fields) > 2 else resolved_leader_144 or person.get("Leader @144", ""),
+                "Leader @1": resolved_leader_1 or person.get("Leader @1", "") or (person.get(hierarchy_fields[0], "") if hierarchy_fields else ""),
+                "Leader @12": resolved_leader_12 or person.get("Leader @12", "") or (person.get(hierarchy_fields[1], "") if len(hierarchy_fields) > 1 else ""),
+                "Leader @144": resolved_leader_144 or person.get("Leader @144", "") or (person.get(hierarchy_fields[2], "") if len(hierarchy_fields) > 2 else ""),
                 "Leader @1728": person.get("Leader @1728", ""),
                 "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
             }
 
-            # Dynamically add all org hierarchy fields (for victory-outreach etc.)
             for h in hierarchy:
                 field = h.get("field")
                 label = h.get("label")
@@ -7451,7 +7810,72 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-    
+
+
+@app.get("/people/search")
+async def search_people(
+    query: str = Query("", min_length=2),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        org_id = (
+            current_user.get("org_id") or
+            current_user.get("organization", "").lower().replace(" ", "-") or
+            "active-teams"
+        )
+        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+        organization = (current_user.get("Organization") or current_user.get("organization", "")).lower()
+        org_name_from_id = org_id.replace("-", " ").lower()
+
+        if not people_cache["data"]:
+            return {"success": False, "error": "Cache not ready", "results": []}
+
+        search_term = query.lower().strip()
+        results = []
+
+        for person in people_cache["data"]:
+            person_org_id = (person.get("org_id") or person.get("Org_id") or "").lower()
+            person_org_name = (person.get("Organization") or person.get("Organisation") or "").lower()
+            person_org_name_as_id = person_org_name.replace(" ", "-")
+
+            org_match = (
+                org_id in person_org_id or
+                person_org_id in org_id or
+                (organization and organization in person_org_name) or
+                (organization and person_org_name in organization) or
+                (org_name_from_id and org_name_from_id in person_org_name) or
+                (org_name_from_id and person_org_name in org_name_from_id) or
+                person_org_name_as_id == org_id or
+                (org_id == "active-teams" and "active" in person_org_name)
+            )
+
+            if not org_match:
+                continue
+
+            if (
+                search_term in person.get("FullName", "").lower() or
+                search_term in person.get("Email", "").lower() or
+                search_term in person.get("Number", "") or
+                search_term in person.get("Address", "").lower() or
+                search_term in person.get("Stage", "").lower()
+            ):
+                results.append(person)
+
+            if len(results) >= limit:
+                break
+
+        return {
+            "success": True,
+            "results": results,
+            "total_found": len(results),
+            "search_term": query,
+            "source": "cache"
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "results": []}
+
 @app.post("/people")
 async def create_person_with_cache_invalidation(
     person_data: PersonCreate,

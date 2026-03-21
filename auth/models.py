@@ -19,12 +19,16 @@ class UserCreate(BaseModel):
     surname: str
     date_of_birth: str
     home_address: str
-    invited_by: Optional[str] = None  # Changed from "str" to "Optional[str] = None"
+    invited_by: Optional[str] = None
+    invited_by_id: Optional[str] = None  
+    leader: Optional[str] = None 
     phone_number: str
     email: EmailStr
     gender: str
     password: str
     role: Optional[str] = None
+    organization: Optional[str] = None  
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
@@ -40,6 +44,7 @@ class Attendee(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     decision: Optional[str] = None
+    invitedBy: Optional[str] = None
     priceName: Optional[str] = None
     priceTier: Optional[str] = None
     price: Optional[float] = None
@@ -54,7 +59,6 @@ class Attendee(BaseModel):
         if not v and info.data.get("priceTier"):
             return info.data.get("priceTier")
         return v
-
 # ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
@@ -62,6 +66,7 @@ class AttendanceSubmission(BaseModel):
     leaderName: str
     did_not_meet: bool = False
     isTicketed: bool = False
+    invitedBy: Optional[str] = None
 
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
@@ -179,7 +184,8 @@ class EventInDB(EventBase):
     attendees: List[dict] = []
     total_attendance: int = 0
 
-# ============= Profile Update =============
+# =========== Profile endpoint===========
+
 class UserProfile(BaseModel):
     id: str
     name: str
@@ -192,7 +198,6 @@ class UserProfile(BaseModel):
     gender: str
     role: Optional[str] = "user"
     organization: Optional[str] = None
-    org_tag: Optional[str] = None
     profile_picture: Optional[str] = None
 
 class UserProfileUpdate(BaseModel):
@@ -204,8 +209,7 @@ class UserProfileUpdate(BaseModel):
     phone_number: Optional[str] = None
     email: Optional[EmailStr] = None
     gender: Optional[str] = None
-    organization: Optional[str] = None  # updating org also re-derives org_tag
-
+    organization: Optional[str] = None
 # ===== Cell Events =====
 class CellEventCreate(BaseModel):
     service_name: str
