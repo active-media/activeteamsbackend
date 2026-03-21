@@ -8295,15 +8295,7 @@ async def get_user_tasks(
             return {"error": "User email not found", "status": "failed"}
 
         # Build leader full name (used in task matching)
-        # Use the resolved user's name, not always the token holder's name
-        if email and email != current_user.get("email"):
-            # Looking up tasks for a specific user — resolve their name from users collection
-            target_user = await users_collection.find_one(
-                {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
-            )
-            user_name = f"{(target_user or {}).get('name', '')} {(target_user or {}).get('surname', '')}".strip() if target_user else ""
-        else:
-            user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
         timezone = pytz.timezone("Africa/Johannesburg")
 
@@ -8313,6 +8305,7 @@ async def get_user_tasks(
         else:
             query = {
                 "$or": [
+                    {"assignedfor": user_email},
                     {"assigned_to_email": user_email},
                     {
                         "$and": [
@@ -8467,9 +8460,6 @@ async def update_task(task_id: str, updated_task: dict):
    
     if "assignedfor" in updated_task:
         update_data["assignedfor"] = updated_task["assignedfor"]
-
-    if "assigned_to_email" in updated_task:
-        update_data["assigned_to_email"] = updated_task["assigned_to_email"]
    
     # Store updated_at as proper datetime object too, not string
     update_data["updated_at"] = datetime.utcnow()
@@ -10230,39 +10220,27 @@ async def update_service_checkin_person(
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
 
-        # Build the update document correctly
+        
         set_fields = {}
         for field, value in update_fields.items():
-            # Use arrayFilters instead of positional operator for more reliable updates
-            set_fields[f"{data_type}.$[elem].{field}"] = value
+            set_fields[f"{data_type}.$.{field}"] = value
 
         set_fields["updated_at"] = datetime.utcnow().isoformat()
 
-        # Use arrayFilters to target the specific element
         result = await events_collection.update_one(
             {
                 "_id": ObjectId(event_id),
-                f"{data_type}.id": person_id  # This helps with the array filter
+                f"{data_type}.id": person_id
             },
             {
                 "$set": set_fields
-            },
-            array_filters=[
-                {f"elem.id": person_id}  # This targets the specific element in the array
-            ]
+            }
         )
 
-        if result.matched_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found in event")
-        
         if result.modified_count == 0:
-            print(f"No changes made to person {person_id} in {data_type}")
-            return {
-                "success": True,
-                "message": f"No changes needed for person in {data_type}"
-            }
+            raise HTTPException(status_code=404, detail="Person not found or no changes made")
 
-        print(f"✅ Successfully updated in {data_type}")
+        print(f"Successfully updated in {data_type}")
 
         return {
             "success": True,
@@ -10272,8 +10250,9 @@ async def update_service_checkin_person(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error updating service check-in: {str(e)}")
+        print(f"Error updating service check-in: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
+   
    
 @app.post("/events/{event_id}/initialize-structure")
 async def initialize_event_structure(
@@ -10583,7 +10562,13 @@ async def get_dashboard_comprehensive(
                     "_is_overdue": {"$literal": True},
                     "is_recurring": {"$ifNull": ["$is_recurring", True]},
                     "week_identifier": 1,
-                    "original_event_id": {"$toString": "$_id"}
+                    "original_event_id": {"$toString": "$_id"},
+                    "eventTypeName": {
+                        "$ifNull": ["$eventTypeName", "$Event Type", "$eventType", "Cells"]
+                    },
+                    "description": {"$ifNull": ["$description", ""]},
+                    "created_at": 1,
+                    "updated_at": 1
                 }
             }
         ]
@@ -10750,7 +10735,18 @@ async def get_dashboard_comprehensive(
                     "is_due_in_period": "$is_due_in_period",
                     "completed_in_period": "$completed_in_period",
                     "is_excluded_type": "$is_excluded_type",
-                    "description": "$description"
+                    "description": "$description",
+                    # Fields needed by the frontend download export
+                    "created_at": "$createdAt_conv",
+                    "updated_at": {
+                        "$cond": {
+                            "if": {"$eq": [{"$type": "$updated_at"}, "string"]},
+                            "then": {"$dateFromString": {"dateString": "$updated_at", "onError": None, "onNull": None}},
+                            "else": "$updated_at"
+                        }
+                    },
+                    "memberID": "$memberID",
+                    "taskStage": "$taskStage"
                 }
             },
             "total_tasks": {"$sum": 1},
@@ -10794,8 +10790,9 @@ async def get_dashboard_comprehensive(
         formatted_overdue_cells = []
         for cell in overdue_cells:
             cell["_id"] = str(cell["_id"])
-            if isinstance(cell.get("date"), datetime):
-                cell["date"] = cell["date"].isoformat()
+            for date_field in ["date", "created_at", "updated_at"]:
+                if isinstance(cell.get(date_field), datetime):
+                    cell[date_field] = cell[date_field].isoformat()
             formatted_overdue_cells.append(cell)
 
         # ===== FIX: Define all_users_map HERE before using it =====
@@ -10867,7 +10864,7 @@ async def get_dashboard_comprehensive(
             for task in tasks_list:
                 task["_id"] = str(task["_id"])
                 
-                for date_field in ["followup_date", "due_date", "completedAt", "createdAt"]:
+                for date_field in ["followup_date", "due_date", "completedAt", "createdAt", "created_at", "updated_at"]:
                     if isinstance(task.get(date_field), datetime):
                         task[date_field] = task[date_field].isoformat()
                 
