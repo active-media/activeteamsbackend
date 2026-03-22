@@ -11716,10 +11716,12 @@ def get_period_range(period: str):
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
 
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
-
 @app.get("/stats/dashboard-comprehensive")
 async def get_dashboard_comprehensive(
-    period: str = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
+    period: str = Query(
+        "today",
+        pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"
+    ),
     limit: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(get_current_user)
 ):
@@ -11747,18 +11749,24 @@ async def get_dashboard_comprehensive(
             {
                 "$match": {
                     **org_filter,
-                    "$or": [
-                        {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
-                        {"eventType": {"$regex": "^Cells$", "$options": "i"}},
-                        {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
-                    ],
-                    "date": {"$lte": end},
-                    "$or": [
-                        {"status": "incomplete"},
-                        {"status": {"$exists": False}},
-                        {"status": None},
-                        {"Status": "Incomplete"},
-                        {"_is_overdue": True}
+                    "$and": [
+                        {
+                            "$or": [
+                                {"Event Type": {"$regex": "^Cells$", "$options": "i"}},
+                                {"eventType": {"$regex": "^Cells$", "$options": "i"}},
+                                {"eventTypeName": {"$regex": "^Cells$", "$options": "i"}}
+                            ]
+                        },
+                        {"date": {"$lte": end}},
+                        {
+                            "$or": [
+                                {"status": "incomplete"},
+                                {"status": {"$exists": False}},
+                                {"status": None},
+                                {"Status": "Incomplete"},
+                                {"_is_overdue": True}
+                            ]
+                        }
                     ]
                 }
             },
@@ -11768,19 +11776,64 @@ async def get_dashboard_comprehensive(
                 "$project": {
                     "_id": 1,
                     "UUID": 1,
-                    "eventName": {"$ifNull": ["$Event Name", "$eventName", "$EventName", "Unnamed Event"]},
-                    "eventType": {"$ifNull": ["$Event Type", "$eventType", "$eventTypeName", "Cells"]},
-                    "eventLeaderName": {"$ifNull": ["$Leader", "$eventLeaderName", "$EventLeaderName", "Unknown Leader"]},
-                    "eventLeaderEmail": {"$ifNull": ["$Email", "$eventLeaderEmail", "$EventLeaderEmail", ""]},
-                    "leader1": {"$ifNull": ["$leader1", "$Leader @1", ""]},
-                    "leader12": {"$ifNull": ["$Leader at 12", "$Leader @12", "$leader12", "$Leader12", ""]},
-                    "day": {"$ifNull": ["$Day", "$day", ""]},
+                    "eventName": {
+                        "$ifNull": [
+                            "$Event Name",
+                            {"$ifNull": ["$eventName", {"$ifNull": ["$EventName", "Unnamed Event"]}]}
+                        ]
+                    },
+                    "eventType": {
+                        "$ifNull": [
+                            "$Event Type",
+                            {"$ifNull": ["$eventType", {"$ifNull": ["$eventTypeName", "Cells"]}]}
+                        ]
+                    },
+                    "eventLeaderName": {
+                        "$ifNull": [
+                            "$Leader",
+                            {"$ifNull": ["$eventLeaderName", {"$ifNull": ["$EventLeaderName", "Unknown Leader"]}]}
+                        ]
+                    },
+                    "eventLeaderEmail": {
+                        "$ifNull": [
+                            "$Email",
+                            {"$ifNull": ["$eventLeaderEmail", {"$ifNull": ["$EventLeaderEmail", ""]}]}
+                        ]
+                    },
+                    "leader1": {
+                        "$ifNull": [
+                            "$leader1",
+                            {"$ifNull": ["$Leader @1", ""]}
+                        ]
+                    },
+                    "leader12": {
+                        "$ifNull": [
+                            "$Leader at 12",
+                            {"$ifNull": ["$Leader @12", {"$ifNull": ["$leader12", {"$ifNull": ["$Leader12", ""]}]}]}
+                        ]
+                    },
+                    "day": {
+                        "$ifNull": [
+                            "$Day",
+                            {"$ifNull": ["$day", ""]}
+                        ]
+                    },
                     "date": 1,
-                    "location": {"$ifNull": ["$Location", "$location", ""]},
+                    "location": {
+                        "$ifNull": [
+                            "$Location",
+                            {"$ifNull": ["$location", ""]}
+                        ]
+                    },
                     "attendees": {"$ifNull": ["$attendees", []]},
                     "persistent_attendees": {"$ifNull": ["$persistent_attendees", []]},
                     "hasPersonSteps": {"$ifNull": ["$hasPersonSteps", True]},
-                    "status": {"$ifNull": ["$status", "$Status", "incomplete"]},
+                    "status": {
+                        "$ifNull": [
+                            "$status",
+                            {"$ifNull": ["$Status", "incomplete"]}
+                        ]
+                    },
                     "_is_overdue": {"$literal": True},
                     "is_recurring": {"$ifNull": ["$is_recurring", True]},
                     "week_identifier": 1,
@@ -11806,53 +11859,82 @@ async def get_dashboard_comprehensive(
                     "task_type_label": {"$ifNull": ["$taskType", "Uncategorized"]},
                     "is_excluded_type": {
                         "$cond": [
-                            {"$and": [{"$ne": ["$taskType", None]}, {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}]},
-                            True, False
-                        ]
-                    },
-                    True,
-                    False
-                ]
-            },
-            "is_completed": {
-                "$cond": [
-                    {
-                        "$and": [
                             {
                                 "$and": [
-                                    {"$in": [{"$toLower": {"$ifNull": ["$status", "pending"]}}, ["completed", "done", "closed", "finished"]]},
-                                    {"$not": {"$cond": [{"$and": [{"$ne": ["$taskType", None]}, {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}]}, True, False]}}
+                                    {"$ne": ["$taskType", None]},
+                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
                                 ]
                             },
-                            True, False
+                            True,
+                            False
+                        ]
+                    },
+                    "is_completed": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {
+                                        "$in": [
+                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                            ["completed", "done", "closed", "finished"]
+                                        ]
+                                    },
+                                    {
+                                        "$not": [
+                                            {
+                                                "$and": [
+                                                    {"$ne": ["$taskType", None]},
+                                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            True,
+                            False
                         ]
                     },
                     "completed_in_period": {
                         "$cond": [
-                            {"$and": [
-                                {"$ne": ["$completedAt", None]},
-                                {"$gte": ["$completedAt", start]},
-                                {"$lte": ["$completedAt", end]},
-                                {"$in": [{"$toLower": {"$ifNull": ["$status", "pending"]}}, ["completed", "done", "closed", "finished"]]},
-                                {"$not": {"$cond": [
-                                    {"$and": [
-                                        {"$ne": ["$taskType", None]},
-                                        {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
-                                    ]},
-                                    True, False
-                                ]}}
-                            ]},
-                            True, False
+                            {
+                                "$and": [
+                                    {"$ne": ["$completedAt", None]},
+                                    {"$gte": ["$completedAt", start]},
+                                    {"$lte": ["$completedAt", end]},
+                                    {
+                                        "$in": [
+                                            {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                            ["completed", "done", "closed", "finished"]
+                                        ]
+                                    },
+                                    {
+                                        "$not": [
+                                            {
+                                                "$and": [
+                                                    {"$ne": ["$taskType", None]},
+                                                    {"$in": ["$taskType", EXCLUDED_TASK_TYPES_FROM_COMPLETED]}
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            True,
+                            False
                         ]
                     },
                     "is_due_in_period": {
                         "$cond": [
-                            {"$and": [
-                                {"$ne": ["$followup_date", None]},
-                                {"$gte": ["$followup_date", start]},
-                                {"$lte": ["$followup_date", end]}
-                            ]},
-                            True, False
+                            {
+                                "$and": [
+                                    {"$ne": ["$followup_date", None]},
+                                    {"$gte": ["$followup_date", start]},
+                                    {"$lte": ["$followup_date", end]}
+                                ]
+                            },
+                            True,
+                            False
                         ]
                     }
                 }
@@ -11874,7 +11956,13 @@ async def get_dashboard_comprehensive(
                             "assignedfor": "$assignedfor",
                             "type": "$type",
                             "contacted_person": "$contacted_person",
-                            "isRecurring": {"$cond": [{"$ifNull": ["$recurring_day", False]}, True, False]},
+                            "isRecurring": {
+                                "$cond": [
+                                    {"$ifNull": ["$recurring_day", False]},
+                                    True,
+                                    False
+                                ]
+                            },
                             "priority": "$priority",
                             "is_completed": "$is_completed",
                             "is_due_in_period": "$is_due_in_period",
@@ -11898,34 +11986,16 @@ async def get_dashboard_comprehensive(
                     }
                 }
             },
-            "total_tasks": {"$sum": 1},
-            "completed_tasks": {
-                "$sum": {"$cond": ["$is_completed", 1, 0]}
-            },
-            "completed_in_period": {
-                "$sum": {"$cond": ["$completed_in_period", 1, 0]}
-            },
-            "due_in_period": {
-                "$sum": {"$cond": ["$is_due_in_period", 1, 0]}
-            },
-            "task_type_counts": {
-                "$push": {
-                    "task_type": "$task_type_label",
-                    "is_completed": "$is_completed",
-                    "completed_in_period": "$completed_in_period",
-                    "is_due_in_period": "$is_due_in_period",
-                    "is_excluded_type": "$is_excluded_type"
-                }
-            }
-        }
-    },
-    {"$match": {"total_tasks": {"$gt": 0}}},
-    {"$sort": {"_id": 1}}
-]
+            {"$match": {"total_tasks": {"$gt": 0}}},
+            {"$sort": {"_id": 1}}
+        ]
 
         overdue_cells_cursor = events_collection.aggregate(overdue_cells_pipeline)
         tasks_cursor = tasks_collection.aggregate(tasks_pipeline)
-        users_cursor = users_collection.find(org_filter, {"_id": 1, "email": 1, "name": 1, "surname": 1}).limit(limit)
+        users_cursor = users_collection.find(
+            org_filter,
+            {"_id": 1, "email": 1, "name": 1, "surname": 1}
+        ).limit(limit)
 
         overdue_cells, task_groups, users = await asyncio.gather(
             overdue_cells_cursor.to_list(100),
@@ -11949,20 +12019,29 @@ async def get_dashboard_comprehensive(
                 email = user.get("email", "").lower()
                 if not email:
                     continue
+
                 person = await people_collection.find_one({
                     "$or": [
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
                         {"user_id": uid}
                     ]
                 })
+
                 if person:
                     full_name = f"{person.get('Name', '').strip()} {person.get('Surname', '').strip()}".strip()
                 else:
                     full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+
                 if not full_name:
                     full_name = email.split("@")[0]
-                all_users_map[email] = {"_id": uid, "email": email, "fullName": full_name}
+
+                all_users_map[email] = {
+                    "_id": uid,
+                    "email": email,
+                    "fullName": full_name
+                }
                 all_users_map[uid] = all_users_map[email]
+
         except Exception as e:
             print(f"[DASHBOARD] Error building user map: {e}")
 
@@ -11978,21 +12057,25 @@ async def get_dashboard_comprehensive(
 
         for task_group in task_groups:
             email = task_group["_id"] or "unassigned@example.com"
+
             user_info = all_users_map.get(email.lower(), {
                 "_id": f"unknown_{email}",
                 "email": email,
                 "fullName": email.split("@")[0]
             })
+
             tasks_list = task_group["tasks"]
 
             for task in tasks_list:
                 task["_id"] = str(task["_id"])
+
                 for date_field in ["followup_date", "due_date", "completedAt", "createdAt"]:
                     if isinstance(task.get(date_field), datetime):
                         task[date_field] = task[date_field].isoformat()
 
                 task_type = task.get("taskType") or "Uncategorized"
                 is_excluded = task.get("is_excluded_type", False)
+
                 if task_type not in task_type_stats:
                     task_type_stats[task_type] = {
                         "total": 0,
@@ -12002,13 +12085,18 @@ async def get_dashboard_comprehensive(
                         "incomplete_due": 0,
                         "is_excluded": is_excluded
                     }
+
                 task_type_stats[task_type]["total"] += 1
+
                 if task.get("is_completed"):
                     task_type_stats[task_type]["completed"] += 1
+
                 if task.get("completed_in_period"):
                     task_type_stats[task_type]["completed_in_period"] += 1
+
                 if task.get("is_due_in_period"):
                     task_type_stats[task_type]["due_in_period"] += 1
+
                 if task.get("is_due_in_period") and not task.get("is_completed"):
                     task_type_stats[task_type]["incomplete_due"] += 1
 
@@ -12016,7 +12104,10 @@ async def get_dashboard_comprehensive(
             completed_all = task_group["completed_tasks"]
             completed_in_period = task_group["completed_in_period"]
             due_in_period = task_group["due_in_period"]
-            incomplete_due = sum(1 for t in tasks_list if t.get("is_due_in_period") and not t.get("is_completed"))
+            incomplete_due = sum(
+                1 for t in tasks_list
+                if t.get("is_due_in_period") and not t.get("is_completed")
+            )
             incomplete_all = total_for_user - completed_all
 
             global_total_tasks += total_for_user
@@ -12036,12 +12127,18 @@ async def get_dashboard_comprehensive(
                 "incompleteDueInPeriodCount": incomplete_due,
                 "taskTypes": list(set([t.get("taskType") or "Uncategorized" for t in tasks_list]))
             })
+
             all_tasks_list.extend(tasks_list)
 
         grouped_tasks.sort(key=lambda x: x["user"]["fullName"].lower())
 
-        completion_rate_due = round((global_completed_in_period / global_due_in_period * 100), 2) if global_due_in_period > 0 else 0
-        completion_rate_overall = round((global_completed_tasks / global_total_tasks * 100), 2) if global_total_tasks > 0 else 0
+        completion_rate_due = round(
+            (global_completed_in_period / global_due_in_period * 100), 2
+        ) if global_due_in_period > 0 else 0
+
+        completion_rate_overall = round(
+            (global_completed_tasks / global_total_tasks * 100), 2
+        ) if global_total_tasks > 0 else 0
 
         unique_task_types_found = list(task_type_stats.keys())
 
@@ -12062,8 +12159,11 @@ async def get_dashboard_comprehensive(
             "completion_rate_due_tasks": completion_rate_due,
             "completion_rate_overall": completion_rate_overall,
             "consolidation_completion_rate": round(
-                (task_type_stats.get("consolidation", {}).get("completed", 0) /
-                 task_type_stats.get("consolidation", {}).get("total", 1) * 100), 2
+                (
+                    task_type_stats.get("consolidation", {}).get("completed", 0) /
+                    task_type_stats.get("consolidation", {}).get("total", 1) * 100
+                ),
+                2
             ) if task_type_stats.get("consolidation", {}).get("total", 0) > 0 else 0,
             "task_type_breakdown": task_type_stats,
             "users_with_tasks": len(grouped_tasks),
@@ -12075,14 +12175,25 @@ async def get_dashboard_comprehensive(
             "note": "'no answer' and 'Awaiting Call' task types are excluded from completed counts"
         }
 
+        # Deduplicate users
+        seen_user_ids = set()
         all_users_list = []
+
         for user_info in all_users_map.values():
-            if isinstance(user_info, dict) and "_id" in user_info and not user_info["_id"].startswith("unknown_"):
+            if (
+                isinstance(user_info, dict)
+                and "_id" in user_info
+                and not user_info["_id"].startswith("unknown_")
+                and user_info["_id"] not in seen_user_ids
+            ):
+                seen_user_ids.add(user_info["_id"])
+                full_name_parts = user_info["fullName"].split()
+
                 all_users_list.append({
                     "_id": user_info["_id"],
                     "email": user_info["email"],
-                    "name": user_info["fullName"].split()[0] if user_info["fullName"] else "",
-                    "surname": " ".join(user_info["fullName"].split()[1:]) if len(user_info["fullName"].split()) > 1 else "",
+                    "name": full_name_parts[0] if full_name_parts else "",
+                    "surname": " ".join(full_name_parts[1:]) if len(full_name_parts) > 1 else "",
                     "fullName": user_info["fullName"]
                 })
 
@@ -12104,7 +12215,7 @@ async def get_dashboard_comprehensive(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(500, f"Error fetching comprehensive stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching comprehensive stats: {str(e)}")
 
 # ====================== QUICK DASHBOARD (MULTI-TENANT) ======================
 @app.get("/stats/dashboard-quick")
