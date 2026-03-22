@@ -6716,6 +6716,75 @@ async def get_persistent_attendees(
                     "paymentMethod": p.get("paymentMethod", ""),
                 })
 
+        # Collect all emails that need leader12 resolved
+        emails_to_resolve = [
+            a["email"] for a in cleaned
+            if a.get("email") and not a.get("leader12")
+        ]
+
+        # Bulk fetch people by email
+        email_to_person = {}
+        if emails_to_resolve:
+            email_regex_conditions = [
+                {"Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+                for email in emails_to_resolve
+            ]
+            async for person in people_collection.find(
+                {"$or": email_regex_conditions},
+                {"Email": 1, "LeaderPath": 1, "Name": 1, "Surname": 1}
+            ):
+                email_key = person.get("Email", "").lower()
+                email_to_person[email_key] = person
+
+        # Collect all LeaderPath[1] IDs to resolve
+        leader12_ids = set()
+        for person in email_to_person.values():
+            lp = person.get("LeaderPath", [])
+            if len(lp) > 1:
+                try:
+                    leader12_ids.add(ObjectId(str(lp[1])))
+                except Exception:
+                    pass
+
+        # Bulk fetch leader names
+        leader_name_map = {}
+        if leader12_ids:
+            async for leader_doc in people_collection.find(
+                {"_id": {"$in": list(leader12_ids)}},
+                {"_id": 1, "Name": 1, "Surname": 1}
+            ):
+                leader_name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+
+        # Enrich cleaned attendees with resolved leader12
+        for attendee in cleaned:
+            if not attendee.get("leader12") and attendee.get("email"):
+                person = email_to_person.get(attendee["email"].lower())
+                if person:
+                    lp = person.get("LeaderPath", [])
+                    if len(lp) > 1:
+                        try:
+                            lid = ObjectId(str(lp[1]))
+                            resolved = leader_name_map.get(lid, "")
+                            if resolved:
+                                attendee["leader12"] = resolved
+                        except Exception:
+                            pass
+                    if len(lp) > 2 and not attendee.get("leader144"):
+                        try:
+                            lid144 = ObjectId(str(lp[2]))
+                            resolved144 = leader_name_map.get(lid144)
+                            if not resolved144:
+                                leader_doc = await people_collection.find_one(
+                                    {"_id": lid144},
+                                    {"Name": 1, "Surname": 1}
+                                )
+                                if leader_doc:
+                                    resolved144 = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+                            if resolved144:
+                                attendee["leader144"] = resolved144
+                        except Exception:
+                            pass
+
         attendance_map = event.get("attendance", {})
 
         if date_from_id:
@@ -7285,41 +7354,65 @@ async def uncapture_person(data: UncaptureRequest):
 
 
 # --- PROFILE PICTURE ENDPOINTS ---
-
-# In main.py
 @app.get("/profile/{user_id}", response_model=UserProfile)
 async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        # Debug logging
-        print(f"Profile request - User ID from URL: {user_id}")
-        print(f"Current user data: {current_user}")
-        
         token_user_id = current_user.get("user_id") or current_user.get("_id")
         
         if not token_user_id:
-            print("Error: No user_id in token")
             raise HTTPException(status_code=401, detail="Invalid user ID in token")
         
-        print(f"Token user ID: {token_user_id}")
-        
-        # Compare as strings to avoid type issues
         if str(token_user_id) != str(user_id):
-            print(f"Authorization mismatch - Token: {token_user_id}, URL: {user_id}")
             raise HTTPException(status_code=403, detail="Not authorized to access this profile")
         
         if not ObjectId.is_valid(user_id):
-            print(f"Invalid ObjectId format: {user_id}")
             raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
         
-        # Fetch user with all fields
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
-            print(f"User not found with ID: {user_id}")
             raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
         
-        print(f"User found: {user.get('email')}")
+        person = await people_collection.find_one({"email": user.get("email")})
         
-        # Build response with proper field mapping
+        leader_path = person.get("LeaderPath", []) if person else []
+        
+        leader_at_1 = None
+        leader_at_12 = None
+        leader_at_144 = None
+        
+        if len(leader_path) > 0 and ObjectId.is_valid(leader_path[0]):
+            leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[0])})
+            if leader_doc:
+                leader_at_1 = {
+                    "id": str(leader_doc["_id"]),
+                    "name": leader_doc.get("name", ""),
+                    "surname": leader_doc.get("surname", ""),
+                    "email": leader_doc.get("email", ""),
+                    "phone_number": leader_doc.get("phone_number", "")
+                }
+        
+        if len(leader_path) > 1 and ObjectId.is_valid(leader_path[1]):
+            leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[1])})
+            if leader_doc:
+                leader_at_12 = {
+                    "id": str(leader_doc["_id"]),
+                    "name": leader_doc.get("name", ""),
+                    "surname": leader_doc.get("surname", ""),
+                    "email": leader_doc.get("email", ""),
+                    "phone_number": leader_doc.get("phone_number", "")
+                }
+        
+        if len(leader_path) > 2 and ObjectId.is_valid(leader_path[2]):
+            leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[2])})
+            if leader_doc:
+                leader_at_144 = {
+                    "id": str(leader_doc["_id"]),
+                    "name": leader_doc.get("name", ""),
+                    "surname": leader_doc.get("surname", ""),
+                    "email": leader_doc.get("email", ""),
+                    "phone_number": leader_doc.get("phone_number", "")
+                }
+        
         response_data = {
             "id": str(user["_id"]),
             "name": user.get("name", ""),
@@ -7332,10 +7425,15 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
             "gender": user.get("gender", ""),
             "role": user.get("role", "user"),
             "profile_picture": user.get("profile_picture", ""),
-            "organization": user.get("organization", user.get("Organization", "")),  # Try both cases
+            "organization": user.get("Organization", user.get("organization", "")),
+            "leader_path": leader_path,
+            "leaders": {
+                "leaderAt1": leader_at_1,
+                "leaderAt12": leader_at_12,
+                "leaderAt144": leader_at_144
+            }
         }
         
-        print(f"Returning profile data for {response_data['email']}")
         return response_data
         
     except HTTPException:
@@ -7345,12 +7443,10 @@ async def get_profile(user_id: str, current_user: dict = Depends(get_current_use
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
-
-# In main.py
 @app.put("/profile/{user_id}")
 async def update_profile(
     user_id: str,
-    request: Request,
+    profile_update: UserProfileUpdate,
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -7361,74 +7457,34 @@ async def update_profile(
         if not ObjectId.is_valid(user_id):
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        try:
-            body = await request.body()
-            update_data = json.loads(body.decode('utf-8'))
-            print(f"Update data received: {update_data}")
-        except json.JSONDecodeError as e:
-            print(f"JSON decode error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
         existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not existing_user:
             raise HTTPException(status_code=404, detail="User not found")
 
         update_payload = {}
         
-        field_mapping = {
-            "name": "name",
-            "surname": "surname",
-            "email": "email",
-            "date_of_birth": "date_of_birth",
-            "home_address": "home_address",
-            "phone_number": "phone_number",
-            "invited_by": "invited_by",
-            "gender": "gender",
-            "profile_picture": "profile_picture",
-            "organization": "organization",
-            "Organization": "Organization",  # Preserve original case
-            "dob": "date_of_birth",
-            "address": "home_address",
-            "invitedBy": "invited_by",
-            "phone": "phone_number"
-        }
+        if profile_update.name is not None:
+            update_payload["name"] = profile_update.name
+        if profile_update.surname is not None:
+            update_payload["surname"] = profile_update.surname
+        if profile_update.email is not None:
+            update_payload["email"] = profile_update.email
+        if profile_update.date_of_birth is not None:
+            update_payload["date_of_birth"] = profile_update.date_of_birth
+        if profile_update.home_address is not None:
+            update_payload["home_address"] = profile_update.home_address
+        if profile_update.phone_number is not None:
+            update_payload["phone_number"] = profile_update.phone_number
+        if profile_update.invited_by is not None:
+            update_payload["invited_by"] = profile_update.invited_by
+        if profile_update.gender is not None:
+            update_payload["gender"] = profile_update.gender.capitalize()
+        if profile_update.organization is not None:
+            update_payload["organization"] = profile_update.organization
+            update_payload["Organization"] = profile_update.organization
+            update_payload["org_id"] = profile_update.organization.lower().replace(" ", "-")
         
-        for frontend_field, db_field in field_mapping.items():
-            if frontend_field in update_data:
-                value = update_data[frontend_field]
-                if value is not None and value != "":
-                    if db_field == "gender":
-                        value = value.capitalize()
-                    update_payload[db_field] = value
-
         update_payload["updated_at"] = datetime.utcnow().isoformat()
-
-        # Handle organization changes
-        if "organization" in update_payload:
-            new_org = update_payload["organization"]
-            # Also update the capitalized version if needed
-            update_payload["Organization"] = new_org
-            
-            # Update org_id
-            update_payload["org_id"] = new_org.lower().replace(" ", "-")
-            
-            # Check if organization exists in organizations_collection
-            if organizations_collection:
-                org_doc = await organizations_collection.find_one(
-                    {"name": {"$regex": f"^{re.escape(new_org)}$", "$options": "i"}}
-                )
-                if org_doc:
-                    update_payload["org_tag"] = org_doc.get("tag", new_org)
-            
-            # Reset leaders if organization changes from Active Church
-            if new_org.lower() != "active church" and new_org.lower() != "active teams":
-                update_payload["leader1"] = ""
-                update_payload["leader12"] = ""
-                update_payload["leader144"] = ""
-                update_payload["Leader @1"] = ""   
-                update_payload["Leader @12"] = ""
-                update_payload["Leader @144"] = ""
-                update_payload["Leader @1728"] = ""
 
         if not update_payload:
             return {
@@ -7442,16 +7498,11 @@ async def update_profile(
                 }
             }
 
-        # Perform the update
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {"$set": update_payload}
         )
         
-        if result.modified_count == 0:
-            print("No documents were modified")
-        
-        # Fetch updated user
         updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
         
         return {
@@ -7475,8 +7526,7 @@ async def update_profile(
         print(f"Profile update error: {str(e)}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}") 
 def normalize_gender_value(gender):
     """Normalize gender values to consistent format"""
     if not gender:
@@ -7747,7 +7797,15 @@ async def get_people(
         for person in people_list:
             for lid in person.get("LeaderPath", []):
                 if lid:
-                    all_leader_ids.add(lid)
+                    try:
+                        if isinstance(lid, ObjectId):
+                            all_leader_ids.add(lid)
+                        else:
+                            all_leader_ids.add(ObjectId(str(lid)))
+                    except Exception:
+                        pass
+
+        print(f"PEOPLE ENDPOINT: found {len(people_list)} people, {len(all_leader_ids)} unique leader IDs")
 
         name_map = {}
         if all_leader_ids:
@@ -7757,13 +7815,40 @@ async def get_people(
             ):
                 name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
 
+        print(f"NAME MAP SIZE: {len(name_map)}")
+
+        def resolve_leader(lid):
+            if not lid:
+                return ""
+            try:
+                if isinstance(lid, ObjectId):
+                    return name_map.get(lid, "")
+                return name_map.get(ObjectId(str(lid)), "")
+            except Exception:
+                return ""
+
+        # Debug first person
+        if people_list:
+            first = people_list[0]
+            lp = first.get("LeaderPath", [])
+            print(f"FIRST PERSON: {first.get('Name')} {first.get('Surname')}")
+            print(f"FIRST LEADERPATH: {lp}")
+            if len(lp) > 1:
+                lid = lp[1]
+                print(f"LEADER @12 ID: {lid}, type: {type(lid)}")
+                try:
+                    resolved = name_map.get(ObjectId(str(lid)), "NOT FOUND")
+                    print(f"RESOLVED LEADER @12: {resolved}")
+                except Exception as e:
+                    print(f"RESOLVE ERROR: {e}")
+
         final_list = []
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
 
-            resolved_leader_1   = name_map.get(leader_path[0], "") if len(leader_path) > 0 else ""
-            resolved_leader_12  = name_map.get(leader_path[1], "") if len(leader_path) > 1 else ""
-            resolved_leader_144 = name_map.get(leader_path[2], "") if len(leader_path) > 2 else ""
+            resolved_leader_1   = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
+            resolved_leader_12  = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
+            resolved_leader_144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
 
             mapped = {
                 "_id": str(person["_id"]),
@@ -7810,8 +7895,6 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-
-
 @app.get("/people/search")
 async def search_people(
     query: str = Query("", min_length=2),

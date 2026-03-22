@@ -5,11 +5,12 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from enum import Enum
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import datetime, date
 from bson import ObjectId
 import uuid
 from urllib.parse import unquote
+
 
 app = FastAPI()
 
@@ -184,7 +185,14 @@ class EventInDB(EventBase):
     attendees: List[dict] = []
     total_attendance: int = 0
 
-# =========== Profile endpoint===========
+# =========== Profile endpoint==========
+
+class LeaderInfo(BaseModel):
+    id: str
+    name: str
+    surname: str
+    email: str
+    phone_number: Optional[str] = None
 
 class UserProfile(BaseModel):
     id: str
@@ -192,13 +200,21 @@ class UserProfile(BaseModel):
     surname: str
     date_of_birth: str
     home_address: str
-    invited_by: Optional[str]
+    invited_by: Optional[str] = None
     phone_number: str
     email: EmailStr
     gender: str
     role: Optional[str] = "user"
     organization: Optional[str] = None
     profile_picture: Optional[str] = None
+    leader_path: Optional[List[str]] = Field(default_factory=list)
+    leaders: Optional[Dict[str, Optional[LeaderInfo]]] = Field(
+        default_factory=lambda: {
+            "leaderAt1": None,
+            "leaderAt12": None,
+            "leaderAt144": None
+        }
+    )
 
 class UserProfileUpdate(BaseModel):
     name: Optional[str] = None
