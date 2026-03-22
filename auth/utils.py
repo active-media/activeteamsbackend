@@ -19,6 +19,10 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+ORG_ID_MAP = {
+    "active-church": "active-teams",
+    "active church": "active-teams",
+}
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
@@ -95,19 +99,21 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
     ):
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    # Check if user is supreme admin
     email = user.get("email", "")
-    is_supreme = False
-    if email == SUPREME_ADMIN_EMAIL:
-        is_supreme = True
-    else:
-        is_supreme = user.get("is_supreme_admin", False)
+    is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
+
+    # Derive and normalize org_id
+    organization = user.get("Organization") or user.get("organization", "")
+    org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
+    org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
 
     new_access = create_access_token({
-        "user_id": str(user["_id"]), 
-        "email": user["email"], 
+        "user_id": str(user["_id"]),
+        "email": user["email"],
         "role": user.get("role", "user"),
-        "is_supreme_admin": is_supreme
+        "is_supreme_admin": is_supreme,
+        "org_id": org_id,
+        "Organization": organization,
     })
 
     new_refresh = create_refresh_token()
@@ -116,7 +122,8 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         {"$set": {
             "refresh_token_id": new_refresh["id"],
             "refresh_token_hash": new_refresh["hash"],
-            "refresh_token_expires": new_refresh["expires"]
+            "refresh_token_expires": new_refresh["expires"],
+            "org_id": org_id,
         }}
     )
 
@@ -143,37 +150,75 @@ def verify_password_reset_token(token: str) -> Optional[str]:
 # ==============================
 # FASTAPI DEPENDENCIES
 # ==============================
+# In utils.py
 async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
-    payload = decode_access_token(token.credentials)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
+    try:
+        # First, check if token is None or empty
+        if not token or not token.credentials:
+            raise HTTPException(status_code=401, detail="No token provided")
+        
+        payload = decode_access_token(token.credentials)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        
+        # Try different possible user ID fields
+        user_id = payload.get("user_id") or payload.get("sub") or payload.get("id")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found in token")
+        
+        # Convert user_id to string if it's not already
+        user_id = str(user_id)
+        
+        # Check if it's a valid ObjectId
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=401, detail=f"Invalid user ID format: {user_id}")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=401, detail=f"User not found with ID: {user_id}")
+        
+        # Convert ObjectId to string for JSON serialization
+        user_id_str = str(user["_id"])
+        
+        email = user.get("email", "")
+        is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
+        db_role = user.get("role", "user")
+        
+        # Handle both uppercase and lowercase Organization fields
+        organization = user.get("Organization") or user.get("organization", "")
+        
+        # Get org_id, handle if missing
+        org_id = user.get("org_id")
+        if not org_id and organization:
+            org_id = organization.lower().replace(" ", "-")
+        if not org_id:
+            org_id = "active-teams"
+        
+        # Apply ORG_ID_MAP if it exists
+        if org_id.lower() in ORG_ID_MAP:
+            org_id = ORG_ID_MAP[org_id.lower()]
+        
+        return {
+            "user_id": user_id_str,
+            "email": email,
+            "role": db_role,
+            "is_supreme_admin": is_supreme,
+            "organization": organization,
+            "Organization": organization,  # Include both for compatibility
+            "org_id": org_id,
+            "name": user.get("name", ""),
+            "surname": user.get("surname", ""),
+            "_id": user_id_str
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Authentication error: {str(e)}")  # Add logging
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
-    user = await users_collection.find_one({"_id": ObjectId(payload["user_id"])})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    
-    email = user.get("email", "")
-    
-    # Check if user is supreme admin
-    is_supreme = False
-    if email == SUPREME_ADMIN_EMAIL:
-        is_supreme = True
-    else:
-        is_supreme = user.get("is_supreme_admin", False)
-    
-    # Get the role from DB
-    db_role = user.get("role", "user")
-    
-    # Update payload with fresh data
-    payload["role"] = db_role
-    payload["_id"] = str(user["_id"])
-    payload["organization"] = user.get("Organization") or user.get("organization", "")
-    payload["is_supreme_admin"] = is_supreme
-    payload["email"] = email
-    payload["name"] = user.get("name", "")
-    payload["surname"] = user.get("surname", "")
-    
-    return payload
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
         payload = decode_access_token(token.credentials)

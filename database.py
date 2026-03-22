@@ -7,7 +7,7 @@ load_dotenv()
 MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
 DB_NAME = os.getenv("DB_NAME", "test-data-active-teams")
 print(f"--- CONNECTING TO DB: {DB_NAME} ---")
-DB_NAME = "test-data-active-teams"
+# DB_NAME = "test-data-active-teams"
 client = AsyncIOMotorClient(MONGO_URI)
 
 db = client[DB_NAME]
@@ -16,6 +16,7 @@ people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]
 tasktypes_collection = db["TaskTypes"]
+org_config_collection = db["OrgConfig"]
 consolidations_collection=db["consolidations"]
 organizations_collection = db["organizations"]
 

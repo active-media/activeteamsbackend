@@ -5,11 +5,12 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from enum import Enum
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import datetime, date
 from bson import ObjectId
 import uuid
 from urllib.parse import unquote
+
 
 app = FastAPI()
 
@@ -19,12 +20,16 @@ class UserCreate(BaseModel):
     surname: str
     date_of_birth: str
     home_address: str
-    invited_by: Optional[str] = None  # Changed from "str" to "Optional[str] = None"
+    invited_by: Optional[str] = None
+    invited_by_id: Optional[str] = None  
+    leader: Optional[str] = None 
     phone_number: str
     email: EmailStr
     gender: str
     password: str
     role: Optional[str] = None
+    organization: Optional[str] = None  
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
@@ -40,6 +45,7 @@ class Attendee(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     decision: Optional[str] = None
+    invitedBy: Optional[str] = None
     priceName: Optional[str] = None
     priceTier: Optional[str] = None
     price: Optional[float] = None
@@ -54,7 +60,6 @@ class Attendee(BaseModel):
         if not v and info.data.get("priceTier"):
             return info.data.get("priceTier")
         return v
-
 # ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
@@ -62,6 +67,7 @@ class AttendanceSubmission(BaseModel):
     leaderName: str
     did_not_meet: bool = False
     isTicketed: bool = False
+    invitedBy: Optional[str] = None
 
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
@@ -179,21 +185,36 @@ class EventInDB(EventBase):
     attendees: List[dict] = []
     total_attendance: int = 0
 
-# ============= Profile Update =============
+# =========== Profile endpoint==========
+
+class LeaderInfo(BaseModel):
+    id: str
+    name: str
+    surname: str
+    email: str
+    phone_number: Optional[str] = None
+
 class UserProfile(BaseModel):
     id: str
     name: str
     surname: str
     date_of_birth: str
     home_address: str
-    invited_by: Optional[str]
+    invited_by: Optional[str] = None
     phone_number: str
     email: EmailStr
     gender: str
     role: Optional[str] = "user"
     organization: Optional[str] = None
-    org_tag: Optional[str] = None
     profile_picture: Optional[str] = None
+    leader_path: Optional[List[str]] = Field(default_factory=list)
+    leaders: Optional[Dict[str, Optional[LeaderInfo]]] = Field(
+        default_factory=lambda: {
+            "leaderAt1": None,
+            "leaderAt12": None,
+            "leaderAt144": None
+        }
+    )
 
 class UserProfileUpdate(BaseModel):
     name: Optional[str] = None
@@ -204,8 +225,7 @@ class UserProfileUpdate(BaseModel):
     phone_number: Optional[str] = None
     email: Optional[EmailStr] = None
     gender: Optional[str] = None
-    organization: Optional[str] = None  # updating org also re-derives org_tag
-
+    organization: Optional[str] = None
 # ===== Cell Events =====
 class CellEventCreate(BaseModel):
     service_name: str
@@ -256,7 +276,7 @@ class RefreshTokenRequest(BaseModel):
 class ContactedPerson(BaseModel):
     name: str
     phone: str
-    email: Optional[str]=""
+    email: EmailStr
 
 class TaskModel(BaseModel):
     memberID: str
@@ -266,10 +286,7 @@ class TaskModel(BaseModel):
     followup_date: datetime
     status: str
     type: str
-    assignedfor: Optional[str] = None     
-    assigned_to_email: Optional[str] = None
-    created_by_email: Optional[str] = None 
-    created_by_name: Optional[str] = None 
+    assignedfor: str
 
     class Config:
         validate_by_name = True
