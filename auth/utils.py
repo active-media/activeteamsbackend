@@ -18,6 +18,11 @@ JWT_SECRET = os.getenv("JWT_SECRET", "replace_me_with_a_strong_secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+ORG_ID_MAP = {
+    "active-church": "active-teams",
+    "active church": "active-teams",
+}
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
@@ -39,6 +44,10 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     now = datetime.utcnow()
     expire = now + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire, "iat": now})
+    
+    if "is_supreme_admin" not in to_encode:
+        to_encode["is_supreme_admin"] = False
+    
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def create_refresh_token() -> Dict[str, str]:
@@ -90,9 +99,22 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
     ):
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    new_access = create_access_token(
-        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "registrant")}
-    )
+    email = user.get("email", "")
+    is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
+
+    # Derive and normalize org_id
+    organization = user.get("Organization") or user.get("organization", "")
+    org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
+    org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+
+    new_access = create_access_token({
+        "user_id": str(user["_id"]),
+        "email": user["email"],
+        "role": user.get("role", "user"),
+        "is_supreme_admin": is_supreme,
+        "org_id": org_id,
+        "Organization": organization,
+    })
 
     new_refresh = create_refresh_token()
     await users_collection.update_one(
@@ -100,7 +122,8 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         {"$set": {
             "refresh_token_id": new_refresh["id"],
             "refresh_token_hash": new_refresh["hash"],
-            "refresh_token_expires": new_refresh["expires"]
+            "refresh_token_expires": new_refresh["expires"],
+            "org_id": org_id,
         }}
     )
 
@@ -109,7 +132,6 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         "refresh_token_id": new_refresh["id"],
         "refresh_token": new_refresh["plain"]
     }
-
 # ==============================
 # FORGOT / RESET PASSWORD
 # ==============================
@@ -128,43 +150,112 @@ def verify_password_reset_token(token: str) -> Optional[str]:
 # ==============================
 # FASTAPI DEPENDENCIES
 # ==============================
-# async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
-#     payload = decode_access_token(token.credentials)
-#     if not payload:
-#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-#     return payload
+# In utils.py
 async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
-    payload = decode_access_token(token.credentials)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-    
-    # Always fetch fresh role from DB
-    user = await users_collection.find_one({"_id": ObjectId(payload["user_id"])})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    
-    payload["role"] = user.get("role", "user")
-    payload["_id"] = user["_id"]
-    return payload
-
-
-
-
-
+    try:
+        # First, check if token is None or empty
+        if not token or not token.credentials:
+            raise HTTPException(status_code=401, detail="No token provided")
+        
+        payload = decode_access_token(token.credentials)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        
+        # Try different possible user ID fields
+        user_id = payload.get("user_id") or payload.get("sub") or payload.get("id")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found in token")
+        
+        # Convert user_id to string if it's not already
+        user_id = str(user_id)
+        
+        # Check if it's a valid ObjectId
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=401, detail=f"Invalid user ID format: {user_id}")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=401, detail=f"User not found with ID: {user_id}")
+        
+        # Convert ObjectId to string for JSON serialization
+        user_id_str = str(user["_id"])
+        
+        email = user.get("email", "")
+        is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
+        db_role = user.get("role", "user")
+        
+        # Handle both uppercase and lowercase Organization fields
+        organization = user.get("Organization") or user.get("organization", "")
+        
+        # Get org_id, handle if missing
+        org_id = user.get("org_id")
+        if not org_id and organization:
+            org_id = organization.lower().replace(" ", "-")
+        if not org_id:
+            org_id = "active-teams"
+        
+        # Apply ORG_ID_MAP if it exists
+        if org_id.lower() in ORG_ID_MAP:
+            org_id = ORG_ID_MAP[org_id.lower()]
+        
+        return {
+            "user_id": user_id_str,
+            "email": email,
+            "role": db_role,
+            "is_supreme_admin": is_supreme,
+            "organization": organization,
+            "Organization": organization,  # Include both for compatibility
+            "org_id": org_id,
+            "name": user.get("name", ""),
+            "surname": user.get("surname", ""),
+            "_id": user_id_str
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Authentication error: {str(e)}")  # Add logging
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 def require_role(*allowed_roles: str):
     async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
         payload = decode_access_token(token.credentials)
         role = payload.get("role")
+        is_supreme = payload.get("is_supreme_admin", False)
+        
+        # Supreme admins have access to everything
+        if is_supreme:
+            return payload
+        
         if not role:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role not present in token")
+        
+        # Admin has access to everything
         if role == "admin":
             return payload
-        if role not in allowed_roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-        return payload
+        
+        # Check system roles
+        SYSTEM_ROLES = ['admin', 'leader', 'leaderAt12', 'user', 'registrant']
+        if role in SYSTEM_ROLES:
+            if role in allowed_roles:
+                return payload
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Insufficient permissions"
+            )
+        
+        # Custom roles
+        if 'user' in allowed_roles:
+            return payload
+        
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Insufficient permissions"
+        )
+        
     return _checker
-    
 def sanitize_document(doc: dict) -> dict:
     """
     Recursively convert ObjectId and other non-serializable fields.
