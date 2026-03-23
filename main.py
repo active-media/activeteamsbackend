@@ -338,10 +338,9 @@ async def invalidate_people_cache(operation_type: str, details: dict = None):
         print(f"Cache invalidation error: {str(e)}")
         return {"error": str(e)}
 
-
 async def background_refresh_people_cache(stale_data: list = None):
     """
-    Background task to refresh all people data from MongoDB.
+    Background task to refresh all people data from MongoDB with resolved leader names.
     Serves stale data while the fresh load is in progress.
     """
     if people_cache["is_loading"]:
@@ -363,74 +362,104 @@ async def background_refresh_people_cache(stale_data: list = None):
         total_count = await people_collection.count_documents({})
         people_cache["total_in_database"] = total_count
 
-        all_people_data = []
+        # FIRST PASS: Collect all people to build ID mapping
+        all_people = []
         batch_size = 1000
         page = 1
-        total_loaded = 0
-
+        
         while True:
             try:
                 skip = (page - 1) * batch_size
-                
-                projection = {
-                    "_id": 1,
-                    "Name": 1,
-                    "Surname": 1,
-                    "Email": 1,
-                    "Number": 1,
-                    "Gender": 1,
-                    "LeaderId": 1,
-                    "LeaderPath": 1,
-                    "Leader @1": 1,
-                    "Leader @12": 1,
-                    "Leader @144": 1,
-                    "Leader @1728": 1
-                }
-                
-                cursor = people_collection.find({}, projection).skip(skip).limit(batch_size)
+                cursor = people_collection.find({}).skip(skip).limit(batch_size)
                 batch_data = await cursor.to_list(length=batch_size)
-
+                
                 if not batch_data:
                     break
                 
-                # Transform batch data
-                transformed_batch = []
-                for person in batch_data:
-                    transformed_batch.append({
-                        "_id": str(person["_id"]),
-                        "Name": person.get("Name", ""),
-                        "Surname": person.get("Surname", ""),
-                        "Email": person.get("Email", ""),
-                        "Number": person.get("Number", ""),
-                        "Gender": person.get("Gender", ""),
-                        "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
-                        "LeaderPath": [str(x) for x in person.get("LeaderPath", [])] if isinstance(person.get("LeaderPath"), list) else [],
-                        "Leader @1": person.get("Leader @1", ""),
-                        "Leader @12": person.get("Leader @12", ""),
-                        "Leader @144": person.get("Leader @144", ""),
-                        "Leader @1728": person.get("Leader @1728", ""),
-                        "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-                    })
-                
-                all_people_data.extend(transformed_batch)
-                total_loaded += len(transformed_batch)
-
-                progress = (total_loaded / total_count) * 100 if total_count > 0 else 100
-                people_cache["load_progress"] = round(progress, 1)
-                people_cache["total_loaded"] = total_loaded
-
-                # Publish partial results every 5 batches for early availability
-                if page % 5 == 0:
-                    people_cache["data"] = all_people_data.copy()
-                    print(f"BACKGROUND REFRESH: Batch {page} — {total_loaded}/{total_count} ({progress:.1f}%)")
-
+                all_people.extend(batch_data)
                 page += 1
-                await asyncio.sleep(0.05)
-
+                
             except Exception as batch_error:
                 print(f"BACKGROUND REFRESH: Error in batch {page}: {str(batch_error)}")
                 break
-
+        
+        print(f"BACKGROUND REFRESH: Collected {len(all_people)} people from database")
+        
+        # SECOND PASS: Build name map of all people (for leader resolution)
+        name_map = {}
+        for person in all_people:
+            person_id = person["_id"]
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            name_map[person_id] = full_name
+        
+        print(f"BACKGROUND REFRESH: Built name map with {len(name_map)} entries")
+        
+        def resolve_leader(lid):
+            """Resolve leader ID to full name"""
+            if not lid:
+                return ""
+            try:
+                if isinstance(lid, ObjectId):
+                    return name_map.get(lid, "")
+                return name_map.get(ObjectId(str(lid)), "")
+            except Exception:
+                return ""
+        
+        # THIRD PASS: Format all people with resolved leader names
+        all_people_data = []
+        total_loaded = 0
+        
+        for idx, person in enumerate(all_people):
+            leader_path = person.get("LeaderPath", [])
+            
+            # Resolve leaders from LeaderPath (this is the key fix!)
+            leader1_name = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
+            leader12_name = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
+            leader144_name = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
+            leader1728_name = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
+            
+            transformed_person = {
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Number": person.get("Number", ""),
+                "Gender": person.get("Gender", ""),
+                "Address": person.get("Address", ""),
+                "InvitedBy": person.get("InvitedBy", ""),
+                "Stage": person.get("Stage", "Win"),
+                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                "LeaderPath": [str(x) for x in leader_path] if leader_path else [],
+                # CRITICAL: Use resolved names from LeaderPath, not stored fields
+                "Leader @1": leader1_name,
+                "Leader @12": leader12_name,
+                "Leader @144": leader144_name,
+                "Leader @1728": leader1728_name,
+                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            }
+            
+            all_people_data.append(transformed_person)
+            total_loaded = idx + 1
+            
+            # Update progress
+            progress = (total_loaded / total_count) * 100 if total_count > 0 else 100
+            people_cache["load_progress"] = round(progress, 1)
+            people_cache["total_loaded"] = total_loaded
+            
+            # Publish partial results every 500 people
+            if (idx + 1) % 500 == 0:
+                people_cache["data"] = all_people_data.copy()
+                print(f"BACKGROUND REFRESH: Processed {total_loaded}/{total_count} ({progress:.1f}%)")
+                
+                # Debug: Check Lesedi
+                lesedi = next((p for p in all_people_data if p["FullName"] == "Lesedi Naomi Malobane"), None)
+                if lesedi:
+                    print(f"  Lesedi in progress: Leader @12 = '{lesedi['Leader @12']}', Leader @144 = '{lesedi['Leader @144']}'")
+            
+            # Small delay to prevent blocking
+            if (idx + 1) % 100 == 0:
+                await asyncio.sleep(0.01)
+        
         # Commit final complete dataset
         people_cache["data"] = all_people_data
         people_cache["last_updated"] = datetime.utcnow().isoformat()
@@ -441,6 +470,15 @@ async def background_refresh_people_cache(stale_data: list = None):
         people_cache["pending_refresh"] = False
         people_cache["version"] += 1
         people_cache["refresh_queue"] = []
+        
+        # Final debug
+        lesedi_final = next((p for p in all_people_data if p["FullName"] == "Lesedi Naomi Malobane"), None)
+        if lesedi_final:
+            print(f"\n✅ FINAL LESEDI IN CACHE:")
+            print(f"  Leader @12: '{lesedi_final['Leader @12']}'")
+            print(f"  Leader @144: '{lesedi_final['Leader @144']}'")
+        else:
+            print(f"\n⚠️ Lesedi not found in cache!")
 
         duration = time.time() - start_time
         print(f"BACKGROUND REFRESH COMPLETE: {len(all_people_data)} people in {duration:.2f}s (cache v{people_cache['version']})")
@@ -457,8 +495,9 @@ async def background_refresh_people_cache(stale_data: list = None):
         people_cache["last_error"] = str(e)
         people_cache["pending_refresh"] = False
         print(f"BACKGROUND REFRESH FAILED: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}
-
 
 async def background_load_all_people():
     """
@@ -1577,7 +1616,16 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         org_id = current_user.get("org_id", "active-teams")
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
+        
+        # Make sure organization is properly set (only uppercase)
+        if not organization:
+            organization = "Active Church"  # Default organization
+        
+        # Set ONLY the uppercase Organization field
+        event_data["org_id"] = org_id
+        event_data["Organization"] = organization  # Uppercase O only
 
+        # Check if it's a CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
@@ -1585,25 +1633,48 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             event_data["isGlobal"] = False
             event_data["status"] = "incomplete"
         else:
+            # Try to find the event type - first by name only (without org filter)
             event_type = await events_collection.find_one({
                 "$or": [
                     {"name": {"$regex": f"^{event_type_name}$", "$options": "i"}},
                     {"eventType": {"$regex": f"^{event_type_name}$", "$options": "i"}},
                     {"eventTypeName": {"$regex": f"^{event_type_name}$", "$options": "i"}}
                 ],
-                "isEventType": True,
-                "org_id": org_id
+                "isEventType": True
             })
-
-            if not event_type:
-                raise HTTPException(status_code=400, detail=f"Event type '{event_type_name}' not found")
-
-            event_data["eventTypeId"] = event_type.get("UUID")
-            event_data["eventTypeName"] = event_type.get("name")
-            event_data["isGlobal"] = event_type.get("isGlobal", False)
-            event_data["hasPersonSteps"] = event_type.get("hasPersonSteps", False)
-            event_data["isTicketed"] = event_type.get("isTicketed", False)
-            event_data["status"] = "open"
+            
+            # If found, check if it's global or belongs to the user's org
+            if event_type:
+                is_global = event_type.get("isGlobal", False)
+                event_org_id = event_type.get("org_id", "")
+                
+                # If it's global OR belongs to user's org, use it
+                if is_global or event_org_id == org_id:
+                    print(f"Found event type: {event_type_name} (global={is_global})")
+                    event_data["eventTypeId"] = event_type.get("UUID")
+                    event_data["eventTypeName"] = event_type.get("name")
+                    event_data["isGlobal"] = event_type.get("isGlobal", False)
+                    event_data["hasPersonSteps"] = event_type.get("hasPersonSteps", False)
+                    event_data["isTicketed"] = event_type.get("isTicketed", False)
+                    event_data["status"] = "open"
+                else:
+                    # Event type exists but belongs to different org - create as custom
+                    print(f"Event type '{event_type_name}' belongs to org {event_org_id}, user org is {org_id} - using as custom")
+                    event_data["eventTypeId"] = None
+                    event_data["eventTypeName"] = event_type_name
+                    event_data["isGlobal"] = False
+                    event_data["hasPersonSteps"] = False
+                    event_data["isTicketed"] = False
+                    event_data["status"] = "open"
+            else:
+                # Event type not found, use default
+                print(f"Event type '{event_type_name}' not found, using default")
+                event_data["eventTypeId"] = None
+                event_data["eventTypeName"] = event_type_name
+                event_data["isGlobal"] = False
+                event_data["hasPersonSteps"] = False
+                event_data["isTicketed"] = False
+                event_data["status"] = "open"
 
         print(f"Using day value from frontend: {event_data.get('day')}")
 
@@ -1653,8 +1724,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 if field in event_data and not event_data[field]:
                     del event_data[field]
 
-        event_data["org_id"] = org_id
-        event_data["Organization"] = organization
         event_data["created_at"] = datetime.utcnow()
         event_data["updated_at"] = datetime.utcnow()
         event_data.setdefault("attendees", [])
@@ -1694,7 +1763,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             except Exception:
                 event_data["Date Of Event"] = first_event_date.isoformat()
 
-            print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}")
+            print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}, Organization: {event_data['Organization']}")
 
             result = await events_collection.insert_one(event_data)
             print(f"[RECURRING CREATE] Inserted _id: {result.inserted_id}")
@@ -1722,6 +1791,8 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @app.get("/event-types")
 async def get_event_types(current_user: dict = Depends(get_current_user)):
@@ -6696,7 +6767,7 @@ async def get_persistent_attendees(
 
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+
         raw_persistent = event.get("persistent_attendees", [])
         cleaned = []
         for p in raw_persistent:
@@ -6736,32 +6807,32 @@ async def get_persistent_attendees(
                 email_key = person.get("Email", "").lower()
                 email_to_person[email_key] = person
 
-        # Collect all LeaderPath[1] IDs to resolve
-        leader12_ids = set()
+        # Collect all LeaderPath IDs to resolve
+        leader_ids_to_resolve = set()
         for person in email_to_person.values():
             lp = person.get("LeaderPath", [])
-            if len(lp) > 1:
+            for lid in lp:
                 try:
-                    leader12_ids.add(ObjectId(str(lp[1])))
+                    leader_ids_to_resolve.add(ObjectId(str(lid)))
                 except Exception:
                     pass
 
         # Bulk fetch leader names
         leader_name_map = {}
-        if leader12_ids:
+        if leader_ids_to_resolve:
             async for leader_doc in people_collection.find(
-                {"_id": {"$in": list(leader12_ids)}},
+                {"_id": {"$in": list(leader_ids_to_resolve)}},
                 {"_id": 1, "Name": 1, "Surname": 1}
             ):
                 leader_name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
 
-        # Enrich cleaned attendees with resolved leader12
+        # Enrich cleaned attendees with resolved leaders
         for attendee in cleaned:
-            if not attendee.get("leader12") and attendee.get("email"):
+            if attendee.get("email"):
                 person = email_to_person.get(attendee["email"].lower())
                 if person:
                     lp = person.get("LeaderPath", [])
-                    if len(lp) > 1:
+                    if not attendee.get("leader12") and len(lp) > 1:
                         try:
                             lid = ObjectId(str(lp[1]))
                             resolved = leader_name_map.get(lid, "")
@@ -6769,19 +6840,12 @@ async def get_persistent_attendees(
                                 attendee["leader12"] = resolved
                         except Exception:
                             pass
-                    if len(lp) > 2 and not attendee.get("leader144"):
+                    if not attendee.get("leader144") and len(lp) > 2:
                         try:
-                            lid144 = ObjectId(str(lp[2]))
-                            resolved144 = leader_name_map.get(lid144)
-                            if not resolved144:
-                                leader_doc = await people_collection.find_one(
-                                    {"_id": lid144},
-                                    {"Name": 1, "Surname": 1}
-                                )
-                                if leader_doc:
-                                    resolved144 = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
-                            if resolved144:
-                                attendee["leader144"] = resolved144
+                            lid = ObjectId(str(lp[2]))
+                            resolved = leader_name_map.get(lid, "")
+                            if resolved:
+                                attendee["leader144"] = resolved
                         except Exception:
                             pass
 
@@ -6795,9 +6859,6 @@ async def get_persistent_attendees(
                 event_date = event_date.date().isoformat()
             elif isinstance(event_date, str):
                 event_date = event_date.split("T")[0].split(" ")[0].strip()
-
-        print(f"event_date looking for: {event_date}")
-        print(f"attendance_map keys: {list(attendance_map.keys()) if isinstance(attendance_map, dict) else 'NOT A DICT'}")
 
         checked_in_attendees = []
         headcount = 0
@@ -6813,7 +6874,6 @@ async def get_persistent_attendees(
                                 value.get("event_date_exact") == event_date or
                                 key == event_date):
                             date_entry = value
-                            print(f"Found date_entry via fallback key: {key}")
                             break
 
             if isinstance(date_entry, dict) and date_entry:
@@ -6839,18 +6899,14 @@ async def get_persistent_attendees(
                             "ageGroup": a.get("ageGroup", ""),
                             "paymentMethod": a.get("paymentMethod", ""),
                         })
-            else:
-                attendance_status = "incomplete"
-                checked_in_attendees = []
-                headcount = 0
 
         return {
-            "persistent_attendees": root_persistent,
-            "checked_in_attendees": event.get("attendees", []),
-            "attendance_status": event.get("status", "incomplete"),
-            "total_headcounts": event.get("last_headcount", 0),
+            "persistent_attendees": cleaned,
+            "checked_in_attendees": checked_in_attendees,
+            "attendance_status": attendance_status,
+            "total_headcounts": headcount,
             "event_name": event.get("Event Name", "Unknown"),
-            "date": date_str
+            "date": event_date
         }
 
     except HTTPException:
@@ -6858,7 +6914,8 @@ async def get_persistent_attendees(
     except Exception as e:
         print(f"Error getting persistent attendees: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-          
+
+
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(
     event_id: str = Path(...),
@@ -6867,11 +6924,11 @@ async def get_last_attendance(
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-        
+
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+
         persistent = event.get("persistent_attendees", [])
         if persistent:
             return {
@@ -6883,11 +6940,11 @@ async def get_last_attendance(
                     "last_decisions_count": event.get("last_decisions_count", 0)
                 }
             }
-        
+
         attendance = event.get("attendance", {})
         if not attendance:
             return {
-                "has_previous_attendance": False, 
+                "has_previous_attendance": False,
                 "attendees": [],
                 "statistics": {
                     "total_associated": 0,
@@ -6895,7 +6952,7 @@ async def get_last_attendance(
                     "last_decisions_count": 0
                 }
             }
-        
+
         weeks = sorted(attendance.keys(), reverse=True)
         if weeks:
             last_week_data = attendance[weeks[0]]
@@ -6908,9 +6965,9 @@ async def get_last_attendance(
                     "last_decisions_count": event.get("last_decisions_count", 0)
                 }
             }
-        
+
         return {
-            "has_previous_attendance": False, 
+            "has_previous_attendance": False,
             "attendees": [],
             "statistics": {
                 "total_associated": 0,
@@ -6918,10 +6975,11 @@ async def get_last_attendance(
                 "last_decisions_count": 0
             }
         }
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-     
+        raise HTTPException(status_code=500, detail=str(e))     
+
+    
 @app.get("/events/{event_id}/statistics")
 async def get_event_statistics(
     event_id: str = Path(...),
@@ -7564,44 +7622,6 @@ def format_user_response(user):
         "organization": user.get("organization", ""),
     }
 
-# # Debug endpoint
-@app.put("/profile/{user_id}/debug")
-async def debug_profile_update(
-    user_id: str,
-    request: Request,
-    current_user: dict = Depends(get_current_user)
-):
-    """Debug endpoint to see what's happening"""
-    try:
-        body = await request.body()
-        body_str = body.decode('utf-8')
-       
-        return {
-            "message": "Debug info",
-            "user_id_from_url": user_id,
-            "user_id_from_token": current_user.get("user_id"),
-            "authorized": current_user.get("user_id") == user_id,
-            "raw_body": body_str,
-            "current_user_email": current_user.get("email")
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-# Test endpoint
-@app.get("/profile/{user_id}/test")
-async def test_profile_access(
-    user_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Test if profile access works"""
-    return {
-        "message": "Profile test",
-        "user_id": user_id,
-        "current_user": current_user.get("user_id"),
-        "authorized": current_user.get("user_id") == user_id
-    }
-   
-
 @app.post("/users/{user_id}/avatar")
 async def upload_avatar(
     user_id: str,
@@ -7701,9 +7721,6 @@ async def change_password(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
-
-
-
 # PEOPLE ENDPOINTS
 @app.get("/people")
 async def get_people(
@@ -7796,7 +7813,8 @@ async def get_people(
 
         all_leader_ids = set()
         for person in people_list:
-            for lid in person.get("LeaderPath", []):
+            leader_path = person.get("LeaderPath", [])
+            for lid in leader_path:
                 if lid:
                     try:
                         if isinstance(lid, ObjectId):
@@ -7806,17 +7824,14 @@ async def get_people(
                     except Exception:
                         pass
 
-        print(f"PEOPLE ENDPOINT: found {len(people_list)} people, {len(all_leader_ids)} unique leader IDs")
-
         name_map = {}
         if all_leader_ids:
-            async for leader_doc in people_collection.find(
+            leader_cursor = people_collection.find(
                 {"_id": {"$in": list(all_leader_ids)}},
                 {"_id": 1, "Name": 1, "Surname": 1}
-            ):
+            )
+            async for leader_doc in leader_cursor:
                 name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
-
-        print(f"NAME MAP SIZE: {len(name_map)}")
 
         def resolve_leader(lid):
             if not lid:
@@ -7828,28 +7843,14 @@ async def get_people(
             except Exception:
                 return ""
 
-        # Debug first person
-        if people_list:
-            first = people_list[0]
-            lp = first.get("LeaderPath", [])
-            print(f"FIRST PERSON: {first.get('Name')} {first.get('Surname')}")
-            print(f"FIRST LEADERPATH: {lp}")
-            if len(lp) > 1:
-                lid = lp[1]
-                print(f"LEADER @12 ID: {lid}, type: {type(lid)}")
-                try:
-                    resolved = name_map.get(ObjectId(str(lid)), "NOT FOUND")
-                    print(f"RESOLVED LEADER @12: {resolved}")
-                except Exception as e:
-                    print(f"RESOLVE ERROR: {e}")
-
         final_list = []
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
-
-            resolved_leader_1   = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
-            resolved_leader_12  = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
-            resolved_leader_144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
+            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
+            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
+            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
+            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
 
             mapped = {
                 "_id": str(person["_id"]),
@@ -7868,24 +7869,16 @@ async def get_people(
                 "LeaderPath": [str(lid) for lid in leader_path],
                 "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "Leader @1": resolved_leader_1 or person.get("Leader @1", "") or (person.get(hierarchy_fields[0], "") if hierarchy_fields else ""),
-                "Leader @12": resolved_leader_12 or person.get("Leader @12", "") or (person.get(hierarchy_fields[1], "") if len(hierarchy_fields) > 1 else ""),
-                "Leader @144": resolved_leader_144 or person.get("Leader @144", "") or (person.get(hierarchy_fields[2], "") if len(hierarchy_fields) > 2 else ""),
-                "Leader @1728": person.get("Leader @1728", ""),
-                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+                "Leader @1": leader1,
+                "Leader @12": leader12,
+                "Leader @144": leader144,
+                "Leader @1728": leader1728,
+                "FullName": full_name
             }
-
-            for h in hierarchy:
-                field = h.get("field")
-                label = h.get("label")
-                if field:
-                    mapped[field] = person.get(field, "")
-                if label:
-                    mapped[label] = person.get(label, "") or person.get(field, "")
-
             final_list.append(mapped)
 
         total_count = await people_collection.count_documents(query)
+
         return {
             "page": page,
             "perPage": perPage,
@@ -7894,8 +7887,8 @@ async def get_people(
         }
 
     except Exception as e:
-        print(f"Error fetching people: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        print(f"Error in get_people: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @app.get("/people/search")
 async def search_people(
     query: str = Query("", min_length=2),
@@ -8890,12 +8883,10 @@ async def get_user_tasks(
 
         is_super_admin = current_user.get("role") == "super_admin"
         is_leader = current_user.get("role") in ["admin", "leader", "manager", "org_admin"]
-
-        # === MULTI-TENANT QUERY (exactly as XMind plan + your DB) ===
         if is_super_admin and view_all:
-            query = {}                                      # super admin sees everything
+            query = {}                                     
         elif is_leader and view_all:
-            query = {"Organization": org_name}              # leader sees only their church
+            query = {"Organization": org_name}       
         else:
             query = {
                 "Organization": org_name,
@@ -8988,14 +8979,11 @@ async def get_task_types(current_user: dict = Depends(get_current_user)):
         return types
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 # ====================== POST /tasktypes (CREATES WITH ORGANIZATION) ======================
 
 @app.post("/tasktypes", response_model=TaskTypeOut)
 async def create_task_type(task: TaskTypeIn, current_user: dict = Depends(get_current_user)):
     try:
-        # Only admins can create (same as your frontend)
         if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
             raise HTTPException(status_code=403, detail="Only admins can create task types.")
 
@@ -9008,16 +8996,12 @@ async def create_task_type(task: TaskTypeIn, current_user: dict = Depends(get_cu
 
         if not org_name:
             raise HTTPException(status_code=403, detail="Organization not associated with user")
-
-        # Check if already exists in THIS organization
         existing = await tasktypes_collection.find_one({
             "name": task.name,
             "Organization": org_name
         })
         if existing:
             raise HTTPException(status_code=400, detail="Task type already exists in this organization.")
-
-        # Create with Organization tag
         new_task = {
             "name": task.name,
             "Organization": org_name
@@ -9028,8 +9012,6 @@ async def create_task_type(task: TaskTypeIn, current_user: dict = Depends(get_cu
         return task_type_serializer(created)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
 # ====================== Helper (keep exactly as before) ======================
 def serialize_doc(doc):
     if doc and "_id" in doc:
@@ -9037,7 +9019,6 @@ def serialize_doc(doc):
     return doc
 
 # ====================== PUT /tasktypes/{tasktype_id} ======================
-
 @app.put("/tasktypes/{tasktype_id}")
 async def update_task_type(
     tasktype_id: str,
@@ -9045,7 +9026,6 @@ async def update_task_type(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Admin-only check
         if current_user.get("role") not in ["super_admin", "org_admin", "admin"]:
             raise HTTPException(status_code=403, detail="Only admins can edit task types.")
 
@@ -9091,7 +9071,6 @@ async def update_task_type(
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 # ====================== DELETE /tasktypes/{tasktype_id} ======================
 
@@ -9151,7 +9130,6 @@ async def update_task(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # === ROBUST ORGANIZATION LOOKUP (ignores case) ===
         org_name = None
         for key in current_user.keys():
             if key.lower() == "organization":
@@ -9245,35 +9223,24 @@ async def get_stats_overview(period: str = "monthly"):
                 end_date = now.replace(year=now.year + 1, month=1, day=1)
             else:
                 end_date = now.replace(month=now.month + 1, day=1)
-
-        # Count outstanding cells (cells with status != "completed" or "closed")
-        # Assuming cells are events with eventType "Cell" and have a status field
         outstanding_cells = await events_collection.count_documents({
             "eventType": "Cell",
             "status": {"$nin": ["completed", "closed", "done"]}
         })
-       
-        # Count outstanding tasks from tasks collection
-        # Assuming tasks have a status field and are not completed/closed
         outstanding_tasks = await tasks_collection.count_documents({
             "status": {"$nin": ["completed", "closed", "done"]}
         })
        
-        # Get total people (assuming you have a people collection)
         total_people = await people_collection.count_documents({})
        
-        # Get events for the period to calculate attendance and growth
-        # Only include non-cell events for attendance calculation
         period_events = await events_collection.find({
             "date": {"$gte": start_date, "$lt": end_date},
             "status": {"$in": ["completed", "closed"]},
-            "eventType": {"$ne": "Cell"}  # Exclude cells from attendance calculation
+            "eventType": {"$ne": "Cell"} 
         }).to_list(length=None)
        
-        # Calculate total attendance for the period
         total_attendance = sum(event.get("total_attendance", 0) for event in period_events)
        
-        # Calculate previous period for growth comparison
         if period == "daily":
             prev_start = start_date - timedelta(days=1)
             prev_end = start_date
@@ -9287,7 +9254,6 @@ async def get_stats_overview(period: str = "monthly"):
                 prev_start = start_date.replace(month=start_date.month - 1)
             prev_end = start_date
        
-        # Get previous period attendance (exclude cells)
         prev_events = await events_collection.find({
             "date": {"$gte": prev_start, "$lt": prev_end},
             "status": {"$in": ["completed", "closed"]},
@@ -9392,22 +9358,21 @@ async def get_people_capture_stats():
         client = get_database_client()
         db = client[DB_NAME]
        
-        # Count how many people each team member has captured
         pipeline = [
             {
                 "$match": {
-                    "captured_by": {"$exists": True, "$ne": None}  # Only people who were captured by someone
+                    "captured_by": {"$exists": True, "$ne": None} 
                 }
             },
             {
                 "$group": {
-                    "_id": "$captured_by",  # Group by the person who captured them
+                    "_id": "$captured_by", 
                     "people_captured_count": {"$sum": 1},
                     "captured_people": {
                         "$push": {
                             "name": "$fullName",
                             "email": "$email",
-                            "capture_date": "$created_date"  # or whatever field tracks when
+                            "capture_date": "$created_date" 
                         }
                     }
                 }
@@ -9472,8 +9437,6 @@ async def get_people_capture_stats():
         )
 
 # --- ROLE MANAGEMENT ENDPOINTS (Admin only) ---
-
-# Role permissions configuration
 ROLE_PERMISSIONS = {
     "admin": {
         "manage_users": True,
@@ -12513,7 +12476,7 @@ async def toggle_event_status(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error toggling event status: {str(e)}")
+        print(f"Error toggling event status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
      
 # ==================== CREATE CONSOLIDATION (UPDATED) ====================
@@ -13335,4 +13298,3 @@ async def get_top_leader_dynamic(gender: str, org_id: str = "active-teams") -> s
         if "male" in gender.lower():   return "Gavin Enslin"
         return ""
     
-        

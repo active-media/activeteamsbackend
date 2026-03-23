@@ -11,7 +11,7 @@ print(f"--- CONNECTING TO DB: {DB_NAME} ---")
 client = AsyncIOMotorClient(MONGO_URI)
 
 db = client[DB_NAME]
-events_collection = db["AllEvents"]
+events_collection = db["Events"]
 people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]

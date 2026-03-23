@@ -16,8 +16,8 @@ from datetime import datetime
 # ==============================
 JWT_SECRET = os.getenv("JWT_SECRET", "replace_me_with_a_strong_secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
 ORG_ID_MAP = {
     "active-church": "active-teams",
