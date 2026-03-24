@@ -1792,8 +1792,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
 @app.get("/event-types")
 async def get_event_types(current_user: dict = Depends(get_current_user)):
     try:
@@ -3442,10 +3440,9 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
 
         config = await org_config_collection.find_one({"_id": org_id})
-        print(f"Config found: {config is not None}")  # ← ADD THIS
+        print(f"Config found: {config is not None}")  #
 
         if not config:
-            # ... auto-detect logic
             pass
 
         config["org_id"] = str(config["_id"])
@@ -3453,9 +3450,9 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         return config
 
     except Exception as e:
-        print(f"ORG CONFIG ERROR: {str(e)}")  # ← ADD THIS
+        print(f"ORG CONFIG ERROR: {str(e)}") 
         import traceback
-        traceback.print_exc()  # ← ADD THIS
+        traceback.print_exc()  
         raise HTTPException(status_code=500, detail=str(e))  
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
