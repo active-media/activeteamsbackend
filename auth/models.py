@@ -5,12 +5,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from enum import Enum
-from typing import Optional, List, Literal, Dict
-from datetime import datetime, date
+from typing import Optional, List, Any, Dict, Union, Literal
 from bson import ObjectId
 import uuid
 from urllib.parse import unquote
-
+from datetime import datetime, timedelta, date, timezone
 
 app = FastAPI()
 
@@ -77,16 +76,26 @@ class AttendanceSubmission(BaseModel):
 
 # Adding new Person in the Event screen
 class PersonCreate(BaseModel):
-    invitedBy: str
-    name: str
-    surname: str
-    gender: str
-    email: str
-    number: str
-    dob: str
-    address: str
-    leaders: list[str]
-    stage: Literal["Win"]
+    name:      str
+    surname:   str
+    email:     str
+    number:    Optional[str] = ""
+    phone:     Optional[str] = ""       
+    gender:    Optional[str] = ""
+    dob:       Optional[str] = ""      
+    address:   Optional[str] = ""
+    stage:     Optional[str] = "Win"
+    invitedBy: Optional[str] = ""
+    leaderId:    Optional[Any] = None   
+    leaderPath:  Optional[List[Any]] = []
+    invitedById: Optional[Any] = None
+    leader1:   Optional[str] = ""
+    leader12:  Optional[str] = ""
+    leader144: Optional[str] = ""
+    
+    # Allow any extra fields the frontend might send without breaking
+    class Config:
+        extra = "allow"
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
