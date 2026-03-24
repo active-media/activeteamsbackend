@@ -11500,114 +11500,114 @@ async def initialize_event_structure(
         print(f"Error initializing event structure: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error initializing event: {str(e)}")
    
-@app.post("/admin/migrate-all-events-structure")
-async def migrate_all_events_structure(current_user: dict = Depends(get_current_user)):
-    """
-    Migrate ALL events to the new three-type structure
-    Admin only
-    """
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+# @app.post("/admin/migrate-all-events-structure")
+# async def migrate_all_events_structure(current_user: dict = Depends(get_current_user)):
+#     """
+#     Migrate ALL events to the new three-type structure
+#     Admin only
+#     """
+#     if current_user.get("role") != "admin":
+#         raise HTTPException(status_code=403, detail="Admin access required")
 
-    try:
-        print("Starting migration of all events to new structure...")
+#     try:
+#         print("Starting migration of all events to new structure...")
        
         
-        all_events = await events_collection.find({}).to_list(length=None)
-        migrated_count = 0
-        results = []
+#         all_events = await events_collection.find({}).to_list(length=None)
+#         migrated_count = 0
+#         results = []
 
-        for event in all_events:
-            try:
-                event_id = event["_id"]
+#         for event in all_events:
+#             try:
+#                 event_id = event["_id"]
                
                 
-                if "new_people" in event and "consolidations" in event:
-                    continue
+#                 if "new_people" in event and "consolidations" in event:
+#                     continue
 
                 
-                old_attendees = event.get("attendees", [])
-                new_attendees = []
-                new_people = []
-                consolidations = []
+#                 old_attendees = event.get("attendees", [])
+#                 new_attendees = []
+#                 new_people = []
+#                 consolidations = []
 
-                for attendee in old_attendees:
-                    if isinstance(attendee, dict):
+#                 for attendee in old_attendees:
+#                     if isinstance(attendee, dict):
                         
-                        if attendee.get("decision") or attendee.get("is_consolidation"):
-                            consolidation_record = {
-                                "id": attendee.get("id", f"consolidation_{secrets.token_urlsafe(8)}"),
-                                "person_name": attendee.get("name", ""),
-                                "person_surname": attendee.get("surname", ""),
-                                "person_email": attendee.get("email", ""),
-                                "person_phone": attendee.get("phone", ""),
-                                "decision_type": attendee.get("decision", "first_time"),
-                                "decision_display_name": attendee.get("decision_display",
-                                    "First Time Decision" if attendee.get("decision") == "first_time" else "Recommitment"),
-                                "assigned_to": attendee.get("assigned_leader", ""),
-                                "assigned_to_email": attendee.get("assigned_leader_email", ""),
-                                "created_at": attendee.get("time", datetime.utcnow().isoformat()),
-                                "type": "consolidation",
-                                "status": "active"
-                            }
-                            consolidations.append(consolidation_record)
-                        else:
+#                         if attendee.get("decision") or attendee.get("is_consolidation"):
+#                             consolidation_record = {
+#                                 "id": attendee.get("id", f"consolidation_{secrets.token_urlsafe(8)}"),
+#                                 "person_name": attendee.get("name", ""),
+#                                 "person_surname": attendee.get("surname", ""),
+#                                 "person_email": attendee.get("email", ""),
+#                                 "person_phone": attendee.get("phone", ""),
+#                                 "decision_type": attendee.get("decision", "first_time"),
+#                                 "decision_display_name": attendee.get("decision_display",
+#                                     "First Time Decision" if attendee.get("decision") == "first_time" else "Recommitment"),
+#                                 "assigned_to": attendee.get("assigned_leader", ""),
+#                                 "assigned_to_email": attendee.get("assigned_leader_email", ""),
+#                                 "created_at": attendee.get("time", datetime.utcnow().isoformat()),
+#                                 "type": "consolidation",
+#                                 "status": "active"
+#                             }
+#                             consolidations.append(consolidation_record)
+#                         else:
                             
-                            attendee_record = {
-                                "id": attendee.get("id", f"attendee_{secrets.token_urlsafe(8)}"),
-                                "name": attendee.get("name", ""),
-                                "fullName": attendee.get("fullName", attendee.get("name", "")),
-                                "email": attendee.get("email", ""),
-                                "phone": attendee.get("phone", ""),
-                                "leader12": attendee.get("leader12", ""),
-                                "time": attendee.get("time", datetime.utcnow().isoformat()),
-                                "checked_in": attendee.get("checked_in", True),
-                                "type": "attendee"
-                            }
-                            new_attendees.append(attendee_record)
+#                             attendee_record = {
+#                                 "id": attendee.get("id", f"attendee_{secrets.token_urlsafe(8)}"),
+#                                 "name": attendee.get("name", ""),
+#                                 "fullName": attendee.get("fullName", attendee.get("name", "")),
+#                                 "email": attendee.get("email", ""),
+#                                 "phone": attendee.get("phone", ""),
+#                                 "leader12": attendee.get("leader12", ""),
+#                                 "time": attendee.get("time", datetime.utcnow().isoformat()),
+#                                 "checked_in": attendee.get("checked_in", True),
+#                                 "type": "attendee"
+#                             }
+#                             new_attendees.append(attendee_record)
 
-                update_data = {
-                    "attendees": new_attendees,
-                    "new_people": new_people,
-                    "consolidations": consolidations,
-                    "updated_at": datetime.utcnow().isoformat()
-                }
+#                 update_data = {
+#                     "attendees": new_attendees,
+#                     "new_people": new_people,
+#                     "consolidations": consolidations,
+#                     "updated_at": datetime.utcnow().isoformat()
+#                 }
 
-                if "total_attendance" not in event:
-                    update_data["total_attendance"] = len(new_attendees)
+#                 if "total_attendance" not in event:
+#                     update_data["total_attendance"] = len(new_attendees)
 
-                await events_collection.update_one(
-                    {"_id": event_id},
-                    {"$set": update_data}
-                )
+#                 await events_collection.update_one(
+#                     {"_id": event_id},
+#                     {"$set": update_data}
+#                 )
 
-                migrated_count += 1
-                results.append({
-                    "event_id": str(event_id),
-                    "event_name": event.get("eventName", "Unknown"),
-                    "attendees": len(new_attendees),
-                    "consolidations": len(consolidations)
-                })
+#                 migrated_count += 1
+#                 results.append({
+#                     "event_id": str(event_id),
+#                     "event_name": event.get("eventName", "Unknown"),
+#                     "attendees": len(new_attendees),
+#                     "consolidations": len(consolidations)
+#                 })
 
-                print(f"Migrated: {event.get('eventName', 'Unknown')}")
+#                 print(f"Migrated: {event.get('eventName', 'Unknown')}")
 
-            except Exception as e:
-                print(f"Error migrating event {event.get('eventName')}: {str(e)}")
-                continue
+#             except Exception as e:
+#                 print(f"Error migrating event {event.get('eventName')}: {str(e)}")
+#                 continue
 
-        print(f"Migration complete! Migrated {migrated_count} events")
+#         print(f"Migration complete! Migrated {migrated_count} events")
 
-        return {
-            "success": True,
-            "message": f"Migrated {migrated_count} events to new structure",
-            "migrated_count": migrated_count,
-            "total_events": len(all_events),
-            "results": results
-        }
+#         return {
+#             "success": True,
+#             "message": f"Migrated {migrated_count} events to new structure",
+#             "migrated_count": migrated_count,
+#             "total_events": len(all_events),
+#             "results": results
+#         }
 
-    except Exception as e:
-        print(f"Error in bulk migration: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
+#     except Exception as e:
+#         print(f"Error in bulk migration: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
 
 def get_period_range(period: str):
     """
@@ -13046,7 +13046,6 @@ async def cleanup_orphaned_tasks(
 # ─────────────────────────────────────────────────────────────
 # ORG CONFIG ENDPOINTS
 # ─────────────────────────────────────────────────────────────
-
 @app.get("/org-config")
 async def get_org_config(current_user: dict = Depends(get_current_user)):
     try:
@@ -13187,7 +13186,6 @@ async def detect_and_update_hierarchy(current_user: dict = Depends(get_current_u
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    
 @app.put("/org-config")
 async def update_org_config(
     config_data: dict,
