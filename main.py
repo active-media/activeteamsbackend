@@ -6580,8 +6580,7 @@ async def get_persistent_attendees(
 ):
     try:
         print(f"[PERSISTENT ATTENDEES] Raw event_id received: {event_id}")
-        
-        # Extract date from compound ID if present
+
         date_str = None
         if "_" in event_id:
             parts = event_id.split("_")
@@ -6589,52 +6588,70 @@ async def get_persistent_attendees(
             date_str = parts[1] if len(parts) > 1 else None
         else:
             clean_id = event_id
-        
+
         print(f"[PERSISTENT ATTENDEES] Clean ID: {clean_id}, Date: {date_str}")
-        
+
         if not ObjectId.is_valid(clean_id):
             raise HTTPException(status_code=400, detail=f"Invalid event ID: {clean_id}")
-        
+
         event = await events_collection.find_one({"_id": ObjectId(clean_id)})
-        
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        # If date provided, check that specific week's attendance first
+
+        root_persistent = event.get("persistent_attendees", [])
+
+        # If a specific date was provided, look up that exact week's data
         if date_str:
             attendance_data = event.get("attendance", {})
             week_data = attendance_data.get(date_str, {})
-            
+
             if week_data:
                 week_persistent = week_data.get("persistent_attendees", [])
                 week_checked_in = week_data.get("attendees", [])
                 week_status = week_data.get("status", "incomplete")
                 total_headcounts = week_data.get("total_headcounts", 0)
-                
-                print(f"[PERSISTENT ATTENDEES] Found week data for {date_str}: {len(week_persistent)} persistent, {len(week_checked_in)} checked in, status={week_status}")
-                
+                is_did_not_meet = week_data.get("is_did_not_meet", False)
+
+                # Normalise status
+                if is_did_not_meet:
+                    week_status = "did_not_meet"
+
+                print(f"[PERSISTENT ATTENDEES] Found week data for {date_str}: "
+                      f"{len(week_persistent)} persistent, {len(week_checked_in)} checked in, "
+                      f"status={week_status}")
+
                 return {
-                    "persistent_attendees": week_persistent if week_persistent else event.get("persistent_attendees", []),
+                    # Prefer the week-level persistent snapshot; fall back to root roster
+                    "persistent_attendees": week_persistent if week_persistent else root_persistent,
                     "checked_in_attendees": week_checked_in,
                     "attendance_status": week_status,
                     "total_headcounts": total_headcounts,
-                    "event_name": event.get("Event Name", "Unknown"),
+                    "event_name": event.get("Event Name", event.get("eventName", "Unknown")),
                     "date": date_str
                 }
-        
-        # Fallback to root-level persistent attendees
-        root_persistent = event.get("persistent_attendees", [])
-        print(f"[PERSISTENT ATTENDEES] Using root persistent attendees: {len(root_persistent)}")
-        
+
+            # No entry for this date yet — fresh week, nobody checked in
+            print(f"[PERSISTENT ATTENDEES] No week data for {date_str}, returning fresh state")
+            return {
+                "persistent_attendees": root_persistent,
+                "checked_in_attendees": [],        # ← nobody checked in yet
+                "attendance_status": "incomplete", # ← always incomplete for a new week
+                "total_headcounts": 0,
+                "event_name": event.get("Event Name", event.get("eventName", "Unknown")),
+                "date": date_str
+            }
+
+        # No date provided — just return the roster, no check-in state
+        print(f"[PERSISTENT ATTENDEES] No date provided, returning root persistent only")
         return {
             "persistent_attendees": root_persistent,
-            "checked_in_attendees": event.get("attendees", []),
-            "attendance_status": event.get("status", "incomplete"),
-            "total_headcounts": event.get("last_headcount", 0),
-            "event_name": event.get("Event Name", "Unknown"),
-            "date": date_str
+            "checked_in_attendees": [],
+            "attendance_status": "incomplete",
+            "total_headcounts": 0,
+            "event_name": event.get("Event Name", event.get("eventName", "Unknown")),
+            "date": None
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
