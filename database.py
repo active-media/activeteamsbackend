@@ -13,8 +13,6 @@ events_collection = db["Events"]
 people_collection = db["People"]
 users_collection = db["Users"]
 tasks_collection = db["tasks"]
-#  is used to test the whole data for events
-# events_collection = db["cellst"]  
 tasktypes_collection = db["TaskTypes"]
 consolidations_collection=db["consolidations"]
 

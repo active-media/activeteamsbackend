@@ -141,15 +141,14 @@ class EventUpdate(BaseModel):
     eventType: Optional[str] = None
     eventName: Optional[str] = None
     date: Optional[datetime] = None
-    time: Optional[str] = None
+    time: Optional[str] = None  
     recurring_day: Optional[List[str]] = None
     location: Optional[str] = None
     eventLeader: Optional[str] = None
     description: Optional[str] = None
     userEmail: Optional[str] = None
-    status: Optional[str] = None
-    Status: Optional[str] = None
-    attendees: Optional[List[dict]] = None
+    status: Optional[str] = None  
+    # attendees: Optional[List[dict]] = None
     did_not_meet: Optional[bool] = None
     total_attendance: Optional[int] = None
     isTicketed: Optional[bool] = None
@@ -164,7 +163,6 @@ class EventUpdate(BaseModel):
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
     deactivation_reason: Optional[str] = None
-class CellDeactivateRequest(BaseModel):
     weeks: int = Field(1, ge=1, le=12, description="Number of weeks to deactivate (1-12)")
     reason: Optional[str] = Field(None, max_length=200, description="Reason for deactivation")
 
