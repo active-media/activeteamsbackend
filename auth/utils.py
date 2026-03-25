@@ -319,3 +319,4 @@ def task_type_serializer(task_type) -> dict:
         "id": str(task_type["_id"]),
         "name": task_type["name"]
     }
+ 

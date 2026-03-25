@@ -1,5 +1,6 @@
 
 import os
+import io
 from datetime import datetime, timedelta, date, timezone
 import time
 from bson import ObjectId
@@ -8,7 +9,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depend
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel,TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile,  OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection
@@ -30,6 +31,8 @@ from apscheduler.schedulers.background import BackgroundScheduler, BlockingSched
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 from supreme_admin import router as supreme_admin_router
+import pandas as pd
+
 app = FastAPI()
 app.include_router(supreme_admin_router)
 
@@ -608,9 +611,8 @@ async def background_refresh_people_cache(stale_data: list = None):
             people_cache["load_progress"] = round(progress, 1)
             people_cache["total_loaded"]  = total_loaded
 
-            if page % 5 == 0:
-                people_cache["data"] = all_people.copy()
-                print(f"Batch {page}: {len(all_people)} records ({progress:.1f}%)")
+            people_cache["data"] = all_people.copy()
+            print(f"Batch {page}: {len(all_people)} records ({progress:.1f}%)")
 
             page += 1
             await asyncio.sleep(0.05)
@@ -644,13 +646,6 @@ async def background_refresh_people_cache(stale_data: list = None):
 
 async def background_load_all_people():
     await background_refresh_people_cache()
-
-@app.on_event("startup")
-async def startup_event():
-    """Start background loading of all people on startup"""
-    print(" Starting background load of ALL people...")
-    asyncio.create_task(background_load_all_people())
-    asyncio.create_task(background_refresh_people_cache())
 
 @app.get("/cache/people")
 async def get_cached_people(current_user: dict = Depends(get_current_user)):
@@ -5210,6 +5205,11 @@ async def get_missing_leaders(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.on_event("startup")
+async def startup_event():
+    print("Starting background load of ALL people...")
+    asyncio.create_task(background_refresh_people_cache())
+    
 @app.on_event("startup")
 async def create_indexes_on_startup():
     print("Creating MongoDB indexes for faster queries...")
@@ -13081,5 +13081,508 @@ async def get_top_leader_dynamic(gender: str, org_id: str = "active-teams") -> s
         if "female" in gender.lower(): return "Vicky Enslin"
         if "male" in gender.lower():   return "Gavin Enslin"
         return ""
+  
+COLUMN_MAP: dict[str, str] = {
+    # Name
+    "personname":    "name",
+    "full name":     "name",
+    "fullname":      "name",
+    "name":          "name",
+    "firstname":     "name",
+    "first name":    "name",
+    "first_name":    "name",
+
+    # Surname
+    "familytag":     "surname",
+    "surname":       "surname",
+    "last name":     "surname",
+    "lastname":      "surname",
+    "family name":   "surname",
+    "last_name":     "surname",
+
+    # Phone
+    "cellnumber":    "number",
+    "phone":         "number",
+    "number":        "number",
+    "mobile":        "number",
+    "cell":          "number",
+    "phonenumber":   "number",
+    "phone_number":  "number",
+    "tel":           "number",
+
+    # Email
+    "sacredemail":   "email",
+    "email":         "email",
+    "emailaddress":  "email",
+    "email address": "email",
+    "email_address": "email",
+
+    # Address
+    "homebase":      "address",
+    "address":       "address",
+    "home address":  "address",
+    "homeaddress":   "address",
+    "location":      "address",
+    "city":          "address",
+
+    # Birthday
+    "birthstar":     "birthday",
+    "birthday":      "birthday",
+    "dob":           "birthday",
+    "date of birth": "birthday",
+    "dateofbirth":   "birthday",
+    "birth date":    "birthday",
+    "birthdate":     "birthday",
+
+    # Gender
+    "gender":        "gender",
+    "sex":           "gender",
+
+    # Direct leader (used for LeaderPath resolution)
+    "shepherd":      "invitedby",
+    "invitedby":     "invitedby",
+    "invited by":    "invitedby",
+    "invited_by":    "invitedby",
+    "direct leader": "invitedby",
+    "directleader":  "invitedby",
+    "leader":        "invitedby",
+    "discipledby":   "invitedby",
+    "disciple of":   "invitedby",
+
+    # Stage / ministry track
+    "stage":         "stage",
+    "ministry":      "stage",
+    "status":        "stage",
+
+    # Organization
+    "organization":  "organization",
+    "organisation":  "organization",
+    "church":        "organization",
+    "org":           "organization",
+    "churchname":    "organization",
+    "church_name":   "organization",
+
+    # Date joined
+    "joinedscroll":  "date_created",
+    "joined":        "date_created",
+    "date joined":   "date_created",
+    "datejoined":    "date_created",
+    "created":       "date_created",
+    "date created":  "date_created",
+
+    # Top-level leader name — stored as a plain string, not used for path building
+    "seniorpastor":  "senior_pastor",
+    "senior pastor": "senior_pastor",
+
+    # Silently ignored — computed/redundant columns
+    "shepherdtrail":       "_ignore",
+    "shepherd trail":      "_ignore",
+    "lastheavenupdate":    "_ignore",
+    "last heaven update":  "_ignore",
+    "updatedat":           "_ignore",
+    "updated at":          "_ignore",
+    }
+
+
+def _clean_col(col: str) -> str:
+    return re.sub(r"\s+", " ", str(col).strip().lower())
+
+
+def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename, drop = {}, []
+    for col in df.columns:
+        key = _clean_col(col)
+        mapped = COLUMN_MAP.get(key)
+        if mapped is None or mapped == "_ignore":
+            drop.append(col)
+        else:
+            rename[col] = mapped
+    df = df.drop(columns=drop, errors="ignore")
+    df = df.rename(columns=rename)
+    df = df.loc[:, ~df.columns.duplicated()]
+    return df
+
+
+def _safe_str(val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    return str(val).strip()
+
+
+def _parse_birthday(val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, (pd.Timestamp, datetime)):
+        return val.strftime("%Y/%m/%d")
+    return str(val).strip().replace("-", "/")
+
+
+def _build_sheet_name_map(df: pd.DataFrame) -> dict[str, int]:
+    """
+    Maps every person's full name (lower) and first name (lower) to their
+    row index. Built from the sheet itself — no DB involved.
+    First-name-only is a fallback and will be overwritten if two people
+    share a first name.
+    """
+    mapping: dict[str, int] = {}
+    for idx, row in df.iterrows():
+        name    = _safe_str(row.get("name",    "")).title()
+        surname = _safe_str(row.get("surname", "")).title()
+        full    = f"{name} {surname}".strip().lower()
+        if full:
+            mapping[full] = idx
+        first = name.strip().lower()
+        if first and first not in mapping:
+            mapping[first] = idx
+    return mapping
+
+
+def _resolve_sheet_path(
+    invitedby_name: str,
+    sheet_name_map: dict[str, int],
+    sheet_id_map:   dict[int, str],
+    sheet_path_map: dict[int, list[str]],
+) -> tuple[Optional[str], list[str]]:
+    """
+    Pure in-memory resolution — no DB calls.
+
+    Returns (direct_leader_id_str, full_root_first_path_str_list).
+
+    LeaderPath is root-first:
+        [root, ..., inviter_parent, inviter]
+
+    inviter's already-resolved path + inviter's own ID = this person's path.
+    """
+    clean = invitedby_name.strip().lower()
+    if not clean:
+        return None, []
+
+    inviter_row = sheet_name_map.get(clean)
+    if inviter_row is None:
+        return None, []
+
+    inviter_id = sheet_id_map.get(inviter_row)
+    if not inviter_id:
+        return None, []
+
+    inviter_path = sheet_path_map.get(inviter_row, [])
+    # root-first: inviter's ancestors + inviter
+    return inviter_id, inviter_path + [inviter_id]
+
+
+async def _import_rows(
+    df: pd.DataFrame,
+    default_organization: str,
+    dry_run: bool,
+    current_user: dict,
+) -> dict:
+    now = datetime.utcnow()
+    results = {"inserted": 0, "skipped": 0, "errors": 0, "dry_run": dry_run, "rows": []}
+
+    # ── PASS 1: pre-assign a stable ObjectId to every row ─────────────────
+    # These IDs are used as references in LeaderPath *before* anything is
+    # written to MongoDB, so cross-row references are always valid.
+    sheet_id_map:   dict[int, str]       = {}
+    sheet_path_map: dict[int, list[str]] = {}
+
+    for idx in df.index:
+        sheet_id_map[idx] = str(ObjectId())
+
+    # ── PASS 2: build name → row-index lookup from the sheet ──────────────
+    sheet_name_map = _build_sheet_name_map(df)
+
+    # ── PASS 3: resolve every row's LeaderPath from sheet data only ───────
+    # We loop until nothing changes. This handles any row ordering — a
+    # disciple can appear before their shepherd and still get the correct
+    # path once the shepherd's own path stabilises in a later pass.
+    for _ in range(len(df) + 1):
+        changed = False
+        for idx, row in df.iterrows():
+            invitedby = _safe_str(row.get("invitedby", ""))
+            if not invitedby:
+                new_path: list[str] = []
+            else:
+                _, new_path = _resolve_sheet_path(
+                    invitedby, sheet_name_map, sheet_id_map, sheet_path_map
+                )
+            if new_path != sheet_path_map.get(idx):
+                sheet_path_map[idx] = new_path
+                changed = True
+        if not changed:
+            break
+
+    # ── PASS 4: validate + insert ──────────────────────────────────────────
+    for idx, row in df.iterrows():
+        row_num = idx + 2   # 1-indexed + header row
+
+        name         = _safe_str(row.get("name",         "")).title()
+        surname      = _safe_str(row.get("surname",      "")).title()
+        email        = _safe_str(row.get("email",        "")).lower()
+        number       = _safe_str(row.get("number",       ""))
+        address      = _safe_str(row.get("address",      ""))
+        birthday     = _parse_birthday(row.get("birthday"))
+        gender       = _safe_str(row.get("gender",       "")).capitalize()
+        stage        = "Win"
+        invitedby    = _safe_str(row.get("invitedby",    ""))
+        senior_pastor = _safe_str(row.get("senior_pastor", ""))
+
+        row_org = _safe_str(row.get("organization", ""))
+        org = default_organization or row_org or (
+            current_user.get("Organization") or
+            current_user.get("organization") or ""
+        )
+
+        # date_created
+        raw_dc = row.get("date_created")
+        if raw_dc and not (isinstance(raw_dc, float) and pd.isna(raw_dc)):
+            try:
+                dc_str = (
+                    pd.Timestamp(raw_dc).isoformat()
+                    if not isinstance(raw_dc, str)
+                    else str(raw_dc)
+                )
+            except Exception:
+                dc_str = now.isoformat()
+        else:
+            dc_str = now.isoformat()
+
+        # ── validation ──────────────────────────────────────────────────────
+        if not name or not surname:
+            results["skipped"] += 1
+            results["rows"].append({
+                "row": row_num, "status": "skipped",
+                "reason": "Missing name or surname",
+                "person": f"{name} {surname}".strip(),
+            })
+            continue
+
+        if email:
+            existing = await people_collection.find_one(
+                {"Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+            )
+            if existing:
+                results["skipped"] += 1
+                results["rows"].append({
+                    "row": row_num, "status": "skipped",
+                    "reason": f"Email '{email}' already exists",
+                    "person": f"{name} {surname}",
+                })
+                continue
+
+        # ── resolve leader fields from pre-computed sheet maps ─────────────
+        pre_assigned_id = sheet_id_map[idx]
+        path_strs       = sheet_path_map.get(idx, [])
+
+        # Convert string IDs → ObjectIds for MongoDB storage
+        leader_id_obj: Optional[ObjectId] = None
+        if path_strs:
+            try:
+                leader_id_obj = ObjectId(path_strs[-1])
+            except Exception:
+                pass
+
+        leader_path: list[ObjectId] = []
+        for s in path_strs:
+            try:
+                leader_path.append(ObjectId(s))
+            except Exception:
+                pass
+
+        # ── build document ──────────────────────────────────────────────────
+        person_doc = {
+            "_id":          ObjectId(pre_assigned_id),  # stable pre-assigned ID
+            "Name":         name,
+            "Surname":      surname,
+            "Email":        email,
+            "Number":       number,
+            "Address":      address,
+            "Gender":       gender,
+            "Birthday":     birthday,
+            "InvitedBy":    invitedby,
+            "SeniorPastor": senior_pastor,              # plain string, informational
+            "Stage":        stage,
+            "Organization": org,
+            "LeaderId":     leader_id_obj,              # ObjectId | None
+            "LeaderPath":   leader_path,                # [ObjectId, ...] root-first
+            "DateCreated":  dc_str,
+            "UpdatedAt":    now.isoformat(),
+            "imported_by":  current_user.get("email", "unknown"),
+        }
+
+        if dry_run:
+            results["inserted"] += 1
+            results["rows"].append({
+                "row":          row_num,
+                "status":       "would_insert",
+                "person":       f"{name} {surname}",
+                "email":        email,
+                "organization": org,
+                "invitedby":    invitedby,
+                "senior_pastor": senior_pastor,
+                "leader_id":    str(leader_id_obj) if leader_id_obj else None,
+                "leader_path":  path_strs,              # already strings
+            })
+        else:
+            try:
+                await people_collection.insert_one(person_doc)
+
+                results["inserted"] += 1
+                results["rows"].append({
+                    "row":          row_num,
+                    "status":       "inserted",
+                    "person":       f"{name} {surname}",
+                    "email":        email,
+                    "organization": org,
+                    "_id":          pre_assigned_id,
+                    "invitedby":    invitedby,
+                    "senior_pastor": senior_pastor,
+                    "leader_id":    str(leader_id_obj) if leader_id_obj else None,
+                    "leader_path":  path_strs,
+                })
+
+                # sync user account if one exists with this email
+                if email:
+                    await users_collection.update_one(
+                        {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+                        {"$set": {
+                            "LeaderId":   leader_id_obj,
+                            "LeaderPath": leader_path,
+                            "people_id":  pre_assigned_id,
+                            "updated_at": now.isoformat(),
+                        }}
+                    )
+
+            except Exception as exc:
+                results["errors"] += 1
+                results["rows"].append({
+                    "row":    row_num,
+                    "status": "error",
+                    "person": f"{name} {surname}",
+                    "error":  str(exc),
+                })
+
+    return results
+
+
+@app.post("/people/import/spreadsheet")
+async def import_people_from_spreadsheet(
+    file:         UploadFile = File(...),
+    organization: Optional[str] = Query(None),
+    dry_run:      bool = Query(False),
+    current_user: dict = Depends(get_current_user),
+):
+    filename  = file.filename or ""
+    ext       = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    raw_bytes = await file.read()
+
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        if ext in ("xlsx", "xls"):
+            df = pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+        elif ext == "csv":
+            df = pd.read_csv(
+                io.StringIO(raw_bytes.decode("utf-8-sig", errors="replace")),
+                dtype=str,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '.{ext}'. Use .xlsx, .xls, or .csv.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="The file contains no data rows.")
+
+    original_columns = list(df.columns)
+    df = _normalise_columns(df)
+    df = df.where(pd.notna(df), None)
+
+    results = await _import_rows(
+        df=df,
+        default_organization=organization or "",
+        dry_run=dry_run,
+        current_user=current_user,
+    )
     
-        
+    if not dry_run:
+        # After successful import, invalidate the cache
+        await invalidate_people_cache("import", {
+            "inserted": results["inserted"],
+            "skipped": results["skipped"],
+            "errors": results["errors"]
+        })
+
+    return {
+        "success":          True,
+        "dry_run":          dry_run,
+        "file":             filename,
+        "total_rows":       len(df),
+        "inserted":         results["inserted"],
+        "skipped":          results["skipped"],
+        "errors":           results["errors"],
+        "original_columns": original_columns,
+        "mapped_columns":   list(df.columns),
+        "rows":             results["rows"],
+    }
+
+
+@app.post("/people/import/preview-columns")
+async def preview_spreadsheet_columns(
+    file: UploadFile = File(...),
+):
+    filename  = file.filename or ""
+    ext       = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    raw_bytes = await file.read()
+    print(f"DEBUG preview: filename={filename!r}, ext={ext!r}, size={len(raw_bytes)}")
+
+    try:
+        if ext in ("xlsx", "xls"):
+            df = pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+        elif ext == "csv":
+            df = pd.read_csv(
+                io.StringIO(raw_bytes.decode("utf-8-sig", errors="replace")),
+                dtype=str,
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type '.{ext}'.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    original_columns = list(df.columns)
+    column_mapping = []
+
+    for col in original_columns:
+        key    = _clean_col(col)
+        mapped = COLUMN_MAP.get(key)
+        if mapped is None or mapped == "_ignore":
+            column_mapping.append({"original": col, "maps_to": None, "status": "ignored"})
+        else:
+            column_mapping.append({"original": col, "maps_to": mapped, "status": "mapped"})
+
+    df_mapped = _normalise_columns(df)
+    df_mapped = df_mapped.where(pd.notna(df_mapped), None)
+
+    raw_sample = df_mapped.head(3).to_dict(orient="records")
+    sample = []
+    for row in raw_sample:
+        sample.append({
+            k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
+            for k, v in row.items()
+        })
+
+    return {
+        "success":        True,
+        "file":           filename,
+        "total_rows":     len(df),
+        "column_mapping": column_mapping,
+        "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
+        "sample_rows":    sample,
+    }
