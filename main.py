@@ -3473,7 +3473,6 @@ async def update_event_type(
        
         if not existing_event_type:
             print(f"[EVENT-TYPE UPDATE] Event type '{decoded_event_type_name}' not found")
-            # Try to find by ID as well
             try:
                 existing_event_type = await events_collection.find_one({
                     "_id": ObjectId(decoded_event_type_name),
@@ -3505,8 +3504,6 @@ async def update_event_type(
             if duplicate:
                 print(f"[EVENT-TYPE UPDATE] Duplicate: '{new_name}' already exists")
                 raise HTTPException(status_code=400, detail="Event type with this name already exists")
-
-        # Update events that reference this event type
         events_updated_count = 0
         if name_changed or is_global_changed:
             print(f"[EVENT-TYPE UPDATE] Updating events for '{current_name}'")
@@ -4040,9 +4037,7 @@ def should_show_cell_for_user(
        
         # Set the mandatory date fields
         instance["date"] = occ_date.isoformat()  
-        instance["Date Of Event"] = occ_date.strftime('%d-%m-%Y')  # Used for display
-       
-        # Add event metadata for frontend
+        instance["Date Of Event"] = occ_date.strftime('%d-%m-%Y')  
         instance["eventName"] = instance.get("Event Name", "")
         instance["eventType"] = instance.get("Event Type", instance.get("eventType", "Cells"))
         instance["eventLeaderName"] = instance.get("Leader", "")
@@ -4063,10 +4058,9 @@ def should_show_cell_for_user(
             elif has_attendees:
                 instance["status"] = "complete"
             else:
-                instance["status"] = "incomplete"  # Overdue
+                instance["status"] = "incomplete" 
         else:
-            # Today or Future event
-            instance["status"] = "incomplete"  # Not yet due
+            instance["status"] = "incomplete"
            
         cell_instances.append(instance)
    
@@ -4130,7 +4124,6 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
         logging.info(f"TODAY: {today_day_name.upper()} ({today_date})")
         logging.info(f"Fetching cells for {today_day_name}")
 
-        # Find user's name
         user_cell = await events_collection.find_one({
             "Event Type": "Cells",
             "$or": [
@@ -4179,7 +4172,6 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
                 logging.warning(f"Skipping {recurring_day} cell: {event_name}")
                 continue
            
-            # Deduplicate
             dedup_key = f"{event_name}-{event_email}-{recurring_day}"
             if dedup_key in seen_keys:
                 continue
@@ -9511,7 +9503,7 @@ async def create_user(
             "leader1728": user_data.leader1728,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
-            "organization": current_user.get("Organization"),  # Always use lowercase for new users
+            "Organization": current_user.get("Organization"),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
@@ -9546,7 +9538,7 @@ ROLE_HIERARCHY = {
 async def get_all_users(
     organization: Optional[str] = Query(None, description="Filter by organization"),
     skip: int = Query(0, ge=0),
-    limit: int = Query(5000, ge=1, le=10000),
+    limit: int = Query(500, ge=1, le=5000),
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -9555,31 +9547,47 @@ async def get_all_users(
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
         
-        # Build query
-        query = {}
-        
-        # Determine organization filter
         org_filter = None
         if is_supreme and organization:
             org_filter = organization
         elif not is_supreme:
-            org_filter = current_user.get("Organization") or current_user.get("organization")
+            # Use Organization field with capital O to match your database
+            org_filter = current_user.get("Organization")
         
-        # Apply organization filter
+        query = {}
         if org_filter:
-            query["$or"] = [
-                {"Organization": org_filter},
-                {"organization": org_filter}
-            ]
+            query["Organization"] = org_filter  # Capital O to match your document
         
-        # Get TOTAL count of ALL matching documents
+        # Get total count
         total = await users_collection.count_documents(query)
         print(f"Total users in database for this org: {total}")
         
-        # Get results
-        cursor = users_collection.find(query).skip(skip).limit(limit)
+        # Get paginated results
+        cursor = users_collection.find(
+            query,
+            {
+                "_id": 1,
+                "name": 1,
+                "surname": 1,
+                "email": 1,
+                "role": 1,
+                "phone_number": 1,
+                "Organization": 1,  # Capital O
+                "created_at": 1,
+                "updated_at": 1,
+                "date_of_birth": 1,
+                "home_address": 1,  # Changed from address
+                "gender": 1,
+                "invited_by": 1,    # Changed from invitedBy
+                "leader12": 1,
+                "leader144": 1,
+                "leader1728": 1,
+                "stage": 1
+            }
+        ).skip(skip).limit(limit).sort("created_at", -1)
+        
         users_raw = await cursor.to_list(length=limit)
-
+        
         users = []
         for user in users_raw:
             users.append({
@@ -9589,44 +9597,54 @@ async def get_all_users(
                 "email": user.get("email", ""),
                 "role": user.get("role", "user"),
                 "phone_number": user.get("phone_number"),
-                "organization": user.get("Organization") or user.get("organization") or "Unknown",
-                "created_at": user.get("created_at") or user.get("updated_at")
+                "organization": user.get("Organization") or "Unknown",  # Map to organization for frontend
+                "created_at": user.get("created_at") or user.get("updated_at"),
+                "date_of_birth": user.get("date_of_birth"),
+                "address": user.get("home_address"),  # Map home_address to address for frontend
+                "gender": user.get("gender"),
+                "invitedBy": user.get("invited_by"),  # Map invited_by to invitedBy for frontend
+                "leader12": user.get("leader12"),
+                "leader144": user.get("leader144"),
+                "leader1728": user.get("leader1728"),
+                "stage": user.get("stage")
             })
         
         print(f"Returning {len(users)} users, total in DB: {total}")
         
         return {
             "users": users,
-            "total": total, 
+            "total": total,
             "skip": skip,
             "limit": limit
         }
         
     except Exception as e:
-        print(f"ERROR: {str(e)}")
+        print(f"ERROR in get_all_users: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin/stats")
 async def get_admin_stats(
-    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only"),
+    organization: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get statistics - ONLY from users collection"""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
-    
-    if not is_supreme and current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
     try:
-        # Build query
-        query = {}
-        if is_supreme and organization:
-            query["$or"] = [{"Organization": organization}, {"organization": organization}]
-        elif not is_supreme:
-            query["$or"] = [{"Organization": current_user.get("Organization")}, 
-                           {"organization": current_user.get("Organization")}]
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
         
-        # Use aggregation for faster counts - GROUP BY ROLE
+        if not is_supreme and current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
+        org_filter = None
+        if is_supreme and organization:
+            org_filter = organization
+        elif not is_supreme:
+            org_filter = current_user.get("Organization") or current_user.get("organization")
+        
+        query = {}
+        if org_filter:
+            query["Organization"] = org_filter
+        
         pipeline = [
             {"$match": query},
             {"$group": {
@@ -9636,9 +9654,7 @@ async def get_admin_stats(
         ]
         
         results = await users_collection.aggregate(pipeline).to_list(length=100)
-        print(f"Aggregation results: {results}")
         
-        # Format response
         stats = {
             "total_users": 0,
             "administrators": 0,
@@ -9646,7 +9662,7 @@ async def get_admin_stats(
             "leaders_at_12": 0,
             "registrants": 0,
             "regular_users": 0,
-            "custom_roles": {}  # For church-specific roles
+            "custom_roles": {}
         }
         
         for item in results:
@@ -9654,7 +9670,6 @@ async def get_admin_stats(
             count = item["count"]
             stats["total_users"] += count
             
-            # Map to standard roles
             if role == "admin":
                 stats["administrators"] = count
             elif role == "leader":
@@ -9666,12 +9681,10 @@ async def get_admin_stats(
             elif role == "user":
                 stats["regular_users"] = count
             else:
-                # This is a custom role unique to a church
                 stats["custom_roles"][role] = count
         
-        # Also get all unique roles for this organization
         distinct_roles = await users_collection.distinct("role", query)
-        stats["all_roles"] = [r for r in distinct_roles if r]  # Filter out None/empty
+        stats["all_roles"] = [r for r in distinct_roles if r]
         
         return stats
         
@@ -9684,50 +9697,47 @@ async def get_distinct_roles(
     organization: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all distinct roles for an organization from the users collection"""
     try:
         is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
         
-        # Determine organization
         org_filter = None
         if is_supreme and organization:
             org_filter = organization
         elif not is_supreme:
-            org_filter = current_user.get("Organization")
+            org_filter = current_user.get("Organization") or current_user.get("organization")
         else:
             raise HTTPException(status_code=400, detail="Organization required")
         
-        # Define Active Church
         ACTIVE_CHURCH_NAME = "Active Church"
         system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
         
-        # Build query for this organization
         query = {}
         if org_filter:
-            query["$or"] = [{"Organization": org_filter}, {"organization": org_filter}]
+            query["Organization"] = org_filter
         
-        distinct_roles = await users_collection.distinct("role", query)
+        pipeline = [
+            {"$match": query},
+            {"$group": {
+                "_id": "$role",
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
         
-        # Filter out None/empty and sort
-        roles = [r for r in distinct_roles if r]
+        results = await users_collection.aggregate(pipeline).to_list(length=100)
         
-        # For Active Church, ONLY show system roles (even if somehow custom roles exist)
-        if org_filter == ACTIVE_CHURCH_NAME:
-            roles = [r for r in roles if r in system_roles]
-        else:
-            # For other churches, show all roles but sort system roles first
-            roles.sort(key=lambda x: (x not in system_roles, x))
-        
-        # Get count for each role
         roles_with_counts = []
-        for role in roles:
-            count_query = {"$and": [query, {"role": role}]} if query else {"role": role}
-            count = await users_collection.count_documents(count_query)
-            
-            # Determine if it's a system role or custom
+        for item in results:
+            role = item["_id"]
+            if not role:
+                continue
+                
+            count = item["count"]
             is_system = role in system_roles
             
-            # Get a consistent color for this role
+            if org_filter == ACTIVE_CHURCH_NAME and not is_system:
+                continue
+                
             color = get_role_color(role)
             
             roles_with_counts.append({
@@ -9735,9 +9745,10 @@ async def get_distinct_roles(
                 "count": count,
                 "is_system": is_system,
                 "color": color,
-                # Add flag to indicate if new roles can be created for this org
                 "can_create_custom": org_filter != ACTIVE_CHURCH_NAME
             })
+        
+        roles_with_counts.sort(key=lambda x: (not x["is_system"], x["name"]))
         
         return {
             "roles": roles_with_counts,
@@ -9748,9 +9759,9 @@ async def get_distinct_roles(
     except Exception as e:
         print(f"Error fetching distinct roles: {str(e)}")
         import traceback
-        print(traceback.format_exc())
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 # Helper function for role colors
 def get_role_color(role):
     role_colors = {
@@ -9768,108 +9779,89 @@ async def update_user_role(
     role_update: RoleUpdate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Update user role - With hierarchy enforcement and organization checks"""
-    # Check if user is supreme admin (either by email OR is_supreme_admin flag)
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
-    
-    print(f"Updating role - User: {current_user.get('email')}, is_supreme: {is_supreme}")
-    
-    if not is_supreme and current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
     try:
-        # Get the user to update
+        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+        
+        if not is_supreme and current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Check organization access - SUPREME ADMINS CAN ACCESS ANY ORGANIZATION
         if not is_supreme:
-            # Only check organization for non-supreme admins
-            user_org = user.get("Organization") or user.get("Organization")
-            user_org = current_user.get("Organization") or current_user.get("organization", "")
+            user_org = user.get("Organization")
+            current_user_org = current_user.get("Organization")
             
             if user_org != current_user_org:
                 raise HTTPException(
-                    status_code=403, 
+                    status_code=403,
                     detail=f"Cannot access users from other organizations. Your org: {current_user_org}, Target org: {user_org}"
                 )
         
         old_role = user.get("role", "user")
         new_role = role_update.role
         
-        # Get the organization of the user being updated
-        user_org = user.get("Organization") or user.get("Organization")
-        
-        # Define Active Church
+        user_org = user.get("Organization")
         ACTIVE_CHURCH_NAME = "Active Church"
         system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
         
-        # CASE 1: This is Active Church - ONLY allow system roles
         if user_org == ACTIVE_CHURCH_NAME:
             if new_role not in system_roles:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail=f"Active Church only supports standard roles: {', '.join(system_roles)}"
                 )
             
-            # Apply hierarchy enforcement for Active Church (only for non-supreme admins)
+            ROLE_HIERARCHY = {
+                "registrant": 2,
+                "user": 1,
+                "leader": 3,
+                "leaderAt12": 4,
+                "admin": 5,
+                "supreme_admin": 6
+            }
+            
             if not is_supreme:
                 current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
                 target_user_level = ROLE_HIERARCHY.get(old_role, 0)
                 new_role_level = ROLE_HIERARCHY.get(new_role, 0)
                 
-                # Can only modify users with lower role level
                 if target_user_level >= current_user_role_level:
                     raise HTTPException(
-                        status_code=403, 
+                        status_code=403,
                         detail="Cannot modify users with equal or higher role"
                     )
                 
-                # Can only assign roles lower than your own
                 if new_role_level >= current_user_role_level:
                     raise HTTPException(
-                        status_code=403, 
+                        status_code=403,
                         detail="Cannot assign role equal to or higher than your own"
                     )
-        
-        # CASE 2: This is another church - Allow custom roles
         else:
-            # Still prevent assigning admin if not supreme admin
             if new_role == "admin" and not is_supreme:
                 raise HTTPException(
-                    status_code=403, 
+                    status_code=403,
                     detail="Cannot assign admin role"
                 )
             
-            # Optional: You might still want some hierarchy for basic roles
-            # But custom roles can be anything
             if new_role in system_roles and not is_supreme:
-                # If assigning a system role in another church, still enforce hierarchy
+                ROLE_HIERARCHY = {
+                    "registrant": 2,
+                    "user": 1,
+                    "leader": 3,
+                    "leaderAt12": 4,
+                    "admin": 5
+                }
                 current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
                 new_role_level = ROLE_HIERARCHY.get(new_role, 0)
                 
                 if new_role_level >= current_user_role_level:
                     raise HTTPException(
-                        status_code=403, 
+                        status_code=403,
                         detail="Cannot assign system role equal to or higher than your own"
                     )
-            
-            # Log when a new custom role is created
-            if new_role not in system_roles:
-                # Check if this is the first time this custom role is used in this org
-                existing_count = await users_collection.count_documents({
-                    "role": new_role,
-                    "$or": [
-                        {"organization": user_org},
-                        {"Organization": user_org}
-                    ]
-                })
-                
-                if existing_count == 0:
-                    print(f"📝 New custom role '{new_role}' created in {user_org}")
         
-        # Update the user's role
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {
@@ -9883,12 +9875,10 @@ async def update_user_role(
         if result.modified_count == 0:
             raise HTTPException(status_code=400, detail="Failed to update user role")
         
-        # Log the activity
-        role_type = "custom" if new_role not in system_roles and user_org != ACTIVE_CHURCH_NAME else "system"
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="ROLE_UPDATED",
-            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {new_role} ({role_type} role in {user_org})"
+            details=f"Updated {user.get('name')} {user.get('surname')}'s role from {old_role} to {new_role}"
         )
         
         return MessageResponse(message=f"User role updated to {new_role}")
@@ -9898,15 +9888,18 @@ async def update_user_role(
     except Exception as e:
         print(f"Error updating role: {str(e)}")
         import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")   
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error updating role: {str(e)}")
+
 @app.delete("/admin/users/{user_id}", response_model=MessageResponse)
 async def delete_user(
     user_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """Delete a user - Admin only"""
-    if current_user.get("role") != "admin":
+    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    if not is_supreme and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
         raise HTTPException(status_code=403, detail="Admin access required")
    
     try:
@@ -9990,6 +9983,114 @@ async def get_role_permissions(
         raise HTTPException(status_code=400, detail="Invalid role")
    
     return {"role": role_name, "permissions": ROLE_PERMISSIONS[role_name]}
+
+
+async def create_indexes():
+    """Create database indexes for better performance"""
+    try:
+        # Index for Organization field (used in most queries) - matches your document structure
+        await users_collection.create_index("Organization")
+        print("✓ Index created on Organization field")
+        
+        # Compound index for Organization + role (used in role queries)
+        await users_collection.create_index([("Organization", 1), ("role", 1)])
+        print("✓ Index created on Organization + role fields")
+        
+        # Index for created_at for sorting
+        await users_collection.create_index("created_at")
+        print("✓ Index created on created_at field")
+        
+        # Index for email for login queries
+        await users_collection.create_index("email", unique=True)
+        print("✓ Index created on email field")
+        
+        # Index for refresh_token_id for token management
+        await users_collection.create_index("refresh_token_id")
+        print("✓ Index created on refresh_token_id field")
+        
+        # Index for _id (already exists by default, but including for completeness)
+        print("✓ All indexes created successfully")
+        
+    except Exception as e:
+        print(f"✗ Error creating indexes: {e}")
+
+# Migration function to standardize field names (run once)
+async def migrate_user_fields():
+    """Migrate existing users to use consistent field names"""
+    try:
+        # Check if we have any users with lowercase 'organization' field
+        lowercase_count = await users_collection.count_documents({"organization": {"$exists": True}})
+        if lowercase_count > 0:
+            # Rename lowercase organization to uppercase Organization
+            result = await users_collection.update_many(
+                {"organization": {"$exists": True}, "Organization": {"$exists": False}},
+                {"$rename": {"organization": "Organization"}}
+            )
+            print(f"✓ Migrated {result.modified_count} users: organization -> Organization")
+        
+        # Check for address field to rename to home_address
+        address_count = await users_collection.count_documents({"address": {"$exists": True}})
+        if address_count > 0:
+            result = await users_collection.update_many(
+                {"address": {"$exists": True}, "home_address": {"$exists": False}},
+                {"$rename": {"address": "home_address"}}
+            )
+            print(f"✓ Migrated {result.modified_count} users: address -> home_address")
+        
+        # Check for invitedBy field to rename to invited_by
+        invited_count = await users_collection.count_documents({"invitedBy": {"$exists": True}})
+        if invited_count > 0:
+            result = await users_collection.update_many(
+                {"invitedBy": {"$exists": True}, "invited_by": {"$exists": False}},
+                {"$rename": {"invitedBy": "invited_by"}}
+            )
+            print(f"✓ Migrated {result.modified_count} users: invitedBy -> invited_by")
+        
+        # Remove duplicate organization field if both exist
+        duplicate_count = await users_collection.count_documents({
+            "organization": {"$exists": True}, 
+            "Organization": {"$exists": True}
+        })
+        if duplicate_count > 0:
+            result = await users_collection.update_many(
+                {"organization": {"$exists": True}, "Organization": {"$exists": True}},
+                {"$unset": {"organization": ""}}
+            )
+            print(f"✓ Removed duplicate organization field from {result.modified_count} users")
+        
+        print("✓ Field migration completed")
+        
+    except Exception as e:
+        print(f"✗ Error during migration: {e}")
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    print("=" * 50)
+    print("Starting up application...")
+    print(f"Database: {DB_NAME}")
+    print("=" * 50)
+    
+    # First migrate existing data to consistent format (optional, can be removed after first run)
+    await migrate_user_fields()
+    
+    # Then create indexes for performance
+    await create_indexes()
+    
+    print("=" * 50)
+    print("Application startup complete")
+    print("=" * 50)
+    """Run on application startup"""
+    print("Starting up application...")
+    
+    # First migrate existing data to consistent format
+    await migrate_user_fields()
+    
+    # Then create indexes for performance
+    await create_indexes()
+    
+    print("Application startup complete")
 
 # Helper function to log activities
 async def log_activity(user_id: str, action: str, details: str):

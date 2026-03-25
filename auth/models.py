@@ -324,18 +324,21 @@ class UserListResponse(BaseModel):
     role: str
     date_of_birth: Optional[str] = None
     phone_number: Optional[str] = None
-    address: Optional[str] = None
+    home_address: Optional[str] = None  # Changed from address to home_address
     gender: Optional[str] = None
-    invitedBy: Optional[str] = None
+    invited_by: Optional[str] = None  # Changed from invitedBy to invited_by
     leader12: Optional[str] = None
     leader144: Optional[str] = None
     leader1728: Optional[str] = None
     stage: Optional[str] = None
-    organization: Optional[str] = None  
+    Organization: Optional[str] = None  # Changed from organization to Organization (capital O)
     created_at: Optional[datetime] = None
-
+    updated_at: Optional[datetime] = None  # Added updated_at
 class UserList(BaseModel):
     users: List[UserListResponse]
+    total: int
+    skip: int
+    limit: int
 
 class RoleCreate(BaseModel):
     name: str
