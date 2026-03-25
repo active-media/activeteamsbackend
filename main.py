@@ -1,4 +1,3 @@
-
 import os
 from datetime import datetime, timedelta, date
 import time
@@ -10574,7 +10573,13 @@ async def get_dashboard_comprehensive(
                     "_is_overdue": {"$literal": True},
                     "is_recurring": {"$ifNull": ["$is_recurring", True]},
                     "week_identifier": 1,
-                    "original_event_id": {"$toString": "$_id"}
+                    "original_event_id": {"$toString": "$_id"},
+                    "eventTypeName": {
+                        "$ifNull": ["$eventTypeName", "$Event Type", "$eventType", "Cells"]
+                    },
+                    "description": {"$ifNull": ["$description", ""]},
+                    "created_at": 1,
+                    "updated_at": 1
                 }
             }
         ]
@@ -10741,7 +10746,18 @@ async def get_dashboard_comprehensive(
                     "is_due_in_period": "$is_due_in_period",
                     "completed_in_period": "$completed_in_period",
                     "is_excluded_type": "$is_excluded_type",
-                    "description": "$description"
+                    "description": "$description",
+                    # Fields needed by the frontend download export
+                    "created_at": "$createdAt_conv",
+                    "updated_at": {
+                        "$cond": {
+                            "if": {"$eq": [{"$type": "$updated_at"}, "string"]},
+                            "then": {"$dateFromString": {"dateString": "$updated_at", "onError": None, "onNull": None}},
+                            "else": "$updated_at"
+                        }
+                    },
+                    "memberID": "$memberID",
+                    "taskStage": "$taskStage"
                 }
             },
             "total_tasks": {"$sum": 1},
@@ -10785,8 +10801,9 @@ async def get_dashboard_comprehensive(
         formatted_overdue_cells = []
         for cell in overdue_cells:
             cell["_id"] = str(cell["_id"])
-            if isinstance(cell.get("date"), datetime):
-                cell["date"] = cell["date"].isoformat()
+            for date_field in ["date", "created_at", "updated_at"]:
+                if isinstance(cell.get(date_field), datetime):
+                    cell[date_field] = cell[date_field].isoformat()
             formatted_overdue_cells.append(cell)
 
         # ===== FIX: Define all_users_map HERE before using it =====
@@ -10858,7 +10875,7 @@ async def get_dashboard_comprehensive(
             for task in tasks_list:
                 task["_id"] = str(task["_id"])
                 
-                for date_field in ["followup_date", "due_date", "completedAt", "createdAt"]:
+                for date_field in ["followup_date", "due_date", "completedAt", "createdAt", "created_at", "updated_at"]:
                     if isinstance(task.get(date_field), datetime):
                         task[date_field] = task[date_field].isoformat()
                 
@@ -11947,7 +11964,4 @@ async def cleanup_orphaned_tasks(
         
     except Exception as e:
         logger.error(f"Error cleaning up orphaned tasks: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")     
-        
-        
-        
+        raise HTTPException(status_code=500, detail=f"Cleanup error: {str(e)}")
