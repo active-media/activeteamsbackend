@@ -6576,6 +6576,7 @@ async def submit_attendance(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # print("ATTENDENCE",submission)
         actual_event_id = event_id
         extracted_date = None
         
@@ -6698,7 +6699,12 @@ async def submit_attendance(
                     "leader144": att.get("leader144", ""),
                     "checked_in": True,
                     "check_in_date": datetime.now(timezone).isoformat(),
-                    "isPersistent": att.get("isPersistent", False)
+                    "isPersistent": att.get("isPersistent", False),
+                    "priceName": att.get("priceName",""),
+                    "price": att.get("price",""),
+                    "ageGroup":att.get("ageGroup",""),
+                    "paymentMethod": att.get("paymentMethod",""),
+
                 }
                 
                 decision = att.get("decision", "")
@@ -6715,6 +6721,7 @@ async def submit_attendance(
         total_associated = len(persistent_attendees_dict) or event.get("total_associated_count", 0)
         weekly_attendance = len(checked_in_attendees)
         total_decisions = first_time_count + recommitment_count
+        print("CHecked in",checked_in_attendees)
         
         should_mark_as_did_not_meet = (did_not_meet and weekly_attendance == 0 and manual_headcount == 0)
         
