@@ -9427,7 +9427,7 @@ def sanitize_document(doc):
     return doc
 
 
-DB_NAME = os.getenv("DB_NAME", "active-teams-db")
+DB_NAME = os.getenv("DB_NAME", "test-data-active-teams")
 consolidations_collection = db.get_collection("consolidations")
 
 
@@ -15798,11 +15798,25 @@ async def submit_attendance(
         
         # Extract submission data
         attendees_data = submission.attendees or []
-        persistent_attendees = getattr(submission, 'persistent_attendees', [])
+        persistent_attendees = getattr(submission, 'persistent_attendees', []) or []
         did_not_meet = submission.did_not_meet
         manual_headcount = getattr(submission, 'headcount', 0)
         is_ticketed = submission.isTicketed
-        
+
+        # ── FIX: Convert Pydantic models to plain dicts ──────────────────────
+        def to_dict(obj):
+            if isinstance(obj, dict):
+                return obj
+            if hasattr(obj, 'model_dump'):
+                return obj.model_dump()
+            if hasattr(obj, 'dict'):
+                return obj.dict()
+            return dict(obj)
+
+        attendees_data = [to_dict(att) for att in attendees_data]
+        persistent_attendees = [to_dict(att) for att in persistent_attendees]
+        # ─────────────────────────────────────────────────────────────────────
+
         try:
             manual_headcount = int(manual_headcount) if manual_headcount else 0
         except:
@@ -15819,7 +15833,7 @@ async def submit_attendance(
             # Get price (default to 0 if not present)
             price = attendee_dict.get("price", 0)
             
-            # IMPORTANT: Check multiple possible field names for paid amount
+            # Check multiple possible field names for paid amount
             paid = attendee_dict.get("paid", None)
             if paid is None:
                 paid = attendee_dict.get("paidAmount", None)
@@ -15876,8 +15890,7 @@ async def submit_attendance(
         # Process persistent attendees
         persistent_attendees_dict = []
         for attendee in persistent_attendees:
-            if isinstance(attendee, dict):
-                persistent_attendees_dict.append(enrich_with_financials(attendee))
+            persistent_attendees_dict.append(enrich_with_financials(attendee))
         
         # Process checked-in attendees
         checked_in_attendees = []
@@ -15885,20 +15898,19 @@ async def submit_attendance(
         recommitment_count = 0
         
         for att in attendees_data:
-            if isinstance(att, dict):
-                attendee_data = enrich_with_financials(att)
-                
-                # Handle decision tracking
-                decision = att.get("decision", "")
-                if decision:
-                    attendee_data["decision"] = decision
-                    decision_lower = decision.lower()
-                    if "first" in decision_lower:
-                        first_time_count += 1
-                    elif "re-commitment" in decision_lower or "recommitment" in decision_lower:
-                        recommitment_count += 1
-                
-                checked_in_attendees.append(attendee_data)
+            attendee_data = enrich_with_financials(att)
+            
+            # Handle decision tracking
+            decision = att.get("decision", "")
+            if decision:
+                attendee_data["decision"] = decision
+                decision_lower = decision.lower()
+                if "first" in decision_lower:
+                    first_time_count += 1
+                elif "re-commitment" in decision_lower or "recommitment" in decision_lower:
+                    recommitment_count += 1
+            
+            checked_in_attendees.append(attendee_data)
         
         # Calculate statistics
         total_associated = len(persistent_attendees_dict) or event.get("total_associated_count", 0)
@@ -16000,6 +16012,7 @@ async def submit_attendance(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),
