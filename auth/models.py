@@ -276,7 +276,7 @@ class RefreshTokenRequest(BaseModel):
 class ContactedPerson(BaseModel):
     name: str
     phone: str
-    email: Optional[str] = ""  
+    email: EmailStr
 
 class TaskModel(BaseModel):
     memberID: str
@@ -286,10 +286,7 @@ class TaskModel(BaseModel):
     followup_date: datetime
     status: str
     type: str
-    assignedfor: Optional[str] = None
-    assigned_to_email: Optional[str] = None
-    created_by_email: Optional[str] = None
-    created_by_name: Optional[str] = None
+    assignedfor: str
 
     class Config:
         validate_by_name = True
