@@ -6627,8 +6627,6 @@ async def get_cell_events_optimized(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str = Path(...),
