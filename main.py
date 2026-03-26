@@ -1,6 +1,6 @@
 
 import os
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import time
 from bson import ObjectId
 import re
@@ -32,6 +32,8 @@ from time import sleep
 from supreme_admin import router as supreme_admin_router
 app = FastAPI()
 app.include_router(supreme_admin_router)
+import pandas as pd
+import io
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,6 +63,37 @@ ORG_ID_MAP = {
     "active church": "active-teams",
 }
 
+def get_org_from_user(current_user: dict):
+    if current_user.get("role") == "super_admin":
+        return None, None, set(), True
+    raw = (
+        current_user.get("org_id") or
+        current_user.get("Organization") or
+        current_user.get("Organisation") or
+        current_user.get("organization") or
+        current_user.get("organisation") or ""
+    ).strip()
+    if not raw:
+        return None, None, set(), False
+    slug = raw.lower().replace(" ", "-")
+    slug = ORG_ID_MAP.get(slug, slug)
+    human = slug.replace("-", " ")
+    aliases = {raw.lower(), slug, human}
+    if "active" in slug:
+        aliases.update({"active-teams", "active church", "active teams", "active-church"})
+    return slug, raw, aliases, False
+
+def build_org_query(current_user: dict) -> dict:
+    _, _, aliases, is_super_admin = get_org_from_user(current_user)
+    if is_super_admin or not aliases:
+        return {}
+    alias_list = list(aliases)
+    fields = [
+        "org_id", "Org_id", "orgId", "OrgId",
+        "Organization", "Organisation", "organization", "organisation", "church_id",
+    ]
+    return {"$or": [{f: {"$in": alias_list}} for f in fields]}
+
 @app.get("/")
 def root():
     return {"message": "App is live on Render!"}
@@ -82,6 +115,21 @@ def sanitize_document(doc):
                     v[i] = None
     return doc
 
+def serialize_doc(doc: dict) -> dict:
+    """Recursively convert ObjectId values to strings for JSON serialization."""
+    if not isinstance(doc, dict):
+        return doc
+    out = {}
+    for k, v in doc.items():
+        if isinstance(v, ObjectId):
+            out[k] = str(v)
+        elif isinstance(v, dict):
+            out[k] = serialize_doc(v)
+        elif isinstance(v, list):
+            out[k] = [serialize_doc(i) if isinstance(i, dict) else str(i) if isinstance(i, ObjectId) else i for i in v]
+        else:
+            out[k] = v
+    return out
 
 DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 consolidations_collection = db.get_collection("consolidations")
@@ -259,6 +307,7 @@ people_cache = {
 
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
+BATCH_SIZE = 5000 
 
 # Lightweight cache for organizations (used by /organizations)
 organizations_cache = {
@@ -298,205 +347,263 @@ async def get_organizations_cached() -> list[dict]:
 
     return orgs
 
+PEOPLE_PROJECTION = {
+    "_id": 1,
+    "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
+    "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
+    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
+    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
+    "church_id": 1,
+    "LeaderId": 1, "LeaderPath": 1,
+    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
+}
+
+def get_leader_level(index_from_top: int) -> int:
+    """
+    Derive the leader level from its position in the reversed path.
+    index_from_top=0 → root leader → level 1
+    index_from_top=1 → level 12
+    index_from_top=2 → level 144   (12^2)
+    index_from_top=3 → level 1728  (12^3)
+    index_from_top=4 → level 20736 (12^4)
+    ... expands infinitely with no hardcoded ceiling
+    """
+    if index_from_top == 0:
+        return 1
+    return 12 ** index_from_top
+
+def build_id_to_name_map(people_docs: list) -> dict:
+    mapping = {}
+    for p in people_docs:
+        pid = str(p.get("_id", ""))
+        if pid:
+            mapping[pid] = f"{p.get('Name', '')} {p.get('Surname', '')}".strip()
+    return mapping
+
+def build_id_to_full_map(people_docs: list) -> dict:
+    """Return {str(ObjectId): {id, name, email, phone}} for every person doc."""
+    mapping = {}
+    for p in people_docs:
+        pid = str(p.get("_id", ""))
+        if pid:
+            mapping[pid] = {
+                "id":    pid,
+                "name":  f"{p.get('Name', '')} {p.get('Surname', '')}".strip(),
+                "email": p.get("Email", "") or "",
+                "phone": p.get("Number", "") or "",
+            }
+    return mapping
+
+def resolve_leaders(leader_path: list, id_to_full: dict) -> list:
+    """
+    LeaderPath stored root-first: [vicky_id, bernice_id, keren_id]
+    index 0 = root = level 1
+    index 1 = level 12
+    index 2 = level 144
+    """
+    if not leader_path:
+        return []
+
+    leaders = []
+    for idx, lid in enumerate(leader_path):
+        if not lid:
+            continue
+        info = id_to_full.get(str(lid)) or {"id": str(lid), "name": "", "email": "", "phone": ""}
+        if not info.get("name"):
+            continue  # skip empty entries
+        leaders.append({
+            "level": get_leader_level(idx),
+            "id":    str(lid),
+            "name":  info.get("name", ""),
+            "email": info.get("email", ""),
+            "phone": info.get("phone", ""),
+        })
+    return leaders
+
+async def _build_full_id_map_from_db() -> dict:
+    """Fetch Name+Surname+Email+Number for ALL people and return id→full map."""
+    docs = await people_collection.find(
+        {}, {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+    ).to_list(length=None)
+    return build_id_to_full_map(docs)
+
+def transform_person_full(p, id_to_full: dict = None):
+    """
+    Like transform_person but also falls back to legacy Leader @N string fields
+    if LeaderPath is empty. This ensures the cache always has leaders[] populated.
+    """
+    def oid(v):
+        return str(v) if v else None
+
+    raw_path  = p.get("LeaderPath", [])
+    path_strs = [oid(x) for x in raw_path if x]
+    leader_id = oid(p.get("LeaderId")) or (path_strs[0] if path_strs else None)
+
+    # Try resolving from LeaderPath first
+    leaders = resolve_leaders(path_strs, id_to_full or {})
+
+    # Fallback: if leaders is empty, build from legacy Leader @N flat keys
+    if not leaders:
+        LEGACY_LEVELS = [
+            ("Leader @1",    1),
+            ("leader1",      1),
+            ("Leader @12",   12),
+            ("leader12",     12),
+            ("Leader @144",  144),
+            ("leader144",    144),
+            ("Leader @1728", 1728),
+            ("leader1728",   1728),
+        ]
+        seen_levels = set()
+        for field, level in LEGACY_LEVELS:
+            name = p.get(field, "").strip()
+            if name and level not in seen_levels:
+                leaders.append({
+                    "level": level,
+                    "id":    "",
+                    "name":  name,
+                    "email": "",
+                    "phone": "",
+                })
+                seen_levels.add(level)
+        # sort root first
+        leaders.sort(key=lambda x: x["level"])
+
+    return {
+        "_id":          oid(p.get("_id")),
+        "Name":         p.get("Name") or "",
+        "Surname":      p.get("Surname") or "",
+        "Email":        p.get("Email") or "",
+        "Number":       p.get("Number") or "",
+        "Gender":       p.get("Gender") or "",
+        "Birthday":     p.get("Birthday") or "",
+        "Address":      p.get("Address") or "",
+        "InvitedBy":    p.get("InvitedBy") or "",
+        "Stage":        p.get("Stage") or "Win",
+        "DateCreated":  p.get("DateCreated") or p.get("Date Created") or "",
+        "UpdatedAt":    p.get("UpdatedAt") or "",
+        "org_id":       p.get("org_id") or p.get("Org_id") or p.get("orgId") or oid(p.get("church_id")) or "",
+        "Organisation": p.get("Organisation") or p.get("Organization") or "",
+        "Organization": p.get("Organization") or p.get("Organisation") or "",
+        "leaders":      leaders,
+        "LeaderId":     leader_id,
+        "LeaderPath":   path_strs,
+    }
+    
+
 async def invalidate_people_cache(operation_type: str, details: dict = None):
     """
     Invalidate the people cache and trigger background rehydration.
     Operation types: 'create', 'update', 'delete'
     """
     try:
-        print(f"CACHE INVALIDATION: {operation_type.upper()} operation on people collection")
-
+        print(f"CACHE INVALIDATION: {operation_type.upper()} operation detected on people collection")
+        
         people_cache["is_valid"] = False
         people_cache["pending_refresh"] = True
-
+        
         if details:
             people_cache["refresh_queue"].append({
                 "operation": operation_type,
                 "details": details,
                 "timestamp": datetime.utcnow().isoformat()
             })
-
+        
         stale_data = people_cache["data"].copy() if people_cache["data"] else []
-        refresh_triggered = False
-
+        
         if not people_cache["is_loading"]:
             print(f"Triggering background cache refresh after {operation_type} operation...")
             people_cache["background_task"] = asyncio.create_task(
                 background_refresh_people_cache(stale_data)
             )
-            refresh_triggered = True
-
+        
         return {
             "cache_invalidated": True,
             "operation": operation_type,
             "current_data_size": len(stale_data),
-            "refresh_triggered": refresh_triggered,
+            "refresh_triggered": not people_cache["is_loading"],
             "timestamp": datetime.utcnow().isoformat()
         }
-
+        
     except Exception as e:
         print(f"Cache invalidation error: {str(e)}")
         return {"error": str(e)}
 
+
 async def background_refresh_people_cache(stale_data: list = None):
-    """
-    Background task to refresh all people data from MongoDB with resolved leader names.
-    Serves stale data while the fresh load is in progress.
-    """
-    if people_cache["is_loading"]:
-        print("BACKGROUND REFRESH: Already in progress, skipping.")
-        return
-
     try:
-        people_cache["is_loading"] = True
-        people_cache["last_error"] = None
+        people_cache["is_loading"]    = True
+        people_cache["last_error"]    = None
         people_cache["load_progress"] = 0
-        people_cache["total_loaded"] = 0
+        people_cache["total_loaded"]  = 0
 
-        start_time = time.time()
-        print("BACKGROUND REFRESH: Starting cache rehydration...")
+        import time as _time
+        start = _time.time()
+        print("BACKGROUND REFRESH: starting...")
 
-        if stale_data:
-            print(f"BACKGROUND REFRESH: Serving {len(stale_data)} stale records while refreshing")
-
-        total_count = await people_collection.count_documents({})
-        people_cache["total_in_database"] = total_count
-
-        # FIRST PASS: Collect all people to build ID mapping
-        all_people = []
-        batch_size = 1000
-        page = 1
-        
-        while True:
-            try:
-                skip = (page - 1) * batch_size
-                cursor = people_collection.find({}).skip(skip).limit(batch_size)
-                batch_data = await cursor.to_list(length=batch_size)
-                
-                if not batch_data:
-                    break
-                
-                all_people.extend(batch_data)
-                page += 1
-                
-            except Exception as batch_error:
-                print(f"BACKGROUND REFRESH: Error in batch {page}: {str(batch_error)}")
-                break
-        
-        print(f"BACKGROUND REFRESH: Collected {len(all_people)} people from database")
-        
-        # SECOND PASS: Build name map of all people (for leader resolution)
-        name_map = {}
-        for person in all_people:
-            person_id = person["_id"]
-            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            name_map[person_id] = full_name
-        
-        print(f"BACKGROUND REFRESH: Built name map with {len(name_map)} entries")
-        
-        def resolve_leader(lid):
-            """Resolve leader ID to full name"""
-            if not lid:
-                return ""
-            try:
-                if isinstance(lid, ObjectId):
-                    return name_map.get(lid, "")
-                return name_map.get(ObjectId(str(lid)), "")
-            except Exception:
-                return ""
-        
-        # THIRD PASS: Format all people with resolved leader names
-        all_people_data = []
-        total_loaded = 0
-        
-        for idx, person in enumerate(all_people):
-            leader_path = person.get("LeaderPath", [])
-            
-            # Resolve leaders from LeaderPath (this is the key fix!)
-            leader1_name = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
-            leader12_name = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
-            leader144_name = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
-            leader1728_name = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
-            
-            transformed_person = {
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Number": person.get("Number", ""),
-                "Gender": person.get("Gender", ""),
-                "Address": person.get("Address", ""),
-                "InvitedBy": person.get("InvitedBy", ""),
-                "Stage": person.get("Stage", "Win"),
-                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
-                "LeaderPath": [str(x) for x in leader_path] if leader_path else [],
-                # CRITICAL: Use resolved names from LeaderPath, not stored fields
-                "Leader @1": leader1_name,
-                "Leader @12": leader12_name,
-                "Leader @144": leader144_name,
-                "Leader @1728": leader1728_name,
-                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            }
-            
-            all_people_data.append(transformed_person)
-            total_loaded = idx + 1
-            
-            # Update progress
-            progress = (total_loaded / total_count) * 100 if total_count > 0 else 100
-            people_cache["load_progress"] = round(progress, 1)
-            people_cache["total_loaded"] = total_loaded
-            
-            # Publish partial results every 500 people
-            if (idx + 1) % 500 == 0:
-                people_cache["data"] = all_people_data.copy()
-                print(f"BACKGROUND REFRESH: Processed {total_loaded}/{total_count} ({progress:.1f}%)")
-                
-                # Debug: Check Lesedi
-                lesedi = next((p for p in all_people_data if p["FullName"] == "Lesedi Naomi Malobane"), None)
-                if lesedi:
-                    print(f"  Lesedi in progress: Leader @12 = '{lesedi['Leader @12']}', Leader @144 = '{lesedi['Leader @144']}'")
-            
-            # Small delay to prevent blocking
-            if (idx + 1) % 100 == 0:
-                await asyncio.sleep(0.01)
-        
-        # Commit final complete dataset
-        people_cache["data"] = all_people_data
-        people_cache["last_updated"] = datetime.utcnow().isoformat()
-        people_cache["expires_at"] = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
-        people_cache["is_loading"] = False
-        people_cache["load_progress"] = 100
-        people_cache["is_valid"] = True
-        people_cache["pending_refresh"] = False
-        people_cache["version"] += 1
-        people_cache["refresh_queue"] = []
-        
-        # Final debug
-        lesedi_final = next((p for p in all_people_data if p["FullName"] == "Lesedi Naomi Malobane"), None)
-        if lesedi_final:
-            print(f"\n✅ FINAL LESEDI IN CACHE:")
-            print(f"  Leader @12: '{lesedi_final['Leader @12']}'")
-            print(f"  Leader @144: '{lesedi_final['Leader @144']}'")
-        else:
-            print(f"\n⚠️ Lesedi not found in cache!")
-
-        duration = time.time() - start_time
-        print(f"BACKGROUND REFRESH COMPLETE: {len(all_people_data)} people in {duration:.2f}s (cache v{people_cache['version']})")
-
-        return {
-            "success": True,
-            "loaded_count": len(all_people_data),
-            "duration": duration,
-            "cache_version": people_cache["version"]
+        FULL_PROJECTION = {
+            "_id": 1,
+            "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
+            "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
+            "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
+            "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
+            "church_id": 1,
+            "LeaderId": 1, "LeaderPath": 1,
+            "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
+            "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+            "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
         }
 
-    except Exception as e:
-        people_cache["is_loading"] = False
-        people_cache["last_error"] = str(e)
+        # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
+        # Motor streams the cursor efficiently — no need to paginate
+        all_raw = await people_collection.find(
+            {}, FULL_PROJECTION
+        ).to_list(length=None)  # None = no limit, loads everything at once
+
+        total_count = len(all_raw)
+        people_cache["total_in_database"] = total_count
+        print(f"BACKGROUND REFRESH: fetched {total_count} raw docs in {_time.time()-start:.2f}s")
+
+        # ── Build id→full map in one pass (no second DB query) ───────────
+        id_to_full = build_id_to_full_map(all_raw)
+        print(f"BACKGROUND REFRESH: built id map with {len(id_to_full)} entries")
+
+        # ── Transform everything in one pass, no sleep ────────────────────
+        # Process in chunks so we can update progress without sleeping
+        CHUNK = 2000
+        all_people = []
+        
+        for i in range(0, total_count, CHUNK):
+            chunk = all_raw[i : i + CHUNK]
+            transformed = [transform_person_full(p, id_to_full=id_to_full) for p in chunk]
+            all_people.extend(transformed)
+            
+            progress = min(100, round(len(all_people) / total_count * 100, 1))
+            people_cache["load_progress"] = progress
+            people_cache["total_loaded"]  = len(all_people)
+            people_cache["data"]          = all_people.copy()  # partial results available immediately
+            
+            # Yield control to event loop without sleeping
+            await asyncio.sleep(0)  # was 0.05 — just yields, doesn't actually wait
+
+        people_cache["data"]            = all_people
+        people_cache["last_updated"]    = datetime.utcnow().isoformat()
+        people_cache["expires_at"]      = (datetime.utcnow() + timedelta(minutes=CACHE_DURATION_MINUTES)).isoformat()
+        people_cache["is_loading"]      = False
+        people_cache["load_progress"]   = 100
+        people_cache["is_valid"]        = True
         people_cache["pending_refresh"] = False
-        print(f"BACKGROUND REFRESH FAILED: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        people_cache["version"]        += 1
+        people_cache["refresh_queue"]   = []
+
+        print(f"BACKGROUND REFRESH COMPLETE: {len(all_people)} people in {_time.time()-start:.2f}s")
+        return {"success": True, "loaded_count": len(all_people), "cache_version": people_cache["version"]}
+
+    except Exception as e:
+        people_cache["is_loading"]      = False
+        people_cache["last_error"]      = str(e)
+        people_cache["pending_refresh"] = False
+        print(f"BACKGROUND REFRESH FAILED: {e}")
         return {"error": str(e)}
 
 async def background_load_all_people():
@@ -507,6 +614,8 @@ async def background_load_all_people():
     await asyncio.sleep(BACKGROUND_LOAD_DELAY)
     await background_refresh_people_cache()
 
+async def background_load_all_people():
+    await background_refresh_people_cache()
 
 @app.on_event("startup")
 async def startup_event():
@@ -516,105 +625,152 @@ async def startup_event():
 
 
 @app.get("/cache/people")
-async def get_cached_people():
+async def get_cached_people(current_user: dict = Depends(get_current_user)):
     """
-    Get cached people data - returns whatever is available immediately.
-
-    Priority order:
-      1. Fresh valid cache  → source: "cache"
-      2. Still loading      → source: "loading"  (partial data returned)
-      3. Stale but has data → source: "stale_cache" (refresh triggered)
-      4. Empty cache        → source: "triggered_load" (background load kicked off)
+    Returns org-filtered people from the in-memory cache.
+    Cache entries are already in the dynamic `leaders` array shape
+    (built by transform_person in background_refresh_people_cache).
+    No Leader @N string fields are present.
     """
     try:
-        current_time = datetime.utcnow()
-        data = people_cache["data"] or []
+        current_time = datetime.now(timezone.utc)
 
-        # 1. Fresh valid cache
+        # ── resolve org from JWT ──────────────────────────────────────────────
+        _, _, aliases, is_super_admin = get_org_from_user(current_user)
+        org_label = current_user.get("Organization") or current_user.get("org_id") or "ALL"
+
+        # ── in-memory org filter ──────────────────────────────────────────────
+        def filter_by_org(data: list) -> list:
+            if is_super_admin or not aliases:
+                return data
+            result = []
+            for p in data:
+                person_org = (
+                    p.get("org_id") or p.get("Org_id") or p.get("orgId") or
+                    p.get("Organization") or p.get("Organisation") or
+                    p.get("organization") or p.get("organisation") or ""
+                ).strip().lower()
+                if person_org and person_org in aliases:
+                    result.append(p)
+            return result
+
+        # ── parse expires_at safely (stored as ISO string or datetime) ────────
+        def parse_expires(val):
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+            try:
+                dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                return None
+
+        expires_at = parse_expires(people_cache.get("expires_at"))
+
+        # ── 1. fresh valid cache ──────────────────────────────────────────────
         if (
-            data
-            and people_cache["is_valid"]
-            and people_cache["expires_at"]
-            and current_time < datetime.fromisoformat(people_cache["expires_at"])
+            people_cache["data"] and
+            people_cache["is_valid"] and
+            expires_at and
+            current_time < expires_at
         ):
-            print(f"CACHE HIT: Returning {len(data)} people")
+            filtered = filter_by_org(people_cache["data"])
+            print(f"CACHE HIT: {len(filtered)} people (org={org_label})")
             return {
-                "success": True,
-                "cached_data": data,
-                "cached_at": people_cache["last_updated"],
-                "expires_at": people_cache["expires_at"],
-                "source": "cache",
-                "total_count": len(data),
-                "is_complete": True,
+                "success":       True,
+                "cached_data":   filtered,
+                "cached_at":     people_cache["last_updated"],
+                "expires_at":    people_cache["expires_at"],
+                "source":        "cache",
+                "total_count":   len(filtered),
+                "is_complete":   True,
                 "load_progress": 100,
                 "cache_version": people_cache["version"],
-                "is_valid": True,
+                "is_valid":      True,
+                "organization":  org_label,
             }
 
-        # 2. Background load still in progress — return partial data with progress info
+        # ── 2. cache still loading — return partial ───────────────────────────
         if people_cache["is_loading"]:
-            print(f"CACHE LOADING: {people_cache['load_progress']}% — returning {len(data)} records so far")
+            filtered = filter_by_org(people_cache["data"] or [])
             return {
-                "success": True,
-                "cached_data": data,
-                "cached_at": people_cache["last_updated"],
-                "source": "loading",
-                "total_count": len(data),
-                "is_complete": False,
-                "load_progress": people_cache["load_progress"],
-                "loaded_so_far": people_cache["total_loaded"],
+                "success":           True,
+                "cached_data":       filtered,
+                "cached_at":         people_cache["last_updated"],
+                "source":            "loading",
+                "total_count":       len(filtered),
+                "is_complete":       False,
+                "load_progress":     people_cache["load_progress"],
+                "loaded_so_far":     people_cache["total_loaded"],
                 "total_in_database": people_cache["total_in_database"],
-                "message": f"Loading in background… {people_cache['load_progress']}% complete",
-                "cache_version": people_cache["version"],
-                "is_valid": people_cache["is_valid"],
+                "message":           f"Loading... {people_cache['load_progress']}% complete",
+                "cache_version":     people_cache["version"],
+                "is_valid":          people_cache["is_valid"],
+                "organization":      org_label,
             }
 
-        # 3. Stale cache (invalidated by a write operation) — serve stale while refreshing
-        if data and not people_cache["is_valid"]:
-            print("CACHE STALE: Returning stale data while triggering background refresh…")
-            if people_cache["pending_refresh"] and not people_cache["is_loading"]:
-                asyncio.create_task(background_refresh_people_cache(data.copy()))
+        # ── 3. stale cache — serve stale, trigger refresh ─────────────────────
+        if people_cache["data"] and not people_cache["is_valid"]:
+            print("Cache stale — returning stale data while refreshing...")
+            if not people_cache["is_loading"] and people_cache["pending_refresh"]:
+                asyncio.create_task(
+                    background_refresh_people_cache(people_cache["data"].copy())
+                )
+            filtered = filter_by_org(people_cache["data"])
             return {
-                "success": True,
-                "cached_data": data,
-                "cached_at": people_cache["last_updated"],
-                "expires_at": people_cache["expires_at"],
-                "source": "stale_cache",
-                "total_count": len(data),
-                "is_complete": True,
-                "load_progress": 100,
-                "message": "Serving stale data — cache refresh in progress",
-                "cache_version": people_cache["version"],
-                "is_valid": False,
+                "success":        True,
+                "cached_data":    filtered,
+                "cached_at":      people_cache["last_updated"],
+                "expires_at":     people_cache["expires_at"],
+                "source":         "stale_cache",
+                "total_count":    len(filtered),
+                "is_complete":    True,
+                "message":        "Stale data (refresh in progress)",
+                "cache_version":  people_cache["version"],
+                "is_valid":       False,
                 "refresh_queued": people_cache["pending_refresh"],
+                "organization":   org_label,
             }
 
-        # 4. Cache is empty and nothing is loading — kick off a fresh background load
-        print("CACHE EMPTY: Triggering background load…")
-        asyncio.create_task(background_refresh_people_cache())
+        # ── 4. cache empty — trigger load ─────────────────────────────────────
+        if not people_cache["data"] and not people_cache["is_loading"]:
+            print("Cache empty — triggering background load...")
+            asyncio.create_task(background_refresh_people_cache())
+            return {
+                "success":       True,
+                "cached_data":   [],
+                "cached_at":     None,
+                "source":        "triggered_load",
+                "total_count":   0,
+                "is_complete":   False,
+                "message":       "Background loading started...",
+                "load_progress": 0,
+                "cache_version": people_cache["version"],
+                "organization":  org_label,
+            }
+
+        # ── 5. fallback ───────────────────────────────────────────────────────
+        filtered = filter_by_org(people_cache["data"] or [])
         return {
-            "success": True,
-            "cached_data": [],
-            "cached_at": None,
-            "source": "triggered_load",
-            "total_count": 0,
-            "is_complete": False,
-            "load_progress": 0,
-            "message": "Cache was empty — background loading started",
+            "success":       True,
+            "cached_data":   filtered,
+            "cached_at":     people_cache["last_updated"],
+            "source":        "fallback",
+            "total_count":   len(filtered),
+            "is_complete":   bool(filtered),
             "cache_version": people_cache["version"],
-            "is_valid": False,
+            "organization":  org_label,
         }
 
     except Exception as e:
         print(f"Error in /cache/people: {str(e)}")
         return {
-            "success": False,
-            "error": str(e),
+            "success":     False,
+            "error":       str(e),
             "cached_data": [],
             "total_count": 0,
-            "source": "error",
         }
-
 
 @app.get("/health")
 async def health_check():
@@ -636,14 +792,19 @@ async def get_people_simple(
     page: int = Query(1, ge=1),
     per_page: int = Query(100, ge=1, le=1000)
 ):
-    """Simple people endpoint as fallback — queries MongoDB directly."""
+    """
+    Simple paginated people endpoint as fallback.
+    Uses updated schema fields — old Leader @N fields are no longer fetched.
+    """
     try:
         skip = (page - 1) * per_page
         cursor = people_collection.find({}, PEOPLE_PROJECTION).skip(skip).limit(per_page)
         people_list = await cursor.to_list(length=per_page)
-        formatted_people = [_transform_person(p) for p in people_list]
+       
+        formatted_people = [transform_person_full(p) for p in people_list]
+       
         total_count = await people_collection.count_documents({})
-
+       
         return {
             "success": True,
             "results": formatted_people,
@@ -654,7 +815,7 @@ async def get_people_simple(
                 "has_more": (skip + len(formatted_people)) < total_count
             }
         }
-
+       
     except Exception as e:
         return {
             "success": False,
@@ -662,15 +823,17 @@ async def get_people_simple(
             "results": []
         }
 
-
 @app.post("/cache/people/refresh")
 async def refresh_people_cache():
-    """Manually trigger a people cache refresh."""
+    """
+    Manually refresh the people cache.
+    """
     try:
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else None
             asyncio.create_task(background_refresh_people_cache(current_data))
+            
             return {
                 "success": True,
                 "message": "Cache refresh triggered",
@@ -678,17 +841,20 @@ async def refresh_people_cache():
                 "current_progress": people_cache["load_progress"],
                 "current_cache_size": len(people_cache["data"]) if people_cache["data"] else 0
             }
-        return {
-            "success": True,
-            "message": "Cache refresh already in progress",
-            "is_loading": True,
-            "current_progress": people_cache["load_progress"]
-        }
-
+        else:
+            return {
+                "success": True,
+                "message": "Cache refresh already in progress",
+                "is_loading": True,
+                "current_progress": people_cache["load_progress"]
+            }
+        
     except Exception as e:
         print(f"Error refreshing cache: {str(e)}")
-        return {"success": False, "error": str(e)}
-
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 @app.get("/cache/people/status")
 async def get_cache_status():
@@ -7715,160 +7881,111 @@ async def get_people(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        org_id = (
-            current_user.get("org_id") or
-            current_user.get("organization", "").lower().replace(" ", "-") or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
-
-        org_config = await org_config_collection.find_one({"_id": org_id})
-        hierarchy = org_config.get("hierarchy", []) if org_config else []
+        org_id, _, _, _ = get_org_from_user(current_user)
+        org_q = build_org_query(current_user)
+ 
+        org_config_doc   = await org_config_collection.find_one({"_id": org_id}) if org_id else None
+        hierarchy        = org_config_doc.get("hierarchy", []) if org_config_doc else []
         hierarchy_fields = [h.get("field") for h in hierarchy if h.get("field")]
-
-        org_conditions = [
-            {"org_id": org_id},
-            {"Org_id": {"$regex": f"^{re.escape(org_id)}$", "$options": "i"}},
-        ]
-
-        if organization:
-            org_conditions.append({"Organization": {"$regex": re.escape(organization), "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": re.escape(organization), "$options": "i"}})
-            org_id_from_name = organization.lower().replace(" ", "-")
-            if org_id_from_name != org_id:
-                org_conditions.append({"org_id": org_id_from_name})
-
-        org_name_from_id = org_id.replace("-", " ")
-        if org_name_from_id != org_id:
-            org_conditions.append({"Organization": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
-            org_conditions.append({"org_id": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
-
-        if org_id == "active-teams":
-            org_conditions.append({"Organisation": {"$regex": "active church", "$options": "i"}})
-            org_conditions.append({"Organization": {"$regex": "active church", "$options": "i"}})
-            org_conditions.append({"org_id": {"$exists": False}})
-
-        query = {"$or": org_conditions}
-
+ 
+        query = {"$and": [org_q]} if org_q else {}
+ 
         if name:
-            query["$and"] = query.get("$and", [])
-            query["$and"].append({
-                "$or": [
-                    {"Name": {"$regex": re.escape(name), "$options": "i"}},
-                    {"Surname": {"$regex": re.escape(name), "$options": "i"}},
-                ]
-            })
+            query.setdefault("$and", []).append({"$or": [
+                {"Name":    {"$regex": re.escape(name), "$options": "i"}},
+                {"Surname": {"$regex": re.escape(name), "$options": "i"}},
+            ]})
         if gender:
-            query["Gender"] = {"$regex": gender, "$options": "i"}
+            query["Gender"]  = {"$regex": gender, "$options": "i"}
         if dob:
             query["Birthday"] = dob
         if location:
             query["Address"] = {"$regex": location, "$options": "i"}
         if leader:
-            leader_conditions = [
-                {"Leader @1": {"$regex": leader, "$options": "i"}},
-                {"Leader @12": {"$regex": leader, "$options": "i"}},
-                {"Leader @144": {"$regex": leader, "$options": "i"}},
-                {"Leader @1728": {"$regex": leader, "$options": "i"}}
-            ] + [
-                {field: {"$regex": leader, "$options": "i"}}
-                for field in hierarchy_fields
-            ]
-            query["$and"] = query.get("$and", [])
-            query["$and"].append({"$or": leader_conditions})
+            # still support name-based leader search against legacy string fields
+            leader_conds = [
+                {"Leader @1":    {"$regex": leader, "$options": "i"}},
+                {"Leader @12":   {"$regex": leader, "$options": "i"}},
+                {"Leader @144":  {"$regex": leader, "$options": "i"}},
+                {"Leader @1728": {"$regex": leader, "$options": "i"}},
+            ] + [{f: {"$regex": leader, "$options": "i"}} for f in hierarchy_fields]
+            query.setdefault("$and", []).append({"$or": leader_conds})
         if stage:
             query["Stage"] = {"$regex": stage, "$options": "i"}
-
+ 
         if perPage == 0:
             cursor = people_collection.find(query)
         else:
-            skip = (page - 1) * perPage
+            skip   = (page - 1) * perPage
             cursor = people_collection.find(query).skip(skip).limit(perPage)
-
-        people_list = []
-        async for person in cursor:
-            people_list.append(person)
-
-        all_leader_ids = set()
+ 
+        people_list = await cursor.to_list(length=None)
+ 
+        # collect all LeaderPath ObjectIds in one pass
+        all_leader_ids: set = set()
         for person in people_list:
-            leader_path = person.get("LeaderPath", [])
-            for lid in leader_path:
+            for lid in person.get("LeaderPath", []):
                 if lid:
                     try:
-                        if isinstance(lid, ObjectId):
-                            all_leader_ids.add(lid)
-                        else:
-                            all_leader_ids.add(ObjectId(str(lid)))
+                        all_leader_ids.add(lid if isinstance(lid, ObjectId) else ObjectId(str(lid)))
                     except Exception:
                         pass
-
-        name_map = {}
+ 
+        # bulk fetch leader info
+        id_to_full: dict = {}
         if all_leader_ids:
-            leader_cursor = people_collection.find(
+            async for ldoc in people_collection.find(
                 {"_id": {"$in": list(all_leader_ids)}},
-                {"_id": 1, "Name": 1, "Surname": 1}
-            )
-            async for leader_doc in leader_cursor:
-                name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
-
-        def resolve_leader(lid):
-            if not lid:
-                return ""
-            try:
-                if isinstance(lid, ObjectId):
-                    return name_map.get(lid, "")
-                return name_map.get(ObjectId(str(lid)), "")
-            except Exception:
-                return ""
-
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            ):
+                pid = str(ldoc["_id"])
+                id_to_full[pid] = {
+                    "id":    pid,
+                    "name":  f"{ldoc.get('Name','')} {ldoc.get('Surname','')}".strip(),
+                    "email": ldoc.get("Email", "") or "",
+                    "phone": ldoc.get("Number", "") or "",
+                }
+ 
         final_list = []
         for person in people_list:
-            leader_path = person.get("LeaderPath", [])
-            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
-            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
-            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
-            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
-            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-
+            lp        = person.get("LeaderPath", [])
+            path_strs = [str(lid) for lid in lp if lid]
             mapped = {
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Number": person.get("Number", ""),
-                "Email": person.get("Email", ""),
-                "Address": person.get("Address", ""),
-                "Gender": person.get("Gender", ""),
-                "Birthday": person.get("Birthday", ""),
-                "InvitedBy": person.get("InvitedBy", ""),
-                "Stage": person.get("Stage", "Win"),
-                "org_id": person.get("org_id") or person.get("Org_id", ""),
+                "_id":          str(person["_id"]),
+                "Name":         person.get("Name", ""),
+                "Surname":      person.get("Surname", ""),
+                "Number":       person.get("Number", ""),
+                "Email":        person.get("Email", ""),
+                "Address":      person.get("Address", ""),
+                "Gender":       person.get("Gender", ""),
+                "Birthday":     person.get("Birthday", ""),
+                "InvitedBy":    person.get("InvitedBy", ""),
+                "Stage":        person.get("Stage", "Win"),
+                "org_id":       person.get("org_id") or person.get("Org_id", ""),
                 "Organization": person.get("Organization") or person.get("Organisation", ""),
-                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
-                "LeaderPath": [str(lid) for lid in leader_path],
+                "LeaderId":     str(person["LeaderId"]) if person.get("LeaderId") else "",
+                "LeaderPath":   path_strs,
                 "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
-                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "Leader @1": leader1,
-                "Leader @12": leader12,
-                "Leader @144": leader144,
-                "Leader @1728": leader1728,
-                "FullName": full_name
+                "UpdatedAt":    person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "FullName":     f"{person.get('Name','')} {person.get('Surname','')}".strip(),
+                "leaders":      resolve_leaders(path_strs, id_to_full),
             }
+            for h in hierarchy:
+                field = h.get("field")
+                label = h.get("label")
+                if field:
+                    mapped[field] = person.get(field, "")
+                if label:
+                    mapped[label] = person.get(label, "") or person.get(field, "")
             final_list.append(mapped)
-
+ 
         total_count = await people_collection.count_documents(query)
-
-        return {
-            "page": page,
-            "perPage": perPage,
-            "total": total_count,
-            "results": final_list
-        }
-
+        return {"page": page, "perPage": perPage, "total": total_count, "results": final_list}
+ 
     except Exception as e:
-        print(f"Error in get_people: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error fetching people: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 @app.get("/people/search")
 async def search_people(
     query: str = Query("", min_length=2),
@@ -7876,775 +7993,500 @@ async def search_people(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        org_id = (
-            current_user.get("org_id") or
-            current_user.get("organization", "").lower().replace(" ", "-") or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = (current_user.get("Organization") or current_user.get("organization", "")).lower()
-        org_name_from_id = org_id.replace("-", " ").lower()
-
-        if not people_cache["data"]:
-            return {"success": False, "error": "Cache not ready", "results": []}
-
         search_term = query.lower().strip()
-        results = []
-
-        for person in people_cache["data"]:
-            person_org_id = (person.get("org_id") or person.get("Org_id") or "").lower()
-            person_org_name = (person.get("Organization") or person.get("Organisation") or "").lower()
-            person_org_name_as_id = person_org_name.replace(" ", "-")
-
-            org_match = (
-                org_id in person_org_id or
-                person_org_id in org_id or
-                (organization and organization in person_org_name) or
-                (organization and person_org_name in organization) or
-                (org_name_from_id and org_name_from_id in person_org_name) or
-                (org_name_from_id and person_org_name in org_name_from_id) or
-                person_org_name_as_id == org_id or
-                (org_id == "active-teams" and "active" in person_org_name)
-            )
-
-            if not org_match:
-                continue
-
-            if (
-                search_term in person.get("FullName", "").lower() or
-                search_term in person.get("Email", "").lower() or
-                search_term in person.get("Number", "") or
-                search_term in person.get("Address", "").lower() or
-                search_term in person.get("Stage", "").lower()
-            ):
-                results.append(person)
-
-            if len(results) >= limit:
-                break
-
-        return {
-            "success": True,
-            "results": results,
-            "total_found": len(results),
-            "search_term": query,
-            "source": "cache"
-        }
-
+        _, _, aliases, is_super = get_org_from_user(current_user)
+ 
+        if people_cache["data"]:
+            results = []
+            for person in people_cache["data"]:
+                if not is_super and aliases:
+                    person_org = (person.get("org_id") or person.get("Organization") or "").strip().lower()
+                    if person_org and person_org not in aliases:
+                        continue
+                full = f"{person.get('Name','')} {person.get('Surname','')}".lower()
+                if (
+                    search_term in full or
+                    search_term in person.get("Email", "").lower() or
+                    search_term in (person.get("Number", "") or "")
+                ):
+                    results.append(person)
+                if len(results) >= limit:
+                    break
+            return {"success": True, "results": results, "total_found": len(results),
+                    "search_term": query, "source": "cache"}
+ 
+        search_regex = {"$regex": search_term, "$options": "i"}
+        text_q = {"$or": [
+            {"Name": search_regex}, {"Surname": search_regex},
+            {"Email": search_regex}, {"Number": search_regex},
+        ]}
+        org_q   = build_org_query(current_user)
+        final_q = {"$and": [text_q, org_q]} if org_q else text_q
+        docs    = await people_collection.find(final_q, PEOPLE_PROJECTION).limit(limit).to_list(length=limit)
+        id_to_full = await _build_full_id_map_from_db()
+        results = [transform_person_full(p, id_to_full=id_to_full) for p in docs]
+        return {"success": True, "results": results, "total_found": len(results),
+                "search_term": query, "source": "database"}
+ 
     except Exception as e:
+        print(f"Error in /people/search: {e}")
         return {"success": False, "error": str(e), "results": []}
 
 @app.post("/people")
-async def create_person_with_cache_invalidation(
-    person_data: PersonCreate,
+async def create_person(
+    person_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        org_id = (
-            current_user.get("org_id") or
-            current_user.get("organization", "").lower().replace(" ", "-") or
-            "active-teams"
+        org_id = current_user.get("org_id") or (
+            current_user.get("Organization", "").lower().replace(" ", "-")
+        ) or "active-teams"
+        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+        organization = current_user.get("Organization") or current_user.get("organization", "")
+
+        # ── Resolve LeaderPath ──────────────────────────────────────────
+        leader_path: list = []
+        leader_id_obj     = None
+
+        raw_leader = (
+            person_data.get("leaderId") or
+            person_data.get("leader_id") or
+            person_data.get("invitedById") or
+            None
         )
 
-        email = person_data.email.lower().strip()
+        if raw_leader:
+            try:
+                leader_id_obj = ObjectId(str(raw_leader))
+            except Exception:
+                leader_id_obj = None
+
+        # Always re-fetch inviter from DB to get their FULL LeaderPath.
+        # LeaderPath is root-first: [root_id, ..., direct_parent_id]
+        # New person's path = inviter's ancestors + inviter (inviter is their direct leader)
+        if leader_id_obj:
+            try:
+                inviter_doc = await people_collection.find_one(
+                    {"_id": leader_id_obj},
+                    {"_id": 1, "LeaderPath": 1}
+                )
+                if inviter_doc:
+                    inv_own_path = [
+                        ObjectId(str(x)) for x in inviter_doc.get("LeaderPath", []) if x
+                    ]
+                    # Root-first order: [root, ..., inviter's_parent, inviter]
+                    leader_path = inv_own_path + [leader_id_obj]
+                else:
+                    leader_path = [leader_id_obj]
+            except Exception as e:
+                print(f"Warning: could not fetch inviter LeaderPath: {e}")
+                leader_path = [leader_id_obj]
+        else:
+            # Fallback: resolve by name if no ObjectId supplied
+            if person_data.get("invitedBy"):
+                inviter_name = person_data["invitedBy"].strip()
+                if inviter_name:
+                    parts = inviter_name.split()
+                    first = parts[0] if parts else ""
+                    last  = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+                    inviter_query = {
+                        "Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}
+                    }
+                    if last:
+                        inviter_query["Surname"] = {
+                            "$regex": f"^{re.escape(last)}$", "$options": "i"
+                        }
+
+                    inviter = await people_collection.find_one(
+                        inviter_query,
+                        {"_id": 1, "LeaderPath": 1}
+                    )
+                    if inviter:
+                        inv_id       = inviter["_id"]
+                        inv_own_path = [
+                            ObjectId(str(x)) for x in inviter.get("LeaderPath", []) if x
+                        ]
+                        # Root-first: ancestors + inviter
+                        leader_path   = inv_own_path + [inv_id]
+                        leader_id_obj = inv_id
+
+        # ── Validate required fields ────────────────────────────────────
+        name    = (person_data.get("name")    or "").strip()
+        surname = (person_data.get("surname") or "").strip()
+        email   = (person_data.get("email")   or "").strip().lower()
+
+        if not name or not surname:
+            raise HTTPException(status_code=400, detail="name and surname are required")
 
         if email:
-            existing_person = await people_collection.find_one({"Email": email, "org_id": org_id})
-            if existing_person:
+            existing = await people_collection.find_one(
+                {"Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+            )
+            if existing:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"A person with email '{email}' already exists"
+                    status_code=409,
+                    detail=f"A person with email '{email}' already exists."
                 )
 
-        leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
-        leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
-        leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
-        leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
+        now = datetime.utcnow()
 
         person_doc = {
-            "Name": person_data.name.strip(),
-            "Surname": person_data.surname.strip(),
-            "Email": email,
-            "Number": person_data.number.strip(),
-            "Address": person_data.address.strip(),
-            "Gender": person_data.gender.strip(),
-            "Birthday": person_data.dob.strip(),
-            "InvitedBy": person_data.invitedBy.strip(),
-            "Leader @1": leader1,
-            "Leader @12": leader12,
-            "Leader @144": leader144,
-            "Leader @1728": leader1728,
-            "Stage": person_data.stage or "Win",
-            "org_id": org_id,
-            "Date Created": datetime.utcnow().isoformat(),
-            "UpdatedAt": datetime.utcnow().isoformat()
+            "Name":         name.title(),
+            "Surname":      surname.title(),
+            "Email":        email,
+            "Number":       (person_data.get("number") or person_data.get("phone") or "").strip(),
+            "Address":      (person_data.get("address") or "").strip(),
+            "Gender":       (person_data.get("gender")  or "").strip().capitalize(),
+            "Birthday":     (person_data.get("dob")     or "").replace("-", "/"),
+            "InvitedBy":    (person_data.get("invitedBy") or "").strip(),
+            "Stage":        (person_data.get("stage")   or "Win"),
+            "LeaderId":     leader_id_obj,
+            "LeaderPath":   leader_path,
+            "org_id":       org_id,
+            "Organization": organization,
+            "DateCreated":  now.isoformat(),
+            "UpdatedAt":    now.isoformat(),
         }
 
-        result = await people_collection.insert_one(person_doc)
-        inserted_id = str(result.inserted_id)
+        result      = await people_collection.insert_one(person_doc)
+        inserted_id = result.inserted_id
 
-        if people_cache["data"] is not None:
-            try:
-                new_cache_entry = {
-                    "_id": inserted_id,
-                    "FullName": f"{person_doc['Name']} {person_doc['Surname']}".strip(),
-                    "Name": person_doc["Name"],
-                    "Surname": person_doc["Surname"],
-                    "Email": person_doc["Email"],
-                    "Number": person_doc["Number"],
-                    "Gender": person_doc["Gender"],
-                    "Birthday": person_doc["Birthday"],
-                    "Address": person_doc["Address"],
-                    "InvitedBy": person_doc["InvitedBy"],
-                    "Leader @1": person_doc["Leader @1"],
-                    "Leader @12": person_doc["Leader @12"],
-                    "Leader @144": person_doc["Leader @144"],
-                    "Leader @1728": person_doc["Leader @1728"],
-                    "Stage": person_doc["Stage"],
-                    "org_id": person_doc["org_id"],
-                    "Date Created": person_doc["Date Created"],
-                    "UpdatedAt": person_doc["UpdatedAt"]
+        # ── Resolve leaders[] for response ──────────────────────────────
+        path_strs  = [str(lid) for lid in leader_path]
+        id_to_full: dict = {}
+        if leader_path:
+            docs = await people_collection.find(
+                {"_id": {"$in": leader_path}},
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            ).to_list(length=None)
+            for d in docs:
+                pid = str(d["_id"])
+                id_to_full[pid] = {
+                    "id":    pid,
+                    "name":  f"{d.get('Name','')} {d.get('Surname','')}".strip(),
+                    "email": d.get("Email", "") or "",
+                    "phone": d.get("Number", "") or "",
                 }
-                people_cache["data"].append(new_cache_entry)
-            except Exception as cache_error:
-                print(f"Warning: Failed to add person to cache: {cache_error}")
 
-        await invalidate_people_cache("create", {
-            "person_id": inserted_id,
-            "email": person_doc["Email"],
-            "full_name": f"{person_doc['Name']} {person_doc['Surname']}".strip()
-        })
+        leaders_array = resolve_leaders(path_strs, id_to_full)
 
-        created_person = {
-            "_id": inserted_id,
-            "Name": person_doc["Name"],
-            "Surname": person_doc["Surname"],
-            "Email": person_doc["Email"],
-            "Number": person_doc["Number"],
-            "Gender": person_doc["Gender"],
-            "Birthday": person_doc["Birthday"],
-            "Address": person_doc["Address"],
-            "InvitedBy": person_doc["InvitedBy"],
-            "Leader @1": person_doc["Leader @1"],
-            "Leader @12": person_doc["Leader @12"],
-            "Leader @144": person_doc["Leader @144"],
-            "Leader @1728": person_doc["Leader @1728"],
-            "Stage": person_doc["Stage"],
-            "org_id": person_doc["org_id"],
-            "Date Created": person_doc["Date Created"],
-            "UpdatedAt": person_doc["UpdatedAt"]
+        # ── Sync Users doc if account exists ────────────────────────────
+        if email:
+            try:
+                await users_collection.update_one(
+                    {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+                    {"$set": {
+                        "LeaderId":   leader_id_obj,
+                        "LeaderPath": leader_path,
+                        "people_id":  str(inserted_id),
+                        "updated_at": now.isoformat(),
+                    }}
+                )
+            except Exception as sync_err:
+                print(f"Warning: user sync failed for {email}: {sync_err}")
+
+        asyncio.create_task(
+            invalidate_people_cache("create", {"person_id": str(inserted_id)})
+        )
+
+        person_response = {
+            "_id":          str(inserted_id),
+            "Name":         person_doc["Name"],
+            "Surname":      person_doc["Surname"],
+            "Email":        person_doc["Email"],
+            "Number":       person_doc["Number"],
+            "Gender":       person_doc["Gender"],
+            "Birthday":     person_doc["Birthday"],
+            "Address":      person_doc["Address"],
+            "InvitedBy":    person_doc["InvitedBy"],
+            "Stage":        person_doc["Stage"],
+            "org_id":       person_doc["org_id"],
+            "Organization": person_doc["Organization"],
+            "LeaderId":     str(leader_id_obj) if leader_id_obj else None,
+            "LeaderPath":   path_strs,
+            "leaders":      leaders_array,
+            "DateCreated":  person_doc["DateCreated"],
+            "UpdatedAt":    person_doc["UpdatedAt"],
+            "FullName":     f"{person_doc['Name']} {person_doc['Surname']}".strip(),
         }
 
         return {
             "success": True,
             "message": "Person created successfully",
-            "id": inserted_id,
-            "_id": inserted_id,
-            "person": created_person,
-            "cache_invalidated": True,
-            "cache_refresh_triggered": people_cache["pending_refresh"]
+            "person":  person_response,
         }
 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error creating person: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal Server Error: {str(e)}"
-        )
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating person: {str(e)}")
+    
     
 @app.get("/people/search-fast")
 async def search_people_fast(
     query: str = Query(..., min_length=2),
-    limit: int = Query(25, le=50)
+    limit: int = Query(25, le=50),
+    current_user: dict = Depends(get_current_user)
 ):
-    """
-    FAST search endpoint for autocomplete - optimized for signup form
-    Uses simple regex matching and returns minimal fields
-    """
     try:
         if not query or len(query) < 2:
             return {"results": []}
-       
-        # Simple regex search on name fields - much faster than complex queries
+ 
         search_regex = {"$regex": query.strip(), "$options": "i"}
-       
-        # Only fetch essential fields for autocomplete
-        projection = {
-            "_id": 1,
-            "Name": 1,
-            "Surname": 1,
-            "Email": 1,
-            "Phone": 1,
-            "Leader @1": 1,
-            "Leader @12": 1,
-            "Leader @144": 1,
-            "Leader @1728": 1
-        }
-       
-        cursor = people_collection.find({
-            "$or": [
-                {"Name": search_regex},
-                {"Surname": search_regex},
-                {"Email": search_regex},
-                {"$expr": {
-                    "$regexMatch": {
-                        "input": {"$concat": ["$Name", " ", "$Surname"]},
-                        "regex": query.strip(),
-                        "options": "i"
-                    }
-                }}
-            ]
-        }, projection).limit(limit)
-       
+        text_q = {"$or": [
+            {"Name": search_regex}, {"Surname": search_regex},
+            {"Email": search_regex}, {"Number": search_regex},
+            {"$expr": {"$regexMatch": {
+                "input": {"$concat": ["$Name", " ", "$Surname"]},
+                "regex": query.strip(), "options": "i"
+            }}}
+        ]}
+        org_q   = build_org_query(current_user)
+        final_q = {"$and": [text_q, org_q]} if org_q else text_q
+ 
+        projection = {"_id": 1, "Name": 1, "Surname": 1, "Email": 1,
+                      "Number": 1, "Gender": 1, "LeaderPath": 1, "LeaderId": 1}
+        docs = await people_collection.find(final_q, projection).limit(limit).to_list(length=limit)
+ 
+        all_ids: set = set()
+        for doc in docs:
+            for lid in doc.get("LeaderPath", []):
+                if lid:
+                    try:
+                        all_ids.add(lid if isinstance(lid, ObjectId) else ObjectId(str(lid)))
+                    except Exception:
+                        pass
+ 
+        id_to_full: dict = {}
+        if all_ids:
+            async for ldoc in people_collection.find(
+                {"_id": {"$in": list(all_ids)}},
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            ):
+                pid = str(ldoc["_id"])
+                id_to_full[pid] = {
+                    "id":    pid,
+                    "name":  f"{ldoc.get('Name','')} {ldoc.get('Surname','')}".strip(),
+                    "email": ldoc.get("Email", "") or "",
+                    "phone": ldoc.get("Number", "") or "",
+                }
+ 
         results = []
-        async for person in cursor:
+        for doc in docs:
+            path_strs = [str(lid) for lid in doc.get("LeaderPath", []) if lid]
             results.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
+                "_id":        str(doc["_id"]),
+                "Name":       doc.get("Name", ""),
+                "Surname":    doc.get("Surname", ""),
+                "Email":      doc.get("Email", ""),
+                "Number":     doc.get("Number", ""),
+                "Gender":     doc.get("Gender", ""),
+                "FullName":   f"{doc.get('Name','')} {doc.get('Surname','')}".strip(),
+                "LeaderPath": path_strs,
+                "leaders":    resolve_leaders(path_strs, id_to_full),
             })
-       
         return {"results": results}
-       
+ 
     except Exception as e:
-        print(f"Error in fast search: {e}")
-        return {"results": []}
-       
+        print(f"Error in search-fast: {str(e)}")
+        return {"results": [], "error": str(e)}
 
 @app.get("/people/{person_id}")
-async def get_person_by_id(person_id: str = Path(...)):
-    """
-    Get complete person data by ID - ENHANCED to include ALL fields
-    """
+async def get_person(
+    person_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Return a single person with full leaders[] array resolved from LeaderPath."""
     try:
         if not ObjectId.is_valid(person_id):
             raise HTTPException(status_code=400, detail="Invalid person ID")
-        
-        # Fetch the person with NO projection to get ALL fields
+ 
         person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
-        
-        # Convert ObjectId to string
-        person["_id"] = str(person["_id"])
-        
-        # Build comprehensive response with ALL fields
-        # Handle both capitalized and lowercase field names
-        complete_person = {
-            # Core identification
-            "_id": person["_id"],
-            "Name": person.get("Name", ""),
-            "Surname": person.get("Surname", ""),
-            "Email": person.get("Email", ""),
-            "Number": person.get("Number", ""),
-            
-            # Personal information - CRITICAL: Include Birthday/DOB
-            "Birthday": person.get("Birthday", ""),
-            "dob": person.get("Birthday", ""),  # Alias for frontend compatibility
-            "Gender": person.get("Gender", ""),
-            "Address": person.get("Address", ""),
-            
-            # Invitation and leadership
-            "InvitedBy": person.get("InvitedBy", ""),
-            "Leader @1": person.get("Leader @1", ""),
-            "Leader @12": person.get("Leader @12", ""),
-            "Leader @144": person.get("Leader @144", ""),
-            "Leader @1728": person.get("Leader @1728", ""),
-            
-            # Stage and status
-            "Stage": person.get("Stage", "Win"),
-            
-            # Timestamps
-            "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
-            "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-            
-            # Additional fields that might exist
-            "user_id": person.get("user_id", ""),
-            "DecisionType": person.get("DecisionType", ""),
-            "DecisionDate": person.get("DecisionDate", ""),
-            "DecisionHistory": person.get("DecisionHistory", []),
-            "FirstDecisionDate": person.get("FirstDecisionDate", ""),
-            "LastDecisionDate": person.get("LastDecisionDate", ""),
-            "TotalRecommitments": person.get("TotalRecommitments", 0),
-            
-            # Lowercase aliases for frontend compatibility
-            "name": person.get("Name", ""),
-            "surname": person.get("Surname", ""),
-            "email": person.get("Email", ""),
-            "number": person.get("Number", ""),
-            "gender": person.get("Gender", ""),
-            "address": person.get("Address", ""),
-            "invitedBy": person.get("InvitedBy", ""),
-            "leader1": person.get("Leader @1", ""),
-            "leader12": person.get("Leader @12", ""),
-            "leader144": person.get("Leader @144", ""),
-            "leader1728": person.get("Leader @1728", ""),
-            "stage": person.get("Stage", "Win"),
-        }
-        return complete_person
-        
+ 
+        id_to_full = await _build_full_id_map_from_db()
+        return transform_person_full(person, id_to_full=id_to_full)
+ 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error fetching person by ID: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error fetching person: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.patch("/people/{person_id}")
-async def update_person_with_cache_invalidation_enhanced(
-    person_id: str = Path(...), 
+async def update_person(
+    person_id: str,
     update_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Update person with automatic cache invalidation - ENHANCED for Birthday handling
-    """
     try:
-        print(f"Updating person {person_id}")
-        print(f"   Update data received: {update_data}")
-        
-        # Get current person data for comparison
-        current_person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        if not current_person:
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+
+        existing = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not existing:
             raise HTTPException(status_code=404, detail="Person not found")
-        
-        # Prepare normalized update data
-        normalized_data = {}
-        
-        # Handle name fields
-        if "Name" in update_data or "name" in update_data:
-            normalized_data["Name"] = (update_data.get("Name") or update_data.get("name", "")).strip()
-        
-        if "Surname" in update_data or "surname" in update_data:
-            normalized_data["Surname"] = (update_data.get("Surname") or update_data.get("surname", "")).strip()
-        
-        # Handle email
-        if "Email" in update_data or "email" in update_data:
-            normalized_data["Email"] = (update_data.get("Email") or update_data.get("email", "")).strip()
-        
-        # Handle phone
-        if "Number" in update_data or "number" in update_data:
-            normalized_data["Number"] = (update_data.get("Number") or update_data.get("number", "")).strip()
-        
-        # ⭐ CRITICAL: Handle Birthday/DOB properly
-        if "Birthday" in update_data or "dob" in update_data:
-            birthday_value = update_data.get("Birthday") or update_data.get("dob", "")
-            if birthday_value:
-                # Normalize date format if needed (handle both DD/MM/YYYY and YYYY-MM-DD)
-                normalized_data["Birthday"] = birthday_value.strip()
-                print(f"Birthday being updated to: {normalized_data['Birthday']}")
-        
-        # Handle gender
-        if "Gender" in update_data or "gender" in update_data:
-            normalized_data["Gender"] = (update_data.get("Gender") or update_data.get("gender", "")).strip()
-        
-        # Handle address
-        if "Address" in update_data or "address" in update_data:
-            normalized_data["Address"] = (update_data.get("Address") or update_data.get("address", "")).strip()
-        
-        # Handle InvitedBy
-        if "InvitedBy" in update_data or "invitedBy" in update_data:
-            normalized_data["InvitedBy"] = (update_data.get("InvitedBy") or update_data.get("invitedBy", "")).strip()
-        
-        # Handle leader fields
-        if "Leader @1" in update_data or "leader1" in update_data:
-            normalized_data["Leader @1"] = (update_data.get("Leader @1") or update_data.get("leader1", "")).strip()
-        
-        if "Leader @12" in update_data or "leader12" in update_data:
-            normalized_data["Leader @12"] = (update_data.get("Leader @12") or update_data.get("leader12", "")).strip()
-        
-        if "Leader @144" in update_data or "leader144" in update_data:
-            normalized_data["Leader @144"] = (update_data.get("Leader @144") or update_data.get("leader144", "")).strip()
-        
-        if "Leader @1728" in update_data or "leader1728" in update_data:
-            normalized_data["Leader @1728"] = (update_data.get("Leader @1728") or update_data.get("leader1728", "")).strip()
-        
-        # Handle stage
-        if "Stage" in update_data or "stage" in update_data:
-            normalized_data["Stage"] = (update_data.get("Stage") or update_data.get("stage", "Win")).strip()
-        
-        # Add update timestamp
-        normalized_data["UpdatedAt"] = datetime.utcnow().isoformat()
-        
-        print(f"Normalized update data: {normalized_data}")
-        
-        # Perform the update
-        result = await people_collection.update_one(
-            {"_id": ObjectId(person_id)},
-            {"$set": normalized_data}
+
+        now = datetime.utcnow()
+        set_fields: dict = {"UpdatedAt": now.isoformat()}
+
+        # ── Standard scalar fields ──────────────────────────────────────
+        field_map = {
+            "name":      ("Name",      lambda v: v.strip().title()),
+            "surname":   ("Surname",   lambda v: v.strip().title()),
+            "email":     ("Email",     lambda v: v.strip().lower()),
+            "number":    ("Number",    lambda v: v.strip()),
+            "phone":     ("Number",    lambda v: v.strip()),
+            "address":   ("Address",   lambda v: v.strip()),
+            "gender":    ("Gender",    lambda v: v.strip().capitalize()),
+            "dob":       ("Birthday",  lambda v: v.replace("-", "/")),
+            "invitedBy": ("InvitedBy", lambda v: v.strip()),
+            "stage":     ("Stage",     lambda v: v),
+            "Stage":     ("Stage",     lambda v: v),  # drag-drop sends capital S
+        }
+        for src_key, (dest_key, transform) in field_map.items():
+            if src_key in update_data and update_data[src_key] is not None:
+                set_fields[dest_key] = transform(str(update_data[src_key]))
+
+        # ── LeaderPath / LeaderId ───────────────────────────────────────
+        raw_leader = (
+            update_data.get("leaderId")    or
+            update_data.get("leader_id")   or
+            update_data.get("invitedById") or
+            None
         )
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=400, detail="No changes made to person")
-        
-        # TRIGGER CACHE INVALIDATION
-        await invalidate_people_cache("update", {
-            "person_id": person_id,
-            "updated_fields": list(update_data.keys()),
-            "previous_data": {
-                "name": current_person.get("Name"),
-                "surname": current_person.get("Surname"),
-                "email": current_person.get("Email")
-            }
-        })
-        
-        # Update cache entry if it exists
-        if people_cache["data"]:
-            for i, person in enumerate(people_cache["data"]):
-                if person["_id"] == person_id:
-                    people_cache["data"][i].update({
-                        "Name": normalized_data.get("Name", person.get("Name", "")),
-                        "Surname": normalized_data.get("Surname", person.get("Surname", "")),
-                        "Email": normalized_data.get("Email", person.get("Email", "")),
-                        "Number": normalized_data.get("Number", person.get("Number", "")),
-                        "Gender": normalized_data.get("Gender", person.get("Gender", "")),
-                        "FullName": f"{normalized_data.get('Name', person.get('Name', ''))} {normalized_data.get('Surname', person.get('Surname', ''))}".strip(),
-                        "UpdatedAt": datetime.utcnow().isoformat()
-                    })
-                    print(f"Updated cached entry for person ID: {person_id}")
-                    break
-        
-        # Fetch and return updated person in the expected format
-        updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        if not updated_person:
-            raise HTTPException(status_code=404, detail="Person not found after update")
-        
-        # Return comprehensive response
-        updated_person["_id"] = str(updated_person["_id"])
-        mapped_response = {
-            "_id": updated_person["_id"],
-            "Name": updated_person.get("Name", ""),
-            "Surname": updated_person.get("Surname", ""),
-            "Number": updated_person.get("Number", ""),
-            "Email": updated_person.get("Email", ""),
-            "Address": updated_person.get("Address", ""),
-            "Gender": updated_person.get("Gender", ""),
-            "Birthday": updated_person.get("Birthday", ""),
-            "dob": updated_person.get("Birthday", ""),
-            "InvitedBy": updated_person.get("InvitedBy", ""),
-            "Leader @1": updated_person.get("Leader @1", ""),
-            "Leader @12": updated_person.get("Leader @12", ""),
-            "Leader @144": updated_person.get("Leader @144", ""),
-            "Leader @1728": updated_person.get("Leader @1728", ""),
-            "Stage": updated_person.get("Stage", "Win"),
-            "UpdatedAt": updated_person.get("UpdatedAt"),
-        }
-        
-        print(f"Person updated successfully")
-        print(f"Birthday: {mapped_response['Birthday']}")
-        
-        return {
-            "success": True,
-            "message": "Person updated successfully",
-            "person": mapped_response,
-            "cache_invalidated": True,
-            "cache_refresh_triggered": people_cache["pending_refresh"]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating person: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
 
-def normalize_person_data(data: dict) -> dict:
-    """Normalize person data for database operations"""
-    return {
-        "Name": data.get("Name") or data.get("name", ""),
-        "Surname": data.get("Surname") or data.get("surname", ""),
-        "Number": data.get("Number") or data.get("number", ""),
-        "Email": data.get("Email") or data.get("email", ""),
-        "Address": data.get("Address") or data.get("address", ""),
-        "Birthday": data.get("Birthday") or data.get("birthday") or data.get("dob", ""),
-        "Gender": data.get("Gender") or data.get("gender", ""),
-        "InvitedBy": data.get("InvitedBy") or data.get("invitedBy", ""),
-        "Leader @1": data.get("Leader @1") or data.get("leader1", ""),
-        "Leader @12": data.get("Leader @12") or data.get("leader12", ""),
-        "Leader @144": data.get("Leader @144") or data.get("leader144", ""),
-        "Leader @1728": data.get("Leader @1728") or data.get("leader1728", ""),
-        "Stage": data.get("Stage") or data.get("stage", "Win"),
-        "UpdatedAt": datetime.utcnow().isoformat()
-    }
+        new_leader_path = []
+        new_leader_id   = None
 
-@app.patch("/people/{person_id}")
-async def update_person_with_cache_invalidation(
-    person_id: str = Path(...), 
-    update_data: dict = Body(...),
-    current_user: dict = Depends(get_current_user)
-):
-    """Update person with automatic cache invalidation"""
-    try:
-        normalized_data = normalize_person_data(update_data)
-        
-        # Get current person data for comparison
-        current_person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        if not current_person:
-            raise HTTPException(status_code=404, detail="Person not found")
-        
-        # Perform the update
-        result = await people_collection.update_one(
-            {"_id": ObjectId(person_id)},
-            {"$set": normalized_data}
-        )
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=400, detail="No changes made to person")
-        
-        # TRIGGER CACHE INVALIDATION
-        await invalidate_people_cache("update", {
-            "person_id": person_id,
-            "updated_fields": list(update_data.keys()),
-            "previous_data": {
-                "name": current_person.get("Name"),
-                "surname": current_person.get("Surname"),
-                "email": current_person.get("Email")
-            }
-        })
-        
-        # Update cache entry if it exists
-        if people_cache["data"]:
-            for i, person in enumerate(people_cache["data"]):
-                if person["_id"] == person_id:
-                    # Update the cached entry with all fields
-                    people_cache["data"][i].update({
-                        "Name": normalized_data.get("Name", person.get("Name", "")),
-                        "Surname": normalized_data.get("Surname", person.get("Surname", "")),
-                        "Email": normalized_data.get("Email", person.get("Email", "")),
-                        "Number": normalized_data.get("Number", person.get("Number", "")),
-                        "Gender": normalized_data.get("Gender", person.get("Gender", "")),
-                        "Address": normalized_data.get("Address", person.get("Address", "")),
-                        "Birthday": normalized_data.get("Birthday", person.get("Birthday", "")),
-                        "InvitedBy": normalized_data.get("InvitedBy", person.get("InvitedBy", "")),
-                        "Leader @1": normalized_data.get("Leader @1", person.get("Leader @1", "")),
-                        "Leader @12": normalized_data.get("Leader @12", person.get("Leader @12", "")),
-                        "Leader @144": normalized_data.get("Leader @144", person.get("Leader @144", "")),
-                        "Leader @1728": normalized_data.get("Leader @1728", person.get("Leader @1728", "")),
-                        "Stage": normalized_data.get("Stage", person.get("Stage", "Win")),
-                        "FullName": f"{normalized_data.get('Name', person.get('Name', ''))} {normalized_data.get('Surname', person.get('Surname', ''))}".strip(),
-                        "UpdatedAt": datetime.utcnow().isoformat()
-                    })
-                    print(f"Updated cached entry for person ID: {person_id}")
-                    break
-        
-        # Fetch and return updated person in the expected format
-        updated_person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        if not updated_person:
-            raise HTTPException(status_code=404, detail="Person not found after update")
-        
-        # Return the updated person in the same format as the GET endpoint
-        updated_person["_id"] = str(updated_person["_id"])
-        mapped_response = {
-            "_id": updated_person["_id"],
-            "Name": updated_person.get("Name", ""),
-            "Surname": updated_person.get("Surname", ""),
-            "Number": updated_person.get("Number", ""),
-            "Email": updated_person.get("Email", ""),
-            "Address": updated_person.get("Address", ""),
-            "Gender": updated_person.get("Gender", ""),
-            "Birthday": updated_person.get("Birthday", ""),
-            "InvitedBy": updated_person.get("InvitedBy", ""),
-            "Leader @1": updated_person.get("Leader @1", ""),
-            "Leader @12": updated_person.get("Leader @12", ""),
-            "Leader @144": updated_person.get("Leader @144", ""),
-            "Leader @1728": updated_person.get("Leader @1728", ""),
-            "Stage": updated_person.get("Stage", "Win"),
-            "UpdatedAt": updated_person.get("UpdatedAt"),
-        }
-        
-        return {
-            "success": True,
-            "message": "Person updated successfully",
-            "person": mapped_response,
-            "cache_invalidated": True,
-            "cache_refresh_triggered": people_cache["pending_refresh"]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating person: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    
-
-@app.post("/people")
-async def create_person_with_cache_invalidation(
-    person_data: PersonCreate,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Create a new person with automatic cache invalidation
-    """
-    try:
-        # Normalize and validate email
-        email = person_data.email.lower().strip()
-        
-        # Check if email already exists
-        if email:
-            existing_person = await people_collection.find_one({"Email": email})
-            if existing_person:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"A person with email '{email}' already exists"
-                )
-        
-        # Extract leader fields from the list
-        leader1 = person_data.leaders[0] if len(person_data.leaders) > 0 else ""
-        leader12 = person_data.leaders[1] if len(person_data.leaders) > 1 else ""
-        leader144 = person_data.leaders[2] if len(person_data.leaders) > 2 else ""
-        leader1728 = person_data.leaders[3] if len(person_data.leaders) > 3 else ""
-        
-        # Prepare the document for MongoDB
-        person_doc = {
-            "Name": person_data.name.strip(),
-            "Surname": person_data.surname.strip(),
-            "Email": email,
-            "Number": person_data.number.strip(),
-            "Address": person_data.address.strip(),
-            "Gender": person_data.gender.strip(),
-            "Birthday": person_data.dob.strip(),
-            "InvitedBy": person_data.invitedBy.strip(),
-            "Leader @1": leader1,
-            "Leader @12": leader12,
-            "Leader @144": leader144,
-            "Leader @1728": leader1728,
-            "Stage": person_data.stage or "Win",
-            "Date Created": datetime.utcnow().isoformat(),
-            "UpdatedAt": datetime.utcnow().isoformat()
-        }
-        
-        # Insert into MongoDB
-        result = await people_collection.insert_one(person_doc)
-        inserted_id = str(result.inserted_id)
-        
-        # Update cache immediately with new person
-        if people_cache["data"] is not None:
+        if raw_leader:
             try:
-                new_cache_entry = {
-                    "_id": inserted_id,
-                    "FullName": f"{person_doc['Name']} {person_doc['Surname']}".strip(),
-                    "Name": person_doc["Name"],
-                    "Surname": person_doc["Surname"],
-                    "Email": person_doc["Email"],
-                    "Number": person_doc["Number"],
-                    "Gender": person_doc["Gender"],
-                    "Birthday": person_doc["Birthday"],
-                    "Address": person_doc["Address"],
-                    "InvitedBy": person_doc["InvitedBy"],
-                    "Leader @1": person_doc["Leader @1"],
-                    "Leader @12": person_doc["Leader @12"],
-                    "Leader @144": person_doc["Leader @144"],
-                    "Leader @1728": person_doc["Leader @1728"],
-                    "Stage": person_doc["Stage"],
-                    "Date Created": person_doc["Date Created"],
-                    "UpdatedAt": person_doc["UpdatedAt"]
+                new_leader_id = ObjectId(str(raw_leader))
+            except Exception:
+                pass
+
+        if new_leader_id:
+            try:
+                inviter_doc = await people_collection.find_one(
+                    {"_id": new_leader_id},
+                    {"_id": 1, "LeaderPath": 1}
+                )
+                if inviter_doc:
+                    inv_path = [
+                        ObjectId(str(x)) for x in inviter_doc.get("LeaderPath", []) if x
+                    ]
+                    new_leader_path = inv_path + [new_leader_id]
+                else:
+                    new_leader_path = [new_leader_id]
+            except Exception as e:
+                print(f"Warning: could not fetch inviter LeaderPath on update: {e}")
+                new_leader_path = [new_leader_id]
+
+        elif "invitedBy" in update_data and update_data["invitedBy"]:
+            inviter_name = update_data["invitedBy"].strip()
+            parts = inviter_name.split()
+            first = parts[0] if parts else ""
+            last  = " ".join(parts[1:]) if len(parts) > 1 else ""
+            inviter_query = {"Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}}
+            if last:
+                inviter_query["Surname"] = {
+                    "$regex": f"^{re.escape(last)}$", "$options": "i"
                 }
-                people_cache["data"].append(new_cache_entry)
-                print(f"Added new person to cache: {new_cache_entry['FullName']}")
-            except Exception as cache_error:
-                print(f"Warning: Failed to add person to cache: {cache_error}")
-        else:
-            print("Warning: Cache is not initialized, person not added to cache")
-        
-        # TRIGGER CACHE INVALIDATION
-        await invalidate_people_cache("create", {
-            "person_id": inserted_id,
-            "email": person_doc["Email"],
-            "full_name": f"{person_doc['Name']} {person_doc['Surname']}".strip()
-        })
-        
-        # Prepare response object
-        created_person = {
-            "_id": inserted_id,
-            "Name": person_doc["Name"],
-            "Surname": person_doc["Surname"],
-            "Email": person_doc["Email"],
-            "Number": person_doc["Number"],
-            "Gender": person_doc["Gender"],
-            "Birthday": person_doc["Birthday"],
-            "Address": person_doc["Address"],
-            "InvitedBy": person_doc["InvitedBy"],
-            "Leader @1": person_doc["Leader @1"],
-            "Leader @12": person_doc["Leader @12"],
-            "Leader @144": person_doc["Leader @144"],
-            "Leader @1728": person_doc["Leader @1728"],
-            "Stage": person_doc["Stage"],
-            "Date Created": person_doc["Date Created"],
-            "UpdatedAt": person_doc["UpdatedAt"]
-        }
-        
+            inviter = await people_collection.find_one(
+                inviter_query, {"_id": 1, "LeaderPath": 1}
+            )
+            if inviter:
+                inv_id   = inviter["_id"]
+                inv_path = [ObjectId(str(x)) for x in inviter.get("LeaderPath", []) if x]
+                new_leader_path = inv_path + [inv_id]
+                new_leader_id   = inv_id
+
+        if new_leader_path:
+            set_fields["LeaderPath"] = new_leader_path
+        if new_leader_id:
+            set_fields["LeaderId"] = new_leader_id
+
+        # ── Write to DB ─────────────────────────────────────────────────
+        await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": set_fields}
+        )
+
+        # ── Build response without a full DB scan ───────────────────────
+        # Re-fetch only this one document instead of calling
+        # _build_full_id_map_from_db() which scans the entire collection.
+        updated = await people_collection.find_one({"_id": ObjectId(person_id)})
+
+        # Resolve leader names for just the leaders in this person's path
+        path_ids = [
+            ObjectId(str(x)) for x in updated.get("LeaderPath", []) if x
+        ]
+        id_to_full: dict = {}
+        if path_ids:
+            async for ldoc in people_collection.find(
+                {"_id": {"$in": path_ids}},
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            ):
+                pid = str(ldoc["_id"])
+                id_to_full[pid] = {
+                    "id":    pid,
+                    "name":  f"{ldoc.get('Name', '')} {ldoc.get('Surname', '')}".strip(),
+                    "email": ldoc.get("Email", "") or "",
+                    "phone": ldoc.get("Number", "") or "",
+                }
+
+        person_out = transform_person_full(updated, id_to_full=id_to_full)
+
+        # ── Surgical in-memory cache update — no full refresh ───────────
+        # Only touch the one record that changed. This is instant and
+        # avoids triggering a full background reload on every PATCH.
+        if people_cache.get("data"):
+            for i, p in enumerate(people_cache["data"]):
+                if str(p.get("_id")) == person_id:
+                    # Apply every changed DB field directly onto the cached doc
+                    for db_field, new_val in set_fields.items():
+                        people_cache["data"][i][db_field] = new_val
+                    # Keep the resolved leaders array in sync too
+                    people_cache["data"][i]["leaders"] = person_out.get("leaders", [])
+                    break
+
         return {
             "success": True,
-            "message": "Person created successfully",
-            "id": inserted_id,
-            "_id": inserted_id,
-            "person": created_person,
-            "cache_invalidated": True,
-            "cache_refresh_triggered": people_cache["pending_refresh"]
+            "message": "Person updated successfully",
+            "person":  person_out,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error creating person: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Internal Server Error: {str(e)}"
-        )
-    
+        print(f"Error updating person {person_id}: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
+
 @app.delete("/people/{person_id}")
-async def delete_person_with_cache_invalidation(
-    person_id: str = Path(...),
+async def delete_person(
+    person_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Delete person with automatic cache invalidation"""
     try:
-        # Get person before deletion for cache invalidation
-        person = await people_collection.find_one({"_id": ObjectId(person_id)})
-        if not person:
-            raise HTTPException(status_code=404, detail="Person not found")
-        
-        # Perform deletion
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+ 
         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Person not found")
-        
-        # TRIGGER CACHE INVALIDATION
-        await invalidate_people_cache("delete", {
-            "person_id": person_id,
-            "person_name": f"{person.get('Name', '')} {person.get('Surname', '')}".strip(),
-            "person_email": person.get("Email", "")
-        })
-        
-        # Remove from cache immediately
-        if people_cache["data"]:
-            initial_count = len(people_cache["data"])
-            people_cache["data"] = [p for p in people_cache["data"] if p["_id"] != person_id]
-            if len(people_cache["data"]) < initial_count:
-                print(f"Removed person {person_id} from cache")
-        
-        return {
-            "success": True,
-            "message": "Person deleted successfully",
-            "cache_invalidated": True,
-            "cache_refresh_triggered": people_cache["pending_refresh"]
-        }
-        
+ 
+        asyncio.create_task(
+            invalidate_people_cache("delete", {"person_id": person_id})
+        )
+        return {"success": True, "message": "Person deleted successfully"}
+ 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error deleting person: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/people/search-fast")
@@ -10506,7 +10348,8 @@ async def create_consolidation(
                     ]}}
                 ]
             })
-            
+            # After the leader lookup attempt, add:
+            print(f"Leader lookup for '{consolidation.assigned_to}': found={leader_person is not None}, email={leader_email}")
             if leader_person:
                 leader_email = leader_person.get("Email")
                 print(f"Found leader email from people: {leader_email}")
@@ -12623,12 +12466,14 @@ async def create_consolidation(
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
             "type": "consolidation",
-            "assignedfor": current_user.get("email", "unknown"),
+            # Use assigned leader's email if available, otherwise fall back to current user
+            "assignedfor": consolidation_data.get("assigned_to_email") or current_user.get("email", "unknown"),
+            "assigned_to_email": consolidation_data.get("assigned_to_email") or "",
             "is_consolidation_task": True,
-            "leader_name": assigned_to,
             "leader_assigned": assigned_to,
-            "consolidation_name": f"{person_name} {person_surname} - {decision_type}",
-            "decision_display_name": decision_type,
+            "leader_name": assigned_to,
+            "consolidation_name": f"{person_name} {person_surname} - {consolidation_data.get('decision_type', 'Commitment')}",
+            "decision_display_name": consolidation_data.get("decision_type", "Commitment"),
             "source_display": "Service",
             "consolidation_source": "Service",
             "person_name": person_name,
@@ -12636,10 +12481,11 @@ async def create_consolidation(
             "person_email": person_email,
             "person_phone": person_phone,
             "person_id": person_id,
+            "Organization": current_user.get("Organization") or current_user.get("organization", ""),
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat()
         }
-        
+
         # Insert the task
         task_result = await tasks_collection.insert_one(task_payload)
         task_id = str(task_result.inserted_id)
@@ -12695,8 +12541,8 @@ async def create_consolidation(
         # ========== 4. ADD TO CONSOLIDATIONS COLLECTION ==========
         try:
             consolidations_collection = db["consolidations"]
-            consolidation_record["_id"] = ObjectId(consolidation_id)
-            await consolidations_collection.insert_one(consolidation_record)
+            consolidation_for_db = {**consolidation_record, "_id": ObjectId(consolidation_id)}
+            await consolidations_collection.insert_one(consolidation_for_db)
         except Exception as consolidation_error:
             logger.warning(f"Note: Could not add to consolidations collection: {consolidation_error}")
         
@@ -13385,3 +13231,507 @@ async def get_top_leader_dynamic(gender: str, org_id: str = "active-teams") -> s
         if "male" in gender.lower():   return "Gavin Enslin"
         return ""
     
+COLUMN_MAP: dict[str, str] = {
+    # Name
+    "personname":    "name",
+    "full name":     "name",
+    "fullname":      "name",
+    "name":          "name",
+    "firstname":     "name",
+    "first name":    "name",
+    "first_name":    "name",
+
+    # Surname
+    "familytag":     "surname",
+    "surname":       "surname",
+    "last name":     "surname",
+    "lastname":      "surname",
+    "family name":   "surname",
+    "last_name":     "surname",
+
+    # Phone
+    "cellnumber":    "number",
+    "phone":         "number",
+    "number":        "number",
+    "mobile":        "number",
+    "cell":          "number",
+    "phonenumber":   "number",
+    "phone_number":  "number",
+    "tel":           "number",
+
+    # Email
+    "sacredemail":   "email",
+    "email":         "email",
+    "emailaddress":  "email",
+    "email address": "email",
+    "email_address": "email",
+
+    # Address
+    "homebase":      "address",
+    "address":       "address",
+    "home address":  "address",
+    "homeaddress":   "address",
+    "location":      "address",
+    "city":          "address",
+
+    # Birthday
+    "birthstar":     "birthday",
+    "birthday":      "birthday",
+    "dob":           "birthday",
+    "date of birth": "birthday",
+    "dateofbirth":   "birthday",
+    "birth date":    "birthday",
+    "birthdate":     "birthday",
+
+    # Gender
+    "gender":        "gender",
+    "sex":           "gender",
+
+    # Direct leader (used for LeaderPath resolution)
+    "shepherd":      "invitedby",
+    "invitedby":     "invitedby",
+    "invited by":    "invitedby",
+    "invited_by":    "invitedby",
+    "direct leader": "invitedby",
+    "directleader":  "invitedby",
+    "leader":        "invitedby",
+    "discipledby":   "invitedby",
+    "disciple of":   "invitedby",
+
+    # Stage / ministry track
+    "stage":         "stage",
+    "ministry":      "stage",
+    "status":        "stage",
+
+    # Organization
+    "organization":  "organization",
+    "organisation":  "organization",
+    "church":        "organization",
+    "org":           "organization",
+    "churchname":    "organization",
+    "church_name":   "organization",
+
+    # Date joined
+    "joinedscroll":  "date_created",
+    "joined":        "date_created",
+    "date joined":   "date_created",
+    "datejoined":    "date_created",
+    "created":       "date_created",
+    "date created":  "date_created",
+
+    # Top-level leader name — stored as a plain string, not used for path building
+    "seniorpastor":  "senior_pastor",
+    "senior pastor": "senior_pastor",
+
+    # Silently ignored — computed/redundant columns
+    "shepherdtrail":       "_ignore",
+    "shepherd trail":      "_ignore",
+    "lastheavenupdate":    "_ignore",
+    "last heaven update":  "_ignore",
+    "updatedat":           "_ignore",
+    "updated at":          "_ignore",
+    }
+
+
+def _clean_col(col: str) -> str:
+    return re.sub(r"\s+", " ", str(col).strip().lower())
+
+
+def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename, drop = {}, []
+    for col in df.columns:
+        key = _clean_col(col)
+        mapped = COLUMN_MAP.get(key)
+        if mapped is None or mapped == "_ignore":
+            drop.append(col)
+        else:
+            rename[col] = mapped
+    df = df.drop(columns=drop, errors="ignore")
+    df = df.rename(columns=rename)
+    df = df.loc[:, ~df.columns.duplicated()]
+    return df
+
+
+def _safe_str(val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    return str(val).strip()
+
+
+def _parse_birthday(val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, (pd.Timestamp, datetime)):
+        return val.strftime("%Y/%m/%d")
+    return str(val).strip().replace("-", "/")
+
+
+def _build_sheet_name_map(df: pd.DataFrame) -> dict[str, int]:
+    """
+    Maps every person's full name (lower) and first name (lower) to their
+    row index. Built from the sheet itself — no DB involved.
+    First-name-only is a fallback and will be overwritten if two people
+    share a first name.
+    """
+    mapping: dict[str, int] = {}
+    for idx, row in df.iterrows():
+        name    = _safe_str(row.get("name",    "")).title()
+        surname = _safe_str(row.get("surname", "")).title()
+        full    = f"{name} {surname}".strip().lower()
+        if full:
+            mapping[full] = idx
+        first = name.strip().lower()
+        if first and first not in mapping:
+            mapping[first] = idx
+    return mapping
+
+
+def _resolve_sheet_path(
+    invitedby_name: str,
+    sheet_name_map: dict[str, int],
+    sheet_id_map:   dict[int, str],
+    sheet_path_map: dict[int, list[str]],
+) -> tuple[Optional[str], list[str]]:
+    """
+    Pure in-memory resolution — no DB calls.
+
+    Returns (direct_leader_id_str, full_root_first_path_str_list).
+
+    LeaderPath is root-first:
+        [root, ..., inviter_parent, inviter]
+
+    inviter's already-resolved path + inviter's own ID = this person's path.
+    """
+    clean = invitedby_name.strip().lower()
+    if not clean:
+        return None, []
+
+    inviter_row = sheet_name_map.get(clean)
+    if inviter_row is None:
+        return None, []
+
+    inviter_id = sheet_id_map.get(inviter_row)
+    if not inviter_id:
+        return None, []
+
+    inviter_path = sheet_path_map.get(inviter_row, [])
+    # root-first: inviter's ancestors + inviter
+    return inviter_id, inviter_path + [inviter_id]
+
+
+async def _import_rows(
+    df: pd.DataFrame,
+    default_organization: str,
+    dry_run: bool,
+    current_user: dict,
+) -> dict:
+    now = datetime.utcnow()
+    results = {"inserted": 0, "skipped": 0, "errors": 0, "dry_run": dry_run, "rows": []}
+
+    # ── PASS 1: pre-assign a stable ObjectId to every row ─────────────────
+    # These IDs are used as references in LeaderPath *before* anything is
+    # written to MongoDB, so cross-row references are always valid.
+    sheet_id_map:   dict[int, str]       = {}
+    sheet_path_map: dict[int, list[str]] = {}
+
+    for idx in df.index:
+        sheet_id_map[idx] = str(ObjectId())
+
+    # ── PASS 2: build name → row-index lookup from the sheet ──────────────
+    sheet_name_map = _build_sheet_name_map(df)
+
+    # ── PASS 3: resolve every row's LeaderPath from sheet data only ───────
+    # We loop until nothing changes. This handles any row ordering — a
+    # disciple can appear before their shepherd and still get the correct
+    # path once the shepherd's own path stabilises in a later pass.
+    for _ in range(len(df) + 1):
+        changed = False
+        for idx, row in df.iterrows():
+            invitedby = _safe_str(row.get("invitedby", ""))
+            if not invitedby:
+                new_path: list[str] = []
+            else:
+                _, new_path = _resolve_sheet_path(
+                    invitedby, sheet_name_map, sheet_id_map, sheet_path_map
+                )
+            if new_path != sheet_path_map.get(idx):
+                sheet_path_map[idx] = new_path
+                changed = True
+        if not changed:
+            break
+
+    # ── PASS 4: validate + insert ──────────────────────────────────────────
+    for idx, row in df.iterrows():
+        row_num = idx + 2   # 1-indexed + header row
+
+        name         = _safe_str(row.get("name",         "")).title()
+        surname      = _safe_str(row.get("surname",      "")).title()
+        email        = _safe_str(row.get("email",        "")).lower()
+        number       = _safe_str(row.get("number",       ""))
+        address      = _safe_str(row.get("address",      ""))
+        birthday     = _parse_birthday(row.get("birthday"))
+        gender       = _safe_str(row.get("gender",       "")).capitalize()
+        stage        = "Win"
+        invitedby    = _safe_str(row.get("invitedby",    ""))
+        senior_pastor = _safe_str(row.get("senior_pastor", ""))
+
+        row_org = _safe_str(row.get("organization", ""))
+        org = default_organization or row_org or (
+            current_user.get("Organization") or
+            current_user.get("organization") or ""
+        )
+
+        # date_created
+        raw_dc = row.get("date_created")
+        if raw_dc and not (isinstance(raw_dc, float) and pd.isna(raw_dc)):
+            try:
+                dc_str = (
+                    pd.Timestamp(raw_dc).isoformat()
+                    if not isinstance(raw_dc, str)
+                    else str(raw_dc)
+                )
+            except Exception:
+                dc_str = now.isoformat()
+        else:
+            dc_str = now.isoformat()
+
+        # ── validation ──────────────────────────────────────────────────────
+        if not name or not surname:
+            results["skipped"] += 1
+            results["rows"].append({
+                "row": row_num, "status": "skipped",
+                "reason": "Missing name or surname",
+                "person": f"{name} {surname}".strip(),
+            })
+            continue
+
+        if email:
+            existing = await people_collection.find_one(
+                {"Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+            )
+            if existing:
+                results["skipped"] += 1
+                results["rows"].append({
+                    "row": row_num, "status": "skipped",
+                    "reason": f"Email '{email}' already exists",
+                    "person": f"{name} {surname}",
+                })
+                continue
+
+        # ── resolve leader fields from pre-computed sheet maps ─────────────
+        pre_assigned_id = sheet_id_map[idx]
+        path_strs       = sheet_path_map.get(idx, [])
+
+        # Convert string IDs → ObjectIds for MongoDB storage
+        leader_id_obj: Optional[ObjectId] = None
+        if path_strs:
+            try:
+                leader_id_obj = ObjectId(path_strs[-1])
+            except Exception:
+                pass
+
+        leader_path: list[ObjectId] = []
+        for s in path_strs:
+            try:
+                leader_path.append(ObjectId(s))
+            except Exception:
+                pass
+
+        # ── build document ──────────────────────────────────────────────────
+        person_doc = {
+            "_id":          ObjectId(pre_assigned_id),  # stable pre-assigned ID
+            "Name":         name,
+            "Surname":      surname,
+            "Email":        email,
+            "Number":       number,
+            "Address":      address,
+            "Gender":       gender,
+            "Birthday":     birthday,
+            "InvitedBy":    invitedby,
+            "SeniorPastor": senior_pastor,              # plain string, informational
+            "Stage":        stage,
+            "Organization": org,
+            "LeaderId":     leader_id_obj,              # ObjectId | None
+            "LeaderPath":   leader_path,                # [ObjectId, ...] root-first
+            "DateCreated":  dc_str,
+            "UpdatedAt":    now.isoformat(),
+            "imported_by":  current_user.get("email", "unknown"),
+        }
+
+        if dry_run:
+            results["inserted"] += 1
+            results["rows"].append({
+                "row":          row_num,
+                "status":       "would_insert",
+                "person":       f"{name} {surname}",
+                "email":        email,
+                "organization": org,
+                "invitedby":    invitedby,
+                "senior_pastor": senior_pastor,
+                "leader_id":    str(leader_id_obj) if leader_id_obj else None,
+                "leader_path":  path_strs,              # already strings
+            })
+        else:
+            try:
+                await people_collection.insert_one(person_doc)
+
+                results["inserted"] += 1
+                results["rows"].append({
+                    "row":          row_num,
+                    "status":       "inserted",
+                    "person":       f"{name} {surname}",
+                    "email":        email,
+                    "organization": org,
+                    "_id":          pre_assigned_id,
+                    "invitedby":    invitedby,
+                    "senior_pastor": senior_pastor,
+                    "leader_id":    str(leader_id_obj) if leader_id_obj else None,
+                    "leader_path":  path_strs,
+                })
+
+                # sync user account if one exists with this email
+                if email:
+                    await users_collection.update_one(
+                        {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+                        {"$set": {
+                            "LeaderId":   leader_id_obj,
+                            "LeaderPath": leader_path,
+                            "people_id":  pre_assigned_id,
+                            "updated_at": now.isoformat(),
+                        }}
+                    )
+
+            except Exception as exc:
+                results["errors"] += 1
+                results["rows"].append({
+                    "row":    row_num,
+                    "status": "error",
+                    "person": f"{name} {surname}",
+                    "error":  str(exc),
+                })
+
+    return results
+
+
+@app.post("/people/import/spreadsheet")
+async def import_people_from_spreadsheet(
+    file:         UploadFile = File(...),
+    organization: Optional[str] = Query(None),
+    dry_run:      bool = Query(False),
+    current_user: dict = Depends(get_current_user),
+):
+    filename  = file.filename or ""
+    ext       = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    raw_bytes = await file.read()
+
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        if ext in ("xlsx", "xls"):
+            df = pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+        elif ext == "csv":
+            df = pd.read_csv(
+                io.StringIO(raw_bytes.decode("utf-8-sig", errors="replace")),
+                dtype=str,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '.{ext}'. Use .xlsx, .xls, or .csv.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="The file contains no data rows.")
+
+    original_columns = list(df.columns)
+    df = _normalise_columns(df)
+    df = df.where(pd.notna(df), None)
+
+    results = await _import_rows(
+        df=df,
+        default_organization=organization or "",
+        dry_run=dry_run,
+        current_user=current_user,
+    )
+    
+    if not dry_run:
+        # After successful import, invalidate the cache
+        await invalidate_people_cache("import", {
+            "inserted": results["inserted"],
+            "skipped": results["skipped"],
+            "errors": results["errors"]
+        })
+
+    return {
+        "success":          True,
+        "dry_run":          dry_run,
+        "file":             filename,
+        "total_rows":       len(df),
+        "inserted":         results["inserted"],
+        "skipped":          results["skipped"],
+        "errors":           results["errors"],
+        "original_columns": original_columns,
+        "mapped_columns":   list(df.columns),
+        "rows":             results["rows"],
+    }
+
+
+@app.post("/people/import/preview-columns")
+async def preview_spreadsheet_columns(
+    file: UploadFile = File(...),
+):
+    filename  = file.filename or ""
+    ext       = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    raw_bytes = await file.read()
+    print(f"DEBUG preview: filename={filename!r}, ext={ext!r}, size={len(raw_bytes)}")
+
+    try:
+        if ext in ("xlsx", "xls"):
+            df = pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+        elif ext == "csv":
+            df = pd.read_csv(
+                io.StringIO(raw_bytes.decode("utf-8-sig", errors="replace")),
+                dtype=str,
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type '.{ext}'.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    original_columns = list(df.columns)
+    column_mapping = []
+
+    for col in original_columns:
+        key    = _clean_col(col)
+        mapped = COLUMN_MAP.get(key)
+        if mapped is None or mapped == "_ignore":
+            column_mapping.append({"original": col, "maps_to": None, "status": "ignored"})
+        else:
+            column_mapping.append({"original": col, "maps_to": mapped, "status": "mapped"})
+
+    df_mapped = _normalise_columns(df)
+    df_mapped = df_mapped.where(pd.notna(df_mapped), None)
+
+    raw_sample = df_mapped.head(3).to_dict(orient="records")
+    sample = []
+    for row in raw_sample:
+        sample.append({
+            k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
+            for k, v in row.items()
+        })
+
+    return {
+        "success":        True,
+        "file":           filename,
+        "total_rows":     len(df),
+        "column_mapping": column_mapping,
+        "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
+        "sample_rows":    sample,
+    }
