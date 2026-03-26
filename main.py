@@ -3362,21 +3362,22 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
 
-        name = event_type.name.strip()
-        name_lower = name.lower()
+        # Convert to title case (first letter of each word uppercase)
+        name = event_type.name.strip().title()
+        name_lower = name.lower()  # Keep lowercase version for regex checks
 
+        # Check for reserved keywords (case insensitive)
         if re.search(r'\bcell[s]?\b', name_lower) or 'cell' in name_lower:
             raise HTTPException(
                 status_code=400,
                 detail="Event types containing 'cell' or 'cells' are reserved and cannot be created."
             )
 
-        name = name.lower()
-
         org_id = current_user.get("org_id") or (current_user.get("organization", "").lower().replace(" ", "-")) or "active-teams"
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
 
+        # Check for existing event type (case insensitive)
         existing = await events_collection.find_one({
             "$or": [
                 {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
@@ -3391,9 +3392,9 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
             raise HTTPException(status_code=400, detail=f"Event type '{name}' already exists")
 
         event_type_data = {
-            "name": name,
-            "eventType": name,
-            "eventTypeName": name,
+            "name": name,  # Now stored in title case
+            "eventType": name,  # Now stored in title case
+            "eventTypeName": name,  # Now stored in title case
             "description": event_type.description.strip(),
             "isEventType": True,
             "isTicketed": event_type.isTicketed if hasattr(event_type, 'isTicketed') else False,
@@ -3453,7 +3454,8 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"ORG CONFIG ERROR: {str(e)}") 
         import traceback
         traceback.print_exc()  
-        raise HTTPException(status_code=500, detail=str(e))  
+        raise HTTPException(status_code=500, detail=str(e)) 
+     
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
     event_type_name: str,
@@ -3461,18 +3463,14 @@ async def update_event_type(
 ):
     try:
         decoded_event_type_name = unquote(event_type_name)
-       
-        print(f"[EVENT-TYPE UPDATE] Looking for: '{decoded_event_type_name}'")
-        print(f"[EVENT-TYPE UPDATE] Update data: {updated_data.dict()}")
-       
+        
         # Check if event type exists
         existing_event_type = await events_collection.find_one({
             "name": {"$regex": f"^{decoded_event_type_name}$", "$options": "i"},
             "isEventType": True
         })
-       
+        
         if not existing_event_type:
-            print(f"[EVENT-TYPE UPDATE] Event type '{decoded_event_type_name}' not found")
             try:
                 existing_event_type = await events_collection.find_one({
                     "_id": ObjectId(decoded_event_type_name),
@@ -3480,10 +3478,11 @@ async def update_event_type(
                 })
             except:
                 pass
-           
+            
             if not existing_event_type:
                 raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
 
+        # Convert name to title case (first letter of each word uppercase)
         new_name = updated_data.name.strip().title()
         current_name = existing_event_type["name"]
         name_changed = new_name.lower() != current_name.lower()
@@ -3493,21 +3492,18 @@ async def update_event_type(
         new_is_global = updated_data.isGlobal if updated_data.isGlobal is not None else False
         is_global_changed = current_is_global != new_is_global
         
-        print(f"[EVENT-TYPE UPDATE] isGlobal change: '{current_is_global}' -> '{new_is_global}' (changed: {is_global_changed})")
-       
+        # Check for duplicate names (case insensitive)
         if name_changed:
             duplicate = await events_collection.find_one({
-                "name": {"$regex": f"^{new_name}$", "$options": "i"},
+                "name": {"$regex": f"^{re.escape(new_name)}$", "$options": "i"},
                 "isEventType": True,
                 "_id": {"$ne": existing_event_type["_id"]}
             })
             if duplicate:
-                print(f"[EVENT-TYPE UPDATE] Duplicate: '{new_name}' already exists")
                 raise HTTPException(status_code=400, detail="Event type with this name already exists")
+        
         events_updated_count = 0
         if name_changed or is_global_changed:
-            print(f"[EVENT-TYPE UPDATE] Updating events for '{current_name}'")
-           
             # Build base query
             update_query = {
                 "$or": [
@@ -3539,31 +3535,29 @@ async def update_event_type(
                 }).to_list(length=None)
                 
                 events_updated_count = len(events_without_explicit_isglobal)
-                print(f"[EVENT-TYPE UPDATE] Found {events_updated_count} events that inherit isGlobal")
                 
                 if events_updated_count > 0:
                     update_fields["isGlobal"] = new_is_global
             
             # Apply the update
             if name_changed or (is_global_changed and events_updated_count > 0):
-                events_update_result = await events_collection.update_many(
+                await events_collection.update_many(
                     update_query,
                     {"$set": update_fields}
                 )
-                actual_updated = events_update_result.modified_count
-                print(f"[EVENT-TYPE UPDATE] Actually updated {actual_updated} events")
 
+        # Prepare update data
         update_data_dict = updated_data.dict()
         update_data_dict["name"] = new_name
+        update_data_dict["eventType"] = new_name 
+        update_data_dict["eventTypeName"] = new_name  
         update_data_dict["updatedAt"] = datetime.utcnow()
-       
+        
         update_data_dict = {k: v for k, v in update_data_dict.items() if v is not None}
-       
+        
         immutable_fields = ["_id", "UUID", "createdAt", "isEventType"]
         for field in immutable_fields:
             update_data_dict.pop(field, None)
-
-        print(f"[EVENT-TYPE UPDATE] Final update data: {update_data_dict}")
 
         # Update the event type document
         result = await events_collection.update_one(
@@ -3572,28 +3566,18 @@ async def update_event_type(
         )
 
         if result.modified_count == 0:
-            print(f"[EVENT-TYPE UPDATE] No changes made to '{current_name}'")
             existing_event_type["_id"] = str(existing_event_type["_id"])
             return existing_event_type
 
-        # Fetch and return the updated event type
         updated_event_type = await events_collection.find_one({"_id": existing_event_type["_id"]})
         updated_event_type["_id"] = str(updated_event_type["_id"])
-       
-        print(f"[EVENT-TYPE UPDATE] Successfully updated to: {updated_event_type['name']}")
-        print(f"[EVENT-TYPE UPDATE] Summary - Events updated: {events_updated_count}")
-        print(f"[VISIBILITY] Event type '{new_name}' is now {'GLOBAL' if new_is_global else 'ADMIN ONLY'}")
-       
+        
         return updated_event_type
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[EVENT-TYPE UPDATE] Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
-    
 from urllib.parse import unquote
 
 @app.delete("/event-types/{event_type_name}")
