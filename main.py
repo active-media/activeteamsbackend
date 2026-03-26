@@ -8677,11 +8677,24 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
                 organization = current_user[key]
                 break
         new_task_dict = task.dict()
-        new_task_dict["assignedfor"] = current_user["email"]
-        new_task_dict["Organization"] = organization  
+        if new_task_dict.get("assignedfor"):
+            new_task_dict["assignedfor"] = new_task_dict["assignedfor"].lower()
+        else:
+            new_task_dict["assignedfor"] = current_user["email"].lower()
+
+        if not new_task_dict.get("assigned_to_email"):
+            new_task_dict["assigned_to_email"] = new_task_dict["assignedfor"]
+
+        # Always track creator
+        new_task_dict["created_by_email"] = current_user["email"].lower()
+        new_task_dict["created_by_name"] = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        new_task_dict["createdAt"] = datetime.utcnow()
+
+        print(f"[CREATE TASK] Final assignedfor: {new_task_dict.get('assignedfor')}")
 
         result = await db["tasks"].insert_one(new_task_dict)
-        return {"status": "success", "task": jsonable_encoder({**new_task_dict, "_id": str(result.inserted_id)})}
+        new_task_dict["_id"] = str(result.inserted_id)
+        return {"status": "success", "task": jsonable_encoder(new_task_dict)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -8689,6 +8702,8 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 @app.get("/tasks")
 async def get_user_tasks(
+    email: str = Query(None),
+    userId: str = Query(None),
     view_all: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
@@ -8705,19 +8720,41 @@ async def get_user_tasks(
 
         is_super_admin = current_user.get("role") == "super_admin"
         is_leader = current_user.get("role") in ["admin", "leader", "manager", "org_admin"]
+        user_email = None
+
+        if email:
+            user_email = email.lower()
+        elif userId:
+            user = await users_collection.find_one({"_id": ObjectId(userId)})
+            if user:
+                user_email = user.get("email", "").lower()
+        else:
+            user_email = current_user.get("email", "").lower()
+
+        if not user_email and not (is_leader and view_all):
+            return {"error": "User email not found", "status": "failed"}
+
         if is_super_admin and view_all:
             query = {}                                     
         elif is_leader and view_all:
             query = {"Organization": org_name}       
         else:
             query = {
-                "Organization": org_name,
                 "$or": [
-                    {"assignedfor": current_user["email"]},
-                    {"assigned_to_email": current_user["email"]},
-                    {"assignedfor": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
-                    {"leader_assigned": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
-                    {"leader_name": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
+                    {"assignedfor": user_email},
+                    {"assigned_to_email": user_email},
+                    {
+                        "$and": [
+                            {"leader_name": user_name},
+                            {"is_consolidation_task": True}
+                        ]
+                    },
+                    {
+                        "$and": [
+                            {"leader_assigned": user_name},
+                            {"is_consolidation_task": True}
+                        ]
+                    }
                 ]
             }
 
@@ -8731,12 +8768,15 @@ async def get_user_tasks(
         async for task in cursor:
             task_date_str = task.get("followup_date")
             task_datetime = None
+
             if task_date_str:
                 if isinstance(task_date_str, datetime):
                     task_datetime = task_date_str.astimezone(timezone)
                 else:
                     try:
-                        task_datetime = datetime.fromisoformat(task_date_str).astimezone(timezone)
+                        task_datetime = datetime.fromisoformat(
+                            str(task_date_str).replace("Z", "+00:00")
+                        ).astimezone(timezone)
                     except ValueError:
                         logging.warning(f"Invalid date format: {task_date_str}")
                         continue
@@ -8749,6 +8789,7 @@ async def get_user_tasks(
                 "status": task.get("status", "Open"),
                 "assignedfor": task.get("assignedfor", ""),
                 "assigned_to_email": task.get("assigned_to_email", ""),
+                "created_by_email": task.get("created_by_email", ""),
                 "leader_name": task.get("leader_name", ""),
                 "type": task.get("type", "call"),
                 "contacted_person": task.get("contacted_person", {}),
@@ -8945,6 +8986,8 @@ async def delete_task_type(
 
 # ====================== PUT /taskS ======================
 
+# ====================== PUT /tasks ======================
+
 @app.put("/tasks/{task_id}")
 async def update_task(
     task_id: str,
@@ -8952,26 +8995,25 @@ async def update_task(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # Extract organization name from current user
         org_name = None
         for key in current_user.keys():
             if key.lower() == "organization":
                 org_name = current_user[key]
                 break
 
-        # Convert task_id
-        try:
-            obj_id = ObjectId(task_id)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid task ID")
-
-        # Check if task exists
+        obj_id = ObjectId(task_id)
         task = await db["tasks"].find_one({"_id": obj_id})
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        # === CROSS-TENANT PROTECTION (exactly like XMind plan) ===
+        # === CROSS-TENANT PROTECTION ===
         task_org = task.get("Organization")
-        if task_org and task_org.lower() != org_name.lower() and current_user.get("role") != "super_admin":
+        if (
+            task_org
+            and task_org.lower() != org_name.lower()
+            and current_user.get("role") != "super_admin"
+        ):
             raise HTTPException(
                 status_code=403,
                 detail="You don't have access to this church's data."
@@ -8979,26 +9021,41 @@ async def update_task(
 
         # Prepare update data
         update_data = {}
+
         if "name" in updated_task:
             update_data["name"] = updated_task["name"]
+
         if "taskType" in updated_task:
             update_data["taskType"] = updated_task["taskType"]
+
         if "contacted_person" in updated_task:
             update_data["contacted_person"] = updated_task["contacted_person"]
+
         if "followup_date" in updated_task:
             try:
-                if isinstance(updated_task["followup_date"], str):
-                    update_data["followup_date"] = updated_task["followup_date"]
-                else:
-                    update_data["followup_date"] = updated_task["followup_date"]
+                update_data["followup_date"] = updated_task["followup_date"]
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+
         if "status" in updated_task:
-            update_data["status"] = updated_task["status"]
+            # Always normalize status to lowercase
+            normalized_status = updated_task["status"].lower()
+            update_data["status"] = normalized_status
+
+            if normalized_status in ["completed", "done", "closed", "finished"]:
+                update_data["completedAt"] = datetime.utcnow()
+            elif normalized_status in ["open", "pending", "incomplete"]:
+                update_data["completedAt"] = None
+
         if "type" in updated_task:
             update_data["type"] = updated_task["type"]
+
         if "assignedfor" in updated_task:
-            update_data["assignedfor"] = updated_task["assignedfor"]
+            # Always normalize assignedfor to lowercase
+            update_data["assignedfor"] = updated_task["assignedfor"].lower()
+
+        if "assigned_to_email" in updated_task:
+            update_data["assigned_to_email"] = updated_task["assigned_to_email"].lower()
 
         # Add updated timestamp
         update_data["updated_at"] = datetime.utcnow().isoformat()
@@ -9016,14 +9073,13 @@ async def update_task(
             else:
                 raise HTTPException(status_code=404, detail="Task not found")
 
-        # Return updated task
         updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
         return {"updatedTask": serialize_doc(updated_task_in_db)}
 
     except Exception as e:
         print(f"Error updating task: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
+        
 from collections import defaultdict
 
 @app.get("/stats/overview")
