@@ -8986,6 +8986,8 @@ async def delete_task_type(
 
 # ====================== PUT /taskS ======================
 
+# ====================== PUT /tasks ======================
+
 @app.put("/tasks/{task_id}")
 async def update_task(
     task_id: str,
@@ -8993,26 +8995,25 @@ async def update_task(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # Extract organization name from current user
         org_name = None
         for key in current_user.keys():
             if key.lower() == "organization":
                 org_name = current_user[key]
                 break
 
-        # Convert task_id
-        try:
-            obj_id = ObjectId(task_id)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid task ID")
-
-        # Check if task exists
+        obj_id = ObjectId(task_id)
         task = await db["tasks"].find_one({"_id": obj_id})
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        # === CROSS-TENANT PROTECTION (exactly like XMind plan) ===
+        # === CROSS-TENANT PROTECTION ===
         task_org = task.get("Organization")
-        if task_org and task_org.lower() != org_name.lower() and current_user.get("role") != "super_admin":
+        if (
+            task_org
+            and task_org.lower() != org_name.lower()
+            and current_user.get("role") != "super_admin"
+        ):
             raise HTTPException(
                 status_code=403,
                 detail="You don't have access to this church's data."
@@ -9020,33 +9021,35 @@ async def update_task(
 
         # Prepare update data
         update_data = {}
+
         if "name" in updated_task:
             update_data["name"] = updated_task["name"]
+
         if "taskType" in updated_task:
             update_data["taskType"] = updated_task["taskType"]
+
         if "contacted_person" in updated_task:
             update_data["contacted_person"] = updated_task["contacted_person"]
+
         if "followup_date" in updated_task:
             try:
-                if isinstance(updated_task["followup_date"], str):
-                    update_data["followup_date"] = updated_task["followup_date"]
-                else:
-                    update_data["followup_date"] = updated_task["followup_date"]
+                update_data["followup_date"] = updated_task["followup_date"]
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+
         if "status" in updated_task:
-        # Always normalize to lowercase
-        normalized_status = updated_task["status"].lower()
-        update_data["status"] = normalized_status
-        
-        if normalized_status in ["completed", "done", "closed", "finished"]:
-            update_data["completedAt"] = datetime.utcnow()
-        elif normalized_status in ["open", "pending", "incomplete"]:
-            update_data["completedAt"] = None
+            # Always normalize status to lowercase
+            normalized_status = updated_task["status"].lower()
+            update_data["status"] = normalized_status
+
+            if normalized_status in ["completed", "done", "closed", "finished"]:
+                update_data["completedAt"] = datetime.utcnow()
+            elif normalized_status in ["open", "pending", "incomplete"]:
+                update_data["completedAt"] = None
 
         if "type" in updated_task:
             update_data["type"] = updated_task["type"]
-    
+
         if "assignedfor" in updated_task:
             # Always normalize assignedfor to lowercase
             update_data["assignedfor"] = updated_task["assignedfor"].lower()
@@ -9070,14 +9073,13 @@ async def update_task(
             else:
                 raise HTTPException(status_code=404, detail="Task not found")
 
-        # Return updated task
         updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
         return {"updatedTask": serialize_doc(updated_task_in_db)}
 
     except Exception as e:
         print(f"Error updating task: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
+        
 from collections import defaultdict
 
 @app.get("/stats/overview")
