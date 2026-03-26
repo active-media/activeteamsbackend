@@ -307,6 +307,7 @@ people_cache = {
 
 CACHE_DURATION_MINUTES = 1440  
 BACKGROUND_LOAD_DELAY = 2  
+BATCH_SIZE = 5000 
 
 # Lightweight cache for organizations (used by /organizations)
 organizations_cache = {
@@ -540,12 +541,6 @@ async def background_refresh_people_cache(stale_data: list = None):
         start = _time.time()
         print("BACKGROUND REFRESH: starting...")
 
-        total_count = await people_collection.count_documents({})
-        people_cache["total_in_database"] = total_count
-
-        batch_size = 1000
-
-        # Step 1: load all raw docs — include LeaderPath AND legacy Leader @N fields
         FULL_PROJECTION = {
             "_id": 1,
             "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
@@ -555,69 +550,41 @@ async def background_refresh_people_cache(stale_data: list = None):
             "church_id": 1,
             "LeaderId": 1, "LeaderPath": 1,
             "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
-            # legacy flat leader fields — still in many documents
             "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
             "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
         }
 
-        all_raw = []
-        page = 1
-        while True:
-            skip   = (page - 1) * batch_size
-            cursor = people_collection.find({}, FULL_PROJECTION).skip(skip).limit(batch_size)
-            batch  = await cursor.to_list(length=batch_size)
-            if not batch:
-                break
-            all_raw.extend(batch)
-            page += 1
-            await asyncio.sleep(0.01)
+        # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
+        # Motor streams the cursor efficiently — no need to paginate
+        all_raw = await people_collection.find(
+            {}, FULL_PROJECTION
+        ).to_list(length=None)  # None = no limit, loads everything at once
 
-        # Step 2: build full id→info map
+        total_count = len(all_raw)
+        people_cache["total_in_database"] = total_count
+        print(f"BACKGROUND REFRESH: fetched {total_count} raw docs in {_time.time()-start:.2f}s")
+
+        # ── Build id→full map in one pass (no second DB query) ───────────
         id_to_full = build_id_to_full_map(all_raw)
-        print(f"BACKGROUND REFRESH: id→full map with {len(id_to_full)} entries")
+        print(f"BACKGROUND REFRESH: built id map with {len(id_to_full)} entries")
 
-        # DEBUG: check first 3 people
-        print("=== LEADER PATH DEBUG ===")
-        for i, sample in enumerate(all_raw[:3]):
-            raw_path = sample.get("LeaderPath", [])
-            path_strs = [str(x) for x in raw_path if x]
-            resolved = resolve_leaders(path_strs, id_to_full)
-            print(f"Person {i}: {sample.get('Name')} {sample.get('Surname')}")
-            print(f"  LeaderPath: {raw_path}")
-            print(f"  Resolved leaders: {resolved}")
-            print(f"  Legacy Leader @1: {sample.get('Leader @1')}")
-            print(f"  Legacy Leader @12: {sample.get('Leader @12')}")
-        print("=== END DEBUG ===")
-
-        # Step 3: transform in batches
-        all_people   = []
-        total_loaded = 0
-        page = 1
-        while True:
-            batch_start = (page - 1) * batch_size
-            batch_raw   = all_raw[batch_start: batch_start + batch_size]
-            if not batch_raw:
-                break
-
-            transformed = [transform_person_full(p, id_to_full=id_to_full) for p in batch_raw]
+        # ── Transform everything in one pass, no sleep ────────────────────
+        # Process in chunks so we can update progress without sleeping
+        CHUNK = 2000
+        all_people = []
+        
+        for i in range(0, total_count, CHUNK):
+            chunk = all_raw[i : i + CHUNK]
+            transformed = [transform_person_full(p, id_to_full=id_to_full) for p in chunk]
             all_people.extend(transformed)
-            total_loaded += len(transformed)
-
-            progress = (total_loaded / total_count * 100) if total_count else 100
-            people_cache["load_progress"] = round(progress, 1)
-            people_cache["total_loaded"]  = total_loaded
-
-            people_cache["data"] = all_people.copy()
-            print(f"Batch {page}: {len(all_people)} records ({progress:.1f}%)")
-
-            page += 1
-            await asyncio.sleep(0.05)
-
-        # DEBUG: check first transformed person
-        if all_people:
-            print(f"=== FIRST TRANSFORMED PERSON ===")
-            print(f"leaders: {all_people[0].get('leaders')}")
-            print(f"LeaderPath: {all_people[0].get('LeaderPath')}")
+            
+            progress = min(100, round(len(all_people) / total_count * 100, 1))
+            people_cache["load_progress"] = progress
+            people_cache["total_loaded"]  = len(all_people)
+            people_cache["data"]          = all_people.copy()  # partial results available immediately
+            
+            # Yield control to event loop without sleeping
+            await asyncio.sleep(0)  # was 0.05 — just yields, doesn't actually wait
 
         people_cache["data"]            = all_people
         people_cache["last_updated"]    = datetime.utcnow().isoformat()
@@ -8394,6 +8361,7 @@ async def update_person(
             "dob":       ("Birthday",  lambda v: v.replace("-", "/")),
             "invitedBy": ("InvitedBy", lambda v: v.strip()),
             "stage":     ("Stage",     lambda v: v),
+            "Stage":     ("Stage",     lambda v: v),  # drag-drop sends capital S
         }
         for src_key, (dest_key, transform) in field_map.items():
             if src_key in update_data and update_data[src_key] is not None:
@@ -8416,7 +8384,6 @@ async def update_person(
             except Exception:
                 pass
 
-        # Always re-fetch inviter from DB to guarantee full ancestor chain
         if new_leader_id:
             try:
                 inviter_doc = await people_collection.find_one(
@@ -8427,15 +8394,14 @@ async def update_person(
                     inv_path = [
                         ObjectId(str(x)) for x in inviter_doc.get("LeaderPath", []) if x
                     ]
-                    # Root-first: [root, ..., inviter's_parent, inviter]
                     new_leader_path = inv_path + [new_leader_id]
                 else:
                     new_leader_path = [new_leader_id]
             except Exception as e:
                 print(f"Warning: could not fetch inviter LeaderPath on update: {e}")
                 new_leader_path = [new_leader_id]
+
         elif "invitedBy" in update_data and update_data["invitedBy"]:
-            # Fallback: resolve by name when no ObjectId supplied
             inviter_name = update_data["invitedBy"].strip()
             parts = inviter_name.split()
             first = parts[0] if parts else ""
@@ -8451,7 +8417,6 @@ async def update_person(
             if inviter:
                 inv_id   = inviter["_id"]
                 inv_path = [ObjectId(str(x)) for x in inviter.get("LeaderPath", []) if x]
-                # Root-first: ancestors + inviter
                 new_leader_path = inv_path + [inv_id]
                 new_leader_id   = inv_id
 
@@ -8460,20 +8425,49 @@ async def update_person(
         if new_leader_id:
             set_fields["LeaderId"] = new_leader_id
 
-        # ── Perform update ──────────────────────────────────────────────
+        # ── Write to DB ─────────────────────────────────────────────────
         await people_collection.update_one(
             {"_id": ObjectId(person_id)},
             {"$set": set_fields}
         )
 
-        # ── Build response ──────────────────────────────────────────────
-        updated    = await people_collection.find_one({"_id": ObjectId(person_id)})
-        id_to_full = await _build_full_id_map_from_db()
+        # ── Build response without a full DB scan ───────────────────────
+        # Re-fetch only this one document instead of calling
+        # _build_full_id_map_from_db() which scans the entire collection.
+        updated = await people_collection.find_one({"_id": ObjectId(person_id)})
+
+        # Resolve leader names for just the leaders in this person's path
+        path_ids = [
+            ObjectId(str(x)) for x in updated.get("LeaderPath", []) if x
+        ]
+        id_to_full: dict = {}
+        if path_ids:
+            async for ldoc in people_collection.find(
+                {"_id": {"$in": path_ids}},
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            ):
+                pid = str(ldoc["_id"])
+                id_to_full[pid] = {
+                    "id":    pid,
+                    "name":  f"{ldoc.get('Name', '')} {ldoc.get('Surname', '')}".strip(),
+                    "email": ldoc.get("Email", "") or "",
+                    "phone": ldoc.get("Number", "") or "",
+                }
+
         person_out = transform_person_full(updated, id_to_full=id_to_full)
 
-        asyncio.create_task(
-            invalidate_people_cache("update", {"person_id": person_id})
-        )
+        # ── Surgical in-memory cache update — no full refresh ───────────
+        # Only touch the one record that changed. This is instant and
+        # avoids triggering a full background reload on every PATCH.
+        if people_cache.get("data"):
+            for i, p in enumerate(people_cache["data"]):
+                if str(p.get("_id")) == person_id:
+                    # Apply every changed DB field directly onto the cached doc
+                    for db_field, new_val in set_fields.items():
+                        people_cache["data"][i][db_field] = new_val
+                    # Keep the resolved leaders array in sync too
+                    people_cache["data"][i]["leaders"] = person_out.get("leaders", [])
+                    break
 
         return {
             "success": True,
@@ -8487,7 +8481,6 @@ async def update_person(
         print(f"Error updating person {person_id}: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
-
 
 @app.delete("/people/{person_id}")
 async def delete_person(
