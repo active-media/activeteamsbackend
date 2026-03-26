@@ -6628,6 +6628,7 @@ async def get_cell_events_optimized(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str = Path(...),
@@ -6695,9 +6696,7 @@ async def submit_attendance(
         
         exact_date_str = event_date_local.date().isoformat()
         
-        # Extract submission data
-        attendees_data = submission.attendees or []
-        persistent_attendees = getattr(submission, 'persistent_attendees', [])
+        # Extract submission data - IMPORTANT: Convert Pydantic models to dicts FIRST
         did_not_meet = submission.did_not_meet
         manual_headcount = getattr(submission, 'headcount', 0)
         is_ticketed = submission.isTicketed
@@ -6707,11 +6706,35 @@ async def submit_attendance(
         except:
             manual_headcount = 0
         
+        # Helper function to safely convert any attendee to dict
+        def attendee_to_dict(attendee):
+            if attendee is None:
+                return {}
+            # If it's a Pydantic model, use dict() method
+            if hasattr(attendee, 'dict') and callable(attendee.dict):
+                return attendee.dict()
+            # If it's already a dict, return as is
+            if isinstance(attendee, dict):
+                return attendee
+            # If it's something else, try to convert
+            try:
+                return dict(attendee)
+            except:
+                return {}
+        
         # Helper function to enrich attendee with financials
         def enrich_with_financials(attendee_dict):
             """Add paid, owing, change fields based on price and paid amount"""
             price = attendee_dict.get("price", 0)
             paid = attendee_dict.get("paid", attendee_dict.get("paidAmount", 0))
+            
+            # Ensure numeric values
+            try:
+                price = float(price) if price else 0
+                paid = float(paid) if paid else 0
+            except (ValueError, TypeError):
+                price = 0
+                paid = 0
             
             # Calculate financials
             if paid >= price:
@@ -6748,23 +6771,29 @@ async def submit_attendance(
             }
             return enriched
         
-        # Process persistent attendees
+        # Process persistent attendees - CONVERT TO DICT FIRST
         persistent_attendees_dict = []
-        for attendee in persistent_attendees:
-            if isinstance(attendee, dict):
-                persistent_attendees_dict.append(enrich_with_financials(attendee))
+        persistent_attendees = getattr(submission, 'persistent_attendees', [])
         
-        # Process checked-in attendees
+        for attendee in persistent_attendees:
+            attendee_dict = attendee_to_dict(attendee)
+            if attendee_dict:
+                persistent_attendees_dict.append(enrich_with_financials(attendee_dict))
+        
+        # Process checked-in attendees - CONVERT TO DICT FIRST
         checked_in_attendees = []
         first_time_count = 0
         recommitment_count = 0
         
+        attendees_data = submission.attendees or []
+        
         for att in attendees_data:
-            if isinstance(att, dict):
-                attendee_data = enrich_with_financials(att)
+            att_dict = attendee_to_dict(att)
+            if att_dict:
+                attendee_data = enrich_with_financials(att_dict)
                 
                 # Handle decision tracking
-                decision = att.get("decision", "")
+                decision = att_dict.get("decision", "")
                 if decision:
                     attendee_data["decision"] = decision
                     decision_lower = decision.lower()
@@ -6875,7 +6904,6 @@ async def submit_attendance(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
     event_id: str,
@@ -15706,15 +15734,14 @@ async def get_cell_events_optimized(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.put("/submit-attendance/{event_id}")
 async def submit_attendance(
     event_id: str = Path(...),
-    submission: dict = Body(...),
+    submission: AttendanceSubmission = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # print("ATTENDENCE",submission)
+        # Parse event ID and extract date
         actual_event_id = event_id
         extracted_date = None
         
@@ -15724,8 +15751,7 @@ async def submit_attendance(
                 actual_event_id = parts[0]
                 if len(parts) >= 2:
                     try:
-                        date_str = parts[1]
-                        extracted_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        extracted_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
                     except Exception:
                         pass
         
@@ -15736,29 +15762,20 @@ async def submit_attendance(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
+        # Get user info
         user_email = current_user.get("email", "")
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
         role = current_user.get("role", "user").lower()
         
-        event_leader_email = event.get("Email", "") or event.get("eventLeaderEmail", "")
-        
-        is_leader_at_12 = (
-            "leaderat12" in role or 
-            "leader at 12" in role or
-            "leader@12" in role or
-            role == "leaderat12"
-        )
-        
+        # Set timezone
         timezone = pytz.timezone("Africa/Johannesburg")
         
+        # Determine event date
         if extracted_date:
             event_date_local = timezone.localize(datetime.combine(extracted_date, datetime.min.time()))
         else:
-            # Try to get date from event in various possible fields
             event_date = None
-            
-            # Check different date field names
-            for date_field in ["date", "Date Of Event", "eventDate", "startDate"]:
+            for date_field in ["date", "Date Of Event", "eventDate"]:
                 if date_field in event:
                     date_val = event[date_field]
                     if isinstance(date_val, datetime):
@@ -15777,74 +15794,103 @@ async def submit_attendance(
             if event_date:
                 event_date_local = timezone.localize(datetime.combine(event_date, datetime.min.time()))
             else:
-                day_name = str(event.get("Day", event.get("day", ""))).strip().lower()
-                day_mapping = {
-                    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-                    'friday': 4, 'saturday': 5, 'sunday': 6
-                }
-                
-                if day_name in day_mapping:
-                    target_weekday = day_mapping[day_name]
-                    today = datetime.now(timezone)
-                    current_weekday = today.weekday()
-                    days_since = (current_weekday - target_weekday) % 7
-                    event_date_local = today - timedelta(days=days_since)
-                    event_date_local = event_date_local.replace(hour=0, minute=0, second=0, microsecond=0)
-                else:
-                    event_date_local = datetime.now(timezone).replace(hour=0, minute=0, second=0, microsecond=0)
+                event_date_local = datetime.now(timezone).replace(hour=0, minute=0, second=0, microsecond=0)
         
         exact_date_str = event_date_local.date().isoformat()
         
-        attendees_data = submission.get('attendees', [])
-        persistent_attendees = submission.get('persistent_attendees', [])
-        did_not_meet = submission.get('did_not_meet', False)
-        manual_headcount = submission.get('headcount', 0)
-        is_ticketed = submission.get('is_ticketed', False)
+        # Extract submission data
+        attendees_data = submission.attendees or []
+        persistent_attendees = getattr(submission, 'persistent_attendees', [])
+        did_not_meet = submission.did_not_meet
+        manual_headcount = getattr(submission, 'headcount', 0)
+        is_ticketed = submission.isTicketed
         
         try:
             manual_headcount = int(manual_headcount) if manual_headcount else 0
         except:
             manual_headcount = 0
         
+        # Debug: Print incoming data
+        print(f"Received {len(attendees_data)} attendees")
+        for att in attendees_data:
+            print(f"Attendee: {att.get('fullName')} - price: {att.get('price')}, paid: {att.get('paid')}, paidAmount: {att.get('paidAmount')}")
+        
+        # Helper function to enrich attendee with financials
+        def enrich_with_financials(attendee_dict):
+            """Add paid, owing, change fields based on price and paid amount"""
+            # Get price (default to 0 if not present)
+            price = attendee_dict.get("price", 0)
+            
+            # IMPORTANT: Check multiple possible field names for paid amount
+            paid = attendee_dict.get("paid", None)
+            if paid is None:
+                paid = attendee_dict.get("paidAmount", None)
+            if paid is None:
+                paid = attendee_dict.get("paid_amount", None)
+            if paid is None:
+                paid = 0
+            
+            # Ensure numeric values
+            try:
+                price = float(price) if price else 0
+                paid = float(paid) if paid else 0
+            except (ValueError, TypeError):
+                price = 0
+                paid = 0
+            
+            # Calculate financials
+            if paid >= price:
+                owing = 0
+                change = paid - price
+            elif paid > 0 and paid < price:
+                owing = price - paid
+                change = 0
+            else:
+                owing = price
+                change = 0
+            
+            print(f"Financials - price: {price}, paid: {paid}, owing: {owing}, change: {change}")
+            
+            # Create enriched attendee with all fields
+            enriched = {
+                "id": attendee_dict.get("id", ""),
+                "name": attendee_dict.get("name", attendee_dict.get("fullName", "")),
+                "fullName": attendee_dict.get("fullName", attendee_dict.get("name", "")),
+                "email": attendee_dict.get("email", ""),
+                "phone": attendee_dict.get("phone", ""),
+                "leader12": attendee_dict.get("leader12", ""),
+                "leader144": attendee_dict.get("leader144", ""),
+                "invitedBy": attendee_dict.get("invitedBy", ""),
+                "decision": attendee_dict.get("decision", ""),
+                "checked_in": attendee_dict.get("checked_in", True),
+                "isPersistent": attendee_dict.get("isPersistent", True),
+                "priceName": attendee_dict.get("priceName", ""),
+                "price": price,
+                "ageGroup": attendee_dict.get("ageGroup", ""),
+                "paymentMethod": attendee_dict.get("paymentMethod", ""),
+                "paid": paid,
+                "owing": owing,
+                "change": change,
+                "check_in_date": datetime.now(timezone).isoformat() if not attendee_dict.get("check_in_date") else attendee_dict.get("check_in_date")
+            }
+            return enriched
+        
+        # Process persistent attendees
         persistent_attendees_dict = []
         for attendee in persistent_attendees:
             if isinstance(attendee, dict):
-                persistent_attendees_dict.append({
-                "id": attendee.get("id", ""),
-                "name": attendee.get("name", ""),
-                "fullName": attendee.get("fullName", attendee.get("name", "")),
-                "email": attendee.get("email", ""),
-                "phone": attendee.get("phone", ""),
-                "leader12": attendee.get("leader12", ""),
-                "leader144": attendee.get("leader144", ""),
-                "invitedBy": attendee.get("invitedBy", ""),
-                "isPersistent": True
-            })
-               
+                persistent_attendees_dict.append(enrich_with_financials(attendee))
+        
+        # Process checked-in attendees
         checked_in_attendees = []
         first_time_count = 0
         recommitment_count = 0
         
         for att in attendees_data:
             if isinstance(att, dict):
-                attendee_data = {
-                    "id": att.get("id", ""),
-                    "name": att.get("name", ""),
-                    "fullName": att.get("fullName", att.get("name", "")),
-                    "email": att.get("email", ""),
-                    "phone": att.get("phone", ""),
-                    "leader12": att.get("leader12", ""),
-                    "leader144": att.get("leader144", ""),
-                    "checked_in": True,
-                    "check_in_date": datetime.now(timezone).isoformat(),
-                    "isPersistent": att.get("isPersistent", False),
-                    "priceName": att.get("priceName",""),
-                    "price": att.get("price",""),
-                    "ageGroup":att.get("ageGroup",""),
-                    "paymentMethod": att.get("paymentMethod",""),
-
-                }
+                attendee_data = enrich_with_financials(att)
                 
+                # Handle decision tracking
                 decision = att.get("decision", "")
                 if decision:
                     attendee_data["decision"] = decision
@@ -15856,11 +15902,12 @@ async def submit_attendance(
                 
                 checked_in_attendees.append(attendee_data)
         
+        # Calculate statistics
         total_associated = len(persistent_attendees_dict) or event.get("total_associated_count", 0)
         weekly_attendance = len(checked_in_attendees)
         total_decisions = first_time_count + recommitment_count
-        print("CHecked in",checked_in_attendees)
         
+        # Determine status
         should_mark_as_did_not_meet = (did_not_meet and weekly_attendance == 0 and manual_headcount == 0)
         
         if should_mark_as_did_not_meet:
@@ -15875,8 +15922,7 @@ async def submit_attendance(
         
         now = datetime.now(timezone)
         
-        is_disciples_leader = (user_email != event_leader_email) if event_leader_email else False
-        
+        # Create weekly attendance entry
         weekly_attendance_entry = {
             "status": date_status,
             "attendees": checked_in_attendees if has_attendance else [],
@@ -15891,10 +15937,7 @@ async def submit_attendance(
             "is_did_not_meet": (date_status == "did_not_meet"),
             "checked_in_count": weekly_attendance,
             "total_headcounts": manual_headcount,
-            "captured_by_leader_at_12": is_disciples_leader,
             "is_ticketed": is_ticketed,
-            "new_people": submission.get("new_people", []),
-            "consolidations": submission.get("consolidations", []),
             "statistics": {
                 "total_associated": total_associated,
                 "weekly_attendance": weekly_attendance,
@@ -15907,65 +15950,31 @@ async def submit_attendance(
             }
         }
         
-        # Prepare update fields - these are common for all event types
-        cell_update_fields = {
+        # Prepare update fields
+        update_data = {
             "updated_at": now,
             "last_attendance_count": weekly_attendance,
             "last_headcount": manual_headcount,
-            "last_decisions_count": total_decisions,
             "last_attendance_date": exact_date_str,
             "last_status": date_status,
-            "last_updated_by": {
-                "email": user_email,
-                "name": user_name,
-                "role": role,
-                "timestamp": now.isoformat(),
-                "is_leader_at_12": is_disciples_leader
-            }
-        }
-        
-        if date_status == "complete":
-            cell_update_fields["last_attendance_breakdown"] = {
-                "first_time": first_time_count,
-                "recommitment": recommitment_count,
-                "total": total_decisions,
-                "date": exact_date_str,
-            }
-            cell_update_fields["last_attendance_data"] = {
-                "attendees": checked_in_attendees,
-                "count": weekly_attendance,
-                "headcount": manual_headcount,
-                "date": exact_date_str
-            }
-        
-        if persistent_attendees_dict:
-            cell_update_fields["persistent_attendees"] = persistent_attendees_dict
-            cell_update_fields["total_associated_count"] = len(persistent_attendees_dict)
-        
-        # Also update the event status field
-        cell_update_fields["status"] = date_status
-        
-        # Top-level persistent_attendees now has ticket fields too
-        if persistent_attendees_dict:
-            cell_update_fields["persistent_attendees"] = persistent_attendees_dict
-            cell_update_fields["total_associated_count"] = len(persistent_attendees_dict)
-        
-        recurring_days = event.get("recurring_day", [])
-        is_recurring = isinstance(recurring_days, list) and len(recurring_days) > 0
-        
-        # After the status fix, also prevent root-level attendees from being set on recurring events
-        if not is_recurring:
-            if date_status == "complete":
-                cell_update_fields["attendees"] = checked_in_attendees
-                cell_update_fields["new_people"] = submission.get("new_people", [])
-                cell_update_fields["consolidations"] = submission.get("consolidations", [])
-                cell_update_fields["total_attendance"] = weekly_attendance
-
-        update_data = {
-            **cell_update_fields,
+            "status": date_status,
             f"attendance.{exact_date_str}": weekly_attendance_entry
         }
         
+        # Update persistent attendees if provided
+        if persistent_attendees_dict:
+            update_data["persistent_attendees"] = persistent_attendees_dict
+            update_data["total_associated_count"] = len(persistent_attendees_dict)
+        
+        # For non-recurring events, update root-level attendees
+        recurring_days = event.get("recurring_day", [])
+        is_recurring = isinstance(recurring_days, list) and len(recurring_days) > 0
+        
+        if not is_recurring and date_status == "complete":
+            update_data["attendees"] = checked_in_attendees
+            update_data["total_attendance"] = weekly_attendance
+        
+        # Execute update
         result = await events_collection.update_one(
             {"_id": ObjectId(actual_event_id)},
             {"$set": update_data}
@@ -15977,13 +15986,11 @@ async def submit_attendance(
         return {
             "message": "Attendance submitted successfully",
             "event_id": actual_event_id,
-            "event_name": event.get("Event Name", event.get("eventName", "Unknown")),
             "status": date_status,
             "exact_date": exact_date_str,
             "checked_in_count": weekly_attendance,
             "total_headcounts": manual_headcount,
             "statistics": weekly_attendance_entry["statistics"],
-            "captured_by_leader_at_12": is_disciples_leader,
             "success": True,
             "timestamp": now.isoformat()
         }
@@ -15992,8 +15999,9 @@ async def submit_attendance(
         raise
     except Exception as e:
         print(f"Error submitting attendance: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") 
-
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 @app.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str = Path(...),
@@ -17039,7 +17047,7 @@ async def change_password(
 @app.get("/people")
 async def get_people(
     page: int = Query(1, ge=1),
-    perPage: int = Query(100, ge=0),
+    perPage: int = Query(50, ge=1, le=200),  # Changed default to 50, max 200
     name: Optional[str] = None,
     gender: Optional[str] = None,
     dob: Optional[str] = None,
@@ -17057,10 +17065,7 @@ async def get_people(
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
 
-        org_config = await org_config_collection.find_one({"_id": org_id})
-        hierarchy = org_config.get("hierarchy", []) if org_config else []
-        hierarchy_fields = [h.get("field") for h in hierarchy if h.get("field")]
-
+        # Build organization conditions
         org_conditions = [
             {"org_id": org_id},
             {"Org_id": {"$regex": f"^{re.escape(org_id)}$", "$options": "i"}},
@@ -17086,45 +17091,75 @@ async def get_people(
 
         query = {"$or": org_conditions}
 
+        # Build search filters
         if name:
+            name_parts = name.strip().split()
+            name_conditions = []
+            for part in name_parts:
+                name_conditions.append({"Name": {"$regex": re.escape(part), "$options": "i"}})
+                name_conditions.append({"Surname": {"$regex": re.escape(part), "$options": "i"}})
             query["$and"] = query.get("$and", [])
-            query["$and"].append({
-                "$or": [
-                    {"Name": {"$regex": re.escape(name), "$options": "i"}},
-                    {"Surname": {"$regex": re.escape(name), "$options": "i"}},
-                ]
-            })
+            query["$and"].append({"$or": name_conditions})
+
         if gender:
-            query["Gender"] = {"$regex": gender, "$options": "i"}
+            query["Gender"] = {"$regex": re.escape(gender), "$options": "i"}
+
         if dob:
             query["Birthday"] = dob
+
         if location:
-            query["Address"] = {"$regex": location, "$options": "i"}
+            query["Address"] = {"$regex": re.escape(location), "$options": "i"}
+
         if leader:
             leader_conditions = [
-                {"Leader @1": {"$regex": leader, "$options": "i"}},
-                {"Leader @12": {"$regex": leader, "$options": "i"}},
-                {"Leader @144": {"$regex": leader, "$options": "i"}},
-                {"Leader @1728": {"$regex": leader, "$options": "i"}}
-            ] + [
-                {field: {"$regex": leader, "$options": "i"}}
-                for field in hierarchy_fields
+                {"Leader @1": {"$regex": re.escape(leader), "$options": "i"}},
+                {"Leader @12": {"$regex": re.escape(leader), "$options": "i"}},
+                {"Leader @144": {"$regex": re.escape(leader), "$options": "i"}},
+                {"Leader @1728": {"$regex": re.escape(leader), "$options": "i"}}
             ]
             query["$and"] = query.get("$and", [])
             query["$and"].append({"$or": leader_conditions})
+
         if stage:
-            query["Stage"] = {"$regex": stage, "$options": "i"}
+            query["Stage"] = {"$regex": re.escape(stage), "$options": "i"}
 
-        if perPage == 0:
-            cursor = people_collection.find(query)
-        else:
-            skip = (page - 1) * perPage
-            cursor = people_collection.find(query).skip(skip).limit(perPage)
-
+        # Get total count first (using count_documents which is fast)
+        total_count = await people_collection.count_documents(query)
+        
+        # Calculate pagination
+        skip = (page - 1) * perPage
+        
+        # Use aggregation for better performance
+        pipeline = [
+            {"$match": query},
+            {"$skip": skip},
+            {"$limit": perPage},
+            {"$project": {
+                "_id": 1,
+                "Name": 1,
+                "Surname": 1,
+                "Number": 1,
+                "Email": 1,
+                "Address": 1,
+                "Gender": 1,
+                "Birthday": 1,
+                "InvitedBy": 1,
+                "Stage": 1,
+                "org_id": 1,
+                "Organization": 1,
+                "LeaderId": 1,
+                "LeaderPath": 1,
+                "DateCreated": 1,
+                "UpdatedAt": 1
+            }}
+        ]
+        
+        cursor = people_collection.aggregate(pipeline)
         people_list = []
         async for person in cursor:
             people_list.append(person)
-
+        
+        # Get leader names efficiently with a single query
         all_leader_ids = set()
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
@@ -17137,16 +17172,20 @@ async def get_people(
                             all_leader_ids.add(ObjectId(str(lid)))
                     except Exception:
                         pass
-
+        
         name_map = {}
         if all_leader_ids:
-            leader_cursor = people_collection.find(
-                {"_id": {"$in": list(all_leader_ids)}},
-                {"_id": 1, "Name": 1, "Surname": 1}
-            )
-            async for leader_doc in leader_cursor:
-                name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
-
+            # Only fetch the leaders we need, with a timeout
+            try:
+                leader_cursor = people_collection.find(
+                    {"_id": {"$in": list(all_leader_ids)}},
+                    {"_id": 1, "Name": 1, "Surname": 1}
+                )
+                async for leader_doc in leader_cursor:
+                    name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+            except Exception as e:
+                print(f"Error fetching leaders: {e}")
+        
         def resolve_leader(lid):
             if not lid:
                 return ""
@@ -17156,7 +17195,8 @@ async def get_people(
                 return name_map.get(ObjectId(str(lid)), "")
             except Exception:
                 return ""
-
+        
+        # Build final response
         final_list = []
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
@@ -17165,7 +17205,7 @@ async def get_people(
             leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
             leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-
+            
             mapped = {
                 "_id": str(person["_id"]),
                 "Name": person.get("Name", ""),
@@ -17190,19 +17230,21 @@ async def get_people(
                 "FullName": full_name
             }
             final_list.append(mapped)
-
-        total_count = await people_collection.count_documents(query)
-
+        
         return {
             "page": page,
             "perPage": perPage,
             "total": total_count,
+            "total_pages": (total_count + perPage - 1) // perPage,
             "results": final_list
         }
-
+        
     except Exception as e:
         print(f"Error in get_people: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+    
 @app.get("/people/search")
 async def search_people(
     query: str = Query("", min_length=2),
@@ -17266,6 +17308,32 @@ async def search_people(
 
     except Exception as e:
         return {"success": False, "error": str(e), "results": []}
+
+
+# Add this to your startup code to create indexes
+async def create_indexes():
+    try:
+        # Create indexes for people collection
+        await people_collection.create_index([("org_id", 1)])
+        await people_collection.create_index([("Organization", 1)])
+        await people_collection.create_index([("Name", "text"), ("Surname", "text")])
+        await people_collection.create_index([("Email", 1)])
+        await people_collection.create_index([("Number", 1)])
+        await people_collection.create_index([("Stage", 1)])
+        
+        # Compound index for organization queries
+        await people_collection.create_index([("org_id", 1), ("Name", 1)])
+        await people_collection.create_index([("Organization", 1), ("Name", 1)])
+        
+        print("Indexes created successfully")
+    except Exception as e:
+        print(f"Error creating indexes: {e}")
+
+# Call this in your startup event
+@app.on_event("startup")
+async def startup_event():
+    await create_indexes()
+
 
 @app.post("/people")
 async def create_person_with_cache_invalidation(
