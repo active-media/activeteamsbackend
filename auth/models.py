@@ -35,6 +35,7 @@ class UserLogin(BaseModel):
     password: str
 
 # ===== FIXED Attendee Model =====
+# ===== FIXED Attendee Model =====
 class Attendee(BaseModel):
     id: Optional[str] = None
     name: Optional[str] = None
@@ -54,12 +55,18 @@ class Attendee(BaseModel):
     paymentMethod: Optional[str] = None
     paid: Optional[float] = None
     owing: Optional[float] = None
+    paidAmount: Optional[float] = None 
+    change: Optional[float] = None 
+    checked_in: Optional[bool] = None
+    check_in_date: Optional[str] = None
+    isPersistent: Optional[bool] = None
 
     @field_validator("priceName", mode="before")
     def set_price_name(cls, v, info):
         if not v and info.data.get("priceTier"):
             return info.data.get("priceTier")
         return v
+
 # ===== IMPROVED AttendanceSubmission Model =====
 class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
@@ -74,8 +81,6 @@ class AttendanceSubmission(BaseModel):
         if info.data.get("did_not_meet") and v:
             print(f" Warning: did_not_meet is True but attendees list is not empty: {len(v)} attendees")
         return v
-
-# Adding new Person in the Event screen
 class PersonCreate(BaseModel):
     invitedBy: str
     name: str
@@ -276,7 +281,7 @@ class RefreshTokenRequest(BaseModel):
 class ContactedPerson(BaseModel):
     name: str
     phone: str
-    email: EmailStr
+    email: Optional[str] = ""  
 
 class TaskModel(BaseModel):
     memberID: str
@@ -286,7 +291,10 @@ class TaskModel(BaseModel):
     followup_date: datetime
     status: str
     type: str
-    assignedfor: str
+    assignedfor: Optional[str] = None
+    assigned_to_email: Optional[str] = None
+    created_by_email: Optional[str] = None
+    created_by_name: Optional[str] = None
 
     class Config:
         validate_by_name = True
@@ -324,16 +332,16 @@ class UserListResponse(BaseModel):
     role: str
     date_of_birth: Optional[str] = None
     phone_number: Optional[str] = None
-    home_address: Optional[str] = None  # Changed from address to home_address
+    home_address: Optional[str] = None 
     gender: Optional[str] = None
-    invited_by: Optional[str] = None  # Changed from invitedBy to invited_by
+    invited_by: Optional[str] = None  
     leader12: Optional[str] = None
     leader144: Optional[str] = None
     leader1728: Optional[str] = None
     stage: Optional[str] = None
-    Organization: Optional[str] = None  # Changed from organization to Organization (capital O)
+    Organization: Optional[str] = None  
     created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None  # Added updated_at
+    updated_at: Optional[datetime] = None  
 class UserList(BaseModel):
     users: List[UserListResponse]
     total: int
