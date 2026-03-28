@@ -8516,62 +8516,45 @@ async def search_people_fast(
     try:
         if not query or len(query) < 2:
             return {"results": []}
- 
+
         search_regex = {"$regex": query.strip(), "$options": "i"}
         text_q = {"$or": [
-            {"Name": search_regex}, {"Surname": search_regex},
-            {"Email": search_regex}, {"Number": search_regex},
+            {"Name": search_regex},
+            {"Surname": search_regex},
+            {"Email": search_regex},
+            {"Number": search_regex},
             {"$expr": {"$regexMatch": {
                 "input": {"$concat": ["$Name", " ", "$Surname"]},
                 "regex": query.strip(), "options": "i"
             }}}
         ]}
-        org_q   = build_org_query(current_user)
+
+        org_q = build_org_query(current_user)
         final_q = {"$and": [text_q, org_q]} if org_q else text_q
- 
-        projection = {"_id": 1, "Name": 1, "Surname": 1, "Email": 1,
-                      "Number": 1, "Gender": 1, "LeaderPath": 1, "LeaderId": 1}
-        docs = await people_collection.find(final_q, projection).limit(limit).to_list(length=limit)
- 
-        all_ids: set = set()
-        for doc in docs:
-            for lid in doc.get("LeaderPath", []):
-                if lid:
-                    try:
-                        all_ids.add(lid if isinstance(lid, ObjectId) else ObjectId(str(lid)))
-                    except Exception:
-                        pass
- 
-        id_to_full: dict = {}
-        if all_ids:
-            async for ldoc in people_collection.find(
-                {"_id": {"$in": list(all_ids)}},
-                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
-            ):
-                pid = str(ldoc["_id"])
-                id_to_full[pid] = {
-                    "id":    pid,
-                    "name":  f"{ldoc.get('Name','')} {ldoc.get('Surname','')}".strip(),
-                    "email": ldoc.get("Email", "") or "",
-                    "phone": ldoc.get("Number", "") or "",
-                }
- 
+
+        # Only fetch what the frontend needs — no LeaderPath lookup
+        projection = {
+            "_id": 1, "Name": 1, "Surname": 1, 
+            "Email": 1, "Number": 1
+        }
+
+        docs = await people_collection.find(final_q, projection) \
+            .limit(limit) \
+            .to_list(length=limit)
+
         results = []
         for doc in docs:
-            path_strs = [str(lid) for lid in doc.get("LeaderPath", []) if lid]
             results.append({
-                "_id":        str(doc["_id"]),
-                "Name":       doc.get("Name", ""),
-                "Surname":    doc.get("Surname", ""),
-                "Email":      doc.get("Email", ""),
-                "Number":     doc.get("Number", ""),
-                "Gender":     doc.get("Gender", ""),
-                "FullName":   f"{doc.get('Name','')} {doc.get('Surname','')}".strip(),
-                "LeaderPath": path_strs,
-                "leaders":    resolve_leaders(path_strs, id_to_full),
+                "_id":      str(doc["_id"]),
+                "Name":     doc.get("Name", ""),
+                "Surname":  doc.get("Surname", ""),
+                "Email":    doc.get("Email", ""),
+                "Number":   doc.get("Number", ""),
+                "FullName": f"{doc.get('Name', '')} {doc.get('Surname', '')}".strip(),
             })
+
         return {"results": results}
- 
+
     except Exception as e:
         print(f"Error in search-fast: {str(e)}")
         return {"results": [], "error": str(e)}
@@ -8771,117 +8754,6 @@ async def delete_person(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/people/search-fast")
-async def search_people_fast(
-    query: str = Query(..., min_length=2, description="Search query (minimum 2 characters)"),
-    limit: int = Query(25, ge=1, le=50, description="Maximum number of results to return")
-):
-    """
-    FAST search endpoint for autocomplete - optimized for signup form
-    Uses simple regex matching and returns minimal fields
-    """
-    try:
-        print(f"Search-fast called with query: '{query}', limit: {limit}")
-        
-        if not query or len(query) < 2:
-            print("   Query too short, returning empty results")
-            return {"results": []}
-       
-        # Simple regex search on name fields - it's much faster than the other complex queries
-        search_regex = {"$regex": query.strip(), "$options": "i"}
-       
-        # Only fetch essential fields for autocomplete
-        projection = {
-            "_id": 1,
-            "Name": 1,
-            "Surname": 1,
-            "Email": 1,
-            "Number": 1,
-            "Gender": 1,
-            "Leader @1": 1,
-            "Leader @12": 1,
-            "Leader @144": 1,
-            "Leader @1728": 1
-        }
-       
-        print(f"   Searching with regex: {search_regex}")
-        
-        cursor = people_collection.find({
-            "$or": [
-                {"Name": search_regex},
-                {"Surname": search_regex},
-                {"Email": search_regex},
-                {"Number": search_regex},
-                {"$expr": {
-                    "$regexMatch": {
-                        "input": {"$concat": ["$Name", " ", "$Surname"]},
-                        "regex": query.strip(),
-                        "options": "i"
-                    }
-                }}
-            ]
-        }, projection).limit(limit)
-       
-        results = []
-        async for person in cursor:
-            results.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Number": person.get("Number", ""),
-                "Gender": person.get("Gender", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", ""),
-                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            })
-       
-        print(f"   Found {len(results)} results")
-        return {"results": results}
-       
-    except Exception as e:
-        print(f"Theres an error in fast search: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "results": [],
-            "error": str(e)
-        }
-
-@app.get("/people/all-minimal")
-async def get_all_people_minimal():
-    """
-    Get all people with minimal fields for client-side caching
-    Much faster than full document fetch
-    """
-    try:
-        projection = {
-            "_id": 1,
-            "Name": 1,
-            "Surname": 1,
-            "Email": 1,
-            "Phone": 1
-        }
-       
-        cursor = people_collection.find({}, projection).limit(1000)  # Reasonable limit
-       
-        people = []
-        async for person in cursor:
-            people.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", "")
-            })
-       
-        return {"people": people}
-       
-    except Exception as e:
-        print(f"Error fetching minimal people: {e}")
-        return {"people": []}
 
 @app.get("/people/leaders-only")
 async def get_leaders_only():
@@ -10126,6 +9998,16 @@ async def create_indexes():
         # Index for _id (already exists by default, but including for completeness)
         print("✓ All indexes created successfully")
         
+        await people_collection.create_index([("Name", 1)])
+        await people_collection.create_index([("Surname", 1)])
+        await people_collection.create_index([("Email", 1)])
+        # Text index for full-text search (fastest for name searches)
+        await people_collection.create_index([
+            ("Name", "text"), 
+            ("Surname", "text"),
+            ("Email", "text")
+        ], name="people_text_index")
+        
     except Exception as e:
         print(f"✗ Error creating indexes: {e}")
 
@@ -10186,7 +10068,7 @@ async def startup_event():
     print("Starting up application...")
     print(f"Database: {DB_NAME}")
     print("=" * 50)
-    
+
     # First migrate existing data to consistent format (optional, can be removed after first run)
     await migrate_user_fields()
     
@@ -10198,12 +10080,6 @@ async def startup_event():
     print("=" * 50)
     """Run on application startup"""
     print("Starting up application...")
-    
-    # First migrate existing data to consistent format
-    await migrate_user_fields()
-    
-    # Then create indexes for performance
-    await create_indexes()
     
     print("Application startup complete")
 
