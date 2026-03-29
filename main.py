@@ -12700,49 +12700,47 @@ async def toggle_event_status(
         print(f"Error toggling event status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
      
-# ==================== CREATE CONSOLIDATION (UPDATED) ====================
 @app.post("/service-checkin/create-consolidation")
 async def create_consolidation(
     consolidation_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Create a new consolidation record and associated task
-    - Creates task in tasks collection
-    - Saves task_id in consolidation record
-    - Adds to event consolidations array
-    - Updates consolidations collection
-    """
     try:
-        logger.info(f"Creating consolidation: {consolidation_data}")
-        
-        # Extract data
         event_id = consolidation_data.get("event_id")
         person_data = consolidation_data.get("person_data", {})
         decision_type = consolidation_data.get("decision_type", "Commitment")
         assigned_to = consolidation_data.get("assigned_to", "")
         notes = consolidation_data.get("notes", "")
-        
-        # Validate required fields
+
         if not event_id:
             raise HTTPException(status_code=400, detail="Event ID is required")
-        
-        if not ObjectId.is_valid(event_id):
+
+        # Handle recurring event ID (split base_id from date)
+        parts = event_id.split("_")
+        base_event_id = parts[0]
+        instance_date = parts[1] if len(parts) > 1 else None
+
+        if not ObjectId.is_valid(base_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-        
-        # Get event to verify existence
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+
+        event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        # Get person details
+
+        is_recurring = bool(event.get("recurring_day"))
+
+        # If recurring and no date provided, use today (Joburg time)
+        if is_recurring and not instance_date:
+            timezone = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(timezone).date().isoformat()
+
         person_name = person_data.get("name", "")
         person_surname = person_data.get("surname", "")
         person_email = person_data.get("email", "")
         person_phone = person_data.get("phone", "") or person_data.get("number", "")
         person_id = person_data.get("id", "")
-        
-        # Create task payload
+
+        # Create task
         task_payload = {
             "memberID": current_user.get("user_id", current_user.get("email", "unknown")),
             "name": assigned_to or current_user.get("name", "Unknown"),
@@ -12755,7 +12753,6 @@ async def create_consolidation(
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
             "type": "consolidation",
-            # Use assigned leader's email if available, otherwise fall back to current user
             "assignedfor": consolidation_data.get("assigned_to_email") or current_user.get("email", "unknown"),
             "assigned_to_email": consolidation_data.get("assigned_to_email") or "",
             "is_consolidation_task": True,
@@ -12775,16 +12772,13 @@ async def create_consolidation(
             "updated_at": datetime.utcnow().isoformat()
         }
 
-        # Insert the task
         task_result = await tasks_collection.insert_one(task_payload)
         task_id = str(task_result.inserted_id)
-        logger.info(f"Created task {task_id} for consolidation")
-        
-        # ========== 2. CREATE CONSOLIDATION RECORD ==========
+
         consolidation_id = str(ObjectId())
         consolidation_record = {
             "id": consolidation_id,
-            "task_id": task_id,  # CRITICAL: Link to task
+            "task_id": task_id,
             "event_id": event_id,
             "person_id": person_id,
             "person_name": person_name,
@@ -12801,78 +12795,77 @@ async def create_consolidation(
             "status": "active",
             "source": "service_checkin"
         }
-        
-        # ========== 3. ADD TO EVENT CONSOLIDATIONS ARRAY ==========
-        result = await events_collection.update_one(
-            {"_id": ObjectId(event_id)},
-            {
-                "$push": {"consolidations": consolidation_record},
-                "$set": {
-                    "updated_at": datetime.utcnow().isoformat(),
-                    "last_updated_by": {
-                        "email": current_user.get("email", "unknown"),
-                        "name": current_user.get("name", ""),
-                        "action": "created_consolidation",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
+
+        # ── Write to the correct location based on recurring vs non-recurring ──
+        if is_recurring:
+            # Push into the nested attendance[date].consolidations array
+            result = await events_collection.update_one(
+                {"_id": ObjectId(base_event_id)},
+                {
+                    "$push": {f"attendance.{instance_date}.consolidations": consolidation_record},
+                    "$set": {"updated_at": datetime.utcnow().isoformat()}
                 }
-            }
-        )
-        
-        if result.modified_count == 0:
-            # Rollback task creation if event update fails
-            await tasks_collection.delete_one({"_id": ObjectId(task_id)})
-            raise HTTPException(
-                status_code=500, 
-                detail="Failed to add consolidation to event"
             )
-        
-        # ========== 4. ADD TO CONSOLIDATIONS COLLECTION ==========
+        else:
+            # Push into the root consolidations array (original behaviour)
+            result = await events_collection.update_one(
+                {"_id": ObjectId(base_event_id)},
+                {
+                    "$push": {"consolidations": consolidation_record},
+                    "$set": {"updated_at": datetime.utcnow().isoformat()}
+                }
+            )
+
+        if result.modified_count == 0:
+            await tasks_collection.delete_one({"_id": ObjectId(task_id)})
+            raise HTTPException(status_code=500, detail="Failed to add consolidation to event")
+
+        # Also save to consolidations collection
         try:
             consolidations_collection = db["consolidations"]
-            consolidation_for_db = {**consolidation_record, "_id": ObjectId(consolidation_id)}
-            await consolidations_collection.insert_one(consolidation_for_db)
-        except Exception as consolidation_error:
-            logger.warning(f"Note: Could not add to consolidations collection: {consolidation_error}")
-        
-        # ========== 5. LOG ACTIVITY ==========
+            await consolidations_collection.insert_one(
+                {**consolidation_record, "_id": ObjectId(consolidation_id)}
+            )
+        except Exception as e:
+            logger.warning(f"Could not add to consolidations collection: {e}")
+
         try:
             await log_activity(
                 user_id=current_user.get("user_id", current_user.get("email", "unknown")),
                 action="CONSOLIDATION_CREATED",
                 details=f"Created consolidation for '{person_name} {person_surname}' in event '{event.get('eventName', 'Unknown')}'"
             )
-        except Exception as log_error:
-            logger.warning(f"Failed to log activity: {log_error}")
-        
-        # ========== 6. GET UPDATED STATS ==========
-        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-        
+        except Exception as e:
+            logger.warning(f"Failed to log activity: {e}")
+
+        updated_event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+
+        # Get correct count based on recurring
+        if is_recurring:
+            attendance_data = updated_event.get("attendance", {})
+            date_data = attendance_data.get(instance_date, {})
+            cons_count = len(date_data.get("consolidations", []))
+        else:
+            cons_count = len(updated_event.get("consolidations", []))
+
         return {
             "success": True,
             "message": "Consolidation created successfully",
             "consolidation": consolidation_record,
-            "task_id": task_id,  # Return task_id to frontend
+            "task_id": task_id,
             "event_id": event_id,
             "event_name": event.get("eventName", "Unknown Event"),
             "updated_statistics": {
-                "consolidations_count": len(updated_event.get("consolidations", [])),
-                "new_people_count": len(updated_event.get("new_people", [])),
-                "total_attendance": updated_event.get("total_attendance", 0),
-                "total_attendees": len(updated_event.get("attendees", []))
+                "consolidations_count": cons_count,
             },
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating consolidation: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Internal server error: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.delete("/service-checkin/remove-consolidation")
 async def remove_consolidation(
