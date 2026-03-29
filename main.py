@@ -8517,6 +8517,61 @@ async def search_people_fast(
         if not query or len(query) < 2:
             return {"results": []}
 
+        # ── If cache is ready, search it directly (guaranteed correct org filtering) ──
+        if people_cache.get("data"):
+            org_id = (
+                current_user.get("org_id") or
+                current_user.get("organization", "").lower().replace(" ", "-") or
+                "active-teams"
+            )
+            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+            organization = (current_user.get("Organization") or current_user.get("organization", "")).lower()
+            org_name_from_id = org_id.replace("-", " ").lower()
+
+            search_term = query.lower().strip()
+            results = []
+
+            for person in people_cache["data"]:
+                # Org filter — same logic as /people/search which works
+                person_org_id   = (person.get("org_id") or person.get("Org_id") or "").lower()
+                person_org_name = (person.get("Organization") or person.get("Organisation") or "").lower()
+                person_org_name_as_id = person_org_name.replace(" ", "-")
+
+                org_match = (
+                    org_id in person_org_id or
+                    person_org_id in org_id or
+                    (organization and organization in person_org_name) or
+                    (organization and person_org_name in organization) or
+                    (org_name_from_id and org_name_from_id in person_org_name) or
+                    (org_name_from_id and person_org_name in org_name_from_id) or
+                    person_org_name_as_id == org_id or
+                    (org_id == "active-teams" and "active" in person_org_name)
+                )
+                if not org_match:
+                    continue
+
+                # Name/email/phone search
+                full_name = (person.get("FullName") or f"{person.get('Name','')} {person.get('Surname','')}").lower()
+                if (
+                    search_term in full_name or
+                    search_term in (person.get("Email") or "").lower() or
+                    search_term in (person.get("Number") or "")
+                ):
+                    results.append({
+                        "_id":      str(person.get("_id", "")),
+                        "Name":     person.get("Name", ""),
+                        "Surname":  person.get("Surname", ""),
+                        "Email":    person.get("Email", ""),
+                        "Number":   person.get("Number", ""),
+                        "FullName": person.get("FullName") or full_name.title(),
+                    })
+
+                if len(results) >= limit:
+                    break
+
+            return {"results": results}
+
+        # ── Cache not ready — fall back to DB with loose org filter ──
         search_regex = {"$regex": query.strip(), "$options": "i"}
         text_q = {"$or": [
             {"Name": search_regex},
@@ -8529,36 +8584,49 @@ async def search_people_fast(
             }}}
         ]}
 
-        org_q = build_org_query(current_user)
-        final_q = {"$and": [text_q, org_q]} if org_q else text_q
+        # Use same loose org matching as /people/search instead of build_org_query
+        org_id = (
+            current_user.get("org_id") or
+            current_user.get("organization", "").lower().replace(" ", "-") or
+            "active-teams"
+        )
+        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+        organization = current_user.get("Organization") or current_user.get("organization", "")
+        org_name_from_id = org_id.replace("-", " ")
 
-        # Only fetch what the frontend needs — no LeaderPath lookup
-        projection = {
-            "_id": 1, "Name": 1, "Surname": 1, 
-            "Email": 1, "Number": 1
-        }
+        org_conditions = [
+            {"org_id": org_id},
+            {"Org_id": {"$regex": f"^{org_id}$", "$options": "i"}},
+        ]
+        if organization:
+            org_conditions.append({"Organization": {"$regex": organization, "$options": "i"}})
+            org_conditions.append({"Organisation": {"$regex": organization, "$options": "i"}})
+        if org_name_from_id != org_id:
+            org_conditions.append({"Organization": {"$regex": org_name_from_id, "$options": "i"}})
+            org_conditions.append({"Organisation": {"$regex": org_name_from_id, "$options": "i"}})
+        if org_id == "active-teams":
+            org_conditions.append({"Organization": {"$regex": "active church", "$options": "i"}})
+            org_conditions.append({"Organisation": {"$regex": "active church", "$options": "i"}})
 
-        docs = await people_collection.find(final_q, projection) \
-            .limit(limit) \
-            .to_list(length=limit)
+        org_q   = {"$or": org_conditions}
+        final_q = {"$and": [text_q, org_q]}
 
-        results = []
-        for doc in docs:
-            results.append({
-                "_id":      str(doc["_id"]),
-                "Name":     doc.get("Name", ""),
-                "Surname":  doc.get("Surname", ""),
-                "Email":    doc.get("Email", ""),
-                "Number":   doc.get("Number", ""),
-                "FullName": f"{doc.get('Name', '')} {doc.get('Surname', '')}".strip(),
-            })
+        projection = {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+        docs = await people_collection.find(final_q, projection).limit(limit).to_list(length=limit)
 
-        return {"results": results}
+        return {"results": [{
+            "_id":      str(doc["_id"]),
+            "Name":     doc.get("Name", ""),
+            "Surname":  doc.get("Surname", ""),
+            "Email":    doc.get("Email", ""),
+            "Number":   doc.get("Number", ""),
+            "FullName": f"{doc.get('Name', '')} {doc.get('Surname', '')}".strip(),
+        } for doc in docs]}
 
     except Exception as e:
         print(f"Error in search-fast: {str(e)}")
         return {"results": [], "error": str(e)}
-
+    
 @app.get("/people/{person_id}")
 async def get_person(
     person_id: str,
