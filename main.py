@@ -8022,7 +8022,7 @@ async def change_password(
         if len(new_password) < 8:
             raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
 
-        # Get user and verify current password
+        # Get user and verify current passwords
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
