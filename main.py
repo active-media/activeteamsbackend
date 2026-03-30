@@ -172,7 +172,7 @@ def convert_datetime_to_iso(doc: dict) -> dict:
             out[k] = v
     return out
 
- 
+
 def get_exact_date_identifier(target_date: date) -> str:
     """Return canonical date identifier used for attendance keys (YYYY-MM-DD)."""
     try:
