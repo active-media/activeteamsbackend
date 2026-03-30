@@ -63,7 +63,7 @@ ORG_ID_MAP = {
     "active church": "active-teams",
 }
 
-def get_org_from_user(current_user: dict):
+def get_org_from_user(current_user: dict): 
     if current_user.get("role") == "super_admin":
         return None, None, set(), True
     raw = (
@@ -8516,117 +8516,66 @@ async def search_people_fast(
     try:
         if not query or len(query) < 2:
             return {"results": []}
-
-        # ── If cache is ready, search it directly (guaranteed correct org filtering) ──
-        if people_cache.get("data"):
-            org_id = (
-                current_user.get("org_id") or
-                current_user.get("organization", "").lower().replace(" ", "-") or
-                "active-teams"
-            )
-            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-            organization = (current_user.get("Organization") or current_user.get("organization", "")).lower()
-            org_name_from_id = org_id.replace("-", " ").lower()
-
-            search_term = query.lower().strip()
-            results = []
-
-            for person in people_cache["data"]:
-                # Org filter — same logic as /people/search which works
-                person_org_id   = (person.get("org_id") or person.get("Org_id") or "").lower()
-                person_org_name = (person.get("Organization") or person.get("Organisation") or "").lower()
-                person_org_name_as_id = person_org_name.replace(" ", "-")
-
-                org_match = (
-                    org_id in person_org_id or
-                    person_org_id in org_id or
-                    (organization and organization in person_org_name) or
-                    (organization and person_org_name in organization) or
-                    (org_name_from_id and org_name_from_id in person_org_name) or
-                    (org_name_from_id and person_org_name in org_name_from_id) or
-                    person_org_name_as_id == org_id or
-                    (org_id == "active-teams" and "active" in person_org_name)
-                )
-                if not org_match:
-                    continue
-
-                # Name/email/phone search
-                full_name = (person.get("FullName") or f"{person.get('Name','')} {person.get('Surname','')}").lower()
-                if (
-                    search_term in full_name or
-                    search_term in (person.get("Email") or "").lower() or
-                    search_term in (person.get("Number") or "")
-                ):
-                    results.append({
-                        "_id":      str(person.get("_id", "")),
-                        "Name":     person.get("Name", ""),
-                        "Surname":  person.get("Surname", ""),
-                        "Email":    person.get("Email", ""),
-                        "Number":   person.get("Number", ""),
-                        "FullName": person.get("FullName") or full_name.title(),
-                    })
-
-                if len(results) >= limit:
-                    break
-
-            return {"results": results}
-
-        # ── Cache not ready — fall back to DB with loose org filter ──
+ 
         search_regex = {"$regex": query.strip(), "$options": "i"}
         text_q = {"$or": [
-            {"Name": search_regex},
-            {"Surname": search_regex},
-            {"Email": search_regex},
-            {"Number": search_regex},
+            {"Name": search_regex}, {"Surname": search_regex},
+            {"Email": search_regex}, {"Number": search_regex},
             {"$expr": {"$regexMatch": {
                 "input": {"$concat": ["$Name", " ", "$Surname"]},
                 "regex": query.strip(), "options": "i"
             }}}
         ]}
-
-        # Use same loose org matching as /people/search instead of build_org_query
-        org_id = (
-            current_user.get("org_id") or
-            current_user.get("organization", "").lower().replace(" ", "-") or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
-        org_name_from_id = org_id.replace("-", " ")
-
-        org_conditions = [
-            {"org_id": org_id},
-            {"Org_id": {"$regex": f"^{org_id}$", "$options": "i"}},
-        ]
-        if organization:
-            org_conditions.append({"Organization": {"$regex": organization, "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": organization, "$options": "i"}})
-        if org_name_from_id != org_id:
-            org_conditions.append({"Organization": {"$regex": org_name_from_id, "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": org_name_from_id, "$options": "i"}})
-        if org_id == "active-teams":
-            org_conditions.append({"Organization": {"$regex": "active church", "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": "active church", "$options": "i"}})
-
-        org_q   = {"$or": org_conditions}
-        final_q = {"$and": [text_q, org_q]}
-
-        projection = {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+        org_q   = build_org_query(current_user)
+        final_q = {"$and": [text_q, org_q]} if org_q else text_q
+ 
+        projection = {"_id": 1, "Name": 1, "Surname": 1, "Email": 1,
+                      "Number": 1, "Gender": 1, "LeaderPath": 1, "LeaderId": 1}
         docs = await people_collection.find(final_q, projection).limit(limit).to_list(length=limit)
-
-        return {"results": [{
-            "_id":      str(doc["_id"]),
-            "Name":     doc.get("Name", ""),
-            "Surname":  doc.get("Surname", ""),
-            "Email":    doc.get("Email", ""),
-            "Number":   doc.get("Number", ""),
-            "FullName": f"{doc.get('Name', '')} {doc.get('Surname', '')}".strip(),
-        } for doc in docs]}
-
+ 
+        all_ids: set = set()
+        for doc in docs:
+            for lid in doc.get("LeaderPath", []):
+                if lid:
+                    try:
+                        all_ids.add(lid if isinstance(lid, ObjectId) else ObjectId(str(lid)))
+                    except Exception:
+                        pass
+ 
+        id_to_full: dict = {}
+        if all_ids:
+            async for ldoc in people_collection.find(
+                {"_id": {"$in": list(all_ids)}},
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            ):
+                pid = str(ldoc["_id"])
+                id_to_full[pid] = {
+                    "id":    pid,
+                    "name":  f"{ldoc.get('Name','')} {ldoc.get('Surname','')}".strip(),
+                    "email": ldoc.get("Email", "") or "",
+                    "phone": ldoc.get("Number", "") or "",
+                }
+ 
+        results = []
+        for doc in docs:
+            path_strs = [str(lid) for lid in doc.get("LeaderPath", []) if lid]
+            results.append({
+                "_id":        str(doc["_id"]),
+                "Name":       doc.get("Name", ""),
+                "Surname":    doc.get("Surname", ""),
+                "Email":      doc.get("Email", ""),
+                "Number":     doc.get("Number", ""),
+                "Gender":     doc.get("Gender", ""),
+                "FullName":   f"{doc.get('Name','')} {doc.get('Surname','')}".strip(),
+                "LeaderPath": path_strs,
+                "leaders":    resolve_leaders(path_strs, id_to_full),
+            })
+        return {"results": results}
+ 
     except Exception as e:
         print(f"Error in search-fast: {str(e)}")
         return {"results": [], "error": str(e)}
-    
+
 @app.get("/people/{person_id}")
 async def get_person(
     person_id: str,
@@ -8822,6 +8771,117 @@ async def delete_person(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/people/search-fast")
+async def search_people_fast(
+    query: str = Query(..., min_length=2, description="Search query (minimum 2 characters)"),
+    limit: int = Query(25, ge=1, le=50, description="Maximum number of results to return")
+):
+    """
+    FAST search endpoint for autocomplete - optimized for signup form
+    Uses simple regex matching and returns minimal fields
+    """
+    try:
+        print(f"Search-fast called with query: '{query}', limit: {limit}")
+        
+        if not query or len(query) < 2:
+            print("   Query too short, returning empty results")
+            return {"results": []}
+       
+        # Simple regex search on name fields - it's much faster than the other complex queries
+        search_regex = {"$regex": query.strip(), "$options": "i"}
+       
+        # Only fetch essential fields for autocomplete
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Number": 1,
+            "Gender": 1,
+            "Leader @1": 1,
+            "Leader @12": 1,
+            "Leader @144": 1,
+            "Leader @1728": 1
+        }
+       
+        print(f"   Searching with regex: {search_regex}")
+        
+        cursor = people_collection.find({
+            "$or": [
+                {"Name": search_regex},
+                {"Surname": search_regex},
+                {"Email": search_regex},
+                {"Number": search_regex},
+                {"$expr": {
+                    "$regexMatch": {
+                        "input": {"$concat": ["$Name", " ", "$Surname"]},
+                        "regex": query.strip(),
+                        "options": "i"
+                    }
+                }}
+            ]
+        }, projection).limit(limit)
+       
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Number": person.get("Number", ""),
+                "Gender": person.get("Gender", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", ""),
+                "FullName": f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            })
+       
+        print(f"   Found {len(results)} results")
+        return {"results": results}
+       
+    except Exception as e:
+        print(f"Theres an error in fast search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "results": [],
+            "error": str(e)
+        }
+
+@app.get("/people/all-minimal")
+async def get_all_people_minimal():
+    """
+    Get all people with minimal fields for client-side caching
+    Much faster than full document fetch
+    """
+    try:
+        projection = {
+            "_id": 1,
+            "Name": 1,
+            "Surname": 1,
+            "Email": 1,
+            "Phone": 1
+        }
+       
+        cursor = people_collection.find({}, projection).limit(1000)  # Reasonable limit
+       
+        people = []
+        async for person in cursor:
+            people.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", "")
+            })
+       
+        return {"people": people}
+       
+    except Exception as e:
+        print(f"Error fetching minimal people: {e}")
+        return {"people": []}
 
 @app.get("/people/leaders-only")
 async def get_leaders_only():
@@ -8892,33 +8952,18 @@ from fastapi.encoders import jsonable_encoder
 @app.post("/tasks")
 async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):
     try:
+        # === ROBUST ORGANIZATION LOOKUP (ignores case) ===
         organization = None
         for key in current_user.keys():
             if key.lower() == "organization":
                 organization = current_user[key]
                 break
-
         new_task_dict = task.dict()
-        
-        # Only set assignedfor if not already provided by frontend
-        if new_task_dict.get("assignedfor"):
-            new_task_dict["assignedfor"] = new_task_dict["assignedfor"].lower()
-        else:
-            new_task_dict["assignedfor"] = current_user["email"].lower()
-
-        if not new_task_dict.get("assigned_to_email"):
-            new_task_dict["assigned_to_email"] = new_task_dict["assignedfor"]
-
-        # Always track creator
-        new_task_dict["created_by_email"] = current_user["email"].lower()
-        new_task_dict["created_by_name"] = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-        new_task_dict["createdAt"] = datetime.utcnow()
-        new_task_dict["Organization"] = organization
+        new_task_dict["assignedfor"] = current_user["email"]
+        new_task_dict["Organization"] = organization  
 
         result = await db["tasks"].insert_one(new_task_dict)
-        new_task_dict["_id"] = str(result.inserted_id)
-        return {"status": "success", "task": jsonable_encoder(new_task_dict)}
-    
+        return {"status": "success", "task": jsonable_encoder({**new_task_dict, "_id": str(result.inserted_id)})}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -8926,8 +8971,6 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 @app.get("/tasks")
 async def get_user_tasks(
-    email: str = Query(None),
-    userId: str = Query(None),
     view_all: bool = Query(False),
     current_user: dict = Depends(get_current_user)
 ):
@@ -8944,39 +8987,19 @@ async def get_user_tasks(
 
         is_super_admin = current_user.get("role") == "super_admin"
         is_leader = current_user.get("role") in ["admin", "leader", "manager", "org_admin"]
-        if email:
-            user_email = email.lower()
-        elif userId:
-            user = await users_collection.find_one({"_id": ObjectId(userId)})
-            if user:
-                user_email = user.get("email", "").lower()
-        else:
-            user_email = current_user.get("email", "").lower()
-
-        if not user_email and not (is_leader and view_all):
-            return {"error": "User email not found", "status": "failed"}
-        
         if is_super_admin and view_all:
             query = {}                                     
         elif is_leader and view_all:
             query = {"Organization": org_name}       
         else:
             query = {
+                "Organization": org_name,
                 "$or": [
-                    {"assignedfor": user_email},
-                    {"assigned_to_email": user_email},
-                    {
-                        "$and": [
-                            {"leader_name": user_name},
-                            {"is_consolidation_task": True}
-                        ]
-                    },
-                    {
-                        "$and": [
-                            {"leader_assigned": user_name},
-                            {"is_consolidation_task": True}
-                        ]
-                    }
+                    {"assignedfor": current_user["email"]},
+                    {"assigned_to_email": current_user["email"]},
+                    {"assignedfor": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
+                    {"leader_assigned": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
+                    {"leader_name": f"{current_user.get('name','')} {current_user.get('surname','')}".strip()},
                 ]
             }
 
@@ -8984,7 +9007,7 @@ async def get_user_tasks(
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
         timezone = pytz.timezone("Africa/Johannesburg")
 
-        cursor = tasks_collection.find(query).sort("followup_date", -1).limit(500)
+        cursor = tasks_collection.find(query)
         all_tasks = []
 
         async for task in cursor:
@@ -8995,9 +9018,7 @@ async def get_user_tasks(
                     task_datetime = task_date_str.astimezone(timezone)
                 else:
                     try:
-                        task_datetime = datetime.fromisoformat(
-                            str(task_date_str).replace("Z", "+00:00")
-                        ).astimezone(timezone)
+                        task_datetime = datetime.fromisoformat(task_date_str).astimezone(timezone)
                     except ValueError:
                         logging.warning(f"Invalid date format: {task_date_str}")
                         continue
@@ -9010,7 +9031,6 @@ async def get_user_tasks(
                 "status": task.get("status", "Open"),
                 "assignedfor": task.get("assignedfor", ""),
                 "assigned_to_email": task.get("assigned_to_email", ""),
-                "created_by_email": task.get("created_by_email", ""),
                 "leader_name": task.get("leader_name", ""),
                 "type": task.get("type", "call"),
                 "contacted_person": task.get("contacted_person", {}),
@@ -9207,8 +9227,6 @@ async def delete_task_type(
 
 # ====================== PUT /taskS ======================
 
-# ====================== PUT /tasks ======================
-
 @app.put("/tasks/{task_id}")
 async def update_task(
     task_id: str,
@@ -9216,25 +9234,26 @@ async def update_task(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Extract organization name from current user
         org_name = None
         for key in current_user.keys():
             if key.lower() == "organization":
                 org_name = current_user[key]
                 break
 
-        obj_id = ObjectId(task_id)
+        # Convert task_id
+        try:
+            obj_id = ObjectId(task_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid task ID")
+
+        # Check if task exists
         task = await db["tasks"].find_one({"_id": obj_id})
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        # === CROSS-TENANT PROTECTION ===
+        # === CROSS-TENANT PROTECTION (exactly like XMind plan) ===
         task_org = task.get("Organization")
-        if (
-            task_org
-            and task_org.lower() != org_name.lower()
-            and current_user.get("role") != "super_admin"
-        ):
+        if task_org and task_org.lower() != org_name.lower() and current_user.get("role") != "super_admin":
             raise HTTPException(
                 status_code=403,
                 detail="You don't have access to this church's data."
@@ -9242,41 +9261,26 @@ async def update_task(
 
         # Prepare update data
         update_data = {}
-
         if "name" in updated_task:
             update_data["name"] = updated_task["name"]
-
         if "taskType" in updated_task:
             update_data["taskType"] = updated_task["taskType"]
-
         if "contacted_person" in updated_task:
             update_data["contacted_person"] = updated_task["contacted_person"]
-
         if "followup_date" in updated_task:
             try:
-                update_data["followup_date"] = updated_task["followup_date"]
+                if isinstance(updated_task["followup_date"], str):
+                    update_data["followup_date"] = updated_task["followup_date"]
+                else:
+                    update_data["followup_date"] = updated_task["followup_date"]
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
-
         if "status" in updated_task:
-            # Always normalize status to lowercase
-            normalized_status = updated_task["status"].lower()
-            update_data["status"] = normalized_status
-
-            if normalized_status in ["completed", "done", "closed", "finished"]:
-                update_data["completedAt"] = datetime.utcnow()
-            elif normalized_status in ["open", "pending", "incomplete"]:
-                update_data["completedAt"] = None
-
+            update_data["status"] = updated_task["status"]
         if "type" in updated_task:
             update_data["type"] = updated_task["type"]
-
         if "assignedfor" in updated_task:
-            # Always normalize assignedfor to lowercase
-            update_data["assignedfor"] = updated_task["assignedfor"].lower()
-
-        if "assigned_to_email" in updated_task:
-            update_data["assigned_to_email"] = updated_task["assigned_to_email"].lower()
+            update_data["assignedfor"] = updated_task["assignedfor"]
 
         # Add updated timestamp
         update_data["updated_at"] = datetime.utcnow().isoformat()
@@ -9294,6 +9298,7 @@ async def update_task(
             else:
                 raise HTTPException(status_code=404, detail="Task not found")
 
+        # Return updated task
         updated_task_in_db = await db["tasks"].find_one({"_id": obj_id})
         return {"updatedTask": serialize_doc(updated_task_in_db)}
 
@@ -10120,25 +10125,7 @@ async def create_indexes():
         
         # Index for _id (already exists by default, but including for completeness)
         print("✓ All indexes created successfully")
-
-        await people_collection.create_index([("Name", 1)])
-        await people_collection.create_index([("Surname", 1)])
-        await people_collection.create_index([("Email", 1)])
-        # Text index for full-text search (fastest for name searches)
-        await people_collection.create_index([
-            ("Name", "text"), 
-            ("Surname", "text"),
-            ("Email", "text")
-        ], name="people_text_index")
-        # Tasks indexes
-        await db["tasks"].create_index([("assignedfor", 1)])
-        await db["tasks"].create_index([("assigned_to_email", 1)])
-        await db["tasks"].create_index([("Organization", 1)])
-        await db["tasks"].create_index([("Organization", 1), ("assignedfor", 1)])
         
-        # Task types index
-        await tasktypes_collection.create_index([("Organization", 1)])
-
     except Exception as e:
         print(f"✗ Error creating indexes: {e}")
 
@@ -10199,7 +10186,7 @@ async def startup_event():
     print("Starting up application...")
     print(f"Database: {DB_NAME}")
     print("=" * 50)
-
+    
     # First migrate existing data to consistent format (optional, can be removed after first run)
     await migrate_user_fields()
     
@@ -10211,6 +10198,12 @@ async def startup_event():
     print("=" * 50)
     """Run on application startup"""
     print("Starting up application...")
+    
+    # First migrate existing data to consistent format
+    await migrate_user_fields()
+    
+    # Then create indexes for performance
+    await create_indexes()
     
     print("Application startup complete")
 
@@ -12203,12 +12196,27 @@ async def get_dashboard_comprehensive(
                 email = user.get("email", "").lower()
                 if not email:
                     continue
-                
-                full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+
+                person = await people_collection.find_one({
+                    "$or": [
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"user_id": uid}
+                    ]
+                })
+
+                if person:
+                    full_name = f"{person.get('Name', '').strip()} {person.get('Surname', '').strip()}".strip()
+                else:
+                    full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+
                 if not full_name:
                     full_name = email.split("@")[0]
 
-                all_users_map[email] = {"_id": uid, "email": email, "fullName": full_name}
+                all_users_map[email] = {
+                    "_id": uid,
+                    "email": email,
+                    "fullName": full_name
+                }
                 all_users_map[uid] = all_users_map[email]
 
         except Exception as e:
@@ -12685,47 +12693,49 @@ async def toggle_event_status(
         print(f"Error toggling event status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error toggling event status: {str(e)}")
      
+# ==================== CREATE CONSOLIDATION (UPDATED) ====================
 @app.post("/service-checkin/create-consolidation")
 async def create_consolidation(
     consolidation_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
+    """
+    Create a new consolidation record and associated task
+    - Creates task in tasks collection
+    - Saves task_id in consolidation record
+    - Adds to event consolidations array
+    - Updates consolidations collection
+    """
     try:
+        logger.info(f"Creating consolidation: {consolidation_data}")
+        
+        # Extract data
         event_id = consolidation_data.get("event_id")
         person_data = consolidation_data.get("person_data", {})
         decision_type = consolidation_data.get("decision_type", "Commitment")
         assigned_to = consolidation_data.get("assigned_to", "")
         notes = consolidation_data.get("notes", "")
-
+        
+        # Validate required fields
         if not event_id:
             raise HTTPException(status_code=400, detail="Event ID is required")
-
-        # Handle recurring event ID (split base_id from date)
-        parts = event_id.split("_")
-        base_event_id = parts[0]
-        instance_date = parts[1] if len(parts) > 1 else None
-
-        if not ObjectId.is_valid(base_event_id):
+        
+        if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-
-        event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+        
+        # Get event to verify existence
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
-        is_recurring = bool(event.get("recurring_day"))
-
-        # If recurring and no date provided, use today (Joburg time)
-        if is_recurring and not instance_date:
-            timezone = pytz.timezone("Africa/Johannesburg")
-            instance_date = datetime.now(timezone).date().isoformat()
-
+        
+        # Get person details
         person_name = person_data.get("name", "")
         person_surname = person_data.get("surname", "")
         person_email = person_data.get("email", "")
         person_phone = person_data.get("phone", "") or person_data.get("number", "")
         person_id = person_data.get("id", "")
-
-        # Create task
+        
+        # Create task payload
         task_payload = {
             "memberID": current_user.get("user_id", current_user.get("email", "unknown")),
             "name": assigned_to or current_user.get("name", "Unknown"),
@@ -12738,6 +12748,7 @@ async def create_consolidation(
             "followup_date": datetime.utcnow().isoformat(),
             "status": "Open",
             "type": "consolidation",
+            # Use assigned leader's email if available, otherwise fall back to current user
             "assignedfor": consolidation_data.get("assigned_to_email") or current_user.get("email", "unknown"),
             "assigned_to_email": consolidation_data.get("assigned_to_email") or "",
             "is_consolidation_task": True,
@@ -12757,13 +12768,16 @@ async def create_consolidation(
             "updated_at": datetime.utcnow().isoformat()
         }
 
+        # Insert the task
         task_result = await tasks_collection.insert_one(task_payload)
         task_id = str(task_result.inserted_id)
-
+        logger.info(f"Created task {task_id} for consolidation")
+        
+        # ========== 2. CREATE CONSOLIDATION RECORD ==========
         consolidation_id = str(ObjectId())
         consolidation_record = {
             "id": consolidation_id,
-            "task_id": task_id,
+            "task_id": task_id,  # CRITICAL: Link to task
             "event_id": event_id,
             "person_id": person_id,
             "person_name": person_name,
@@ -12780,77 +12794,78 @@ async def create_consolidation(
             "status": "active",
             "source": "service_checkin"
         }
-
-        # ── Write to the correct location based on recurring vs non-recurring ──
-        if is_recurring:
-            # Push into the nested attendance[date].consolidations array
-            result = await events_collection.update_one(
-                {"_id": ObjectId(base_event_id)},
-                {
-                    "$push": {f"attendance.{instance_date}.consolidations": consolidation_record},
-                    "$set": {"updated_at": datetime.utcnow().isoformat()}
+        
+        # ========== 3. ADD TO EVENT CONSOLIDATIONS ARRAY ==========
+        result = await events_collection.update_one(
+            {"_id": ObjectId(event_id)},
+            {
+                "$push": {"consolidations": consolidation_record},
+                "$set": {
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "last_updated_by": {
+                        "email": current_user.get("email", "unknown"),
+                        "name": current_user.get("name", ""),
+                        "action": "created_consolidation",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
                 }
-            )
-        else:
-            # Push into the root consolidations array (original behaviour)
-            result = await events_collection.update_one(
-                {"_id": ObjectId(base_event_id)},
-                {
-                    "$push": {"consolidations": consolidation_record},
-                    "$set": {"updated_at": datetime.utcnow().isoformat()}
-                }
-            )
-
+            }
+        )
+        
         if result.modified_count == 0:
+            # Rollback task creation if event update fails
             await tasks_collection.delete_one({"_id": ObjectId(task_id)})
-            raise HTTPException(status_code=500, detail="Failed to add consolidation to event")
-
-        # Also save to consolidations collection
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to add consolidation to event"
+            )
+        
+        # ========== 4. ADD TO CONSOLIDATIONS COLLECTION ==========
         try:
             consolidations_collection = db["consolidations"]
-            await consolidations_collection.insert_one(
-                {**consolidation_record, "_id": ObjectId(consolidation_id)}
-            )
-        except Exception as e:
-            logger.warning(f"Could not add to consolidations collection: {e}")
-
+            consolidation_for_db = {**consolidation_record, "_id": ObjectId(consolidation_id)}
+            await consolidations_collection.insert_one(consolidation_for_db)
+        except Exception as consolidation_error:
+            logger.warning(f"Note: Could not add to consolidations collection: {consolidation_error}")
+        
+        # ========== 5. LOG ACTIVITY ==========
         try:
             await log_activity(
                 user_id=current_user.get("user_id", current_user.get("email", "unknown")),
                 action="CONSOLIDATION_CREATED",
                 details=f"Created consolidation for '{person_name} {person_surname}' in event '{event.get('eventName', 'Unknown')}'"
             )
-        except Exception as e:
-            logger.warning(f"Failed to log activity: {e}")
-
-        updated_event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
-
-        # Get correct count based on recurring
-        if is_recurring:
-            attendance_data = updated_event.get("attendance", {})
-            date_data = attendance_data.get(instance_date, {})
-            cons_count = len(date_data.get("consolidations", []))
-        else:
-            cons_count = len(updated_event.get("consolidations", []))
-
+        except Exception as log_error:
+            logger.warning(f"Failed to log activity: {log_error}")
+        
+        # ========== 6. GET UPDATED STATS ==========
+        updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        
         return {
             "success": True,
             "message": "Consolidation created successfully",
             "consolidation": consolidation_record,
-            "task_id": task_id,
+            "task_id": task_id,  # Return task_id to frontend
             "event_id": event_id,
             "event_name": event.get("eventName", "Unknown Event"),
             "updated_statistics": {
-                "consolidations_count": cons_count,
+                "consolidations_count": len(updated_event.get("consolidations", [])),
+                "new_people_count": len(updated_event.get("new_people", [])),
+                "total_attendance": updated_event.get("total_attendance", 0),
+                "total_attendees": len(updated_event.get("attendees", []))
             },
             "timestamp": datetime.utcnow().isoformat()
         }
-
+        
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating consolidation: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal server error: {str(e)}"
+        )
+
 
 @app.delete("/service-checkin/remove-consolidation")
 async def remove_consolidation(
