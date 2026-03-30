@@ -12203,27 +12203,12 @@ async def get_dashboard_comprehensive(
                 email = user.get("email", "").lower()
                 if not email:
                     continue
-
-                person = await people_collection.find_one({
-                    "$or": [
-                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
-                        {"user_id": uid}
-                    ]
-                })
-
-                if person:
-                    full_name = f"{person.get('Name', '').strip()} {person.get('Surname', '').strip()}".strip()
-                else:
-                    full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
-
+                
+                full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
                 if not full_name:
                     full_name = email.split("@")[0]
 
-                all_users_map[email] = {
-                    "_id": uid,
-                    "email": email,
-                    "fullName": full_name
-                }
+                all_users_map[email] = {"_id": uid, "email": email, "fullName": full_name}
                 all_users_map[uid] = all_users_map[email]
 
         except Exception as e:
