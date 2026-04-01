@@ -12345,7 +12345,7 @@ async def get_dashboard_comprehensive(
                 if not email:
                     continue
 
-                person = await people_collection.find_one({
+                person = await users_collection.find_one({
                     "$or": [
                         {"Email": {"$regex": f"^{email}$", "$options": "i"}},
                         {"user_id": uid}
