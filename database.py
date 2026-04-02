@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv() 
 
-MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
+MONGO_URI = os.getenv("MONGO_URI", "None")
 DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 print(f"--- CONNECTING TO DB: {DB_NAME} ---")
 # DB_NAME = "test-data-active-teams"
