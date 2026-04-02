@@ -49,3 +49,6 @@ requests
 resend
 # deactive schedulers 
 apscheduler==3.10.4
+
+#opening an xml doc
+openpyxl==3.1.5
