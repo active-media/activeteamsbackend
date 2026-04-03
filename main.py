@@ -2683,8 +2683,8 @@ async def get_other_events(
 
                         for week_back in range(0, 1):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
-                            if instance_date > today:
-                                continue
+                            # if instance_date > today:
+                            #     continue
                             if instance_date < start_date_obj or instance_date > end_date_obj:
                                 continue
 
@@ -2823,8 +2823,8 @@ async def get_other_events(
 
                     if event_date < start_date_obj or event_date > end_date_obj:
                         continue
-                    if event_date > today:
-                        continue
+                    # if event_date > today:
+                    #     continue
 
                     weekly_attendees = event.get("attendees", [])
                     if not isinstance(weekly_attendees, list):
