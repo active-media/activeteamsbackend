@@ -432,8 +432,23 @@ def transform_person_full(p, id_to_full: dict = None):
     Like transform_person but also falls back to legacy Leader @N string fields
     if LeaderPath is empty. This ensures the cache always has leaders[] populated.
     """
+    from bson import ObjectId
+
     def oid(v):
         return str(v) if v else None
+
+    def convert_objectids(obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        elif isinstance(obj, dict):
+            return {k: convert_objectids(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_objectids(item) for item in obj]
+        else:
+            return obj
+
+    # Convert any ObjectId in the raw person data
+    p = convert_objectids(p)
 
     raw_path  = p.get("LeaderPath", [])
     path_strs = [oid(x) for x in raw_path if x]
@@ -469,7 +484,7 @@ def transform_person_full(p, id_to_full: dict = None):
         # sort root first
         leaders.sort(key=lambda x: x["level"])
 
-    return {
+    result = {
         "_id":          oid(p.get("_id")),
         "Name":         p.get("Name") or "",
         "Surname":      p.get("Surname") or "",
@@ -489,9 +504,10 @@ def transform_person_full(p, id_to_full: dict = None):
         "LeaderId":     leader_id,
         "LeaderPath":   path_strs,
     }
+    return convert_objectids(result)
     
 
-async def invalidate_people_cache(operation_type: str, details: dict = None):
+async def invalidate_people_cache(operation_type: str,background_tasks: BackgroundTasks, details: dict = None):
     """
     Invalidate the people cache and trigger background rehydration.
     Operation types: 'create', 'update', 'delete'
@@ -513,7 +529,7 @@ async def invalidate_people_cache(operation_type: str, details: dict = None):
         
         if not people_cache["is_loading"]:
             print(f"Triggering background cache refresh after {operation_type} operation...")
-            people_cache["background_task"] = asyncio.create_task(
+            people_cache["background_task"] = background_tasks.create_task(
                 background_refresh_people_cache(stale_data)
             )
         
@@ -542,17 +558,19 @@ async def background_refresh_people_cache(stale_data: list = None):
         print("BACKGROUND REFRESH: starting...")
 
         FULL_PROJECTION = {
-            "_id": 1,
-            "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
-            "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
-            "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
-            "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
-            "church_id": 1,
-            "LeaderId": 1, "LeaderPath": 1,
-            "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
-            "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
-            "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
-        }
+    "_id": 1,
+    "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
+    "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
+    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
+    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
+    "church_id": 1,
+    "LeaderId": 1, "LeaderPath": 1,
+    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
+    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+    "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
+    "Leader at 1": 1, "Leader at 12": 1, "Leader at 144": 1, "Leader at 144": 1,
+    "leaders": 1,  
+}
 
         # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
         # Motor streams the cursor efficiently — no need to paginate
@@ -607,14 +625,6 @@ async def background_refresh_people_cache(stale_data: list = None):
         return {"error": str(e)}
 
 async def background_load_all_people():
-    """
-    Startup wrapper — waits for app to fully start then delegates to
-    background_refresh_people_cache (single source of truth).
-    """
-    await asyncio.sleep(BACKGROUND_LOAD_DELAY)
-    await background_refresh_people_cache()
-
-async def background_load_all_people():
     await background_refresh_people_cache()
 
 @app.on_event("startup")
@@ -625,26 +635,22 @@ async def startup_event():
 
 
 @app.get("/cache/people")
-async def get_cached_people(current_user: dict = Depends(get_current_user)):
-    """
-    Returns org-filtered people from the in-memory cache.
-    Cache entries are already in the dynamic `leaders` array shape
-    (built by transform_person in background_refresh_people_cache).
-    No Leader @N string fields are present.
-    """
+async def get_cached_people(
+    background_tasks: BackgroundTasks,                    
+    current_user: dict = Depends(get_current_user)
+):
     try:
         current_time = datetime.now(timezone.utc)
 
-        # ── resolve org from JWT ──────────────────────────────────────────────
         _, _, aliases, is_super_admin = get_org_from_user(current_user)
         org_label = current_user.get("Organization") or current_user.get("org_id") or "ALL"
 
-        # ── in-memory org filter ──────────────────────────────────────────────
         def filter_by_org(data: list) -> list:
             if is_super_admin or not aliases:
-                return data
+                return [serialize_doc(p) for p in data]         # ← serialize here
             result = []
-            for p in data:
+            for p in data:                                       # ← iterate data param
+                p = serialize_doc(p)                            # ← serialize each doc
                 person_org = (
                     p.get("org_id") or p.get("Org_id") or p.get("orgId") or
                     p.get("Organization") or p.get("Organisation") or
@@ -654,7 +660,6 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                     result.append(p)
             return result
 
-        # ── parse expires_at safely (stored as ISO string or datetime) ────────
         def parse_expires(val):
             if val is None:
                 return None
@@ -714,8 +719,9 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
         if people_cache["data"] and not people_cache["is_valid"]:
             print("Cache stale — returning stale data while refreshing...")
             if not people_cache["is_loading"] and people_cache["pending_refresh"]:
-                asyncio.create_task(
-                    background_refresh_people_cache(people_cache["data"].copy())
+                background_tasks.add_task(                     
+                    background_refresh_people_cache,
+                    people_cache["data"].copy()
                 )
             filtered = filter_by_org(people_cache["data"])
             return {
@@ -736,7 +742,7 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
         # ── 4. cache empty — trigger load ─────────────────────────────────────
         if not people_cache["data"] and not people_cache["is_loading"]:
             print("Cache empty — triggering background load...")
-            asyncio.create_task(background_refresh_people_cache())
+            background_tasks.add_task(background_refresh_people_cache)  # ← replaced background_tasks.create_task
             return {
                 "success":       True,
                 "cached_data":   [],
@@ -824,7 +830,7 @@ async def get_people_simple(
         }
 
 @app.post("/cache/people/refresh")
-async def refresh_people_cache():
+async def refresh_people_cache(background_tasks: BackgroundTasks):
     """
     Manually refresh the people cache.
     """
@@ -832,7 +838,7 @@ async def refresh_people_cache():
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else None
-            asyncio.create_task(background_refresh_people_cache(current_data))
+            background_tasks.create_task(background_refresh_people_cache(current_data))
             
             return {
                 "success": True,
@@ -2677,8 +2683,8 @@ async def get_other_events(
 
                         for week_back in range(0, 1):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
-                            if instance_date > today:
-                                continue
+                            # if instance_date > today:
+                            #     continue
                             if instance_date < start_date_obj or instance_date > end_date_obj:
                                 continue
 
@@ -2817,8 +2823,8 @@ async def get_other_events(
 
                     if event_date < start_date_obj or event_date > end_date_obj:
                         continue
-                    if event_date > today:
-                        continue
+                    # if event_date > today:
+                    #     continue
 
                     weekly_attendees = event.get("attendees", [])
                     if not isinstance(weekly_attendees, list):
@@ -3697,11 +3703,11 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
 
         config = await org_config_collection.find_one({"_id": org_id})
-        print(f"Config found: {config is not None}")  #
+        print(f"Config found: {config is not None}")  
 
-        if not config:
-            pass
-
+        if config is None:
+            raise HTTPException(status_code=404, detail=f"No org config found for org_id: {org_id}")
+        
         config["org_id"] = str(config["_id"])
         config.pop("_id", None)
         return config
@@ -8956,6 +8962,10 @@ async def get_user_tasks(
         if not user_email and not (is_leader and view_all):
             return {"error": "User email not found", "status": "failed"}
         
+        # Build leader full name (kept from your original)
+        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        timezone = pytz.timezone("Africa/Johannesburg")
+
         if is_super_admin and view_all:
             query = {}                                     
         elif is_leader and view_all:
@@ -8979,10 +8989,6 @@ async def get_user_tasks(
                     }
                 ]
             }
-
-        # Build leader full name (kept from your original)
-        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-        timezone = pytz.timezone("Africa/Johannesburg")
 
         cursor = tasks_collection.find(query).sort("followup_date", -1).limit(500)
         all_tasks = []

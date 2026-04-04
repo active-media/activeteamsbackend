@@ -281,7 +281,7 @@ class RefreshTokenRequest(BaseModel):
 class ContactedPerson(BaseModel):
     name: str
     phone: str
-    email: Optional[str] = ""  # was EmailStr — caused silent failures
+    email: Optional[str] = "" 
 
 class TaskModel(BaseModel):
     memberID: str
