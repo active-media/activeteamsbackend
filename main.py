@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depend
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel,TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile,  OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user, SUPREME_ADMIN_EMAIL 
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection
@@ -1022,18 +1022,21 @@ async def login(user: UserLogin):
     if not org_id:
         org_id = "active-teams"
     
+    # Check if user is a Supreme Admin - by email or database flag
+    is_supreme_admin = existing["email"] == SUPREME_ADMIN_EMAIL or existing.get("is_supreme_admin", False)
+    
     # Create token with user_id
     access_token = create_access_token({
         "user_id": user_id,  # Important: use "user_id" as key
         "sub": user_id,      # Also include sub for compatibility
         "email": existing["email"],
         "role": existing.get("role", "user"),
-        "is_supreme_admin": existing.get("is_supreme_admin", False),
+        "is_supreme_admin": is_supreme_admin,
         "Organization": organization,
         "org_id": org_id
     })
     
-    logger.info(f"Token created for user {user_id}")
+    logger.info(f"Token created for user {user_id} - is_supreme_admin: {is_supreme_admin}")
     
     # Return response with user ID
     return {
@@ -1048,7 +1051,7 @@ async def login(user: UserLogin):
             "role": existing.get("role", "user"),
             "organization": organization,
             "org_id": org_id,
-            "is_supreme_admin": existing.get("is_supreme_admin", False)
+            "is_supreme_admin": is_supreme_admin
         }
     }
 
@@ -2096,16 +2099,27 @@ async def get_cell_events(
     isLeaderAt12: Optional[bool] = Query(None),
     firstName: Optional[str] = Query(None),
     userSurname: Optional[str] = Query(None),
-    must_paginate: Optional[bool] = Query(True)
+    must_paginate: Optional[bool] = Query(True),
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only")
 ):
     try:
-        org_id = (
-            current_user.get("org_id") or
-            (current_user.get("organization", "").lower().replace(" ", "-")) or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
+        is_supreme_admin = current_user.get("is_supreme_admin", False)
+        
+        # If user is Supreme Admin and organization parameter is provided, use that
+        if is_supreme_admin and organization:
+            org_id = organization.lower().replace(" ", "-")
+            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+            # For Supreme Admin with explicit org parameter, use the parameter as the organization
+            organization_filter = organization
+        else:
+            # Otherwise use user's organization from token
+            org_id = (
+                current_user.get("org_id") or
+                (current_user.get("organization", "").lower().replace(" ", "-")) or
+                "active-teams"
+            )
+            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+            organization_filter = current_user.get("Organization") or current_user.get("organization", "")
 
         org_config = await org_config_collection.find_one({"_id": org_id})
         recurring_type = org_config.get("recurring_event_type", "Cells") if org_config else "Cells"
@@ -2172,7 +2186,7 @@ async def get_cell_events(
                 {
                     "$or": [
                         {"org_id": org_id},
-                        {"Organization": {"$regex": re.escape(organization), "$options": "i"}}
+                        {"Organization": {"$regex": re.escape(organization_filter), "$options": "i"}}
                     ]
                 },
                 {
@@ -2493,23 +2507,33 @@ async def get_other_events(
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query("2025-10-10"),
     end_date: Optional[str] = Query(None),
-    show_all_dates: Optional[bool] = Query(False)
+    show_all_dates: Optional[bool] = Query(False),
+    organization: Optional[str] = Query(None, description="Filter by organization - Supreme Admin only")
 ):
     try:
-        print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}")
+        print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}, Organization param: {organization}")
         print(f"Query params - status: {status}, personal: {personal}, search: {search}")
 
         user_role = current_user.get("role", "user").lower()
         user_email = current_user.get("email", "").lower().strip()
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        is_supreme_admin = current_user.get("is_supreme_admin", False)
 
-        org_id = (
-            current_user.get("org_id") or
-            (current_user.get("organization", "").lower().replace(" ", "-")) or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
+        # If user is Supreme Admin and organization parameter is provided, use that
+        if is_supreme_admin and organization:
+            org_id = organization.lower().replace(" ", "-")
+            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+            # For Supreme Admin with explicit org parameter, use the parameter as the organization
+            organization_filter = organization
+        else:
+            # Otherwise use user's organization from token
+            org_id = (
+                current_user.get("org_id") or
+                (current_user.get("organization", "").lower().replace(" ", "-")) or
+                "active-teams"
+            )
+            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+            organization_filter = current_user.get("Organization") or current_user.get("organization", "")
 
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
@@ -2523,14 +2547,14 @@ async def get_other_events(
             start_date_obj = datetime.strptime("2000-01-01", "%Y-%m-%d").date()
             end_date_obj = today + timedelta(days=365)
 
-        print(f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}")
+        print(f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}, org_id: {org_id}, organization_filter: {organization_filter}")
 
         query = {
             "$and": [
                 {
                     "$or": [
                         {"org_id": org_id},
-                        {"Organization": {"$regex": re.escape(organization), "$options": "i"}}
+                        {"Organization": {"$regex": re.escape(organization_filter), "$options": "i"}}
                     ]
                 },
                 {
