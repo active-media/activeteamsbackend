@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 from supreme_admin import router as supreme_admin_router
 app = FastAPI()
-app.include_router(supreme_admin_router)
+
 import pandas as pd
 import io
 
@@ -49,6 +49,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(supreme_admin_router)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
 
 ORG_ID_MAP = {
     "active-church": "active-teams",
@@ -998,57 +1011,57 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
     }
 
 
-# In login endpoint
 @app.post("/login")
 async def login(user: UserLogin):
-    logger.info(f"Login attempt: {user.email}")
-    existing = await users_collection.find_one({"email": user.email})
-    if not existing or not verify_password(user.password, existing["password"]):
-        logger.warning(f"Login failed: {user.email}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    try:
+        logger.info(f"Login attempt: {user.email}")
+        existing = await users_collection.find_one({"email": user.email})
+        
+        if not existing or not verify_password(user.password, existing["password"]):
+            logger.warning(f"Login failed: {user.email}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Ensure user ID is properly formatted
-    user_id = str(existing["_id"])
-    
-    # Get organization with proper case handling
-    organization = existing.get("Organization") or existing.get("organization", "")
-    
-    # Get or create org_id
-    org_id = existing.get("org_id")
-    if not org_id and organization:
-        org_id = organization.lower().replace(" ", "-")
-    if not org_id:
-        org_id = "active-teams"
-    
-    # Create token with user_id
-    access_token = create_access_token({
-        "user_id": user_id,  # Important: use "user_id" as key
-        "sub": user_id,      # Also include sub for compatibility
-        "email": existing["email"],
-        "role": existing.get("role", "user"),
-        "is_supreme_admin": existing.get("is_supreme_admin", False),
-        "Organization": organization,
-        "org_id": org_id
-    })
-    
-    logger.info(f"Token created for user {user_id}")
-    
-    # Return response with user ID
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user_id,
-            "_id": user_id,  # Include both for compatibility
+        user_id = str(existing["_id"])
+        organization = existing.get("Organization") or existing.get("organization", "")
+        org_id = existing.get("org_id")
+        if not org_id and organization:
+            org_id = organization.lower().replace(" ", "-")
+        if not org_id:
+            org_id = "active-teams"
+
+        access_token = create_access_token({
+            "user_id": user_id,
+            "sub": user_id,
             "email": existing["email"],
-            "name": existing.get("name", ""),
-            "surname": existing.get("surname", ""),
             "role": existing.get("role", "user"),
-            "organization": organization,
-            "org_id": org_id,
-            "is_supreme_admin": existing.get("is_supreme_admin", False)
+            "is_supreme_admin": existing.get("is_supreme_admin", False),
+            "Organization": organization,
+            "org_id": org_id
+        })
+
+        logger.info(f"Token created for user {user_id}")
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user_id,
+                "_id": user_id,
+                "email": existing["email"],
+                "name": existing.get("name", ""),
+                "surname": existing.get("surname", ""),
+                "role": existing.get("role", "user"),
+                "organization": organization,
+                "org_id": org_id,
+                "is_supreme_admin": existing.get("is_supreme_admin", False)
+            }
         }
-    }
+    
+    except HTTPException:
+        raise  # Don't swallow intentional HTTP errors
+    except Exception as e:
+        logger.error(f"Login error for {user.email}: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.post("/signup")
 async def signup(user: UserCreate):
