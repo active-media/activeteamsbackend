@@ -50,10 +50,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.options("/{rest_of_path:path}")
-async def preflight_handler(rest_of_path: str):
-    return JSONResponse(content={"message": "OK"})
-
 ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
