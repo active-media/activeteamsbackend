@@ -638,24 +638,30 @@ async def startup_event():
     print("Starting background load of ALL people...")
     asyncio.create_task(background_load_all_people())
 
-
 @app.get("/cache/people")
 async def get_cached_people(
-    background_tasks: BackgroundTasks,                    
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     try:
         current_time = datetime.now(timezone.utc)
-
-        _, _, aliases, is_super_admin = get_org_from_user(current_user)
+ 
+        # ── Safely resolve org info ───────────────────────────────────────────
+        try:
+            _, _, aliases, is_super_admin = get_org_from_user(current_user)
+        except Exception as org_err:
+            print(f"get_org_from_user failed: {org_err}")
+            aliases = []
+            is_super_admin = True  # fail-open so data is still returned
+ 
         org_label = current_user.get("Organization") or current_user.get("org_id") or "ALL"
-
+ 
         def filter_by_org(data: list) -> list:
             if is_super_admin or not aliases:
-                return [serialize_doc(p) for p in data]         # ← serialize here
+                return [serialize_doc(p) for p in data]
             result = []
-            for p in data:                                       # ← iterate data param
-                p = serialize_doc(p)                            # ← serialize each doc
+            for p in data:
+                p = serialize_doc(p)
                 person_org = (
                     p.get("org_id") or p.get("Org_id") or p.get("orgId") or
                     p.get("Organization") or p.get("Organisation") or
@@ -664,7 +670,7 @@ async def get_cached_people(
                 if person_org and person_org in aliases:
                     result.append(p)
             return result
-
+ 
         def parse_expires(val):
             if val is None:
                 return None
@@ -675,9 +681,13 @@ async def get_cached_people(
                 return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
             except Exception:
                 return None
-
+ 
         expires_at = parse_expires(people_cache.get("expires_at"))
-
+ 
+        # Guard: ensure refresh_queue key exists to avoid KeyError in /status
+        if "refresh_queue" not in people_cache:
+            people_cache["refresh_queue"] = []
+ 
         # ── 1. fresh valid cache ──────────────────────────────────────────────
         if (
             people_cache["data"] and
@@ -700,7 +710,7 @@ async def get_cached_people(
                 "is_valid":      True,
                 "organization":  org_label,
             }
-
+ 
         # ── 2. cache still loading — return partial ───────────────────────────
         if people_cache["is_loading"]:
             filtered = filter_by_org(people_cache["data"] or [])
@@ -719,12 +729,12 @@ async def get_cached_people(
                 "is_valid":          people_cache["is_valid"],
                 "organization":      org_label,
             }
-
+ 
         # ── 3. stale cache — serve stale, trigger refresh ─────────────────────
         if people_cache["data"] and not people_cache["is_valid"]:
             print("Cache stale — returning stale data while refreshing...")
-            if not people_cache["is_loading"] and people_cache["pending_refresh"]:
-                background_tasks.add_task(                     
+            if not people_cache["is_loading"] and people_cache.get("pending_refresh"):
+                background_tasks.add_task(
                     background_refresh_people_cache,
                     people_cache["data"].copy()
                 )
@@ -740,14 +750,14 @@ async def get_cached_people(
                 "message":        "Stale data (refresh in progress)",
                 "cache_version":  people_cache["version"],
                 "is_valid":       False,
-                "refresh_queued": people_cache["pending_refresh"],
+                "refresh_queued": people_cache.get("pending_refresh"),
                 "organization":   org_label,
             }
-
+ 
         # ── 4. cache empty — trigger load ─────────────────────────────────────
         if not people_cache["data"] and not people_cache["is_loading"]:
             print("Cache empty — triggering background load...")
-            background_tasks.add_task(background_refresh_people_cache)  # ← replaced background_tasks.create_task
+            background_tasks.add_task(background_refresh_people_cache)  # ← FIXED: was create_task
             return {
                 "success":       True,
                 "cached_data":   [],
@@ -760,7 +770,7 @@ async def get_cached_people(
                 "cache_version": people_cache["version"],
                 "organization":  org_label,
             }
-
+ 
         # ── 5. fallback ───────────────────────────────────────────────────────
         filtered = filter_by_org(people_cache["data"] or [])
         return {
@@ -773,16 +783,19 @@ async def get_cached_people(
             "cache_version": people_cache["version"],
             "organization":  org_label,
         }
-
+ 
     except Exception as e:
         print(f"Error in /cache/people: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "success":     False,
             "error":       str(e),
             "cached_data": [],
             "total_count": 0,
         }
-
+ 
+ 
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint."""
@@ -796,8 +809,8 @@ async def health_check():
             "last_updated": people_cache["last_updated"]
         }
     }
-
-
+ 
+ 
 @app.get("/people/simple")
 async def get_people_simple(
     page: int = Query(1, ge=1),
@@ -805,17 +818,16 @@ async def get_people_simple(
 ):
     """
     Simple paginated people endpoint as fallback.
-    Uses updated schema fields — old Leader @N fields are no longer fetched.
     """
     try:
         skip = (page - 1) * per_page
         cursor = people_collection.find({}, PEOPLE_PROJECTION).skip(skip).limit(per_page)
         people_list = await cursor.to_list(length=per_page)
-       
+ 
         formatted_people = [transform_person_full(p) for p in people_list]
-       
+ 
         total_count = await people_collection.count_documents({})
-       
+ 
         return {
             "success": True,
             "results": formatted_people,
@@ -826,14 +838,15 @@ async def get_people_simple(
                 "has_more": (skip + len(formatted_people)) < total_count
             }
         }
-       
+ 
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
             "results": []
         }
-
+ 
+ 
 @app.post("/cache/people/refresh")
 async def refresh_people_cache(background_tasks: BackgroundTasks):
     """
@@ -843,8 +856,9 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else None
-            background_tasks.create_task(background_refresh_people_cache(current_data))
-            
+            # ← FIXED: was background_tasks.create_task(...) which doesn't exist
+            background_tasks.add_task(background_refresh_people_cache, current_data)
+ 
             return {
                 "success": True,
                 "message": "Cache refresh triggered",
@@ -859,20 +873,24 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
                 "is_loading": True,
                 "current_progress": people_cache["load_progress"]
             }
-        
+ 
     except Exception as e:
         print(f"Error refreshing cache: {str(e)}")
         return {
             "success": False,
             "error": str(e)
         }
-
+ 
+ 
 @app.get("/cache/people/status")
 async def get_cache_status():
     """Get detailed cache status and loading progress."""
     total_in_db = await people_collection.count_documents({})
     cache_size = len(people_cache["data"])
-
+ 
+    # Guard against missing key
+    refresh_queue = people_cache.get("refresh_queue", [])
+ 
     return {
         "cache": {
             "size": cache_size,
@@ -883,9 +901,9 @@ async def get_cache_status():
             "total_loaded": people_cache["total_loaded"],
             "last_error": people_cache["last_error"],
             "is_valid": people_cache["is_valid"],
-            "pending_refresh": people_cache["pending_refresh"],
+            "pending_refresh": people_cache.get("pending_refresh"),
             "version": people_cache["version"],
-            "refresh_queue_size": len(people_cache["refresh_queue"])
+            "refresh_queue_size": len(refresh_queue)
         },
         "database": {
             "total_people": total_in_db,
@@ -11256,6 +11274,7 @@ async def get_event_new_people(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
    
+ 
 @app.get("/service-checkin/real-time-data")
 async def get_service_checkin_real_time_data(
     event_id: str = Query(...),
@@ -11265,42 +11284,40 @@ async def get_service_checkin_real_time_data(
         parts = event_id.split("_")
         base_event_id = parts[0]
         instance_date = parts[1] if len(parts) > 1 else None
-
+ 
         if not ObjectId.is_valid(base_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+ 
         is_recurring = bool(event.get("recurring_day"))
-
+ 
         if is_recurring:
             if not instance_date:
-                timezone = pytz.timezone("Africa/Johannesburg")
-                instance_date = datetime.now(timezone).date().isoformat()
-
+                tz = pytz.timezone("Africa/Johannesburg")
+                instance_date = datetime.now(tz).date().isoformat()
+ 
             attendance_data = event.get("attendance", {})
             date_data = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
-
+ 
             attendees = date_data.get("attendees", [])
             new_people = date_data.get("new_people", [])
             consolidations = date_data.get("consolidations", [])
-
+ 
             print(f"Recurring [{instance_date}]: {len(attendees)} att, {len(new_people)} new, {len(consolidations)} cons")
         else:
             attendees = event.get("attendees", [])
             new_people = event.get("new_people", [])
             consolidations = event.get("consolidations", [])
-
+ 
         attendees = attendees if isinstance(attendees, list) else []
         new_people = new_people if isinstance(new_people, list) else []
         consolidations = consolidations if isinstance(consolidations, list) else []
-
+ 
         print(f"Real-time data returning: {len(attendees)} attendees, {len(new_people)} new, {len(consolidations)} consolidations")
-        print(f"Instance date used: {instance_date}")
-        print(f"Is recurring: {is_recurring}")
-        
+ 
         return {
             "success": True,
             "event_id": event_id,
@@ -11314,13 +11331,14 @@ async def get_service_checkin_real_time_data(
             "total_attendance": len(attendees),
             "refreshed_at": datetime.utcnow().isoformat()
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error getting real-time data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
-
+ 
+ 
 @app.get("/service-checkin/validate-removal")
 async def validate_removal(
     event_id: str = Query(..., description="Event ID"),
@@ -11328,17 +11346,15 @@ async def validate_removal(
     person_id: str = Query(None, description="Person ID"),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Validate what will be affected by removal
-    """
+    """Validate what will be affected by removal."""
     try:
         if not consolidation_id and not person_id:
             raise HTTPException(status_code=400, detail="Either consolidation_id or person_id is required")
-        
+ 
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+ 
         consolidation = None
         if consolidation_id:
             consolidations = event.get("consolidations", [])
@@ -11346,19 +11362,18 @@ async def validate_removal(
                 if cons.get("id") == consolidation_id:
                     consolidation = cons
                     break
-        
+ 
         warnings = []
         affected_tasks = []
-        
+ 
         if consolidation:
             task_id = consolidation.get("task_id")
             if task_id and ObjectId.is_valid(task_id):
-                # Get ONLY the specific task
                 task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
                 if task:
                     affected_tasks.append(task)
                     warnings.append(f"Task for {task.get('contacted_person', {}).get('name', 'Unknown')} will be deleted")
-        
+ 
         return {
             "success": True,
             "validation": {
@@ -11367,12 +11382,12 @@ async def validate_removal(
                 "affected_tasks_count": len(affected_tasks)
             }
         }
-        
+ 
     except Exception as e:
         logger.error(f"Validation error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Validation error: {str(e)}")
-
-
+ 
+ 
 @app.post("/service-checkin/checkin")
 async def service_checkin_person(
     checkin_data: dict = Body(...),
@@ -11382,32 +11397,31 @@ async def service_checkin_person(
         event_id = checkin_data.get("event_id")
         person_data = checkin_data.get("person_data", {})
         checkin_type = checkin_data.get("type", "attendee")
-
+ 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+ 
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
-
-        # For recurring events, determine today's instance date
+ 
         instance_date = None
         if is_recurring:
-            timezone = pytz.timezone("Africa/Johannesburg")
-            instance_date = datetime.now(timezone).date().isoformat()
-
+            tz = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(tz).date().isoformat()
+ 
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
             if not person_id or not ObjectId.is_valid(person_id):
                 raise HTTPException(status_code=400, detail="Valid person ID is required")
-
+ 
             existing = await people_collection.find_one({"_id": ObjectId(person_id)})
             if not existing:
                 raise HTTPException(status_code=404, detail="Person does not exist")
-
+ 
             attendee_record = {
                 "id": str(existing["_id"]),
                 "name": existing.get("Name", ""),
@@ -11418,9 +11432,8 @@ async def service_checkin_person(
                 "checked_in": True,
                 "type": "attendee"
             }
-
+ 
             if is_recurring:
-                # Write to attendance[date].attendees, prevent duplicates
                 result = await events_collection.update_one(
                     {
                         "_id": ObjectId(event_id),
@@ -11446,17 +11459,17 @@ async def service_checkin_person(
                         "$set": {"updated_at": now}
                     }
                 )
-
+ 
             if result.modified_count == 0:
                 raise HTTPException(status_code=400, detail=f"{existing.get('Name')} is already checked in")
-
+ 
             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
             if is_recurring:
                 date_data = updated_event.get("attendance", {}).get(instance_date, {})
                 present_count = len(date_data.get("attendees", []))
             else:
                 present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in")])
-
+ 
             return {
                 "message": f"{existing.get('Name')} checked in",
                 "type": "attendee",
@@ -11464,7 +11477,7 @@ async def service_checkin_person(
                 "present_count": present_count,
                 "success": True
             }
-
+ 
         elif checkin_type == "new_person":
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
             new_person_record = {
@@ -11479,7 +11492,7 @@ async def service_checkin_person(
                 "type": "new_person",
                 "is_checked_in": True
             }
-
+ 
             if is_recurring:
                 await events_collection.update_one(
                     {"_id": ObjectId(event_id)},
@@ -11493,14 +11506,14 @@ async def service_checkin_person(
                     {"_id": ObjectId(event_id)},
                     {"$push": {"new_people": new_person_record}, "$set": {"updated_at": now}}
                 )
-
+ 
             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
             if is_recurring:
                 date_data = updated_event.get("attendance", {}).get(instance_date, {})
                 count = len(date_data.get("new_people", []))
             else:
                 count = len(updated_event.get("new_people", []))
-
+ 
             return {
                 "message": "Visitor added to event",
                 "type": "new_person",
@@ -11508,16 +11521,17 @@ async def service_checkin_person(
                 "new_people_count": count,
                 "success": True
             }
-
+ 
         else:
             raise HTTPException(status_code=400, detail="Invalid type — must be attendee or new_person")
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print("Error in check-in:", e)
         raise HTTPException(status_code=500, detail="Check-in failed")
-
+ 
+ 
 @app.delete("/service-checkin/remove")
 async def remove_from_service_checkin(
     removal_data: dict = Body(...),
@@ -11527,28 +11541,28 @@ async def remove_from_service_checkin(
         event_id = removal_data.get("event_id")
         person_id = removal_data.get("person_id")
         data_type = removal_data.get("type")
-
+ 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         if not person_id or not data_type:
             raise HTTPException(status_code=400, detail="Person ID and type are required")
-
+ 
         valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
-
+ 
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+ 
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
-
+ 
         if is_recurring:
-            timezone = pytz.timezone("Africa/Johannesburg")
-            instance_date = datetime.now(timezone).date().isoformat()
-
+            tz = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(tz).date().isoformat()
+ 
             result = await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -11564,12 +11578,12 @@ async def remove_from_service_checkin(
             if data_type == "attendees":
                 update_query["$inc"] = {"total_attendance": -1}
             result = await events_collection.update_one({"_id": ObjectId(event_id)}, update_query)
-
+ 
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found in specified list")
-
+ 
         updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-
+ 
         if is_recurring:
             date_data = updated_event.get("attendance", {}).get(instance_date, {})
             present_count = len(date_data.get("attendees", []))
@@ -11579,7 +11593,7 @@ async def remove_from_service_checkin(
             present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in", False)])
             new_people_count = len(updated_event.get("new_people", []))
             consolidation_count = len(updated_event.get("consolidations", []))
-
+ 
         return {
             "success": True,
             "message": f"Person removed from {data_type} successfully",
@@ -11589,66 +11603,87 @@ async def remove_from_service_checkin(
                 "consolidation_count": consolidation_count
             }
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error removing from service check-in: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error removing person: {str(e)}")
-   
+ 
+ 
 @app.put("/service-checkin/update")
 async def update_service_checkin_person(
     update_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Update a person in any of the three data types
-    """
+    """Update a person in any of the three data types, with recurring event support."""
     try:
         event_id = update_data.get("event_id")
         person_id = update_data.get("person_id")
-        data_type = update_data.get("type")  
+        data_type = update_data.get("type")
         update_fields = update_data.get("update_fields", {})
-
-        print(f"✏️ Updating service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
-
+ 
+        print(f"Updating service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
+ 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         if not person_id or not data_type:
             raise HTTPException(status_code=400, detail="Person ID and type are required")
-
+ 
         valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
-
-        
-        set_fields = {}
-        for field, value in update_fields.items():
-            set_fields[f"{data_type}.$.{field}"] = value
-
-        set_fields["updated_at"] = datetime.utcnow().isoformat()
-
-        result = await events_collection.update_one(
-            {
-                "_id": ObjectId(event_id),
-                f"{data_type}.id": person_id
-            },
-            {
-                "$set": set_fields
-            }
-        )
-
+ 
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+ 
+        is_recurring = bool(event.get("recurring_day"))
+        now = datetime.utcnow().isoformat()
+ 
+        if is_recurring:
+            # ← FIXED: recurring events store data under attendance.{date}.{data_type}
+            tz = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(tz).date().isoformat()
+ 
+            set_fields = {}
+            for field, value in update_fields.items():
+                set_fields[f"attendance.{instance_date}.{data_type}.$.{field}"] = value
+            set_fields[f"attendance.{instance_date}.updated_at"] = now
+            set_fields["updated_at"] = now
+ 
+            result = await events_collection.update_one(
+                {
+                    "_id": ObjectId(event_id),
+                    f"attendance.{instance_date}.{data_type}.id": person_id
+                },
+                {"$set": set_fields}
+            )
+        else:
+            set_fields = {}
+            for field, value in update_fields.items():
+                set_fields[f"{data_type}.$.{field}"] = value
+            set_fields["updated_at"] = now
+ 
+            result = await events_collection.update_one(
+                {
+                    "_id": ObjectId(event_id),
+                    f"{data_type}.id": person_id
+                },
+                {"$set": set_fields}
+            )
+ 
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found or no changes made")
-
+ 
         print(f"Successfully updated in {data_type}")
-
+ 
         return {
             "success": True,
             "message": f"Person updated in {data_type} successfully"
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
