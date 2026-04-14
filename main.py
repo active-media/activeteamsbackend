@@ -1363,6 +1363,178 @@ async def signup(user: UserCreate):
    
     return {"message": "User created successfully", "Organization": organization,}
 
+# ---------------- Login ----------------
+@app.post("/login")
+async def login(user: UserLogin):
+    logger.info(f"Login attempt: {user.email}")
+    existing = await users_collection.find_one({"email": user.email})
+    if not existing or not verify_password(user.password, existing["password"]):
+        logger.warning(f"Login failed: {user.email}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    person = await people_collection.find_one({"Email":user.email}) or {}
+
+
+    full_name = f"{person.get('Name') or ''} {person.get('Surname') or ''}"
+    print("FULL NAME",full_name)
+    is_Leader = await events_collection.find_one({"$or":[{"Email":user.email,"Event Type":"Cells"},{"Leader":full_name,"Event Type":"Cells"}]})
+    is_Leader = bool(is_Leader)
+    if not person:
+        person = await people_collection.find_one({"Name":existing["name"], "Surname":existing["surname"]}) or {}
+   
+
+    access_token = create_access_token(
+        {"user_id": str(existing["_id"]), "email": existing["email"], "role": existing.get("role", "user")},
+        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+    )
+
+    refresh_token_id = secrets.token_urlsafe(16)
+    refresh_plain = secrets.token_urlsafe(32)
+    refresh_hash = hash_password(refresh_plain)
+    refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    await users_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {
+            "refresh_token_id": refresh_token_id,
+            "refresh_token_hash": refresh_hash,
+            "refresh_token_expires": refresh_expires,
+        }}
+    )
+
+    logger.info(f"Login successful: {user.email}")
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "refresh_token_id": refresh_token_id,
+        "refresh_token": refresh_plain,
+        "user": {
+        "id": str(existing["_id"]),
+        "email": existing["email"],
+        "name": existing.get("name", ""),
+        "surname": existing.get("surname", ""),
+        "role": existing.get("role", "registrant"),
+        "date_of_birth": existing.get("date_of_birth", ""),
+        "home_address": existing.get("home_address", ""),
+        "phone_number": existing.get("phone_number", ""),
+        "gender": existing.get("gender", ""),
+        "invited_by": existing.get("invited_by", "")
+    },
+    "leaders":{
+        'leaderAt1':person.get("Leader @1",""),
+        'leaderAt12':person.get("Leader @12",""),
+        'leaderAt144':person.get("Leader @144",""),
+    },
+    "isLeader": is_Leader
+    }
+
+@app.post("/forgot-password")
+
+async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+    logger.info(f"Forgot password requested for email: {payload.email}")
+   
+    # Find the user by email
+    user = await users_collection.find_one({"email": payload.email})
+
+    # Not user
+    if not user:
+        logger.info(f"Forgot password - email not found: {payload.email}")
+        return {"message": "Your email doesn't exist."}
+
+    # Create a reset token valid for 1 hour
+    reset_token = create_access_token(
+        {"user_id": str(user["_id"])},
+        expires_delta=timedelta(hours=1)
+    )
+   
+    reset_link = f"https://teams.theactivechurch.org/reset-password?token={reset_token}"
+    recipient_name = user.get("name", "there")  # Default to "there" if name missing
+
+    logger.info(f"Reset link generated for {payload.email}")
+
+    # Add background task with all required arguments
+    background_tasks.add_task(send_reset_email, payload.email, recipient_name, reset_link)
+    logger.info(f"Reset email task scheduled for {payload.email}")
+
+    return {"message": "If your email exists, a reset link has been sent."}
+
+# ---------------- Reset Password ----------------
+@app.post("/reset-password")
+async def reset_password(data: ResetPasswordRequest):
+    try:
+        payload = decode_access_token(data.token)
+    except Exception:
+        logger.warning("Invalid or expired reset token")
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        logger.warning("Invalid token payload")
+        raise HTTPException(status_code=400, detail="Invalid token payload")
+
+    hashed_pw = hash_password(data.new_password)
+    result = await users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+    )
+
+    if result.modified_count == 0:
+        logger.warning(f"Reset password failed - user not found or unchanged: {user_id}")
+        raise HTTPException(status_code=404, detail="User not found or password unchanged")
+
+    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    access_token = create_access_token(
+        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+    )
+
+    logger.info(f"Password reset successful for {user['email']}")
+    return {
+        "message": "Password has been reset successfully.",
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+# ---------------- Refresh Token ----------------
+@app.post("/refresh-token")
+async def refresh_token(payload: RefreshTokenRequest = Body(...)):
+    logger.info(f"Refresh token requested: {payload.refresh_token_id}")
+    user = await users_collection.find_one({"refresh_token_id": payload.refresh_token_id})
+    if (
+        not user
+        or not user.get("refresh_token_hash")
+        or not verify_password(payload.refresh_token, user["refresh_token_hash"])
+        or not user.get("refresh_token_expires")
+        or user["refresh_token_expires"] < datetime.utcnow()
+    ):
+        logger.warning(f"Refresh token invalid/expired: {payload.refresh_token_id}")
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    token = create_access_token(
+        {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+        expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+    )
+
+    new_refresh_token_id = secrets.token_urlsafe(16)
+    new_refresh_plain = secrets.token_urlsafe(32)
+    new_refresh_hash = hash_password(new_refresh_plain)
+    new_refresh_expires = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "refresh_token_id": new_refresh_token_id,
+            "refresh_token_hash": new_refresh_hash,
+            "refresh_token_expires": new_refresh_expires,
+        }},
+    )
+
+    logger.info(f"Refresh token rotated for user: {user['email']}")
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "refresh_token_id": new_refresh_token_id,
+        "refresh_token": new_refresh_plain,
+    }
 
 # ---------------- Logout ----------------
 @app.post("/logout")
