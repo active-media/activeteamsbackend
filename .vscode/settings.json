@@ -1,0 +1,4 @@
+{
+    "python.pythonPath": "venv/bin/python3.12",
+    "python-envs.defaultEnvManager": "ms-python.python:system"
+}
