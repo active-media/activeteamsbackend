@@ -512,7 +512,7 @@ def transform_person_full(p, id_to_full: dict = None):
     return convert_objectids(result)
     
 
-async def invalidate_people_cache(operation_type: str,background_tasks: BackgroundTasks, details: dict = None):
+async def invalidate_people_cache(operation_type: str,details: dict = None):
     """
     Invalidate the people cache and trigger background rehydration.
     Operation types: 'create', 'update', 'delete'
@@ -534,7 +534,7 @@ async def invalidate_people_cache(operation_type: str,background_tasks: Backgrou
         
         if not people_cache["is_loading"]:
             print(f"Triggering background cache refresh after {operation_type} operation...")
-            people_cache["background_task"] = background_tasks.create_task(
+            people_cache["background_task"] = asyncio.create_task(
                 background_refresh_people_cache(stale_data)
             )
         
