@@ -855,8 +855,7 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
     try:
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
-            current_data = people_cache["data"].copy() if people_cache["data"] else None
-            # ← FIXED: was background_tasks.create_task(...) which doesn't exist
+            current_data = people_cache["data"].copy() if people_cache["data"] else Nones
             background_tasks.add_task(background_refresh_people_cache, current_data)
  
             return {
