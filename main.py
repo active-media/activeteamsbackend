@@ -8278,7 +8278,9 @@ async def search_people(
         if not people_cache["data"]:
             return {"success": False, "error": "Cache not ready", "results": []}
 
-        search_term = query.lower().strip()
+
+        # Split query into words for multi-word search
+        search_terms = [w for w in query.lower().strip().split() if w]
         results = []
 
         for person in people_cache["data"]:
@@ -8300,13 +8302,22 @@ async def search_people(
             if not org_match:
                 continue
 
-            if (
-                search_term in person.get("FullName", "").lower() or
-                search_term in person.get("Email", "").lower() or
-                search_term in person.get("Number", "") or
-                search_term in person.get("Address", "").lower() or
-                search_term in person.get("Stage", "").lower()
-            ):
+
+            # Build FullName by concatenating Name and Surname
+            name = person.get("Name", "").strip()
+            surname = person.get("Surname", "").strip()
+            full_name = f"{name} {surname}".strip().lower()
+
+            combined = " ".join([
+                full_name,
+                person.get("Email", "").lower(),
+                person.get("Number", "").lower(),
+                person.get("Address", "").lower(),
+                person.get("Stage", "").lower(),
+            ])
+
+            # All search terms must be present in the combined string
+            if all(term in combined for term in search_terms):
                 results.append(person)
 
             if len(results) >= limit:
