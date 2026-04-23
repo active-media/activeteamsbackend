@@ -548,7 +548,6 @@ def transform_person_full(p, id_to_full: dict = None):
         "leaders":      leaders,
         "LeaderId":     leader_id,
         "LeaderPath":   path_strs,
-        leader_flat,
     }
     return convert_objectids(result)
     
