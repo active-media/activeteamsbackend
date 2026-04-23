@@ -489,6 +489,46 @@ def transform_person_full(p, id_to_full: dict = None):
         # sort root first
         leaders.sort(key=lambda x: x["level"])
 
+    leader_flat = {
+        "Leader @1": "",
+        "leader1": "",
+        "Leader at 1": "",
+        "Leader @12": "",
+        "leader12": "",
+        "Leader at 12": "",
+        "Leader @144": "",
+        "leader144": "",
+        "Leader at 144": "",
+        "Leader @1728": "",
+        "leader1728": "",
+        "Leader at 1728": "",
+    }
+
+    for leader in leaders:
+        level = leader.get("level")
+        name = leader.get("name", "")
+        if not name:
+            continue
+        if level == 1:
+            leader_flat["Leader @1"] = leader_flat["Leader @1"] or name
+            leader_flat["leader1"] = leader_flat["leader1"] or name
+            leader_flat["Leader at 1"] = leader_flat["Leader at 1"] or name
+        elif level == 12:
+            leader_flat["Leader @12"] = leader_flat["Leader @12"] or name
+            leader_flat["leader12"] = leader_flat["leader12"] or name
+            leader_flat["Leader at 12"] = leader_flat["Leader at 12"] or name
+        elif level == 144:
+            leader_flat["Leader @144"] = leader_flat["Leader @144"] or name
+            leader_flat["leader144"] = leader_flat["leader144"] or name
+            leader_flat["Leader at 144"] = leader_flat["Leader at 144"] or name
+        elif level == 1728:
+            leader_flat["Leader @1728"] = leader_flat["Leader @1728"] or name
+            leader_flat["leader1728"] = leader_flat["leader1728"] or name
+            leader_flat["Leader at 1728"] = leader_flat["Leader at 1728"] or name
+
+    for key in leader_flat:
+        leader_flat[key] = p.get(key, leader_flat[key]) or leader_flat[key]
+
     result = {
         "_id":          oid(p.get("_id")),
         "Name":         p.get("Name") or "",
@@ -508,6 +548,7 @@ def transform_person_full(p, id_to_full: dict = None):
         "leaders":      leaders,
         "LeaderId":     leader_id,
         "LeaderPath":   path_strs,
+        leader_flat,
     }
     return convert_objectids(result)
     
@@ -8606,19 +8647,48 @@ async def search_people(
             if not org_match:
                 continue
 
+            leader_names = [
+                (leader.get("name") or "").lower()
+                for leader in person.get("leaders", [])
+            ]
+            leader_match = any(search_term in name for name in leader_names)
+
             if (
                 search_term in person.get("FullName", "").lower() or
                 search_term in person.get("Email", "").lower() or
                 search_term in person.get("Number", "") or
                 search_term in person.get("Address", "").lower() or
                 search_term in person.get("Stage", "").lower() or
-                # Include leader fields in search
                 search_term in (person.get("Leader @1") or "").lower() or
                 search_term in (person.get("Leader @12") or "").lower() or
                 search_term in (person.get("Leader @144") or "").lower() or
-                search_term in (person.get("Leader @1728") or "").lower()
+                search_term in (person.get("Leader @1728") or "").lower() or
+                leader_match
             ):
-                results.append(person)
+                person_copy = person.copy()
+                if person_copy.get("leaders") and not person_copy.get("Leader @1"):
+                    for leader in person_copy["leaders"]:
+                        level = leader.get("level")
+                        name = leader.get("name", "")
+                        if not name:
+                            continue
+                        if level == 1:
+                            person_copy["Leader @1"] = person_copy.get("Leader @1") or name
+                            person_copy["leader1"] = person_copy.get("leader1") or name
+                            person_copy["Leader at 1"] = person_copy.get("Leader at 1") or name
+                        elif level == 12:
+                            person_copy["Leader @12"] = person_copy.get("Leader @12") or name
+                            person_copy["leader12"] = person_copy.get("leader12") or name
+                            person_copy["Leader at 12"] = person_copy.get("Leader at 12") or name
+                        elif level == 144:
+                            person_copy["Leader @144"] = person_copy.get("Leader @144") or name
+                            person_copy["leader144"] = person_copy.get("leader144") or name
+                            person_copy["Leader at 144"] = person_copy.get("Leader at 144") or name
+                        elif level == 1728:
+                            person_copy["Leader @1728"] = person_copy.get("Leader @1728") or name
+                            person_copy["leader1728"] = person_copy.get("leader1728") or name
+                            person_copy["Leader at 1728"] = person_copy.get("Leader at 1728") or name
+                results.append(person_copy)
 
             # Removed early break - search through ALL matching people
             # if len(results) >= limit:
