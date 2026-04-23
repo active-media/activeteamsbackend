@@ -8257,11 +8257,318 @@ async def get_people(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
+# ========== EVENT-SPECIFIC PEOPLE ENDPOINT - RETURNS ALL PEOPLE WITH COMPLETE FIELDS ==========
+@app.get("/events/{event_id}/all-people-for-attendance")
+async def get_all_people_for_event(
+    event_id: str = Path(...),
+    perPage: int = Query(200, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get ALL people with complete fields for event attendance/modals.
+    Returns complete data including all leader fields regardless of organization.
+    BEST ENDPOINT FOR: AttendanceModal, event people selection, searching all attendees
+    """
+    try:
+        # Verify event exists and user has access
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Build query to get ALL people (no org filtering for events)
+        query = {}
+        
+        # Get total count
+        total_count = await people_collection.count_documents(query)
+        
+        # Use aggregation pipeline for complete data
+        pipeline = [
+            {"$match": query},
+            {"$limit": perPage},
+            {"$project": {
+                "_id": 1,
+                "Name": 1,
+                "Surname": 1,
+                "Number": 1,
+                "Email": 1,
+                "Address": 1,
+                "Gender": 1,
+                "Birthday": 1,
+                "InvitedBy": 1,
+                "Stage": 1,
+                "org_id": 1,
+                "Organization": 1,
+                "Organisation": 1,
+                "LeaderId": 1,
+                "LeaderPath": 1,
+                "Leader @1": 1,
+                "Leader @12": 1,
+                "Leader @144": 1,
+                "Leader @1728": 1,
+                "leader1": 1,
+                "leader12": 1,
+                "leader144": 1,
+                "leader1728": 1,
+                "DateCreated": 1,
+                "UpdatedAt": 1,
+                "Date Created": 1
+            }}
+        ]
+        
+        cursor = people_collection.aggregate(pipeline)
+        people_list = []
+        async for person in cursor:
+            people_list.append(person)
+        
+        # Resolve LeaderPath to names if it exists
+        all_leader_ids = set()
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            if leader_path:
+                for lid in leader_path:
+                    if lid:
+                        try:
+                            if isinstance(lid, ObjectId):
+                                all_leader_ids.add(lid)
+                            else:
+                                all_leader_ids.add(ObjectId(str(lid)))
+                        except Exception:
+                            pass
+        
+        name_map = {}
+        if all_leader_ids:
+            try:
+                leader_cursor = people_collection.find(
+                    {"_id": {"$in": list(all_leader_ids)}},
+                    {"_id": 1, "Name": 1, "Surname": 1}
+                )
+                async for leader_doc in leader_cursor:
+                    name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+            except Exception as e:
+                print(f"Error fetching leaders: {e}")
+        
+        def resolve_leader(lid):
+            if not lid:
+                return ""
+            try:
+                if isinstance(lid, ObjectId):
+                    return name_map.get(lid, "")
+                return name_map.get(ObjectId(str(lid)), "")
+            except Exception:
+                return ""
+        
+        # Build final response with all fields
+        final_list = []
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            
+            # Resolve from LeaderPath if available, otherwise use existing fields
+            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else (person.get("Leader @1") or person.get("leader1") or "")
+            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else (person.get("Leader @12") or person.get("leader12") or "")
+            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else (person.get("Leader @144") or person.get("leader144") or "")
+            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else (person.get("Leader @1728") or person.get("leader1728") or "")
+            
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            
+            mapped = {
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Number": person.get("Number", ""),
+                "Email": person.get("Email", ""),
+                "Address": person.get("Address", ""),
+                "Gender": person.get("Gender", ""),
+                "Birthday": person.get("Birthday", ""),
+                "InvitedBy": person.get("InvitedBy", ""),
+                "Stage": person.get("Stage", "Win"),
+                "org_id": person.get("org_id") or person.get("Org_id", ""),
+                "Organization": person.get("Organization") or person.get("Organisation", ""),
+                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                "LeaderPath": [str(lid) for lid in leader_path],
+                "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "Leader @1": leader1,
+                "Leader @12": leader12,
+                "Leader @144": leader144,
+                "Leader @1728": leader1728,
+                "FullName": full_name
+            }
+            final_list.append(mapped)
+        
+        return {
+            "event_id": event_id,
+            "event_name": event.get("Event Name") or event.get("name", "Unknown Event"),
+            "perPage": perPage,
+            "total": total_count,
+            "results": final_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_all_people_for_event: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
+# ========== SIMPLE PEOPLE ENDPOINT - NO ORG FILTERING (FOR SEARCH/MODAL) ==========
+@app.get("/people/all-with-fields")
+async def get_all_people_with_fields(
+    perPage: int = Query(200, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get ALL people with complete fields - NO ORGANIZATION FILTERING.
+    Perfect for: Attendance modals, event person selection, comprehensive search.
+    Returns all fields including leaders regardless of user's organization.
+    
+    Usage in frontend:
+    const res = await authFetch(`${BACKEND_URL}/people/all-with-fields?perPage=200`, { headers });
+    """
+    try:
+        # No organization filtering - returns all people
+        query = {}
+        
+        # Get total count
+        total_count = await people_collection.count_documents(query)
+        
+        # Use aggregation for efficiency
+        pipeline = [
+            {"$match": query},
+            {"$limit": perPage},
+            {"$project": {
+                "_id": 1,
+                "Name": 1,
+                "Surname": 1,
+                "Number": 1,
+                "Email": 1,
+                "Address": 1,
+                "Gender": 1,
+                "Birthday": 1,
+                "InvitedBy": 1,
+                "Stage": 1,
+                "org_id": 1,
+                "Organization": 1,
+                "Organisation": 1,
+                "LeaderId": 1,
+                "LeaderPath": 1,
+                "Leader @1": 1,
+                "Leader @12": 1,
+                "Leader @144": 1,
+                "Leader @1728": 1,
+                "leader1": 1,
+                "leader12": 1,
+                "leader144": 1,
+                "leader1728": 1,
+                "DateCreated": 1,
+                "UpdatedAt": 1,
+                "Date Created": 1
+            }}
+        ]
+        
+        cursor = people_collection.aggregate(pipeline)
+        people_list = []
+        async for person in cursor:
+            people_list.append(person)
+        
+        # Resolve LeaderPath to names
+        all_leader_ids = set()
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            if leader_path:
+                for lid in leader_path:
+                    if lid:
+                        try:
+                            if isinstance(lid, ObjectId):
+                                all_leader_ids.add(lid)
+                            else:
+                                all_leader_ids.add(ObjectId(str(lid)))
+                        except Exception:
+                            pass
+        
+        name_map = {}
+        if all_leader_ids:
+            try:
+                leader_cursor = people_collection.find(
+                    {"_id": {"$in": list(all_leader_ids)}},
+                    {"_id": 1, "Name": 1, "Surname": 1}
+                )
+                async for leader_doc in leader_cursor:
+                    name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+            except Exception as e:
+                print(f"Error fetching leaders: {e}")
+        
+        def resolve_leader(lid):
+            if not lid:
+                return ""
+            try:
+                if isinstance(lid, ObjectId):
+                    return name_map.get(lid, "")
+                return name_map.get(ObjectId(str(lid)), "")
+            except Exception:
+                return ""
+        
+        # Build final response
+        final_list = []
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            
+            # Resolve from LeaderPath first, fallback to stored fields
+            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else (person.get("Leader @1") or person.get("leader1") or "")
+            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else (person.get("Leader @12") or person.get("leader12") or "")
+            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else (person.get("Leader @144") or person.get("leader144") or "")
+            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else (person.get("Leader @1728") or person.get("leader1728") or "")
+            
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            
+            mapped = {
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Number": person.get("Number", ""),
+                "Email": person.get("Email", ""),
+                "Address": person.get("Address", ""),
+                "Gender": person.get("Gender", ""),
+                "Birthday": person.get("Birthday", ""),
+                "InvitedBy": person.get("InvitedBy", ""),
+                "Stage": person.get("Stage", "Win"),
+                "org_id": person.get("org_id") or person.get("Org_id", ""),
+                "Organization": person.get("Organization") or person.get("Organisation", ""),
+                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                "LeaderPath": [str(lid) for lid in leader_path],
+                "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "Leader @1": leader1,
+                "Leader @12": leader12,
+                "Leader @144": leader144,
+                "Leader @1728": leader1728,
+                "FullName": full_name
+            }
+            final_list.append(mapped)
+        
+        return {
+            "perPage": perPage,
+            "total": total_count,
+            "results": final_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_all_people_with_fields: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
     
 @app.get("/people/search")
 async def search_people(
     query: str = Query("", min_length=2),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=20000),  # Increased max limit to 1000
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -8304,17 +8611,27 @@ async def search_people(
                 search_term in person.get("Email", "").lower() or
                 search_term in person.get("Number", "") or
                 search_term in person.get("Address", "").lower() or
-                search_term in person.get("Stage", "").lower()
+                search_term in person.get("Stage", "").lower() or
+                # Include leader fields in search
+                search_term in (person.get("Leader @1") or "").lower() or
+                search_term in (person.get("Leader @12") or "").lower() or
+                search_term in (person.get("Leader @144") or "").lower() or
+                search_term in (person.get("Leader @1728") or "").lower()
             ):
                 results.append(person)
 
-            if len(results) >= limit:
-                break
+            # Removed early break - search through ALL matching people
+            # if len(results) >= limit:
+            #     break
+
+        # Apply limit only at the end, after collecting all matches
+        limited_results = results[:limit] if limit > 0 else results
 
         return {
             "success": True,
-            "results": results,
-            "total_found": len(results),
+            "results": limited_results,
+            "total_found": len(results),  # Total matches found
+            "returned_count": len(limited_results),  # How many returned (may be less than limit)
             "search_term": query,
             "source": "cache"
         }
