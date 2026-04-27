@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 from supreme_admin import router as supreme_admin_router
 app = FastAPI()
-app.include_router(supreme_admin_router)
+
 import pandas as pd
 import io
 
@@ -46,18 +46,23 @@ app.add_middleware(
         "https://activeteamsbackend2.0.onrender.com"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
-        "X-Requested-With",
-        "Access-Control-Allow-Origin"
-    ],
-    expose_headers=["*"],
-    max_age=3600,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+app.include_router(supreme_admin_router)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
@@ -432,8 +437,23 @@ def transform_person_full(p, id_to_full: dict = None):
     Like transform_person but also falls back to legacy Leader @N string fields
     if LeaderPath is empty. This ensures the cache always has leaders[] populated.
     """
+    from bson import ObjectId
+
     def oid(v):
         return str(v) if v else None
+
+    def convert_objectids(obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        elif isinstance(obj, dict):
+            return {k: convert_objectids(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_objectids(item) for item in obj]
+        else:
+            return obj
+
+    # Convert any ObjectId in the raw person data
+    p = convert_objectids(p)
 
     raw_path  = p.get("LeaderPath", [])
     path_strs = [oid(x) for x in raw_path if x]
@@ -469,7 +489,47 @@ def transform_person_full(p, id_to_full: dict = None):
         # sort root first
         leaders.sort(key=lambda x: x["level"])
 
-    return {
+    leader_flat = {
+        "Leader @1": "",
+        "leader1": "",
+        "Leader at 1": "",
+        "Leader @12": "",
+        "leader12": "",
+        "Leader at 12": "",
+        "Leader @144": "",
+        "leader144": "",
+        "Leader at 144": "",
+        "Leader @1728": "",
+        "leader1728": "",
+        "Leader at 1728": "",
+    }
+
+    for leader in leaders:
+        level = leader.get("level")
+        name = leader.get("name", "")
+        if not name:
+            continue
+        if level == 1:
+            leader_flat["Leader @1"] = leader_flat["Leader @1"] or name
+            leader_flat["leader1"] = leader_flat["leader1"] or name
+            leader_flat["Leader at 1"] = leader_flat["Leader at 1"] or name
+        elif level == 12:
+            leader_flat["Leader @12"] = leader_flat["Leader @12"] or name
+            leader_flat["leader12"] = leader_flat["leader12"] or name
+            leader_flat["Leader at 12"] = leader_flat["Leader at 12"] or name
+        elif level == 144:
+            leader_flat["Leader @144"] = leader_flat["Leader @144"] or name
+            leader_flat["leader144"] = leader_flat["leader144"] or name
+            leader_flat["Leader at 144"] = leader_flat["Leader at 144"] or name
+        elif level == 1728:
+            leader_flat["Leader @1728"] = leader_flat["Leader @1728"] or name
+            leader_flat["leader1728"] = leader_flat["leader1728"] or name
+            leader_flat["Leader at 1728"] = leader_flat["Leader at 1728"] or name
+
+    for key in leader_flat:
+        leader_flat[key] = p.get(key, leader_flat[key]) or leader_flat[key]
+
+    result = {
         "_id":          oid(p.get("_id")),
         "Name":         p.get("Name") or "",
         "Surname":      p.get("Surname") or "",
@@ -489,9 +549,10 @@ def transform_person_full(p, id_to_full: dict = None):
         "LeaderId":     leader_id,
         "LeaderPath":   path_strs,
     }
+    return convert_objectids(result)
     
 
-async def invalidate_people_cache(operation_type: str, details: dict = None):
+async def invalidate_people_cache(operation_type: str,details: dict = None):
     """
     Invalidate the people cache and trigger background rehydration.
     Operation types: 'create', 'update', 'delete'
@@ -542,17 +603,19 @@ async def background_refresh_people_cache(stale_data: list = None):
         print("BACKGROUND REFRESH: starting...")
 
         FULL_PROJECTION = {
-            "_id": 1,
-            "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
-            "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
-            "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
-            "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
-            "church_id": 1,
-            "LeaderId": 1, "LeaderPath": 1,
-            "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
-            "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
-            "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
-        }
+    "_id": 1,
+    "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
+    "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
+    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
+    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
+    "church_id": 1,
+    "LeaderId": 1, "LeaderPath": 1,
+    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
+    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+    "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
+    "Leader at 1": 1, "Leader at 12": 1, "Leader at 144": 1, "Leader at 144": 1,
+    "leaders": 1,  
+}
 
         # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
         # Motor streams the cursor efficiently — no need to paginate
@@ -607,14 +670,6 @@ async def background_refresh_people_cache(stale_data: list = None):
         return {"error": str(e)}
 
 async def background_load_all_people():
-    """
-    Startup wrapper — waits for app to fully start then delegates to
-    background_refresh_people_cache (single source of truth).
-    """
-    await asyncio.sleep(BACKGROUND_LOAD_DELAY)
-    await background_refresh_people_cache()
-
-async def background_load_all_people():
     await background_refresh_people_cache()
 
 @app.on_event("startup")
@@ -623,28 +678,30 @@ async def startup_event():
     print("Starting background load of ALL people...")
     asyncio.create_task(background_load_all_people())
 
-
 @app.get("/cache/people")
-async def get_cached_people(current_user: dict = Depends(get_current_user)):
-    """
-    Returns org-filtered people from the in-memory cache.
-    Cache entries are already in the dynamic `leaders` array shape
-    (built by transform_person in background_refresh_people_cache).
-    No Leader @N string fields are present.
-    """
+async def get_cached_people(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         current_time = datetime.now(timezone.utc)
-
-        # ── resolve org from JWT ──────────────────────────────────────────────
-        _, _, aliases, is_super_admin = get_org_from_user(current_user)
+ 
+        # ── Safely resolve org info ───────────────────────────────────────────
+        try:
+            _, _, aliases, is_super_admin = get_org_from_user(current_user)
+        except Exception as org_err:
+            print(f"get_org_from_user failed: {org_err}")
+            aliases = []
+            is_super_admin = True  # fail-open so data is still returned
+ 
         org_label = current_user.get("Organization") or current_user.get("org_id") or "ALL"
-
-        # ── in-memory org filter ──────────────────────────────────────────────
+ 
         def filter_by_org(data: list) -> list:
             if is_super_admin or not aliases:
-                return data
+                return [serialize_doc(p) for p in data]
             result = []
             for p in data:
+                p = serialize_doc(p)
                 person_org = (
                     p.get("org_id") or p.get("Org_id") or p.get("orgId") or
                     p.get("Organization") or p.get("Organisation") or
@@ -653,8 +710,7 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                 if person_org and person_org in aliases:
                     result.append(p)
             return result
-
-        # ── parse expires_at safely (stored as ISO string or datetime) ────────
+ 
         def parse_expires(val):
             if val is None:
                 return None
@@ -665,9 +721,13 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                 return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
             except Exception:
                 return None
-
+ 
         expires_at = parse_expires(people_cache.get("expires_at"))
-
+ 
+        # Guard: ensure refresh_queue key exists to avoid KeyError in /status
+        if "refresh_queue" not in people_cache:
+            people_cache["refresh_queue"] = []
+ 
         # ── 1. fresh valid cache ──────────────────────────────────────────────
         if (
             people_cache["data"] and
@@ -690,7 +750,7 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                 "is_valid":      True,
                 "organization":  org_label,
             }
-
+ 
         # ── 2. cache still loading — return partial ───────────────────────────
         if people_cache["is_loading"]:
             filtered = filter_by_org(people_cache["data"] or [])
@@ -709,13 +769,14 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                 "is_valid":          people_cache["is_valid"],
                 "organization":      org_label,
             }
-
+ 
         # ── 3. stale cache — serve stale, trigger refresh ─────────────────────
         if people_cache["data"] and not people_cache["is_valid"]:
             print("Cache stale — returning stale data while refreshing...")
-            if not people_cache["is_loading"] and people_cache["pending_refresh"]:
-                asyncio.create_task(
-                    background_refresh_people_cache(people_cache["data"].copy())
+            if not people_cache["is_loading"] and people_cache.get("pending_refresh"):
+                background_tasks.add_task(
+                    background_refresh_people_cache,
+                    people_cache["data"].copy()
                 )
             filtered = filter_by_org(people_cache["data"])
             return {
@@ -729,14 +790,14 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                 "message":        "Stale data (refresh in progress)",
                 "cache_version":  people_cache["version"],
                 "is_valid":       False,
-                "refresh_queued": people_cache["pending_refresh"],
+                "refresh_queued": people_cache.get("pending_refresh"),
                 "organization":   org_label,
             }
-
+ 
         # ── 4. cache empty — trigger load ─────────────────────────────────────
         if not people_cache["data"] and not people_cache["is_loading"]:
             print("Cache empty — triggering background load...")
-            asyncio.create_task(background_refresh_people_cache())
+            background_tasks.add_task(background_refresh_people_cache)  # ← FIXED: was create_task
             return {
                 "success":       True,
                 "cached_data":   [],
@@ -749,7 +810,7 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
                 "cache_version": people_cache["version"],
                 "organization":  org_label,
             }
-
+ 
         # ── 5. fallback ───────────────────────────────────────────────────────
         filtered = filter_by_org(people_cache["data"] or [])
         return {
@@ -762,16 +823,19 @@ async def get_cached_people(current_user: dict = Depends(get_current_user)):
             "cache_version": people_cache["version"],
             "organization":  org_label,
         }
-
+ 
     except Exception as e:
         print(f"Error in /cache/people: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "success":     False,
             "error":       str(e),
             "cached_data": [],
             "total_count": 0,
         }
-
+ 
+ 
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint."""
@@ -785,8 +849,8 @@ async def health_check():
             "last_updated": people_cache["last_updated"]
         }
     }
-
-
+ 
+ 
 @app.get("/people/simple")
 async def get_people_simple(
     page: int = Query(1, ge=1),
@@ -794,17 +858,16 @@ async def get_people_simple(
 ):
     """
     Simple paginated people endpoint as fallback.
-    Uses updated schema fields — old Leader @N fields are no longer fetched.
     """
     try:
         skip = (page - 1) * per_page
         cursor = people_collection.find({}, PEOPLE_PROJECTION).skip(skip).limit(per_page)
         people_list = await cursor.to_list(length=per_page)
-       
+ 
         formatted_people = [transform_person_full(p) for p in people_list]
-       
+ 
         total_count = await people_collection.count_documents({})
-       
+ 
         return {
             "success": True,
             "results": formatted_people,
@@ -815,25 +878,26 @@ async def get_people_simple(
                 "has_more": (skip + len(formatted_people)) < total_count
             }
         }
-       
+ 
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
             "results": []
         }
-
+ 
+ 
 @app.post("/cache/people/refresh")
-async def refresh_people_cache():
+async def refresh_people_cache(background_tasks: BackgroundTasks):
     """
     Manually refresh the people cache.
     """
     try:
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
-            current_data = people_cache["data"].copy() if people_cache["data"] else None
-            asyncio.create_task(background_refresh_people_cache(current_data))
-            
+            current_data = people_cache["data"].copy() if people_cache["data"] else Nones
+            background_tasks.add_task(background_refresh_people_cache, current_data)
+ 
             return {
                 "success": True,
                 "message": "Cache refresh triggered",
@@ -848,20 +912,24 @@ async def refresh_people_cache():
                 "is_loading": True,
                 "current_progress": people_cache["load_progress"]
             }
-        
+ 
     except Exception as e:
         print(f"Error refreshing cache: {str(e)}")
         return {
             "success": False,
             "error": str(e)
         }
-
+ 
+ 
 @app.get("/cache/people/status")
 async def get_cache_status():
     """Get detailed cache status and loading progress."""
     total_in_db = await people_collection.count_documents({})
     cache_size = len(people_cache["data"])
-
+ 
+    # Guard against missing key
+    refresh_queue = people_cache.get("refresh_queue", [])
+ 
     return {
         "cache": {
             "size": cache_size,
@@ -872,9 +940,9 @@ async def get_cache_status():
             "total_loaded": people_cache["total_loaded"],
             "last_error": people_cache["last_error"],
             "is_valid": people_cache["is_valid"],
-            "pending_refresh": people_cache["pending_refresh"],
+            "pending_refresh": people_cache.get("pending_refresh"),
             "version": people_cache["version"],
-            "refresh_queue_size": len(people_cache["refresh_queue"])
+            "refresh_queue_size": len(refresh_queue)
         },
         "database": {
             "total_people": total_in_db,
@@ -1000,57 +1068,57 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
     }
 
 
-# In login endpoint
 @app.post("/login")
 async def login(user: UserLogin):
-    logger.info(f"Login attempt: {user.email}")
-    existing = await users_collection.find_one({"email": user.email})
-    if not existing or not verify_password(user.password, existing["password"]):
-        logger.warning(f"Login failed: {user.email}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    try:
+        logger.info(f"Login attempt: {user.email}")
+        existing = await users_collection.find_one({"email": user.email})
+        
+        if not existing or not verify_password(user.password, existing["password"]):
+            logger.warning(f"Login failed: {user.email}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Ensure user ID is properly formatted
-    user_id = str(existing["_id"])
-    
-    # Get organization with proper case handling
-    organization = existing.get("Organization") or existing.get("organization", "")
-    
-    # Get or create org_id
-    org_id = existing.get("org_id")
-    if not org_id and organization:
-        org_id = organization.lower().replace(" ", "-")
-    if not org_id:
-        org_id = "active-teams"
-    
-    # Create token with user_id
-    access_token = create_access_token({
-        "user_id": user_id,  # Important: use "user_id" as key
-        "sub": user_id,      # Also include sub for compatibility
-        "email": existing["email"],
-        "role": existing.get("role", "user"),
-        "is_supreme_admin": existing.get("is_supreme_admin", False),
-        "Organization": organization,
-        "org_id": org_id
-    })
-    
-    logger.info(f"Token created for user {user_id}")
-    
-    # Return response with user ID
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user_id,
-            "_id": user_id,  # Include both for compatibility
+        user_id = str(existing["_id"])
+        organization = existing.get("Organization") or existing.get("organization", "")
+        org_id = existing.get("org_id")
+        if not org_id and organization:
+            org_id = organization.lower().replace(" ", "-")
+        if not org_id:
+            org_id = "active-teams"
+
+        access_token = create_access_token({
+            "user_id": user_id,
+            "sub": user_id,
             "email": existing["email"],
-            "name": existing.get("name", ""),
-            "surname": existing.get("surname", ""),
             "role": existing.get("role", "user"),
-            "organization": organization,
-            "org_id": org_id,
-            "is_supreme_admin": existing.get("is_supreme_admin", False)
+            "is_supreme_admin": existing.get("is_supreme_admin", False),
+            "Organization": organization,
+            "org_id": org_id
+        })
+
+        logger.info(f"Token created for user {user_id}")
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user_id,
+                "_id": user_id,
+                "email": existing["email"],
+                "name": existing.get("name", ""),
+                "surname": existing.get("surname", ""),
+                "role": existing.get("role", "user"),
+                "organization": organization,
+                "org_id": org_id,
+                "is_supreme_admin": existing.get("is_supreme_admin", False)
+            }
         }
-    }
+    
+    except HTTPException:
+        raise  # Don't swallow intentional HTTP errors
+    except Exception as e:
+        logger.error(f"Login error for {user.email}: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.post("/signup")
 async def signup(user: UserCreate):
@@ -3697,11 +3765,11 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
 
         config = await org_config_collection.find_one({"_id": org_id})
-        print(f"Config found: {config is not None}")  #
+        print(f"Config found: {config is not None}")  
 
-        if not config:
-            pass
-
+        if config is None:
+            raise HTTPException(status_code=404, detail=f"No org config found for org_id: {org_id}")
+        
         config["org_id"] = str(config["_id"])
         config.pop("_id", None)
         return config
@@ -7048,15 +7116,14 @@ async def get_persistent_attendees(
 ):
     """
     Get persistent attendees for an event with their ticket and financial information.
-    Also returns attendance status for the specific date.
+    Returns attendance_status ONLY for the specific date being requested.
     """
     try:
         print(f"GET /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
-        
-        # Parse event ID to extract actual event ID and date
+
         actual_event_id = event_id
         target_date = None
-        
+
         if "_" in event_id:
             parts = event_id.split("_")
             if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
@@ -7066,18 +7133,15 @@ async def get_persistent_attendees(
                         target_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
                     except Exception:
                         pass
-        
+
         if not ObjectId.is_valid(actual_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID format")
-        
-        # Fetch the event
+
         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        # Determine the date we're looking for
+
         if not target_date:
-            # Try to get date from event
             event_date = None
             for date_field in ["date", "Date Of Event", "eventDate", "startDate"]:
                 if date_field in event:
@@ -7088,151 +7152,137 @@ async def get_persistent_attendees(
                     elif isinstance(date_val, str):
                         try:
                             if "T" in date_val:
-                                event_date = datetime.fromisoformat(date_val.replace("Z", "+00:00")).date()
+                                event_date = datetime.fromisoformat(
+                                    date_val.replace("Z", "+00:00")
+                                ).date()
                             else:
                                 event_date = datetime.strptime(date_val, "%Y-%m-%d").date()
                             break
-                        except:
+                        except Exception:
                             continue
-            
-            if event_date:
-                target_date = event_date
-            else:
-                # Default to today
-                target_date = datetime.now().date()
-        
+            target_date = event_date or datetime.now().date()
+
         exact_date_str = target_date.isoformat()
-        
-        # Get persistent attendees from the event
+
         persistent_attendees = event.get("persistent_attendees", [])
-        
-        # Check if there's attendance data for this specific date
-        attendance_data = event.get("attendance", {})
-        date_attendance = attendance_data.get(exact_date_str, {})
-        
-        # Determine attendance status
-        attendance_status = "incomplete"
-        checked_in_attendees = []
-        total_headcounts = 0
-        
+
+        attendance_data   = event.get("attendance", {})
+        date_attendance   = attendance_data.get(exact_date_str, {})
+
         if date_attendance:
-            attendance_status = date_attendance.get("status", "incomplete")
-            checked_in_attendees = date_attendance.get("attendees", [])
-            total_headcounts = date_attendance.get("total_headcounts", 0)
+            # This date has a submitted record — use it directly.
+            attendance_status   = date_attendance.get("status", "incomplete")
+            checked_in_from_db  = date_attendance.get("attendees", [])
+            total_headcounts    = date_attendance.get("total_headcounts", 0)
         else:
-            # Check root-level status for non-recurring events
-            root_status = event.get("status", "")
-            if root_status in ["complete", "did_not_meet"]:
-                attendance_status = root_status
-                checked_in_attendees = event.get("attendees", [])
-                total_headcounts = event.get("total_headcounts", 0)
-        
-        # Enrich persistent attendees with ticket and financial data
+            # ── No record for this date → it is a NEW / uncaptured week ─────
+            # Return "incomplete" regardless of what root-level fields say.
+            attendance_status   = "incomplete"
+            checked_in_from_db  = []
+            total_headcounts    = 0
+
+        # Only expose checked-in attendees when the week is actually complete.
+        is_complete = attendance_status == "complete"
+
+        # ── Build enriched persistent list ───────────────────────────────────
+        # Index the checked-in rows by id for O(1) lookup.
+        checked_in_index = {
+            att.get("id"): att
+            for att in checked_in_from_db
+            if isinstance(att, dict) and att.get("id")
+        }
+
         enriched_attendees = []
         for attendee in persistent_attendees:
             if not isinstance(attendee, dict):
                 continue
-            
-            # Find if this attendee has checked-in data for this date
-            checked_in_data = None
-            for checked in checked_in_attendees:
-                if checked.get("id") == attendee.get("id"):
-                    checked_in_data = checked
-                    break
-            
-            # Create enriched attendee object with all fields
-            enriched_attendee = {
-                "id": attendee.get("id", ""),
-                "name": attendee.get("name", ""),
-                "fullName": attendee.get("fullName", attendee.get("name", "")),
-                "email": attendee.get("email", ""),
-                "phone": attendee.get("phone", ""),
-                "leader12": attendee.get("leader12", ""),
-                "leader144": attendee.get("leader144", ""),
-                "invitedBy": attendee.get("invitedBy", ""),
+
+            checked_in_data = checked_in_index.get(attendee.get("id"))
+
+            enriched = {
+                "id":           attendee.get("id", ""),
+                "name":         attendee.get("name", ""),
+                "fullName":     attendee.get("fullName", attendee.get("name", "")),
+                "email":        attendee.get("email", ""),
+                "phone":        attendee.get("phone", ""),
+                "leader12":     attendee.get("leader12", ""),
+                "leader144":    attendee.get("leader144", ""),
+                "invitedBy":    attendee.get("invitedBy", ""),
                 "isPersistent": True,
-                # Ticket information
-                "priceName": attendee.get("priceName", ""),
-                "price": attendee.get("price", 0),
-                "ageGroup": attendee.get("ageGroup", ""),
+                # Base ticket / financial data from the persistent record
+                "priceName":    attendee.get("priceName", ""),
+                "price":        attendee.get("price", 0),
+                "ageGroup":     attendee.get("ageGroup", ""),
                 "paymentMethod": attendee.get("paymentMethod", ""),
-                # Financial information
-                "paidAmount": attendee.get("paid", attendee.get("paidAmount", 0)),
-                "paid": attendee.get("paid", attendee.get("paidAmount", 0)),
-                "owing": attendee.get("owing", 0),
-                "change": attendee.get("change", 0),
+                "paidAmount":   attendee.get("paid", attendee.get("paidAmount", 0)),
+                "paid":         attendee.get("paid", attendee.get("paidAmount", 0)),
+                "owing":        attendee.get("owing", 0),
+                "change":       attendee.get("change", 0),
+                # Default check-in state: always FALSE for new weeks
+                "checked_in":   False,
+                "decision":     "",
+                "check_in_date": "",
             }
-            
-            # Override with checked-in data if available
-            if checked_in_data:
-                enriched_attendee["checked_in"] = checked_in_data.get("checked_in", False)
-                enriched_attendee["decision"] = checked_in_data.get("decision", "")
-                enriched_attendee["check_in_date"] = checked_in_data.get("check_in_date", "")
-                
-                # Use checked-in ticket info if present (allows per-week overrides)
-                if checked_in_data.get("priceName"):
-                    enriched_attendee["priceName"] = checked_in_data.get("priceName")
+
+            # Only override with per-week data when this week is complete
+            if is_complete and checked_in_data:
+                enriched["checked_in"]    = checked_in_data.get("checked_in", True)
+                enriched["decision"]      = checked_in_data.get("decision", "")
+                enriched["check_in_date"] = checked_in_data.get("check_in_date", "")
+
+                # Per-week ticket overrides (only when week is captured)
+                for field in ("priceName", "ageGroup", "paymentMethod"):
+                    val = checked_in_data.get(field)
+                    if val:
+                        enriched[field] = val
                 if checked_in_data.get("price") is not None:
-                    enriched_attendee["price"] = checked_in_data.get("price")
-                if checked_in_data.get("ageGroup"):
-                    enriched_attendee["ageGroup"] = checked_in_data.get("ageGroup")
-                if checked_in_data.get("paymentMethod"):
-                    enriched_attendee["paymentMethod"] = checked_in_data.get("paymentMethod")
+                    enriched["price"] = checked_in_data["price"]
                 if checked_in_data.get("paid") is not None:
-                    enriched_attendee["paidAmount"] = checked_in_data.get("paid")
-                    enriched_attendee["paid"] = checked_in_data.get("paid")
+                    enriched["paidAmount"] = checked_in_data["paid"]
+                    enriched["paid"]       = checked_in_data["paid"]
                 if checked_in_data.get("owing") is not None:
-                    enriched_attendee["owing"] = checked_in_data.get("owing")
+                    enriched["owing"]  = checked_in_data["owing"]
                 if checked_in_data.get("change") is not None:
-                    enriched_attendee["change"] = checked_in_data.get("change")
-            else:
-                enriched_attendee["checked_in"] = False
-                enriched_attendee["decision"] = ""
-            
-            enriched_attendees.append(enriched_attendee)
-        
-        # Build checked-in attendees list for response
+                    enriched["change"] = checked_in_data["change"]
+
+            enriched_attendees.append(enriched)
+
+        # ── Build checked-in list (only meaningful when complete) ────────────
         checked_in_list = []
-        for att in checked_in_attendees:
-            if not isinstance(att, dict):
-                continue
-            
-            checked_in_item = {
-                "id": att.get("id", ""),
-                "name": att.get("name", ""),
-                "fullName": att.get("fullName", att.get("name", "")),
-                "email": att.get("email", ""),
-                "phone": att.get("phone", ""),
-                "leader12": att.get("leader12", ""),
-                "leader144": att.get("leader144", ""),
-                "checked_in": att.get("checked_in", True),
-                "decision": att.get("decision", ""),
-                "check_in_date": att.get("check_in_date", ""),
-                "priceName": att.get("priceName", ""),
-                "price": att.get("price", 0),
-                "ageGroup": att.get("ageGroup", ""),
-                "paymentMethod": att.get("paymentMethod", ""),
-                "paid": att.get("paid", 0),
-                "owing": att.get("owing", 0),
-                "change": att.get("change", 0),
-            }
-            checked_in_list.append(checked_in_item)
-        
-        # Get total headcounts (for manual headcount tracking)
-        total_headcounts_value = total_headcounts
-        if not total_headcounts_value and attendance_status == "complete":
-            total_headcounts_value = date_attendance.get("total_headcounts", 0)
-        
+        if is_complete:
+            for att in checked_in_from_db:
+                if not isinstance(att, dict):
+                    continue
+                checked_in_list.append({
+                    "id":            att.get("id", ""),
+                    "name":          att.get("name", ""),
+                    "fullName":      att.get("fullName", att.get("name", "")),
+                    "email":         att.get("email", ""),
+                    "phone":         att.get("phone", ""),
+                    "leader12":      att.get("leader12", ""),
+                    "leader144":     att.get("leader144", ""),
+                    "checked_in":    att.get("checked_in", True),
+                    "decision":      att.get("decision", ""),
+                    "check_in_date": att.get("check_in_date", ""),
+                    "priceName":     att.get("priceName", ""),
+                    "price":         att.get("price", 0),
+                    "ageGroup":      att.get("ageGroup", ""),
+                    "paymentMethod": att.get("paymentMethod", ""),
+                    "paid":          att.get("paid", 0),
+                    "owing":         att.get("owing", 0),
+                    "change":        att.get("change", 0),
+                })
+
         return {
-            "persistent_attendees": enriched_attendees,
-            "checked_in_attendees": checked_in_list,
-            "attendance_status": attendance_status,
-            "total_headcounts": total_headcounts_value,
-            "event_date": exact_date_str,
-            "is_ticketed": event.get("isTicketed", False),
-            "total_associated": len(persistent_attendees)
+            "persistent_attendees":  enriched_attendees,
+            "checked_in_attendees":  checked_in_list,
+            "attendance_status":     attendance_status,   # "incomplete" | "complete" | "did_not_meet"
+            "total_headcounts":      total_headcounts,
+            "event_date":            exact_date_str,
+            "is_ticketed":           event.get("isTicketed", False),
+            "total_associated":      len(persistent_attendees),
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -7240,8 +7290,6 @@ async def get_persistent_attendees(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
 
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(
@@ -8390,11 +8438,318 @@ async def get_people(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
+# ========== EVENT-SPECIFIC PEOPLE ENDPOINT - RETURNS ALL PEOPLE WITH COMPLETE FIELDS ==========
+@app.get("/events/{event_id}/all-people-for-attendance")
+async def get_all_people_for_event(
+    event_id: str = Path(...),
+    perPage: int = Query(200, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get ALL people with complete fields for event attendance/modals.
+    Returns complete data including all leader fields regardless of organization.
+    BEST ENDPOINT FOR: AttendanceModal, event people selection, searching all attendees
+    """
+    try:
+        # Verify event exists and user has access
+        if not ObjectId.is_valid(event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID")
+        
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Build query to get ALL people (no org filtering for events)
+        query = {}
+        
+        # Get total count
+        total_count = await people_collection.count_documents(query)
+        
+        # Use aggregation pipeline for complete data
+        pipeline = [
+            {"$match": query},
+            {"$limit": perPage},
+            {"$project": {
+                "_id": 1,
+                "Name": 1,
+                "Surname": 1,
+                "Number": 1,
+                "Email": 1,
+                "Address": 1,
+                "Gender": 1,
+                "Birthday": 1,
+                "InvitedBy": 1,
+                "Stage": 1,
+                "org_id": 1,
+                "Organization": 1,
+                "Organisation": 1,
+                "LeaderId": 1,
+                "LeaderPath": 1,
+                "Leader @1": 1,
+                "Leader @12": 1,
+                "Leader @144": 1,
+                "Leader @1728": 1,
+                "leader1": 1,
+                "leader12": 1,
+                "leader144": 1,
+                "leader1728": 1,
+                "DateCreated": 1,
+                "UpdatedAt": 1,
+                "Date Created": 1
+            }}
+        ]
+        
+        cursor = people_collection.aggregate(pipeline)
+        people_list = []
+        async for person in cursor:
+            people_list.append(person)
+        
+        # Resolve LeaderPath to names if it exists
+        all_leader_ids = set()
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            if leader_path:
+                for lid in leader_path:
+                    if lid:
+                        try:
+                            if isinstance(lid, ObjectId):
+                                all_leader_ids.add(lid)
+                            else:
+                                all_leader_ids.add(ObjectId(str(lid)))
+                        except Exception:
+                            pass
+        
+        name_map = {}
+        if all_leader_ids:
+            try:
+                leader_cursor = people_collection.find(
+                    {"_id": {"$in": list(all_leader_ids)}},
+                    {"_id": 1, "Name": 1, "Surname": 1}
+                )
+                async for leader_doc in leader_cursor:
+                    name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+            except Exception as e:
+                print(f"Error fetching leaders: {e}")
+        
+        def resolve_leader(lid):
+            if not lid:
+                return ""
+            try:
+                if isinstance(lid, ObjectId):
+                    return name_map.get(lid, "")
+                return name_map.get(ObjectId(str(lid)), "")
+            except Exception:
+                return ""
+        
+        # Build final response with all fields
+        final_list = []
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            
+            # Resolve from LeaderPath if available, otherwise use existing fields
+            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else (person.get("Leader @1") or person.get("leader1") or "")
+            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else (person.get("Leader @12") or person.get("leader12") or "")
+            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else (person.get("Leader @144") or person.get("leader144") or "")
+            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else (person.get("Leader @1728") or person.get("leader1728") or "")
+            
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            
+            mapped = {
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Number": person.get("Number", ""),
+                "Email": person.get("Email", ""),
+                "Address": person.get("Address", ""),
+                "Gender": person.get("Gender", ""),
+                "Birthday": person.get("Birthday", ""),
+                "InvitedBy": person.get("InvitedBy", ""),
+                "Stage": person.get("Stage", "Win"),
+                "org_id": person.get("org_id") or person.get("Org_id", ""),
+                "Organization": person.get("Organization") or person.get("Organisation", ""),
+                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                "LeaderPath": [str(lid) for lid in leader_path],
+                "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "Leader @1": leader1,
+                "Leader @12": leader12,
+                "Leader @144": leader144,
+                "Leader @1728": leader1728,
+                "FullName": full_name
+            }
+            final_list.append(mapped)
+        
+        return {
+            "event_id": event_id,
+            "event_name": event.get("Event Name") or event.get("name", "Unknown Event"),
+            "perPage": perPage,
+            "total": total_count,
+            "results": final_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_all_people_for_event: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
+# ========== SIMPLE PEOPLE ENDPOINT - NO ORG FILTERING (FOR SEARCH/MODAL) ==========
+@app.get("/people/all-with-fields")
+async def get_all_people_with_fields(
+    perPage: int = Query(200, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get ALL people with complete fields - NO ORGANIZATION FILTERING.
+    Perfect for: Attendance modals, event person selection, comprehensive search.
+    Returns all fields including leaders regardless of user's organization.
+    
+    Usage in frontend:
+    const res = await authFetch(`${BACKEND_URL}/people/all-with-fields?perPage=200`, { headers });
+    """
+    try:
+        # No organization filtering - returns all people
+        query = {}
+        
+        # Get total count
+        total_count = await people_collection.count_documents(query)
+        
+        # Use aggregation for efficiency
+        pipeline = [
+            {"$match": query},
+            {"$limit": perPage},
+            {"$project": {
+                "_id": 1,
+                "Name": 1,
+                "Surname": 1,
+                "Number": 1,
+                "Email": 1,
+                "Address": 1,
+                "Gender": 1,
+                "Birthday": 1,
+                "InvitedBy": 1,
+                "Stage": 1,
+                "org_id": 1,
+                "Organization": 1,
+                "Organisation": 1,
+                "LeaderId": 1,
+                "LeaderPath": 1,
+                "Leader @1": 1,
+                "Leader @12": 1,
+                "Leader @144": 1,
+                "Leader @1728": 1,
+                "leader1": 1,
+                "leader12": 1,
+                "leader144": 1,
+                "leader1728": 1,
+                "DateCreated": 1,
+                "UpdatedAt": 1,
+                "Date Created": 1
+            }}
+        ]
+        
+        cursor = people_collection.aggregate(pipeline)
+        people_list = []
+        async for person in cursor:
+            people_list.append(person)
+        
+        # Resolve LeaderPath to names
+        all_leader_ids = set()
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            if leader_path:
+                for lid in leader_path:
+                    if lid:
+                        try:
+                            if isinstance(lid, ObjectId):
+                                all_leader_ids.add(lid)
+                            else:
+                                all_leader_ids.add(ObjectId(str(lid)))
+                        except Exception:
+                            pass
+        
+        name_map = {}
+        if all_leader_ids:
+            try:
+                leader_cursor = people_collection.find(
+                    {"_id": {"$in": list(all_leader_ids)}},
+                    {"_id": 1, "Name": 1, "Surname": 1}
+                )
+                async for leader_doc in leader_cursor:
+                    name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
+            except Exception as e:
+                print(f"Error fetching leaders: {e}")
+        
+        def resolve_leader(lid):
+            if not lid:
+                return ""
+            try:
+                if isinstance(lid, ObjectId):
+                    return name_map.get(lid, "")
+                return name_map.get(ObjectId(str(lid)), "")
+            except Exception:
+                return ""
+        
+        # Build final response
+        final_list = []
+        for person in people_list:
+            leader_path = person.get("LeaderPath", [])
+            
+            # Resolve from LeaderPath first, fallback to stored fields
+            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else (person.get("Leader @1") or person.get("leader1") or "")
+            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else (person.get("Leader @12") or person.get("leader12") or "")
+            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else (person.get("Leader @144") or person.get("leader144") or "")
+            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else (person.get("Leader @1728") or person.get("leader1728") or "")
+            
+            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+            
+            mapped = {
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Number": person.get("Number", ""),
+                "Email": person.get("Email", ""),
+                "Address": person.get("Address", ""),
+                "Gender": person.get("Gender", ""),
+                "Birthday": person.get("Birthday", ""),
+                "InvitedBy": person.get("InvitedBy", ""),
+                "Stage": person.get("Stage", "Win"),
+                "org_id": person.get("org_id") or person.get("Org_id", ""),
+                "Organization": person.get("Organization") or person.get("Organisation", ""),
+                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
+                "LeaderPath": [str(lid) for lid in leader_path],
+                "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
+                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "Leader @1": leader1,
+                "Leader @12": leader12,
+                "Leader @144": leader144,
+                "Leader @1728": leader1728,
+                "FullName": full_name
+            }
+            final_list.append(mapped)
+        
+        return {
+            "perPage": perPage,
+            "total": total_count,
+            "results": final_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_all_people_with_fields: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
+
     
 @app.get("/people/search")
 async def search_people(
     query: str = Query("", min_length=2),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=20000),  # Increased max limit to 1000
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -8432,22 +8787,61 @@ async def search_people(
             if not org_match:
                 continue
 
+            leader_names = [
+                (leader.get("name") or "").lower()
+                for leader in person.get("leaders", [])
+            ]
+            leader_match = any(search_term in name for name in leader_names)
+
             if (
                 search_term in person.get("FullName", "").lower() or
                 search_term in person.get("Email", "").lower() or
                 search_term in person.get("Number", "") or
                 search_term in person.get("Address", "").lower() or
-                search_term in person.get("Stage", "").lower()
+                search_term in person.get("Stage", "").lower() or
+                search_term in (person.get("Leader @1") or "").lower() or
+                search_term in (person.get("Leader @12") or "").lower() or
+                search_term in (person.get("Leader @144") or "").lower() or
+                search_term in (person.get("Leader @1728") or "").lower() or
+                leader_match
             ):
-                results.append(person)
+                person_copy = person.copy()
+                if person_copy.get("leaders") and not person_copy.get("Leader @1"):
+                    for leader in person_copy["leaders"]:
+                        level = leader.get("level")
+                        name = leader.get("name", "")
+                        if not name:
+                            continue
+                        if level == 1:
+                            person_copy["Leader @1"] = person_copy.get("Leader @1") or name
+                            person_copy["leader1"] = person_copy.get("leader1") or name
+                            person_copy["Leader at 1"] = person_copy.get("Leader at 1") or name
+                        elif level == 12:
+                            person_copy["Leader @12"] = person_copy.get("Leader @12") or name
+                            person_copy["leader12"] = person_copy.get("leader12") or name
+                            person_copy["Leader at 12"] = person_copy.get("Leader at 12") or name
+                        elif level == 144:
+                            person_copy["Leader @144"] = person_copy.get("Leader @144") or name
+                            person_copy["leader144"] = person_copy.get("leader144") or name
+                            person_copy["Leader at 144"] = person_copy.get("Leader at 144") or name
+                        elif level == 1728:
+                            person_copy["Leader @1728"] = person_copy.get("Leader @1728") or name
+                            person_copy["leader1728"] = person_copy.get("leader1728") or name
+                            person_copy["Leader at 1728"] = person_copy.get("Leader at 1728") or name
+                results.append(person_copy)
 
-            if len(results) >= limit:
-                break
+            # Removed early break - search through ALL matching people
+            # if len(results) >= limit:
+            #     break
+
+        # Apply limit only at the end, after collecting all matches
+        limited_results = results[:limit] if limit > 0 else results
 
         return {
             "success": True,
-            "results": results,
-            "total_found": len(results),
+            "results": limited_results,
+            "total_found": len(results),  # Total matches found
+            "returned_count": len(limited_results),  # How many returned (may be less than limit)
             "search_term": query,
             "source": "cache"
         }
@@ -9097,6 +9491,10 @@ async def get_user_tasks(
         if not user_email and not (is_leader and view_all):
             return {"error": "User email not found", "status": "failed"}
         
+        # Build leader full name (kept from your original)
+        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        timezone = pytz.timezone("Africa/Johannesburg")
+
         if is_super_admin and view_all:
             query = {}                                     
         elif is_leader and view_all:
@@ -9120,10 +9518,6 @@ async def get_user_tasks(
                     }
                 ]
             }
-
-        # Build leader full name (kept from your original)
-        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-        timezone = pytz.timezone("Africa/Johannesburg")
 
         cursor = tasks_collection.find(query).sort("followup_date", -1).limit(500)
         all_tasks = []
@@ -11406,6 +11800,7 @@ async def get_event_new_people(event_id: str = Path(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
    
+ 
 @app.get("/service-checkin/real-time-data")
 async def get_service_checkin_real_time_data(
     event_id: str = Query(...),
@@ -11415,42 +11810,40 @@ async def get_service_checkin_real_time_data(
         parts = event_id.split("_")
         base_event_id = parts[0]
         instance_date = parts[1] if len(parts) > 1 else None
-
+ 
         if not ObjectId.is_valid(base_event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+ 
         is_recurring = bool(event.get("recurring_day"))
-
+ 
         if is_recurring:
             if not instance_date:
-                timezone = pytz.timezone("Africa/Johannesburg")
-                instance_date = datetime.now(timezone).date().isoformat()
-
+                tz = pytz.timezone("Africa/Johannesburg")
+                instance_date = datetime.now(tz).date().isoformat()
+ 
             attendance_data = event.get("attendance", {})
             date_data = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
-
+ 
             attendees = date_data.get("attendees", [])
             new_people = date_data.get("new_people", [])
             consolidations = date_data.get("consolidations", [])
-
+ 
             print(f"Recurring [{instance_date}]: {len(attendees)} att, {len(new_people)} new, {len(consolidations)} cons")
         else:
             attendees = event.get("attendees", [])
             new_people = event.get("new_people", [])
             consolidations = event.get("consolidations", [])
-
+ 
         attendees = attendees if isinstance(attendees, list) else []
         new_people = new_people if isinstance(new_people, list) else []
         consolidations = consolidations if isinstance(consolidations, list) else []
-
+ 
         print(f"Real-time data returning: {len(attendees)} attendees, {len(new_people)} new, {len(consolidations)} consolidations")
-        print(f"Instance date used: {instance_date}")
-        print(f"Is recurring: {is_recurring}")
-        
+ 
         return {
             "success": True,
             "event_id": event_id,
@@ -11464,13 +11857,14 @@ async def get_service_checkin_real_time_data(
             "total_attendance": len(attendees),
             "refreshed_at": datetime.utcnow().isoformat()
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error getting real-time data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching real-time data: {str(e)}")
-
+ 
+ 
 @app.get("/service-checkin/validate-removal")
 async def validate_removal(
     event_id: str = Query(..., description="Event ID"),
@@ -11478,17 +11872,15 @@ async def validate_removal(
     person_id: str = Query(None, description="Person ID"),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Validate what will be affected by removal
-    """
+    """Validate what will be affected by removal."""
     try:
         if not consolidation_id and not person_id:
             raise HTTPException(status_code=400, detail="Either consolidation_id or person_id is required")
-        
+ 
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+ 
         consolidation = None
         if consolidation_id:
             consolidations = event.get("consolidations", [])
@@ -11496,19 +11888,18 @@ async def validate_removal(
                 if cons.get("id") == consolidation_id:
                     consolidation = cons
                     break
-        
+ 
         warnings = []
         affected_tasks = []
-        
+ 
         if consolidation:
             task_id = consolidation.get("task_id")
             if task_id and ObjectId.is_valid(task_id):
-                # Get ONLY the specific task
                 task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
                 if task:
                     affected_tasks.append(task)
                     warnings.append(f"Task for {task.get('contacted_person', {}).get('name', 'Unknown')} will be deleted")
-        
+ 
         return {
             "success": True,
             "validation": {
@@ -11517,12 +11908,12 @@ async def validate_removal(
                 "affected_tasks_count": len(affected_tasks)
             }
         }
-        
+ 
     except Exception as e:
         logger.error(f"Validation error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Validation error: {str(e)}")
-
-
+ 
+ 
 @app.post("/service-checkin/checkin")
 async def service_checkin_person(
     checkin_data: dict = Body(...),
@@ -11532,32 +11923,31 @@ async def service_checkin_person(
         event_id = checkin_data.get("event_id")
         person_data = checkin_data.get("person_data", {})
         checkin_type = checkin_data.get("type", "attendee")
-
+ 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+ 
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
-
-        # For recurring events, determine today's instance date
+ 
         instance_date = None
         if is_recurring:
-            timezone = pytz.timezone("Africa/Johannesburg")
-            instance_date = datetime.now(timezone).date().isoformat()
-
+            tz = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(tz).date().isoformat()
+ 
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
             if not person_id or not ObjectId.is_valid(person_id):
                 raise HTTPException(status_code=400, detail="Valid person ID is required")
-
+ 
             existing = await people_collection.find_one({"_id": ObjectId(person_id)})
             if not existing:
                 raise HTTPException(status_code=404, detail="Person does not exist")
-
+ 
             attendee_record = {
                 "id": str(existing["_id"]),
                 "name": existing.get("Name", ""),
@@ -11568,9 +11958,8 @@ async def service_checkin_person(
                 "checked_in": True,
                 "type": "attendee"
             }
-
+ 
             if is_recurring:
-                # Write to attendance[date].attendees, prevent duplicates
                 result = await events_collection.update_one(
                     {
                         "_id": ObjectId(event_id),
@@ -11596,17 +11985,17 @@ async def service_checkin_person(
                         "$set": {"updated_at": now}
                     }
                 )
-
+ 
             if result.modified_count == 0:
                 raise HTTPException(status_code=400, detail=f"{existing.get('Name')} is already checked in")
-
+ 
             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
             if is_recurring:
                 date_data = updated_event.get("attendance", {}).get(instance_date, {})
                 present_count = len(date_data.get("attendees", []))
             else:
                 present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in")])
-
+ 
             return {
                 "message": f"{existing.get('Name')} checked in",
                 "type": "attendee",
@@ -11614,7 +12003,7 @@ async def service_checkin_person(
                 "present_count": present_count,
                 "success": True
             }
-
+ 
         elif checkin_type == "new_person":
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
             new_person_record = {
@@ -11629,7 +12018,7 @@ async def service_checkin_person(
                 "type": "new_person",
                 "is_checked_in": True
             }
-
+ 
             if is_recurring:
                 await events_collection.update_one(
                     {"_id": ObjectId(event_id)},
@@ -11643,14 +12032,14 @@ async def service_checkin_person(
                     {"_id": ObjectId(event_id)},
                     {"$push": {"new_people": new_person_record}, "$set": {"updated_at": now}}
                 )
-
+ 
             updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
             if is_recurring:
                 date_data = updated_event.get("attendance", {}).get(instance_date, {})
                 count = len(date_data.get("new_people", []))
             else:
                 count = len(updated_event.get("new_people", []))
-
+ 
             return {
                 "message": "Visitor added to event",
                 "type": "new_person",
@@ -11658,16 +12047,17 @@ async def service_checkin_person(
                 "new_people_count": count,
                 "success": True
             }
-
+ 
         else:
             raise HTTPException(status_code=400, detail="Invalid type — must be attendee or new_person")
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print("Error in check-in:", e)
         raise HTTPException(status_code=500, detail="Check-in failed")
-
+ 
+ 
 @app.delete("/service-checkin/remove")
 async def remove_from_service_checkin(
     removal_data: dict = Body(...),
@@ -11677,28 +12067,28 @@ async def remove_from_service_checkin(
         event_id = removal_data.get("event_id")
         person_id = removal_data.get("person_id")
         data_type = removal_data.get("type")
-
+ 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         if not person_id or not data_type:
             raise HTTPException(status_code=400, detail="Person ID and type are required")
-
+ 
         valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
-
+ 
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+ 
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
-
+ 
         if is_recurring:
-            timezone = pytz.timezone("Africa/Johannesburg")
-            instance_date = datetime.now(timezone).date().isoformat()
-
+            tz = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(tz).date().isoformat()
+ 
             result = await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -11714,12 +12104,12 @@ async def remove_from_service_checkin(
             if data_type == "attendees":
                 update_query["$inc"] = {"total_attendance": -1}
             result = await events_collection.update_one({"_id": ObjectId(event_id)}, update_query)
-
+ 
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found in specified list")
-
+ 
         updated_event = await events_collection.find_one({"_id": ObjectId(event_id)})
-
+ 
         if is_recurring:
             date_data = updated_event.get("attendance", {}).get(instance_date, {})
             present_count = len(date_data.get("attendees", []))
@@ -11729,7 +12119,7 @@ async def remove_from_service_checkin(
             present_count = len([a for a in updated_event.get("attendees", []) if a.get("checked_in", False)])
             new_people_count = len(updated_event.get("new_people", []))
             consolidation_count = len(updated_event.get("consolidations", []))
-
+ 
         return {
             "success": True,
             "message": f"Person removed from {data_type} successfully",
@@ -11739,66 +12129,87 @@ async def remove_from_service_checkin(
                 "consolidation_count": consolidation_count
             }
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error removing from service check-in: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error removing person: {str(e)}")
-   
+ 
+ 
 @app.put("/service-checkin/update")
 async def update_service_checkin_person(
     update_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Update a person in any of the three data types
-    """
+    """Update a person in any of the three data types, with recurring event support."""
     try:
         event_id = update_data.get("event_id")
         person_id = update_data.get("person_id")
-        data_type = update_data.get("type")  
+        data_type = update_data.get("type")
         update_fields = update_data.get("update_fields", {})
-
-        print(f"✏️ Updating service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
-
+ 
+        print(f"Updating service check-in - Event: {event_id}, Type: {data_type}, ID: {person_id}")
+ 
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-
+ 
         if not person_id or not data_type:
             raise HTTPException(status_code=400, detail="Person ID and type are required")
-
+ 
         valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
-
-        
-        set_fields = {}
-        for field, value in update_fields.items():
-            set_fields[f"{data_type}.$.{field}"] = value
-
-        set_fields["updated_at"] = datetime.utcnow().isoformat()
-
-        result = await events_collection.update_one(
-            {
-                "_id": ObjectId(event_id),
-                f"{data_type}.id": person_id
-            },
-            {
-                "$set": set_fields
-            }
-        )
-
+ 
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+ 
+        is_recurring = bool(event.get("recurring_day"))
+        now = datetime.utcnow().isoformat()
+ 
+        if is_recurring:
+            # ← FIXED: recurring events store data under attendance.{date}.{data_type}
+            tz = pytz.timezone("Africa/Johannesburg")
+            instance_date = datetime.now(tz).date().isoformat()
+ 
+            set_fields = {}
+            for field, value in update_fields.items():
+                set_fields[f"attendance.{instance_date}.{data_type}.$.{field}"] = value
+            set_fields[f"attendance.{instance_date}.updated_at"] = now
+            set_fields["updated_at"] = now
+ 
+            result = await events_collection.update_one(
+                {
+                    "_id": ObjectId(event_id),
+                    f"attendance.{instance_date}.{data_type}.id": person_id
+                },
+                {"$set": set_fields}
+            )
+        else:
+            set_fields = {}
+            for field, value in update_fields.items():
+                set_fields[f"{data_type}.$.{field}"] = value
+            set_fields["updated_at"] = now
+ 
+            result = await events_collection.update_one(
+                {
+                    "_id": ObjectId(event_id),
+                    f"{data_type}.id": person_id
+                },
+                {"$set": set_fields}
+            )
+ 
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Person not found or no changes made")
-
+ 
         print(f"Successfully updated in {data_type}")
-
+ 
         return {
             "success": True,
             "message": f"Person updated in {data_type} successfully"
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
