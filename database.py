@@ -4,8 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv() 
 
+
 MONGO_URI = os.getenv("MONGO_URI","None")
 DB_NAME = os.getenv("DB_NAME", "active-teams-db")
+
 print(f"--- CONNECTING TO DB: {DB_NAME} ---")
 
 client = AsyncIOMotorClient(MONGO_URI)

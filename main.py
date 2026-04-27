@@ -7792,6 +7792,110 @@ async def uncapture_person(data: UncaptureRequest):
 async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     try:
         token_user_id = current_user.get("user_id") or current_user.get("_id")
+        if not token_user_id:
+            raise HTTPException(status_code=401, detail="Invalid user ID in token")
+        if str(token_user_id) != str(user_id):
+            raise HTTPException(status_code=403, detail="Not authorized to access this profile")
+        if not ObjectId.is_valid(user_id):
+            raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
+
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
+
+        user_email = user.get("email", "")
+
+        # ── Always look up the people doc — it has the authoritative LeaderPath ──
+        person = None
+        if user_email:
+            person = await people_collection.find_one(
+                {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}}
+            )
+
+        # ── Resolve leader path: prefer people doc, fall back to users doc ──────
+        raw_path = []
+        if person and person.get("LeaderPath"):
+            raw_path = person["LeaderPath"]
+        elif user.get("LeaderPath"):
+            raw_path = user["LeaderPath"]
+
+        # Normalise to ObjectId list
+        leader_path_oids = []
+        for entry in raw_path:
+            try:
+                leader_path_oids.append(
+                    entry if isinstance(entry, ObjectId) else ObjectId(str(entry))
+                )
+            except Exception:
+                pass
+
+        # ── Resolve the three leader levels from LeaderPath ─────────────────────
+        # LeaderPath is root-first: [root(level1), level12, level144, ...]
+        async def _resolve_leader(oid: ObjectId) -> Optional[dict]:
+            if not oid:
+                return None
+            doc = await people_collection.find_one(
+                {"_id": oid},
+                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+            )
+            if not doc:
+                return None
+            return {
+                "id": str(doc["_id"]),
+                "name": doc.get("Name", ""),
+                "surname": doc.get("Surname", ""),
+                "email": doc.get("Email", ""),
+                "phone_number": doc.get("Number", "")
+            }
+
+        leader_at_1   = await _resolve_leader(leader_path_oids[0]) if len(leader_path_oids) > 0 else None
+        leader_at_12  = await _resolve_leader(leader_path_oids[1]) if len(leader_path_oids) > 1 else None
+        leader_at_144 = await _resolve_leader(leader_path_oids[2]) if len(leader_path_oids) > 2 else None
+
+        # ── Resolve InvitedBy display name ──────────────────────────────────────
+        # Use people doc's InvitedBy string, or derive from the direct leader
+        invited_by = ""
+        if person:
+            invited_by = person.get("InvitedBy", "") or user.get("invited_by", "")
+        else:
+            invited_by = user.get("invited_by", "")
+
+        # If invited_by is still empty but we have a direct leader, use their name
+        if not invited_by and leader_at_1:
+            invited_by = f"{leader_at_1['name']} {leader_at_1['surname']}".strip()
+
+        organization = user.get("Organization") or user.get("organization", "")
+        leader_path_strs = [str(o) for o in leader_path_oids]
+
+        return {
+            "id": str(user["_id"]),
+            "name": user.get("name", ""),
+            "surname": user.get("surname", ""),
+            "date_of_birth": user.get("date_of_birth", ""),
+            "home_address": user.get("home_address", ""),
+            "invited_by": invited_by,
+            "phone_number": user.get("phone_number", ""),
+            "email": user.get("email", ""),
+            "gender": user.get("gender", ""),
+            "role": user.get("role", "user"),
+            "profile_picture": user.get("profile_picture", ""),
+            "organization": organization,
+            "leader_path": leader_path_strs,
+            "leaders": {
+                "leaderAt1":   leader_at_1,
+                "leaderAt12":  leader_at_12,
+                "leaderAt144": leader_at_144,
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Profile fetch error: {str(e)}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
+    try:
+        token_user_id = current_user.get("user_id") or current_user.get("_id")
         
         if not token_user_id:
             raise HTTPException(status_code=401, detail="Invalid user ID in token")
@@ -7996,6 +8100,43 @@ def format_user_response(user):
         "profile_picture": user.get("profile_picture", ""),
         "organization": user.get("organization", ""),
     }
+
+@app.get("/users")
+async def get_users_by_organization(
+    organization: Optional[str] = Query(None),
+):
+    """Get users filtered by organization - used by signup Invited By dropdown"""
+    try:
+        query = {}
+        if organization:
+            query["$or"] = [
+                {"Organization": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}},
+                {"organization": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}},
+            ]
+        
+        cursor = users_collection.find(
+            query,
+            {"_id": 1, "name": 1, "surname": 1, "email": 1}
+        ).limit(200)
+        
+        users = await cursor.to_list(length=200)
+        
+        formatted = []
+        for user in users:
+            full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+            if full_name:
+                formatted.append({
+                    "_id": str(user["_id"]),
+                    "name": user.get("name", ""),
+                    "surname": user.get("surname", ""),
+                    "email": user.get("email", ""),
+                    "label": full_name,
+                })
+        
+        return {"users": formatted, "total": len(formatted)}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")    
 
 @app.post("/users/{user_id}/avatar")
 async def upload_avatar(
@@ -12614,12 +12755,27 @@ async def get_dashboard_comprehensive(
                 email = user.get("email", "").lower()
                 if not email:
                     continue
-                
-                full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+
+                person = await users_collection.find_one({
+                    "$or": [
+                        {"Email": {"$regex": f"^{email}$", "$options": "i"}},
+                        {"user_id": uid}
+                    ]
+                })
+
+                if person:
+                    full_name = f"{person.get('Name', '').strip()} {person.get('Surname', '').strip()}".strip()
+                else:
+                    full_name = f"{user.get('name', '')} {user.get('surname', '')}".strip()
+
                 if not full_name:
                     full_name = email.split("@")[0]
 
-                all_users_map[email] = {"_id": uid, "email": email, "fullName": full_name}
+                all_users_map[email] = {
+                    "_id": uid,
+                    "email": email,
+                    "fullName": full_name
+                }
                 all_users_map[uid] = all_users_map[email]
 
         except Exception as e:
@@ -14412,4 +14568,4 @@ async def preview_spreadsheet_columns(
         "column_mapping": column_mapping,
         "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
         "sample_rows":    sample,
-    }
+    }  
