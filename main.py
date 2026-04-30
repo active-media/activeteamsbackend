@@ -8288,20 +8288,33 @@ async def get_people(
         # Build search filters
         if name:
             name_parts = name.strip().split()
+            full_query = name.strip()
             query["$and"] = query.get("$and", [])
             if len(name_parts) >= 2:
-                # Require both parts to match: one in Name, one in Surname (order-insensitive)
-                part1, part2 = name_parts[0], name_parts[1]
+                # Multi-word: match if all parts are in Name or all in Surname, or split between Name/Surname, or full query matches either field
+                part_regexes = [
+                    {"Name": {"$regex": re.escape(part), "$options": "i"}} for part in name_parts
+                ]
+                surname_regexes = [
+                    {"Surname": {"$regex": re.escape(part), "$options": "i"}} for part in name_parts
+                ]
                 query["$and"].append({
                     "$or": [
-                        {"$and": [
-                            {"Name": {"$regex": re.escape(part1), "$options": "i"}},
-                            {"Surname": {"$regex": re.escape(part2), "$options": "i"}}
-                        ]},
-                        {"$and": [
-                            {"Name": {"$regex": re.escape(part2), "$options": "i"}},
-                            {"Surname": {"$regex": re.escape(part1), "$options": "i"}}
-                        ]}
+                        # All parts in Name
+                        {"$and": part_regexes},
+                        # All parts in Surname
+                        {"$and": surname_regexes},
+                        # Each part split between Name and Surname (order-insensitive, pairwise)
+                        *[
+                            {"$and": [
+                                {"Name": {"$regex": re.escape(part1), "$options": "i"}},
+                                {"Surname": {"$regex": re.escape(part2), "$options": "i"}}
+                            ]}
+                            for i, part1 in enumerate(name_parts) for j, part2 in enumerate(name_parts) if i != j
+                        ],
+                        # Full query in Name or Surname
+                        {"Name": {"$regex": re.escape(full_query), "$options": "i"}},
+                        {"Surname": {"$regex": re.escape(full_query), "$options": "i"}}
                     ]
                 })
             else:
