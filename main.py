@@ -8147,12 +8147,31 @@ async def get_people(
         # Build search filters
         if name:
             name_parts = name.strip().split()
-            name_conditions = []
-            for part in name_parts:
-                name_conditions.append({"Name": {"$regex": re.escape(part), "$options": "i"}})
-                name_conditions.append({"Surname": {"$regex": re.escape(part), "$options": "i"}})
             query["$and"] = query.get("$and", [])
-            query["$and"].append({"$or": name_conditions})
+            if len(name_parts) >= 2:
+                # Require both parts to match: one in Name, one in Surname (order-insensitive)
+                part1, part2 = name_parts[0], name_parts[1]
+                query["$and"].append({
+                    "$or": [
+                        {"$and": [
+                            {"Name": {"$regex": re.escape(part1), "$options": "i"}},
+                            {"Surname": {"$regex": re.escape(part2), "$options": "i"}}
+                        ]},
+                        {"$and": [
+                            {"Name": {"$regex": re.escape(part2), "$options": "i"}},
+                            {"Surname": {"$regex": re.escape(part1), "$options": "i"}}
+                        ]}
+                    ]
+                })
+            else:
+                # Single part: match either Name or Surname
+                part = name_parts[0]
+                query["$and"].append({
+                    "$or": [
+                        {"Name": {"$regex": re.escape(part), "$options": "i"}},
+                        {"Surname": {"$regex": re.escape(part), "$options": "i"}}
+                    ]
+                })
 
         if gender:
             query["Gender"] = {"$regex": re.escape(gender), "$options": "i"}
@@ -8225,7 +8244,7 @@ async def get_people(
                             all_leader_ids.add(ObjectId(str(lid)))
                     except Exception:
                         pass
-        
+
         name_map = {}
         if all_leader_ids:
             # Only fetch the leaders we need, with a timeout
@@ -8238,7 +8257,7 @@ async def get_people(
                     name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
             except Exception as e:
                 print(f"Error fetching leaders: {e}")
-        
+
         def resolve_leader(lid):
             if not lid:
                 return ""
@@ -8248,8 +8267,35 @@ async def get_people(
                 return name_map.get(ObjectId(str(lid)), "")
             except Exception:
                 return ""
-        
-        # Build final response
+
+        # --- Enhanced scoring for name/surname search ---
+        def score_person(person, name_query):
+            if not name_query:
+                return 0
+            name = (person.get("Name") or "").strip().lower()
+            surname = (person.get("Surname") or "").strip().lower()
+            full_name = f"{name} {surname}".strip()
+            query = name_query.strip().lower()
+            parts = query.split()
+            score = 0
+            # Exact full name match
+            if full_name == query:
+                score += 100
+            # Both parts match (order-insensitive)
+            elif len(parts) == 2 and ((name == parts[0] and surname == parts[1]) or (name == parts[1] and surname == parts[0])):
+                score += 80
+            # Name and surname partial matches
+            if all(part in full_name for part in parts):
+                score += 40
+            # Individual part matches
+            for part in parts:
+                if part == name or part == surname:
+                    score += 20
+                elif part in name or part in surname:
+                    score += 10
+            return score
+
+        # Build final response with scoring and sorting
         final_list = []
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
@@ -8258,7 +8304,7 @@ async def get_people(
             leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
             leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            
+
             mapped = {
                 "_id": str(person["_id"]),
                 "Name": person.get("Name", ""),
@@ -8280,10 +8326,20 @@ async def get_people(
                 "Leader @12": leader12,
                 "Leader @144": leader144,
                 "Leader @1728": leader1728,
-                "FullName": full_name
+                "FullName": full_name,
             }
+            # Add score for sorting if name search is used
+            if name:
+                mapped["_score"] = score_person(person, name)
             final_list.append(mapped)
-        
+
+        # Sort by score if searching by name
+        if name:
+            final_list.sort(key=lambda x: x.get("_score", 0), reverse=True)
+            for f in final_list:
+                if "_score" in f:
+                    del f["_score"]
+
         return {
             "page": page,
             "perPage": perPage,
