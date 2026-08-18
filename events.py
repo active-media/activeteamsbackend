@@ -223,7 +223,11 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
             current_person = supabase.table("People").select("*").eq("Email", event_data.get("eventLeaderEmail")).execute().data
             #leader of created cell
+
             leader = current_person[0] if current_person else None
+
+            if not current_person:
+                raise HTTPException(400,"Person not found") 
 
             #temp solution
             if leader.get("LeaderPath[0]") == "692d97e550555e9dfdccea4e":
@@ -244,7 +248,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "leader_at_12_email": leader12email,
             }
 
-
+            print("got event leaders leader")
             final_data = {
                 "event_name": event_data.get("eventName","No Event Name"),
                 "event_type_name": event_data.get("eventTypeName","No Event Type"),
@@ -481,7 +485,7 @@ async def get_cell_events(
                 #getting relevent sessions for each event
                 session = supabase.table("event_sessions").select("*").gte("session_date", start_str).lte("session_date", end_str).eq("event_name", i.get("event_name")).eq("status", status).execute().data
                 if session:
-                    event_sessions.append(*session)
+                    event_sessions.extend(session)
         elif disciples_cells:
             events = supabase.rpc("get_disciples_cells",disciples_cells_params).execute().data
             for i in events:
@@ -3036,6 +3040,25 @@ async def update_persistent_attendees(
     """
     try:
         print(f"PUT /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
+        print("DATA",update_data)
+        attendee = update_data.get("attendee", None)
+        attendee.pop("id", None)
+        attendee.pop("leader12", None)
+        attendee.pop("leader144", None)
+        print("ATTENDEE", attendee)
+        if update_data.get("associate") == True and attendee:
+            new_associate = {   
+                    **attendee,
+                    "is_checked_in": False,
+                    "event_name": update_data.get("event_name", ""),
+                    "session_id": update_data.get("session_id", ""),
+                    "event_id": event_id
+                }
+            print("NEW",new_associate)
+            supabase.table("event_session_attendees").insert(new_associate).execute()
+        elif update_data.get("associate") == False and attendee:
+            supabase.table("event_session_attendees").delete().eq("person_id",attendee.get("person_id")).eq("event_id",event_id).execute().data
+
         
         return {
             "success": True,
@@ -3168,7 +3191,7 @@ async def get_persistent_attendees(
         print(f"GET /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
         per_params = {"p_event_id":event_id, "p_event_name": event_name}
         persistent_attendees = supabase.rpc("get_persistent_attendees",per_params).execute().data
-        attendees = supabase.table("event_session_attendees").select("*").eq("session_id",session_id).execute().data
+        attendees = supabase.table("event_session_attendees").select("*").eq("session_id",session_id).eq("is_checked_in",True).execute().data
         # price_tiers = supabase.table("event_price_tiers").select("*").eq("event_id", event.get("event_id")).execute().data
              
         

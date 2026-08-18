@@ -2732,22 +2732,22 @@ def convert_event_for_display(event):
 #             ]
 #         }
 
-        pipeline = [
-            {"$match": query},
-            {"$sort": {"updated_at": -1}},
-            {
-                "$group": {
-                    "_id": {
-                        "event_name": {"$ifNull": ["$Event Name", "$eventName", "$EventName"]},
-                        "leader_email": {"$ifNull": ["$eventLeaderEmail", "$EventLeaderEmail", "$Email"]},
-                        "day": {"$ifNull": ["$Day", "$day"]}
-                    },
-                    "doc": {"$first": "$$ROOT"}
-                }
-            },
-            {"$replaceRoot": {"newRoot": "$doc"}},
-            {"$sort": {"Day": 1, "Leader": 1}}
-        ]
+        # pipeline = [
+        #     {"$match": query},
+        #     {"$sort": {"updated_at": -1}},
+        #     {
+        #         "$group": {
+        #             "_id": {
+        #                 "event_name": {"$ifNull": ["$Event Name", "$eventName", "$EventName"]},
+        #                 "leader_email": {"$ifNull": ["$eventLeaderEmail", "$EventLeaderEmail", "$Email"]},
+        #                 "day": {"$ifNull": ["$Day", "$day"]}
+        #             },
+        #             "doc": {"$first": "$$ROOT"}
+        #         }
+        #     },
+        #     {"$replaceRoot": {"newRoot": "$doc"}},
+        #     {"$sort": {"Day": 1, "Leader": 1}}
+        # ]
 
 #         if search and search.strip():
 #             search_term = search.strip()
@@ -3153,43 +3153,43 @@ def convert_event_for_display(event):
 #         exact_date_str = week 
 #         attendance_data = event.get("attendance", {}).get(exact_date_str)
 
-                for week_back in range(0, max_weeks):
-                    instance_date = current_week_instance - timedelta(weeks=week_back)
+                # for week_back in range(0, max_weeks):
+                #     instance_date = current_week_instance - timedelta(weeks=week_back)
 
-                    if instance_date > today:
-                        continue
-                    if instance_date < start_date_obj:
-                        continue
+                #     if instance_date > today:
+                #         continue
+                #     if instance_date < start_date_obj:
+                #         continue
 
-                    exact_date = instance_date.isoformat()
-                    attendance_data = event.get("attendance", {}) or {}
-                    attendance = get_attendance_by_date(attendance_data, exact_date)
+                #     exact_date = instance_date.isoformat()
+                #     attendance_data = event.get("attendance", {}) or {}
+                #     attendance = get_attendance_by_date(attendance_data, exact_date)
 
-                    if attendance and exact_date not in attendance_data:
-                        try:
-                            await events_collection.update_one(
-                                {"_id": event["_id"]},
-                                {"$set": {f"attendance.{exact_date}": attendance}}
-                            )
-                        except Exception as migrate_error:
-                            print(f"Legacy attendance migration skipped: {migrate_error}")
+                #     if attendance and exact_date not in attendance_data:
+                #         try:
+                #             await events_collection.update_one(
+                #                 {"_id": event["_id"]},
+                #                 {"$set": {f"attendance.{exact_date}": attendance}}
+                #             )
+                #         except Exception as migrate_error:
+                #             print(f"Legacy attendance migration skipped: {migrate_error}")
 
-                    if not attendance:
-                        event_status = "incomplete"
-                        attendees = []
-                        did_not_meet = False
-                    else:
-                        att_status = attendance.get("status", "").lower()
-                        attendees = attendance.get("attendees", [])
-                        if att_status == "did_not_meet":
-                            event_status = "did_not_meet"
-                            did_not_meet = True
-                        elif att_status == "complete" or len(attendees) > 0:
-                            event_status = "complete"
-                            did_not_meet = False
-                        else:
-                            event_status = "incomplete"
-                            did_not_meet = False
+                #     if not attendance:
+                #         event_status = "incomplete"
+                #         attendees = []
+                #         did_not_meet = False
+                #     else:
+                #         att_status = attendance.get("status", "").lower()
+                #         attendees = attendance.get("attendees", [])
+                #         if att_status == "did_not_meet":
+                #             event_status = "did_not_meet"
+                #             did_not_meet = True
+                #         elif att_status == "complete" or len(attendees) > 0:
+                #             event_status = "complete"
+                #             did_not_meet = False
+                #         else:
+                #             event_status = "incomplete"
+                #             did_not_meet = False
 
 
 # @app.put("/events/cells/{identifier}")
@@ -3710,36 +3710,36 @@ def convert_event_for_display(event):
 #     except Exception as e:
 #         raise HTTPException(status_code=500, detail=str(e))
 
-            except Exception as e:
-                print(f"Error processing event {event.get('_id')}: {e}")
-                continue
+    #         except Exception as e:
+    #             print(f"Error processing event {event.get('_id')}: {e}")
+    #             continue
 
-        if must_paginate:
-            total_count = len(cell_instances)
-            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-            skip = (page - 1) * limit
-            paginated = cell_instances[skip:skip + limit]
-            return {
-                "events": paginated,
-                "total_events": total_count,
-                "total_pages": total_pages,
-                "current_page": page,
-                "page_size": limit,
-                "user_info": {
-                    "name": user_name,
-                    "email": user_email,
-                    "role": role,
-                    "is_leader_at_12": is_actual_leader_at_12,
-                    "view_mode": "personal" if (personal or show_personal_cells) else "all"
-                }
-            }
-        else:
-            print("SENDING ALL EVENTS")
-            return {"events": cell_instances}
+    #     if must_paginate:
+    #         total_count = len(cell_instances)
+    #         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+    #         skip = (page - 1) * limit
+    #         paginated = cell_instances[skip:skip + limit]
+    #         return {
+    #             "events": paginated,
+    #             "total_events": total_count,
+    #             "total_pages": total_pages,
+    #             "current_page": page,
+    #             "page_size": limit,
+    #             "user_info": {
+    #                 "name": user_name,
+    #                 "email": user_email,
+    #                 "role": role,
+    #                 "is_leader_at_12": is_actual_leader_at_12,
+    #                 "view_mode": "personal" if (personal or show_personal_cells) else "all"
+    #             }
+    #         }
+    #     else:
+    #         print("SENDING ALL EVENTS")
+    #         return {"events": cell_instances}
 
-    except Exception as e:
-        print(f"Error in /events/cells: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # except Exception as e:
+    #     print(f"Error in /events/cells: {e}")
+    #     raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/events/eventsdata")
@@ -4810,9 +4810,9 @@ async def reactivate_cell(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def auto_reactivate_expired_events():
-    try:
-        current_time = datetime.utcnow()
+# async def auto_reactivate_expired_events():
+#     try:
+#         current_time = datetime.utcnow()
         
         
 #         query = {
@@ -7796,8 +7796,8 @@ async def update_event_status(event_id: str, new_status: str, updated_by: dict):
 #                     if instance_date < start_date_obj:
 #                         continue
                      
-                    exact_date_str = instance_date.isoformat()
-                    week_attendance = get_attendance_by_date(attendance_data, exact_date_str)
+                    # exact_date_str = instance_date.isoformat()
+                    # week_attendance = get_attendance_by_date(attendance_data, exact_date_str)
                     
 #                     if not week_attendance or not isinstance(week_attendance, dict):
 #                         cell_status = "incomplete"
@@ -8149,13 +8149,13 @@ async def update_event_status(event_id: str, new_status: str, updated_by: dict):
 #         if result.matched_count != 1:
 #             raise HTTPException(status_code=500, detail="Failed to update event")
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating persistent attendees: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    # except HTTPException:
+    #     raise
+    # except Exception as e:
+    #     print(f"Error updating persistent attendees: {str(e)}")
+    #     import traceback
+    #     traceback.print_exc()
+    #     raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/events/{event_id}/persistent-attendees")
 async def get_persistent_attendees(
@@ -8339,14 +8339,14 @@ async def get_persistent_attendees(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/events/{event_id}/last-attendance")
-async def get_last_attendance(
-    event_id: str = Path(...),
-    current_user: dict = Depends(get_current_user)
-):
-    try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
+# @app.get("/events/{event_id}/last-attendance")
+# async def get_last_attendance(
+#     event_id: str = Path(...),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         if not ObjectId.is_valid(event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID")
 
 #         enriched_attendees = []
 #         for attendee in persistent_attendees:
@@ -12569,36 +12569,36 @@ async def get_event_summary_stats(event_id: str):
 #             else:
 #                 person_doc["LastDecisionDate"] = consolidation.decision_date
            
-            result = await people_collection.insert_one(person_doc)
-            person_id = str(result.inserted_id)
-            print(f"Created new person: {person_id}")
+        #     result = await people_collection.insert_one(person_doc)
+        #     person_id = str(result.inserted_id)
+        #     print(f"Created new person: {person_id}")
 
-            created_doc = await people_collection.find_one({"_id": result.inserted_id})
-            created_doc = created_doc or person_doc
+        #     created_doc = await people_collection.find_one({"_id": result.inserted_id})
+        #     created_doc = created_doc or person_doc
 
-            new_person_cache_entry = {
-                "_id": person_id,
-                "Name": created_doc.get("Name", ""),
-                "Surname": created_doc.get("Surname", ""),
-                "Email": created_doc.get("Email", ""),
-                "Number": created_doc.get("Number", ""),
-                "Gender": created_doc.get("Gender", ""),
-                "Leader @1": created_doc.get("Leader @1", ""),
-                "Leader @12": created_doc.get("Leader @12", ""),
-                "Leader @144": created_doc.get("Leader @144", ""),
-                "Leader @1728": created_doc.get("Leader @1728", ""),
-                "FullName": f"{created_doc.get('Name', '')} {created_doc.get('Surname', '')}".strip(),
-                "ConsolidationSource": getattr(consolidation, 'source', 'manual')
-            }
-            people_cache["data"].append(new_person_cache_entry)
-            print(f"Added to cache: {new_person_cache_entry['FullName']}")
+        #     new_person_cache_entry = {
+        #         "_id": person_id,
+        #         "Name": created_doc.get("Name", ""),
+        #         "Surname": created_doc.get("Surname", ""),
+        #         "Email": created_doc.get("Email", ""),
+        #         "Number": created_doc.get("Number", ""),
+        #         "Gender": created_doc.get("Gender", ""),
+        #         "Leader @1": created_doc.get("Leader @1", ""),
+        #         "Leader @12": created_doc.get("Leader @12", ""),
+        #         "Leader @144": created_doc.get("Leader @144", ""),
+        #         "Leader @1728": created_doc.get("Leader @1728", ""),
+        #         "FullName": f"{created_doc.get('Name', '')} {created_doc.get('Surname', '')}".strip(),
+        #         "ConsolidationSource": getattr(consolidation, 'source', 'manual')
+        #     }
+        #     people_cache["data"].append(new_person_cache_entry)
+        #     print(f"Added to cache: {new_person_cache_entry['FullName']}")
 
-        # 2. Resolve leader email
-        leader_email = consolidation.assigned_to_email
-        leader_user_id = None
+        # # 2. Resolve leader email
+        # leader_email = consolidation.assigned_to_email
+        # leader_user_id = None
        
-        if not leader_email:
-            print(f"Searching for leader email: {consolidation.assigned_to}")
+        # if not leader_email:
+        #     print(f"Searching for leader email: {consolidation.assigned_to}")
             
 #             leader_parts = consolidation.assigned_to.strip().split()
 #             first_name = leader_parts[0] if leader_parts else ""
