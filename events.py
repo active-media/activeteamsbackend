@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, params
 from datetime import datetime, timedelta, date, timezone
-from typing import Optional
+from typing import Optional, List, Dict, Any 
 from bson import ObjectId
 import uuid
 from auth.models import EventCreate, EventTypeCreate, LeaderStatusResponse,AttendanceSubmission,ConsolidationCreate
@@ -747,6 +747,7 @@ async def update_session_attendees():
 @router.get("/events/eventsdata")
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
+    # supabase: AsyncClient = Depends(get_supabase_client),
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=500),
     status: Optional[str] = Query(None),
@@ -755,31 +756,40 @@ async def get_other_events(
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query("2025-10-10"),
     end_date: Optional[str] = Query(None),
-    show_all_dates: Optional[bool] = Query(False)
+    show_all_dates: Optional[bool] = Query(False),  # still unused
 ):
     try:
         print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}")
         print(f"Query params - status: {status}, personal: {personal}, search: {search}")
 
         user_role = current_user.get("role", "user").lower()
-        user_email = current_user.get("email", "").lower().strip()
+        user_email = (current_user.get("email") or "").lower().strip()
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
         org_id = (
-            current_user.get("org_id") or
-            (current_user.get("organization", "").lower().replace(" ", "-")) or
-            "active-teams"
+            current_user.get("org_id")
+            or (current_user.get("organization") or "").lower().replace(" ", "-")
+            or "active-teams"
         )
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
+        organization = current_user.get("Organization") or current_user.get("organization") or ""
 
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
 
+        # ---- Date range ----
         try:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime("2000-01-01", "%Y-%m-%d").date()
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today + timedelta(days=365)
+            start_date_obj = (
+                datetime.strptime(start_date, "%Y-%m-%d").date()
+                if start_date
+                else datetime.strptime("2000-01-01", "%Y-%m-%d").date()
+            )
+            end_date_obj = (
+                datetime.strptime(end_date, "%Y-%m-%d").date()
+                if end_date
+                else today + timedelta(days=365)
+            )
         except Exception as e:
             print(f"Error parsing dates: {e}")
             start_date_obj = datetime.strptime("2000-01-01", "%Y-%m-%d").date()
@@ -787,145 +797,121 @@ async def get_other_events(
 
         print(f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}")
 
-        query = {
-            "$and": [
-                {
-                    "$or": [
-                        {"org_id": org_id},
-                        {"Organization": {"$regex": re.escape(organization), "$options": "i"}}
-                    ]
-                },
-                {
-                    "$nor": [
-                        {"Event Type": {"$regex": "Cells", "$options": "i"}},
-                        {"eventType": {"$regex": "Cells", "$options": "i"}},
-                        {"eventTypeName": {"$regex": "Cells", "$options": "i"}}
-                    ]
-                }
-            ]
-        }
+        # ============================================================
+        # 1. Build the base Supabase query
+        # ============================================================
+        # We select the event + its price tiers in one go (nested select)
+        query = (
+            supabase.table("events")
+            .select("*, event_price_tiers(*)")
+            .neq("event_type", "Cells")          # simple exclusion; adjust if you need ILIKE
+            # If you still need case-insensitive exclusion:
+            # .not_.ilike("event_type", "%Cells%")
+        )
 
+        # Organization filter
+        # Supabase doesn't have a direct $or of two different columns easily in one filter,
+        # so we use the or_ string syntax.
+        org_filter = f"org_id.eq.{org_id},organization.ilike.%{organization}%"
+        query = query.or_(org_filter)
+
+        # Visibility / personal filters
         if user_role not in ["admin", "leaderat12", "registrant"]:
-            visibility_filter = {
-                "$or": [
-                    {"isGlobal": True},
-                    {"isGlobal": "true"},
-                    {"eventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"userEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"leader1": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"eventLeaderName": {"$regex": f"^{re.escape(user_name)}$", "$options": "i"}},
-                    {"Leader": {"$regex": f"^{re.escape(user_name)}$", "$options": "i"}},
-                ]
-            }
-            query["$and"].append(visibility_filter)
+            visibility = (
+                f"is_global.eq.true,"
+                f"event_leader_email.ilike.{user_email},"
+                f"user_email.ilike.{user_email},"
+                f"leader1.ilike.{user_email},"
+                f"event_leader_name.ilike.%{user_name}%"
+            )
+            query = query.or_(visibility)
 
-        if personal:
-            print(f"Applying PERSONAL filter for user: {user_email}")
-            query["$and"].append({
-                "$or": [
-                    {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
-                    {"leader1": {"$regex": user_email, "$options": "i"}}
-                ]
-            })
-        elif user_role == "user":
-            print(f"Regular user - showing personal events: {user_email}")
-            query["$and"].append({
-                "$or": [
-                    {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
-                    {"leader1": {"$regex": user_email, "$options": "i"}}
-                ]
-            })
+        if personal or user_role == "user":
+            personal_filter = (
+                f"event_leader_email.ilike.%{user_email}%,"
+                f"leader1.ilike.%{user_email}%"
+            )
+            query = query.or_(personal_filter)
 
-        if event_type and event_type.lower() != 'all':
-            print(f"Filtering by event type: '{event_type}'")
-            if event_type.lower() not in ["all", "cells"]:
-                query["$and"].append({
-                    "$or": [
-                        {"Event Type": {"$regex": f"^{event_type}$", "$options": "i"}},
-                        {"eventType": {"$regex": f"^{event_type}$", "$options": "i"}},
-                        {"eventTypeName": {"$regex": f"^{event_type}$", "$options": "i"}}
-                    ]
-                })
+        # Event type filter
+        if event_type and event_type.lower() not in ("all", "cells"):
+            query = query.ilike("event_type", event_type)  # exact-ish; use eq if you want strict
 
+        # Free-text search (name, leader, email, location)
         if search and search.strip():
-            search_term = search.strip()
-            print(f"Applying search filter: '{search_term}'")
-            safe_search_term = re.escape(search_term)
-            query["$and"].append({
-                "$or": [
-                    {"Event Name": {"$regex": safe_search_term, "$options": "i"}},
-                    {"eventName": {"$regex": safe_search_term, "$options": "i"}},
-                    {"Leader": {"$regex": safe_search_term, "$options": "i"}},
-                    {"eventLeaderName": {"$regex": safe_search_term, "$options": "i"}},
-                    {"eventLeaderEmail": {"$regex": safe_search_term, "$options": "i"}},
-                    {"leader1": {"$regex": safe_search_term, "$options": "i"}},
-                    {"Location": {"$regex": safe_search_term, "$options": "i"}},
-                    {"location": {"$regex": safe_search_term, "$options": "i"}}
-                ]
-            })
+            term = search.strip()
+            search_filter = (
+                f"event_name.ilike.%{term}%,"
+                f"event_leader_name.ilike.%{term}%,"
+                f"event_leader_email.ilike.%{term}%,"
+                f"leader1.ilike.%{term}%,"
+                f"location.ilike.%{term}%"
+            )
+            query = query.or_(search_filter)
 
-        print(f"Final query: {query}")
+        # Execute (we still pull a reasonable upper bound and paginate in memory
+        # because of the recurring-event expansion + status computation)
+        response = await query.limit(3000).execute()
+        events: List[Dict[str, Any]] = response.data or []
+        print(f"Found {len(events)} other events from Supabase")
 
-        cursor = events_collection.find(query)
-        events = await cursor.to_list(length=3000)
-        print(f"Found {len(events)} other events")
-
+        # ============================================================
+        # 2. In-memory processing (recurring expansion + status + enrich)
+        # ============================================================
         day_mapping = {
-            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-            'friday': 4, 'saturday': 5, 'sunday': 6
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6,
         }
+
+        def enrich_attendees_with_financials(attendees_list: list) -> list:
+            enriched = []
+            for att in attendees_list or []:
+                if not isinstance(att, dict):
+                    continue
+                price = float(att.get("price") or 0)
+                paid = float(att.get("paid") or att.get("paidAmount") or 0)
+
+                if paid >= price:
+                    owing, change = 0, paid - price
+                elif paid > 0:
+                    owing, change = price - paid, 0
+                else:
+                    owing, change = price, 0
+
+                enriched.append({
+                    "id": att.get("id", ""),
+                    "name": att.get("name", ""),
+                    "fullName": att.get("fullName") or att.get("name", ""),
+                    "email": att.get("email", ""),
+                    "phone": att.get("phone", ""),
+                    "leader12": att.get("leader12", ""),
+                    "leader144": att.get("leader144", ""),
+                    "checked_in": att.get("checked_in", False),
+                    "decision": att.get("decision", ""),
+                    "priceName": att.get("priceName", ""),
+                    "price": price,
+                    "ageGroup": att.get("ageGroup", ""),
+                    "paymentMethod": att.get("paymentMethod", ""),
+                    "paid": paid,
+                    "owing": owing,
+                    "change": change,
+                })
+            return enriched
 
         other_events = []
 
         for event in events:
             try:
-                event_name = event.get("Event Name") or event.get("eventName", "")
-                event_type_value = event.get("Event Type") or event.get("eventType", "Event")
-                recurring_days = event.get("recurring_day", [])
+                event_id = str(event.get("id") or event.get("_id") or "")
+                event_name = event.get("event_name") or ""
+                event_type_value = event.get("event_type") or "Event"
+                recurring_days = event.get("recurring_days") or []
                 if not isinstance(recurring_days, list):
                     recurring_days = []
                 is_recurring = len(recurring_days) > 0
 
-                # Helper function to enrich attendees with financial data
-                def enrich_attendees_with_financials(attendees_list):
-                    enriched = []
-                    for att in attendees_list:
-                        if not isinstance(att, dict):
-                            continue
-                        # Calculate financials if missing
-                        price = att.get("price", 0)
-                        paid = att.get("paid", att.get("paidAmount", 0))
-                        
-                        if paid >= price:
-                            owing = 0
-                            change = paid - price
-                        elif paid > 0 and paid < price:
-                            owing = price - paid
-                            change = 0
-                        else:
-                            owing = price
-                            change = 0
-                        
-                        enriched_att = {
-                            "id": att.get("id", ""),
-                            "name": att.get("name", ""),
-                            "fullName": att.get("fullName", att.get("name", "")),
-                            "email": att.get("email", ""),
-                            "phone": att.get("phone", ""),
-                            "leader12": att.get("leader12", ""),
-                            "leader144": att.get("leader144", ""),
-                            "checked_in": att.get("checked_in", False),
-                            "decision": att.get("decision", ""),
-                            "priceName": att.get("priceName", ""),
-                            "price": price,
-                            "ageGroup": att.get("ageGroup", ""),
-                            "paymentMethod": att.get("paymentMethod", ""),
-                            "paid": paid,
-                            "owing": owing,
-                            "change": change,
-                        }
-                        enriched.append(enriched_att)
-                    return enriched
+                # Price tiers come already nested from the select
+                price_tiers = event.get("event_price_tiers") or []
 
                 if is_recurring:
                     days_since_monday = today.weekday()
@@ -937,6 +923,7 @@ async def get_other_events(
                         if target_weekday is None:
                             continue
 
+                        # Only current week (same as original)
                         for week_back in range(0, 1):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
                             if instance_date > today:
@@ -945,64 +932,50 @@ async def get_other_events(
                                 continue
 
                             exact_date_str = instance_date.isoformat()
-                            days_list = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                            days_list = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                             actual_day_value = days_list[instance_date.weekday()]
 
-                            attendance_data = event.get("attendance", {})
+                            attendance_data = event.get("attendance") or {}
                             if not isinstance(attendance_data, dict):
                                 attendance_data = {}
-                            date_attendance = attendance_data.get(exact_date_str, {})
+                            date_attendance = attendance_data.get(exact_date_str) or {}
                             if not isinstance(date_attendance, dict):
                                 date_attendance = {}
 
+                            # Fallback to root attendees if this is the original date
                             original_date_str = None
-                            event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
-                            if isinstance(event_date_field, datetime):
-                                original_date_str = event_date_field.date().isoformat()
-                            elif isinstance(event_date_field, str):
-                                try:
-                                    if 'T' in event_date_field:
-                                        original_date_str = datetime.fromisoformat(event_date_field.replace("Z", "+00:00")).date().isoformat()
-                                    else:
-                                        original_date_str = event_date_field[:10]
-                                except:
-                                    pass
+                            event_date_field = event.get("date")
+                            if event_date_field:
+                                if isinstance(event_date_field, str):
+                                    original_date_str = event_date_field[:10]
+                                else:
+                                    original_date_str = str(event_date_field)[:10]
 
-                            root_attendees = event.get("attendees", [])
-                            if not isinstance(root_attendees, list):
-                                root_attendees = []
-
+                            root_attendees = event.get("attendees") or []
                             if not date_attendance and exact_date_str == original_date_str and root_attendees:
                                 date_attendance = {
                                     "attendees": root_attendees,
-                                    "status": str(event.get("status", "")).lower(),
-                                    "new_people": event.get("new_people", []),
-                                    "consolidations": event.get("consolidations", []),
+                                    "status": str(event.get("status") or "").lower(),
+                                    "new_people": event.get("new_people") or [],
+                                    "consolidations": event.get("consolidations") or [],
                                 }
 
-                            weekly_attendees = date_attendance.get("attendees", [])
-                            if not isinstance(weekly_attendees, list):
-                                weekly_attendees = []
-                            
-                            # Enrich attendees with financial data
-                            weekly_attendees = enrich_attendees_with_financials(weekly_attendees)
+                            weekly_attendees = enrich_attendees_with_financials(
+                                date_attendance.get("attendees") or []
+                            )
                             has_weekly_attendees = len(weekly_attendees) > 0
 
-                            new_people = date_attendance.get("new_people", [])
-                            if not isinstance(new_people, list):
-                                new_people = []
-                            consolidations = date_attendance.get("consolidations", [])
-                            if not isinstance(consolidations, list):
-                                consolidations = []
+                            new_people = date_attendance.get("new_people") or []
+                            consolidations = date_attendance.get("consolidations") or []
 
-                            att_status = str(date_attendance.get("status", "")).lower()
+                            att_status = str(date_attendance.get("status") or "").lower()
                             is_did_not_meet = date_attendance.get("is_did_not_meet", False)
 
                             if is_did_not_meet or att_status == "did_not_meet":
                                 event_status = "did_not_meet"
-                            elif att_status in ["open", "incomplete", "reopened", "active"]:
+                            elif att_status in ("open", "incomplete", "reopened", "active"):
                                 event_status = "incomplete"
-                            elif has_weekly_attendees or att_status in ["complete", "closed"]:
+                            elif has_weekly_attendees or att_status in ("complete", "closed"):
                                 event_status = "complete"
                             else:
                                 event_status = "incomplete"
@@ -1010,156 +983,91 @@ async def get_other_events(
                             if status and status != event_status:
                                 continue
 
-                            total_attendance = len(weekly_attendees)
-
                             instance = {
-                                "_id": f"{str(event.get('_id'))}_{exact_date_str}",
-                                "UUID": event.get("UUID", ""),
+                                "_id": f"{event_id}_{exact_date_str}",
+                                "UUID": event.get("uuid") or "",
                                 "eventName": event_name,
                                 "eventType": event_type_value,
-                                "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
-                                "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
-                                "leader1": event.get("leader1", ""),
-                                "leader12": event.get("Leader @12") or event.get("Leader at 12", ""),
+                                "eventLeaderName": event.get("event_leader_name") or "",
+                                "eventLeaderEmail": event.get("event_leader_email") or "",
+                                "leader1": event.get("leader1") or "",
+                                "leader12": event.get("leader12") or "",
                                 "day": actual_day_value,
                                 "date": exact_date_str,
-                                "location": event.get("Location") or event.get("location", ""),
+                                "location": event.get("location") or "",
                                 "hasPersonSteps": False,
                                 "status": event_status,
                                 "Status": event_status.replace("_", " ").title(),
                                 "_is_overdue": instance_date < today and event_status == "incomplete",
                                 "is_recurring": True,
                                 "recurring_days": recurring_days,
-                                "original_event_id": str(event.get("_id")),
-                                "isGlobal": event.get("isGlobal", False),
-                                "isTicketed": event.get("isTicketed", False),
-                                "priceTiers": event.get("priceTiers", []),
-                                "closed_by": date_attendance.get("closed_by") or event.get("closed_by", ""),
-                                "closed_at": str(date_attendance.get("closed_at") or event.get("closed_at", "")),
-                                "created_at": str(event.get("created_at", "")),
-                                "updated_at": str(event.get("updated_at", "") or event.get("updatedAt", "")),
+                                "original_event_id": event_id,
+                                "isGlobal": event.get("is_global", False),
+                                "isTicketed": event.get("is_ticketed", False),
+                                "priceTiers": price_tiers,          # ← from the joined table
+                                "closed_by": date_attendance.get("closed_by") or event.get("closed_by") or "",
+                                "closed_at": str(date_attendance.get("closed_at") or event.get("closed_at") or ""),
+                                "created_at": str(event.get("created_at") or ""),
+                                "updated_at": str(event.get("updated_at") or ""),
                                 "attendees": weekly_attendees,
-                                "persistent_attendees": enrich_attendees_with_financials(event.get("persistent_attendees", [])),
+                                "persistent_attendees": enrich_attendees_with_financials(
+                                    event.get("persistent_attendees") or []
+                                ),
                                 "new_people": new_people,
                                 "consolidations": consolidations,
-                                "total_attendance": total_attendance,
+                                "total_attendance": len(weekly_attendees),
                                 "new_people_count": len(new_people),
                                 "consolidation_count": len(consolidations),
                             }
                             other_events.append(instance)
 
                 else:
-                    day_name_raw = event.get("Day") or event.get("day") or event.get("eventDay") or ""
-                    day_name = str(day_name_raw).strip()
+                    # ---------- One-time event ----------
+                    event_date_field = event.get("date")
+                    if not event_date_field:
+                        continue
 
-                    event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
-                    if isinstance(event_date_field, datetime):
-                        event_date = event_date_field.date()
-                    elif isinstance(event_date_field, str):
+                    if isinstance(event_date_field, str):
                         try:
-                            if 'T' in event_date_field:
-                                event_date = datetime.fromisoformat(event_date_field.replace("Z", "+00:00")).date()
-                            else:
-                                event_date = datetime.strptime(event_date_field, "%Y-%m-%d").date()
-                        except Exception as e:
-                            print(f"Error parsing date '{event_date_field}': {e}")
+                            event_date = datetime.strptime(event_date_field[:10], "%Y-%m-%d").date()
+                        except Exception:
                             continue
                     else:
+                        event_date = event_date_field  # already a date
+
+                    if event_date < start_date_obj or event_date > end_date_obj or event_date > today:
                         continue
 
+                    day_name = event.get("day") or ""
                     if not day_name:
-                        try:
-                            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                            day_name = days[event_date.weekday()]
-                        except Exception as e:
-                            print(f"Error calculating day from date: {e}")
-                            day_name = "One-time"
-
+                        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                        day_name = days[event_date.weekday()]
                     actual_day_value = day_name.capitalize() if day_name else "One-time"
 
-                    if event_date < start_date_obj or event_date > end_date_obj:
-                        continue
-                    if event_date > today:
-                        continue
-
-                    weekly_attendees = event.get("attendees", [])
-                    if not isinstance(weekly_attendees, list):
-                        weekly_attendees = []
-
+                    weekly_attendees = event.get("attendees") or []
                     if not weekly_attendees:
-                        attendance_data = event.get("attendance", {})
+                        attendance_data = event.get("attendance") or {}
                         if isinstance(attendance_data, dict):
-                            event_date_iso = event_date.isoformat()
-                            event_attendance = attendance_data.get(event_date_iso, {})
-                            weekly_attendees = event_attendance.get("attendees", [])
-                            if not isinstance(weekly_attendees, list):
-                                weekly_attendees = []
-
-                    # Helper function to enrich attendees with financial data
-                    def enrich_attendees_with_financials(attendees_list):
-                        enriched = []
-                        for att in attendees_list:
-                            if not isinstance(att, dict):
-                                continue
-                            price = att.get("price", 0)
-                            paid = att.get("paid", att.get("paidAmount", 0))
-                            
-                            if paid >= price:
-                                owing = 0
-                                change = paid - price
-                            elif paid > 0 and paid < price:
-                                owing = price - paid
-                                change = 0
-                            else:
-                                owing = price
-                                change = 0
-                            
-                            enriched_att = {
-                                "id": att.get("id", ""),
-                                "name": att.get("name", ""),
-                                "fullName": att.get("fullName", att.get("name", "")),
-                                "email": att.get("email", ""),
-                                "phone": att.get("phone", ""),
-                                "leader12": att.get("leader12", ""),
-                                "leader144": att.get("leader144", ""),
-                                "checked_in": att.get("checked_in", False),
-                                "decision": att.get("decision", ""),
-                                "priceName": att.get("priceName", ""),
-                                "price": price,
-                                "ageGroup": att.get("ageGroup", ""),
-                                "paymentMethod": att.get("paymentMethod", ""),
-                                "paid": paid,
-                                "owing": owing,
-                                "change": change,
-                            }
-                            enriched.append(enriched_att)
-                        return enriched
+                            event_attendance = attendance_data.get(event_date.isoformat()) or {}
+                            weekly_attendees = event_attendance.get("attendees") or []
 
                     weekly_attendees = enrich_attendees_with_financials(weekly_attendees)
                     has_weekly_attendees = len(weekly_attendees) > 0
 
-                    new_people = event.get("new_people", [])
-                    if not isinstance(new_people, list):
-                        new_people = []
+                    new_people = event.get("new_people") or []
+                    consolidations = event.get("consolidations") or []
 
-                    consolidations = event.get("consolidations", [])
-                    if not isinstance(consolidations, list):
-                        consolidations = []
+                    main_status = str(event.get("status") or "").lower()
+                    main_did_not_meet = event.get("did_not_meet", False)
 
-                    main_event_status = event.get("status", "").lower()
-                    main_event_did_not_meet = event.get("did_not_meet", False)
-                    main_event_complete = event.get("Status", "").lower() == "complete"
-
-                    if main_event_did_not_meet or main_event_status == "did_not_meet":
+                    if main_did_not_meet or main_status == "did_not_meet":
                         event_status = "did_not_meet"
-                    elif main_event_status in ["open", "incomplete", "reopened", "active"]:
+                    elif main_status in ("open", "incomplete", "reopened", "active"):
                         event_status = "incomplete"
-                    elif has_weekly_attendees or main_event_complete or main_event_status in ["complete", "closed"]:
+                    elif has_weekly_attendees or main_status in ("complete", "closed"):
                         event_status = "complete"
                     else:
                         event_status = "incomplete"
-
-                    print(f"Event '{event_name}' - attendees: {len(weekly_attendees)}, status: {event_status}")
 
                     if status and status != event_status:
                         continue
@@ -1169,33 +1077,35 @@ async def get_other_events(
                         total_attendance = len(weekly_attendees)
 
                     instance = {
-                        "_id": str(event.get("_id")),
-                        "UUID": event.get("UUID", ""),
+                        "_id": event_id,
+                        "UUID": event.get("uuid") or "",
                         "eventName": event_name,
                         "eventType": event_type_value,
-                        "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
-                        "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
-                        "leader1": event.get("leader1", ""),
-                        "leader12": event.get("Leader @12") or event.get("Leader at 12", ""),
+                        "eventLeaderName": event.get("event_leader_name") or "",
+                        "eventLeaderEmail": event.get("event_leader_email") or "",
+                        "leader1": event.get("leader1") or "",
+                        "leader12": event.get("leader12") or "",
                         "day": actual_day_value,
                         "date": event_date.isoformat(),
-                        "location": event.get("Location") or event.get("location", ""),
+                        "location": event.get("location") or "",
                         "hasPersonSteps": False,
                         "status": event_status,
                         "Status": event_status.replace("_", " ").title(),
                         "_is_overdue": event_date < today and event_status == "incomplete",
                         "is_recurring": False,
                         "recurring_days": [],
-                        "original_event_id": str(event.get("_id")),
-                        "isGlobal": event.get("isGlobal", False),
-                        "isTicketed": event.get("isTicketed", False),
-                        "priceTiers": event.get("priceTiers", []),
-                        "closed_by": event.get("closed_by", ""),
-                        "closed_at": str(event.get("closed_at", "")),
-                        "created_at": str(event.get("created_at", "")),
-                        "updated_at": str(event.get("updated_at", "") or event.get("updatedAt", "")),
+                        "original_event_id": event_id,
+                        "isGlobal": event.get("is_global", False),
+                        "isTicketed": event.get("is_ticketed", False),
+                        "priceTiers": price_tiers,          # ← from the joined table
+                        "closed_by": event.get("closed_by") or "",
+                        "closed_at": str(event.get("closed_at") or ""),
+                        "created_at": str(event.get("created_at") or ""),
+                        "updated_at": str(event.get("updated_at") or ""),
                         "attendees": weekly_attendees,
-                        "persistent_attendees": enrich_attendees_with_financials(event.get("persistent_attendees", [])),
+                        "persistent_attendees": enrich_attendees_with_financials(
+                            event.get("persistent_attendees") or []
+                        ),
                         "new_people": new_people,
                         "consolidations": consolidations,
                         "total_attendance": total_attendance,
@@ -1205,17 +1115,20 @@ async def get_other_events(
                     other_events.append(instance)
 
             except Exception as e:
-                print(f"Error processing other event: {str(e)}")
+                print(f"Error processing other event: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
 
-        other_events.sort(key=lambda x: x['date'], reverse=True)
+        # ============================================================
+        # 3. Sort + paginate
+        # ============================================================
+        other_events.sort(key=lambda x: x["date"], reverse=True)
 
         total_count = len(other_events)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
         skip = (page - 1) * limit
-        paginated_events = other_events[skip:skip + limit]
+        paginated_events = other_events[skip : skip + limit]
 
         print(f"Returning {len(paginated_events)} other events (page {page}/{total_pages})")
 
@@ -1224,15 +1137,14 @@ async def get_other_events(
             "total_events": total_count,
             "total_pages": total_pages,
             "current_page": page,
-            "page_size": limit
+            "page_size": limit,
         }
 
     except Exception as e:
-        print(f"ERROR in /eventsdata: {str(e)}")
+        print(f"ERROR in /eventsdata: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-  
 
 #not used
 @router.get("/events/{event_id}/attendance/{week}")
