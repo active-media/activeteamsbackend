@@ -434,7 +434,8 @@ async def get_cell_events(
 
         #parameters used when fetching the cells
         all_cells_params = {
-            "p_event_type": "Cells"
+            "p_event_type": "Cells",
+            "p_event_leader_email": user_email
         }
 
         personal_cells_params = {
@@ -473,12 +474,14 @@ async def get_cell_events(
         # 3- getting cells according to roles
         if fetch_all_cells and not personal_cells and not disciples_cells:
             #getting all cells that occured in the past 3wks based on status
+            print("getting all cells")
             event_sessions = supabase.table("event_sessions").select("*").gte("session_date", start_str).lte("session_date", end_str).eq("status",status).execute().data
             event_ids = [session.get("event_id") for session in event_sessions]
             all_cells_params["p_event_ids"] = event_ids
             #getting all active cells
             events = supabase.rpc("get_all_unique_cells", all_cells_params).execute().data
         elif personal_cells and not disciples_cells:
+            print("getting personal cells")
             #getting events of leader:
             events = supabase.rpc("get_personal_unique_events", personal_cells_params).execute().data
             for i in events:
@@ -487,6 +490,7 @@ async def get_cell_events(
                 if session:
                     event_sessions.extend(session)
         elif disciples_cells:
+            print("getting disciples cells")
             events = supabase.rpc("get_disciples_cells",disciples_cells_params).execute().data
             for i in events:
                 session = supabase.table("event_sessions").select("*").gte("session_date", start_str).lte("session_date", end_str).eq("event_name", i.get("event_name")).eq("status", status).execute().data
@@ -3328,9 +3332,9 @@ async def delete_event(event_id: str = Path(...), event_name: str = Path(...)):
     try:
         print("PAYLOAD",event_id,event_name)
         deleted_event_sessions = supabase.table("event_sessions").delete().eq("event_id", event_id).execute().data
-        deleted_event = supabase.table("events").delete().eq("event_name", event_name).execute().data
-        # supabase.table("event_session_attendees").delete().eq("event_id", event_id).execute()
-        # Delete the event
+        supabase.table("event_session_attendees").delete().eq("event_id", event_id).execute()
+        deleted_event = supabase.table("events").delete().eq("event_id", event_id).execute().data
+       
        
         
         if len(deleted_event) >= 1:
