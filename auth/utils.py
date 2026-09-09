@@ -1,13 +1,14 @@
 import os
+import re
 import secrets
 from datetime import datetime, time as time_type, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from database import users_collection
+from database import users_collection, org_config_collection, organizations_collection
 from bson import ObjectId
 from datetime import datetime
 
@@ -319,3 +320,191 @@ def task_type_serializer(task_type) -> dict:
         "id": str(task_type["_id"]),
         "name": task_type["name"]
     }
+
+
+# ==============================
+# MULTI-ORG HELPERS
+# ==============================
+# Open-ended G12 default hierarchy (@1 is top-most; levels are the ×12 group sizes).
+DEFAULT_HIERARCHY: List[dict] = [
+    {"key": "leader1",   "label": "Leader @1",   "level": 1},
+    {"key": "leader12",  "label": "Leader @12",  "level": 12},
+    {"key": "leader144", "label": "Leader @144", "level": 144},
+    {"key": "leader1728","label": "Leader @1728","level": 1728},
+]
+
+DEFAULT_ROLES: List[dict] = [
+    {"key": "admin",      "label": "Admin",  "capabilities": ["admin"]},
+    {"key": "leader",     "label": "Leader", "capabilities": ["view_people", "manage_people", "create_events", "close_events", "view_stats", "checkin"]},
+    {"key": "user",       "label": "Member", "capabilities": ["checkin"]},
+]
+
+KEY_REGEX = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def normalize_org_id(org_id: str) -> str:
+    """Normalize an org identifier into the canonical org_id (slug)."""
+    raw = (org_id or "").strip()
+    if not raw:
+        return ""
+    slug = raw.lower().replace(" ", "-")
+    slug = ORG_ID_MAP.get(slug, slug)
+    return slug
+
+
+def get_org_id(user: dict) -> Optional[str]:
+    """Return the user's org_id, or None if they have no org."""
+    org_id = user.get("org_id")
+    if org_id:
+        return normalize_org_id(str(org_id))
+    org = user.get("Organization") or user.get("organization") or user.get("Organisation")
+    if org:
+        return normalize_org_id(str(org))
+    return None
+
+
+def is_supreme(user: dict) -> bool:
+    return bool(user.get("is_supreme_admin")) or user.get("role") in ("super_admin",)
+
+
+async def require_org(user: dict) -> dict:
+    """Fetch the user's org (Organization or dynamic OrgConfig). 404 if no org."""
+    org_id = get_org_id(user)
+    if not org_id:
+        raise HTTPException(status_code=404, detail="User has no organisation")
+    # Prefer the dynamic OrgConfig which holds is_setup/hierarchy/roles/settings.
+    org = await org_config_collection.find_one({"_id": org_id})
+    if org:
+        org["_id"] = org_id
+        return org
+    # Fall back to the legacy Organization document.
+    legacy = await organizations_collection.find_one({"_id": org_id})
+    if legacy:
+        return legacy
+    # Fall back to an org record keyed by slug.
+    legacy_by_slug = await organizations_collection.find_one({
+        "$or": [
+            {"name": {"$regex": f"^{re.escape(org_id)}$", "$options": "i"}},
+            {"slug": org_id},
+            {"tag": org_id},
+        ]
+    })
+    if legacy_by_slug:
+        return legacy_by_slug
+    raise HTTPException(status_code=404, detail="Organisation not found")
+
+
+async def require_admin(user: dict, org: Optional[dict] = None) -> None:
+    """403 unless the user is a supreme admin, an org admin (capability), or legacy role admin."""
+    if is_supreme(user):
+        return
+    if user.get("role") == "admin" or user.get("role") in ("org_admin", "super_admin"):
+        return
+    if org:
+        roles = org.get("roles") or []
+        for role in roles:
+            caps = role.get("capabilities") or []
+            if role.get("key") == user.get("role") and "admin" in caps:
+                return
+            # If the user's role key matches this role and it grants admin, allow.
+            if caps and "admin" in caps and role.get("key") == user.get("role"):
+                return
+    raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def scoped(user: dict, doc: dict) -> None:
+    """403 if the doc's org differs from the user's org, unless supreme admin."""
+    if is_supreme(user):
+        return
+    user_org = get_org_id(user)
+    if not user_org:
+        raise HTTPException(status_code=403, detail="User has no organisation")
+    doc_org = doc.get("org_id") or doc.get("Organization") or doc.get("organization") or ""
+    if not doc_org:
+        # Documents without an org tag are treated as belonging to the user's org.
+        return
+    if normalize_org_id(str(doc_org)) != user_org:
+        raise HTTPException(status_code=403, detail="Not authorised for this organisation")
+
+
+def get_org_hierarchy(org: Optional[dict]) -> List[dict]:
+    """
+    Return the org's configured hierarchy, or the default G12 hierarchy if the
+    org has none configured / is not set up. Each entry: {key, field, label, level}.
+    field === key so the frontend can migrate off `field` gracefully.
+    """
+    if not org:
+        return [
+            {**h, "field": h["key"]} for h in DEFAULT_HIERARCHY
+        ]
+    hierarchy = org.get("hierarchy") or []
+    if not hierarchy or not org.get("is_setup"):
+        return [
+            {**h, "field": h["key"]} for h in DEFAULT_HIERARCHY
+        ]
+    result = []
+    for h in hierarchy:
+        entry = dict(h)
+        entry["field"] = entry.get("key", "")
+        entry["key"] = entry.get("key", "")
+        result.append(entry)
+    return result
+
+
+async def fetch_org_hierarchy(user: dict) -> List[dict]:
+    """Convenience: fetch the org hierarchy for a user in one call."""
+    org = await require_org(user)
+    return get_org_hierarchy(org)
+
+
+# ── Capability model (spec §7) ────────────────────────────────────────────────
+def resolve_capabilities(user: dict, org: Optional[dict] = None):
+    """Resolve (role_key, capabilities) for a user from org roles or DEFAULT_ROLES.
+
+    Returns a tuple: (resolved_role, capabilities_list).
+    """
+    if is_supreme(user):
+        return ("admin", ["admin"])
+    role = (str(user.get("role") or "user")).lower()
+    if org:
+        for r in org.get("roles") or []:
+            if r.get("key") == role:
+                caps = list(r.get("capabilities") or [])
+                if caps:
+                    return (role, caps)
+    legacy_map = {
+        "admin": "admin",
+        "super_admin": "admin",
+        "org_admin": "admin",
+        "manager": "leader",
+        "leaderat12": "leader",
+        "leader_at_12": "leader",
+        "leader": "leader",
+        "registrant": "user",
+        "registrar": "user",
+        "user": "user",
+    }
+    mapped = legacy_map.get(role, "user")
+    for d in DEFAULT_ROLES:
+        if d["key"] == mapped:
+            return (mapped, list(d["capabilities"]))
+    return ("user", ["checkin"])
+
+
+async def require_capability(user: dict, capability: str, org: Optional[dict] = None) -> None:
+    """403 unless the user holds `capability` (admin capability grants all).
+
+    Resolves org roles first; falls back to DEFAULT_ROLES so legacy/orgless
+    users keep working while the frontend migrates (spec §7).
+    """
+    if not org:
+        org_id = get_org_id(user)
+        if org_id:
+            try:
+                org = await org_config_collection.find_one({"_id": org_id})
+            except Exception:
+                org = None
+    _, caps = resolve_capabilities(user, org)
+    if "admin" in caps or capability in caps:
+        return
+    raise HTTPException(status_code=403, detail=f"Insufficient permissions: {capability} required")

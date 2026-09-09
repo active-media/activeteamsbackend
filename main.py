@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request ,  Depend
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate,UserCreater,  UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel,TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate ,TaskTypeIn ,TaskTypeOut , LeaderStatusResponse, UserProfile,  OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user, get_org_id, require_org, require_admin, scoped, is_supreme, get_org_hierarchy, DEFAULT_HIERARCHY, DEFAULT_ROLES, KEY_REGEX, normalize_org_id, resolve_capabilities, require_capability 
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection
@@ -233,8 +233,9 @@ async def resolve_consolidation_assignee(existing_person: dict | None, consolida
             _append_candidate(leader_name, "leaders-list")
 
     if existing_person:
-        for key in ["Leader @1", "Leader @12", "Leader @144", "Leader @1728", "leader1", "leader12", "leader144", "leader1728"]:
-            _append_candidate(existing_person.get(key, ""), "existing-person-leader")
+        for _lkey in legacy_leader_keys(existing_person) or [h["key"] for h in DEFAULT_HIERARCHY]:
+            for flat in legacy_flat_keys(_lkey) or [_lkey]:
+                _append_candidate(existing_person.get(flat, ""), "existing-person-leader")
         invited_by = existing_person.get("InvitedBy") or existing_person.get("invited_by") or existing_person.get("Invited By")
         if invited_by:
             _append_candidate(invited_by, "existing-person-invited-by")
@@ -503,11 +504,14 @@ async def get_organizations_cached() -> list[dict]:
     # Slow path: load from MongoDB
     cursor = organizations_collection.find(
         {},
-        {"_id": 1, "name": 1, "tag": 1, "description": 1, "created_at": 1},
+        {"_id": 1, "name": 1, "tag": 1, "description": 1, "created_at": 1, "org_id": 1, "slug": 1, "is_setup": 1, "hierarchy": 1},
     ).sort("name", 1)
     orgs = await cursor.to_list(length=500)
     for org in orgs:
         org["_id"] = str(org["_id"])
+        org["is_setup"] = bool(org.get("is_setup") and org.get("hierarchy"))
+        org.setdefault("org_id", org.get("slug") or org.get("org_id") or org["_id"])
+        org.pop("hierarchy", None)
 
     organizations_cache["data"] = orgs
     organizations_cache["last_loaded"] = now.isoformat()
@@ -625,69 +629,35 @@ def transform_person_full(p, id_to_full: dict = None):
     # Try resolving from LeaderPath first
     leaders = resolve_leaders(path_strs, id_to_full or {})
 
-    # Fallback: if leaders is empty, build from legacy Leader @N flat keys
+    # Fallback: if leaders is empty, build from legacy flat keys
     if not leaders:
-        LEGACY_LEVELS = [
-            ("Leader @1",    1),
-            ("leader1",      1),
-            ("Leader @12",   12),
-            ("leader12",     12),
-            ("Leader @144",  144),
-            ("leader144",    144),
-            ("Leader @1728", 1728),
-            ("leader1728",   1728),
-        ]
         seen_levels = set()
-        for field, level in LEGACY_LEVELS:
-            name = p.get(field, "").strip()
-            if name and level not in seen_levels:
+        for h in DEFAULT_HIERARCHY:
+            name = legacy_flat_read(p, h["key"]).strip()
+            if name and h.get("level") not in seen_levels:
                 leaders.append({
-                    "level": level,
+                    "level": h.get("level"),
                     "id":    "",
                     "name":  name,
                     "email": "",
                     "phone": "",
                 })
-                seen_levels.add(level)
+                seen_levels.add(h.get("level"))
         # sort root first
         leaders.sort(key=lambda x: x["level"])
 
-    leader_flat = {
-        "Leader @1": "",
-        "leader1": "",
-        "Leader at 1": "",
-        "Leader @12": "",
-        "leader12": "",
-        "Leader at 12": "",
-        "Leader @144": "",
-        "leader144": "",
-        "Leader at 144": "",
-        "Leader @1728": "",
-        "leader1728": "",
-        "Leader at 1728": "",
-    }
+    leader_flat = {flat: "" for h in DEFAULT_HIERARCHY for flat in (legacy_flat_keys(h["key"]) or [h["key"]])}
 
     for leader in leaders:
         level = leader.get("level")
         name = leader.get("name", "")
         if not name:
             continue
-        if level == 1:
-            leader_flat["Leader @1"] = leader_flat["Leader @1"] or name
-            leader_flat["leader1"] = leader_flat["leader1"] or name
-            leader_flat["Leader at 1"] = leader_flat["Leader at 1"] or name
-        elif level == 12:
-            leader_flat["Leader @12"] = leader_flat["Leader @12"] or name
-            leader_flat["leader12"] = leader_flat["leader12"] or name
-            leader_flat["Leader at 12"] = leader_flat["Leader at 12"] or name
-        elif level == 144:
-            leader_flat["Leader @144"] = leader_flat["Leader @144"] or name
-            leader_flat["leader144"] = leader_flat["leader144"] or name
-            leader_flat["Leader at 144"] = leader_flat["Leader at 144"] or name
-        elif level == 1728:
-            leader_flat["Leader @1728"] = leader_flat["Leader @1728"] or name
-            leader_flat["leader1728"] = leader_flat["leader1728"] or name
-            leader_flat["Leader at 1728"] = leader_flat["Leader at 1728"] or name
+        for h in DEFAULT_HIERARCHY:
+            if h.get("level") == level:
+                for flat in legacy_flat_keys(h["key"]) or [h["key"]]:
+                    leader_flat[flat] = leader_flat[flat] or name
+                break
 
     for key in leader_flat:
         leader_flat[key] = p.get(key, leader_flat[key]) or leader_flat[key]
@@ -774,10 +744,7 @@ async def background_refresh_people_cache(stale_data: list = None):
     "church_id": 1,
     "LeaderId": 1, "LeaderPath": 1,
     "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
-    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
-    "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
-    "Leader at 1": 1, "Leader at 12": 1, "Leader at 144": 1, "Leader at 144": 1,
-    "leaders": 1,  
+    "leaders": 1,
 }
 
         # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
@@ -858,6 +825,7 @@ async def get_cached_people(
             is_super_admin = True  # fail-open so data is still returned
  
         org_label = current_user.get("Organization") or current_user.get("org_id") or "ALL"
+        org_id = get_org_id(current_user) or ""
  
         def filter_by_org(data: list) -> list:
             if is_super_admin or not aliases:
@@ -912,6 +880,7 @@ async def get_cached_people(
                 "cache_version": people_cache["version"],
                 "is_valid":      True,
                 "organization":  org_label,
+                "org_id":        org_id,
             }
  
         # ── 2. cache still loading — return partial ───────────────────────────
@@ -931,6 +900,7 @@ async def get_cached_people(
                 "cache_version":     people_cache["version"],
                 "is_valid":          people_cache["is_valid"],
                 "organization":      org_label,
+                "org_id":            org_id,
             }
  
         # ── 3. stale cache — serve stale, trigger refresh ─────────────────────
@@ -955,6 +925,7 @@ async def get_cached_people(
                 "is_valid":       False,
                 "refresh_queued": people_cache.get("pending_refresh"),
                 "organization":   org_label,
+                "org_id":         org_id,
             }
  
         # ── 4. cache empty — trigger load ─────────────────────────────────────
@@ -970,10 +941,11 @@ async def get_cached_people(
                 "is_complete":   False,
                 "message":       "Background loading started...",
                 "load_progress": 0,
-                "cache_version": people_cache["version"],
+"cache_version": people_cache["version"],
                 "organization":  org_label,
+                "org_id":        org_id,
             }
- 
+
         # ── 5. fallback ───────────────────────────────────────────────────────
         filtered = filter_by_org(people_cache["data"] or [])
         return {
@@ -983,10 +955,11 @@ async def get_cached_people(
             "source":        "fallback",
             "total_count":   len(filtered),
             "is_complete":   bool(filtered),
-            "cache_version": people_cache["version"],
+"cache_version": people_cache["version"],
             "organization":  org_label,
+            "org_id":        org_id,
         }
- 
+
     except Exception as e:
         print(f"Error in /cache/people: {str(e)}")
         import traceback
@@ -1051,20 +1024,26 @@ async def get_people_simple(
  
  
 @app.post("/cache/people/refresh")
-async def refresh_people_cache(background_tasks: BackgroundTasks):
+async def refresh_people_cache(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
     """
-    Manually refresh the people cache.
+    Manually refresh the people cache (scoped to requester's org_id in the payload).
     """
     try:
+        org_id = get_org_id(current_user) or ""
+        scope = {"org_id": org_id, "organization": current_user.get("Organization") or current_user.get("organization") or ""}
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else Nones
             background_tasks.add_task(background_refresh_people_cache, current_data)
- 
+
             return {
                 "success": True,
                 "message": "Cache refresh triggered",
                 "is_loading": True,
+                "scope": scope,
                 "current_progress": people_cache["load_progress"],
                 "current_cache_size": len(people_cache["data"]) if people_cache["data"] else 0
             }
@@ -1073,9 +1052,10 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
                 "success": True,
                 "message": "Cache refresh already in progress",
                 "is_loading": True,
+                "scope": scope,
                 "current_progress": people_cache["load_progress"]
             }
- 
+
     except Exception as e:
         print(f"Error refreshing cache: {str(e)}")
         return {
@@ -1085,15 +1065,20 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
  
  
 @app.get("/cache/people/status")
-async def get_cache_status():
-    """Get detailed cache status and loading progress."""
+async def get_cache_status(current_user: dict = Depends(get_current_user)):
+    """Get detailed cache status and loading progress. Scoped to requester's org."""
+    org_id = get_org_id(current_user) or ""
     total_in_db = await people_collection.count_documents({})
     cache_size = len(people_cache["data"])
- 
+
     # Guard against missing key
     refresh_queue = people_cache.get("refresh_queue", [])
- 
+
     return {
+        "scope": {
+            "org_id": org_id,
+            "organization": current_user.get("Organization") or current_user.get("organization") or "",
+        },
         "cache": {
             "size": cache_size,
             "last_updated": people_cache["last_updated"],
@@ -1341,14 +1326,55 @@ async def signup(user: UserCreate):
     # ---- Resolve organization & org_tag dynamically from DB ----
     organization = (user.organization or "").strip()
     org_tag = ""
+    org_id = ""
+    org_doc = None
+    is_org_new = False
+    is_first_member = False
     if organization:
         org_doc = await organizations_collection.find_one(
             {"name": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}}
         )
         if org_doc:
             org_tag = org_doc.get("tag", organization)
+            org_id = org_doc.get("org_id") or org_doc.get("slug") or str(org_doc.get("_id", ""))
+            org_id = normalize_org_id(org_id) if org_id else normalize_org_id(organization)
         else:
-            org_tag = organization  # fallback: use name as tag if not found
+            # ---- Auto-create the organization (spec §3.1) ----
+            org_id = normalize_org_id(organization)
+            org_doc = {
+                "name": organization,
+                "slug": org_id,
+                "org_id": org_id,
+                "is_setup": False,
+                "hierarchy": [],
+                "roles": DEFAULT_ROLES,
+                "settings": {
+                    "recurring_event_type": "Cells",
+                    "top_leaders": {"male": None, "female": None},
+                    "allows_create_event": True,
+                    "allows_create_event_type": True,
+                },
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            insert_org_result = await organizations_collection.insert_one(org_doc)
+            org_doc["_id"] = insert_org_result.inserted_id
+            is_org_new = True
+            is_first_member = True
+            org_tag = organization
+
+    if org_doc and not is_org_new:
+        # First member of an existing org check: if the org has no users yet, first signup = admin.
+        org_slug = normalize_org_id(organization)
+        existing_user_count = await users_collection.count_documents({
+            "$or": [
+                {"org_id": org_id},
+                {"Organization": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}},
+                {"organization": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}},
+                {"org_id": org_slug},
+            ]
+        })
+        is_first_member = existing_user_count == 0
 
     # Create base user document (leader fields will be added after hierarchy is calculated)
     user_dict = {
@@ -1361,9 +1387,10 @@ async def signup(user: UserCreate):
         "gender": user.gender,
         "password": hashed,
         "confirm_password": hashed,
-        # Default role for all new signups so route guards recognize them
-        "role": "user",
+        # First member of a new org becomes admin; other signups start as user.
+        "role": "admin" if is_first_member else "user",
         "Organization": organization,
+        "org_id": org_id,
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -1381,13 +1408,12 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to generate initial refresh token for signup {email}: {e}")
 
-    inviter_full_name = user.invited_by.strip()
+    inviter_full_name = (user.invited_by or "").strip()
     inviter_person = None
     inviter_person_id: Optional[ObjectId] = None
-    leader1 = ""
-    leader12 = ""
-    leader144 = ""
-    leader1728 = ""
+    # Hierarchy levels (root-first) for the legacy Active Church G12 chain.
+    levels = [(h["key"], h["level"]) for h in DEFAULT_HIERARCHY]
+    leader = {hkey: "" for hkey, hlevel in levels}
 
     async def _find_person_by_full_name(full_name: str):
         full_name = (full_name or "").strip()
@@ -1443,7 +1469,7 @@ async def signup(user: UserCreate):
                 inviter_person = await people_collection.find_one(
                     {"_id": ObjectId(user.invited_by_id)},
                     {"_id": 1, "LeaderId": 1, "LeaderPath": 1, "Name": 1, "Surname": 1, "Gender": 1,
-                     "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1},
+                     **LEGACY_FLAT_PROJECTION},
                 )
                 if inviter_person:
                     inviter_person_id = inviter_person["_id"]
@@ -1470,58 +1496,35 @@ async def signup(user: UserCreate):
             print(cached_inviter.get("Gender", ""),user.gender.capitalize())
 
             if  not isGenderMatching:
-                if user.gender == "male":
-                    leader1 = "Gavin Enslin"
-                else:
-                    leader1 = "Vicky Enslin"
-                leader12 = ""  
-                leader144 = ""
-                leader1728 = ""    
+                leader = {levels[0][0]: ("Gavin Enslin" if user.gender == "male" else "Vicky Enslin")}
+                for _k, _lvl in levels[1:]:
+                    leader[_k] = ""
             else: #if gender is matching should go on as usual
-                # Get the inviter's leader hierarchy from cache
-                inviter_leader1 = cached_inviter.get("Leader @1", "")
-                inviter_leader12 = cached_inviter.get("Leader @12", "")
-                inviter_leader144 = cached_inviter.get("Leader @144", "")
-                inviter_leader1728 = cached_inviter.get("Leader @1728", "")
-                print(cached_inviter,inviter_leader1,inviter_leader12,inviter_leader144,inviter_leader1728)
-               
-               
-                # Determine what level the inviter is at and set leaders accordingly
-                if inviter_leader1728:
-                    print("1")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_leader144
-                    leader1728 = inviter_full_name
-                elif inviter_leader144:
-                    print("2")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_leader144
-                    leader1728 = inviter_full_name
-                elif inviter_leader12:
-                    print("3")
-                    leader1 = inviter_leader1
-                    leader12 = inviter_leader12
-                    leader144 = inviter_full_name
-                    leader1728 = ""
-                elif inviter_leader1:
-                    print("4")
-                    leader1 = inviter_leader1
-                    leader12 = ""
-                    leader144 = ""
-                    leader1728 = ""
-                else:
-                    print("5")
-                    leader1 = inviter_leader1
-                    leader12 = ""
-                    leader144 = ""
-                    leader1728 = ""
-               
-                logger.info(f"Leader hierarchy set for {email}: L1={leader1}, L12={leader12}, L144={leader144}, L1728={leader1728}")
+                # Get the inviter's leader hierarchy from cache (canonical or legacy).
+                inviter_chain = {
+                    hkey: legacy_flat_read(cached_inviter, hkey).strip()
+                    for hkey, hlevel in levels
+                }
+                
+                # Determine what level the inviter is at and set leaders accordingly.
+                # Inviter is placed one slot deeper than their deepest existing leader
+                # (capped at the deepest hierarchy slot), matching the legacy chain logic.
+                leader = {hkey: "" for hkey, hlevel in levels}
+                deep_keys = [hkey for hkey, hlevel in levels if inviter_chain.get(hkey)]
+                if deep_keys:
+                    deepest = deep_keys[-1]
+                    slot_names = [hkey for hkey, _lvl in levels]
+                    idx = slot_names.index(deepest)
+                    if idx == 0:
+                        leader[deepest] = inviter_chain[deepest]
+                    else:
+                        for hkey in slot_names[: idx + 1]:
+                            leader[hkey] = inviter_chain[hkey]
+                        leader[slot_names[min(idx + 1, len(slot_names) - 1)]] = inviter_full_name
+                logger.info(f"Leader hierarchy set for {email}: {leader}")
         else:
-            # Fallback: set inviter as Leader @1
-            leader1 = inviter_full_name
+            # Fallback: set inviter as the top leader
+            leader = {levels[0][0]: inviter_full_name, **{hkey: "" for hkey, hlevel in levels[1:]}}
 
         # If we didn't resolve inviter by id, try resolve by name (best-effort).
         if inviter_person is None:
@@ -1532,10 +1535,7 @@ async def signup(user: UserCreate):
     # ---- Dynamic Leadership Logic: ONLY for Active Church ----
     if organization and organization.lower() != "active church":
         logger.info(f"Organization '{organization}' is not 'Active Church'. Clearing leadership hierarchy for {email}.")
-        leader1 = ""
-        leader12 = ""
-        leader144 = ""
-        leader1728 = ""
+        leader = {hkey: "" for hkey, hlevel in levels}
     elif not organization:
         # Default to Active Church if no organization specified.
         pass
@@ -1553,12 +1553,12 @@ async def signup(user: UserCreate):
             leader_id_obj = inviter_person_id
             leader_path = _build_leader_path_from_leader_doc(inviter_person) if inviter_person else [inviter_person_id]
         else:
-            # Fall back to resolving the computed Leader @1 full name to a People ObjectId.
-            if leader1:
-                leader1_doc = await _find_person_by_full_name(leader1)
-                if leader1_doc and leader1_doc.get("_id"):
-                    leader_id_obj = leader1_doc["_id"]
-                    leader_path = _build_leader_path_from_leader_doc(leader1_doc)
+            # Fall back to resolving the computed top-level leader name to a People ObjectId.
+            if leader.get(levels[0][0]):
+                top_leader_doc = await _find_person_by_full_name(leader[levels[0][0]])
+                if top_leader_doc and top_leader_doc.get("_id"):
+                    leader_id_obj = top_leader_doc["_id"]
+                    leader_path = _build_leader_path_from_leader_doc(top_leader_doc)
 
     # Attach ObjectId-based leader fields onto the user record before inserting.
     user_dict["LeaderId"] = leader_id_obj
@@ -1578,18 +1578,17 @@ async def signup(user: UserCreate):
         "Gender": user.gender.strip(),
         "Birthday": user.date_of_birth,
         "InvitedBy": inviter_full_name,
-        "Leader @1": leader1,
-        "Leader @12": leader12,
-        "Leader @144": leader144,
-        "Leader @1728": leader1728,
+        "leaders": {hkey: (leader.get(hkey) or "") for hkey, hlevel in levels},
         "LeaderId": leader_id_obj,
         "LeaderPath": leader_path,
+        "org_id": org_id,
         "Organization": organization,
         "Stage": "Win",
         "Date Created": datetime.utcnow().isoformat(),
         "UpdatedAt": datetime.utcnow().isoformat(),
         "user_id": str(user_result.inserted_id)
     }
+    apply_flat_leaders(person_doc, {hkey: (leader.get(hkey) or "") for hkey, hlevel in levels})
 
     try:
         person_result = await people_collection.insert_one(person_doc)
@@ -1605,10 +1604,7 @@ async def signup(user: UserCreate):
             "Surname": created_doc.get("Surname", ""),
             "Email": created_doc.get("Email", ""),
             "Number": created_doc.get("Number", ""),
-            "Leader @1": created_doc.get("Leader @1", ""),
-            "Leader @12": created_doc.get("Leader @12", ""),
-            "Leader @144": created_doc.get("Leader @144", ""),
-            "Leader @1728": created_doc.get("Leader @1728", ""),
+            **legacy_flat_echo(created_doc, [hkey for hkey, hlevel in levels]),
             "FullName": f"{created_doc.get('Name', '')} {created_doc.get('Surname', '')}".strip()
         }
         people_cache["data"].append(new_person_cache_entry)
@@ -1617,7 +1613,13 @@ async def signup(user: UserCreate):
     except Exception as e:
         logger.error(f"Failed to create person record for {email}: {e}")
 
-    resp = {"message": "User created successfully", "Organization": organization}
+    resp = {
+        "message": "User created successfully",
+        "Organization": organization,
+        "org_id": org_id,
+        "org_is_setup": bool(org_doc and org_doc.get("is_setup")),
+        "is_first_member": is_first_member,
+    }
     try:
         # If we generated an initial refresh token, return it so client can use refresh flow
         if 'initial_refresh_token_id' in locals() and 'initial_refresh_plain' in locals():
@@ -1693,12 +1695,26 @@ async def create_organization(data: dict = Body(...)):
         raise HTTPException(status_code=409, detail=f"Organization '{name}' already exists")
 
     tag = (data.get("tag") or name).strip()
+    org_id = data.get("org_id") or ("slug" in data and data["slug"]) or normalize_org_id(name)
     doc = {
         "name": name,
         "description": (data.get("description") or "").strip(),
+        "org_id": org_id,
+        "slug": org_id,
+        "is_setup": bool(data.get("is_setup", False)),
+        "hierarchy": data.get("hierarchy") or [],
+        "roles": data.get("roles") or DEFAULT_ROLES,
+        "settings": data.get("settings") or {
+            "recurring_event_type": "Cells",
+            "top_leaders": {"male": None, "female": None},
+            "allows_create_event": True,
+            "allows_create_event_type": True,
+        },
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
+    # Allow explicit tag
+    doc["tag"] = tag
     result = await organizations_collection.insert_one(doc)
     doc["_id"] = str(result.inserted_id)
     logger.info(f"Organization created: {name} (tag={tag})")
@@ -1814,13 +1830,39 @@ async def update_organization(org_id: str, data: dict = Body(...)):
 
 @app.delete("/organizations/{org_id}")
 async def delete_organization(org_id: str):
-    """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
+    """Delete an organization. Refuses if the org still has users or people (spec §3.4)."""
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    org_identifiers = [str(org.get("org_id") or ""), str(org.get("slug") or ""), org.get("name", ""), str(org_id)]
+    org_identifiers = [x for x in org_identifiers if x]
+
+    # Guard children: refuse if users or people reference this org (unless soft-delete requested).
+    child_query = {"$or": [
+        {"org_id": {"$in": org_identifiers}},
+        {"Organization": {"$in": org_identifiers}},
+        {"organization": {"$in": org_identifiers}},
+    ]}
+    user_count = await users_collection.count_documents(child_query)
+    people_count = await people_collection.count_documents(child_query)
+    if user_count > 0 or people_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete organisation: it still has {user_count} user(s) and {people_count} person(s). Move or remove them first.",
+        )
+
     result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Organization not found")
     logger.info(f"Organization deleted: {org_id}")
+
+    # Also remove any dynamic OrgConfig doc.
+    slug = normalize_org_id(org.get("name", org_id))
+    await org_config_collection.delete_one({"_id": slug})
 
     # Invalidate org cache so deletions are reflected
     organizations_cache["data"] = []
@@ -1932,8 +1974,7 @@ def generate_current_week_instances(event: dict) -> list:
                 "eventType": event.get("Event Type") or event.get("eventType") or event.get("eventTypeName", ""),
                 "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
                 "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
-                "leader1": event.get("leader1", ""),
-                "leader12": event.get("Leader @12") or event.get("Leader at 12") or event.get("leader12", ""),
+                **legacy_flat_echo(event, ["leader1", "leader12"]),
                 "day": day_name,
                 "date": instance_date_iso,
                 "display_date": current_date.strftime("%d - %m - %Y"),
@@ -2065,8 +2106,33 @@ def format_display_date(dt):
 @app.post("/events")
 async def create_event(event: EventCreate, current_user: dict = Depends(get_current_user)):
     try:
+        await require_capability(current_user, "create_events")
+
         event_data = event.dict()
         event_data["_id"] = ObjectId()
+
+        # M4: canonical leader chain — accept `leaders` (dict or positional list) or
+        # `hierarchy_leaders`, store keyed by org hierarchy, dual-write flats for leader<N>.
+        _leader_raw = event_data.get("leaders") or event_data.get("hierarchy_leaders")
+        _hierarchy = await get_org_hierarchy_cached(current_user.get("org_id") or "")
+        _canonical_leaders = normalize_leaders_input(_leader_raw, _hierarchy)
+        if _canonical_leaders:
+            event_data["leaders"] = _canonical_leaders
+            apply_flat_leaders(event_data, _canonical_leaders)
+        elif any(event_data.get(h["key"]) for h in _hierarchy if LEGACY_LEVEL_FIELD_PATTERN.match(h.get("key", ""))):
+            _canonical_leaders = {
+                h["key"]: event_data.get(h["key"], "") or ""
+                for h in _hierarchy
+                if LEGACY_LEVEL_FIELD_PATTERN.match(h.get("key", ""))
+            }
+            _canonical_leaders = {k: v.strip() for k, v in _canonical_leaders.items() if v}
+            if _canonical_leaders:
+                event_data["leaders"] = _canonical_leaders
+                apply_flat_leaders(event_data, _canonical_leaders)
+        else:
+            event_data.setdefault("leaders", {})
+        # The leaders dict is canonical; hierarchy_leaders is a write-only alias.
+        event_data.pop("hierarchy_leaders", None)
 
         if not event_data.get("UUID"):
             event_data["UUID"] = str(uuid.uuid4())
@@ -2176,8 +2242,8 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
         event_data.setdefault("eventLeaderName", event_data.get("eventLeader", ""))
         if event_data.get("hasPersonSteps"):
-            event_data.setdefault("leader1", "")
-            event_data.setdefault("leader12", "")
+            for _hk in [h["key"] for h in _hierarchy if LEGACY_LEVEL_FIELD_PATTERN.match(h.get("key", ""))]:
+                event_data.setdefault(_hk, "")
             event_data.setdefault("persistent_attendees", [])
 
         if event_data.get("isTicketed") and event_data.get("priceTiers"):
@@ -2189,7 +2255,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             event_data["priceTiers"] = []
 
         if event_data.get("isGlobal"):
-            for field in ["leader1", "leader12"]:
+            for field in [h["key"] for h in _hierarchy if LEGACY_LEVEL_FIELD_PATTERN.match(h.get("key", ""))]:
                 if field in event_data and not event_data[field]:
                     del event_data[field]
 
@@ -2413,6 +2479,7 @@ async def get_cell_events(
 
         org_config = await org_config_collection.find_one({"_id": org_id})
         recurring_type = org_config.get("recurring_event_type", "Cells") if org_config else "Cells"
+        hierarchy = await get_org_hierarchy_cached(org_id)
 
         user_email = current_user.get("email", "")
         role = current_user.get("role", "").lower().strip()
@@ -2496,8 +2563,7 @@ async def get_cell_events(
                     {"eventName": {"$regex": search_term, "$options": "i"}},
                     {"Leader": {"$regex": search_term, "$options": "i"}},
                     {"Email": {"$regex": search_term, "$options": "i"}},
-                    {"Leader at 12": {"$regex": search_term, "$options": "i"}},
-                    {"Leader @12": {"$regex": search_term, "$options": "i"}},
+                    *leader_match_conditions("leader12", search_term),
                 ]
             })
 
@@ -2540,13 +2606,13 @@ async def get_cell_events(
                 conditions = []
                 if user_person_id:
                     conditions.append({"LeaderPath": user_person_id})
-                leader_at_12_fields = [
-                    "Leader at 12", "Leader @12", "leader12",
-                    "Leader12", "LeaderAt12", "leader at 12", "leader @12"
-                ]
-                for field in leader_at_12_fields:
+                for field in legacy_flat_keys("leader12"):
                     conditions.append({field: {"$regex": f"^{re.escape(user_name)}$", "$options": "i"}})
                     conditions.append({field: {"$regex": re.escape(user_name), "$options": "i"}})
+                # Read-only legacy variants from very old records.
+                for variant in ("Leader12", "LeaderAt12", "leader at 12", "leader @12"):
+                    conditions.append({variant: {"$regex": f"^{re.escape(user_name)}$", "$options": "i"}})
+                    conditions.append({variant: {"$regex": re.escape(user_name), "$options": "i"}})
                 print(f"Disciples query conditions count: {len(conditions)}")
                 if conditions:
                     query["$and"].append({"$or": conditions})
@@ -2562,7 +2628,7 @@ async def get_cell_events(
 
         elif role == "leader144":
             name_fields = ["Leader", "eventLeader", "eventLeaderName", "EventLeaderName",
-                           "leader144", "Leader at 144", "Leader @144"]
+                           *legacy_flat_keys("leader144")]
             name_conditions = create_name_conditions(user_name, name_fields)
             email_fields = ["eventLeaderEmail", "EventLeaderEmail", "Email"]
             email_conditions = create_name_conditions(user_email, email_fields)
@@ -2683,7 +2749,10 @@ async def get_cell_events(
 
                     is_overdue = instance_date < today and event_status == "incomplete"
 
-                    leaderAt1 = event.get("leader1") or event.get("Leader @1") or event.get("Leader at 1", "")
+                    leaderAt1 = legacy_flat_read(event, "leader1")
+
+                    # M4: backfill canonical leaders from flats (flat-only legacy records).
+                    backfill_leaders(event, hierarchy)
 
                     if not leaderAt1:
                         leaderPipeline = [
@@ -2698,16 +2767,13 @@ async def get_cell_events(
                                 gender = eventLeader.get("Gender", "")
                                 leaderAt1 = await get_top_leader_dynamic(gender, org_id)
 
-                    leaderAt12 = (
-                        event.get("Leader at 12") or
-                        event.get("Leader @12") or
-                        event.get("leader12") or
-                        event.get("Leader12") or
-                        event.get("LeaderAt12") or
-                        event.get("leader at 12") or
-                        event.get("leader @12") or
-                        ""
-                    )
+                    leaderAt12 = legacy_flat_read(event, "leader12")
+
+                    _ev_echo_leader = {"leaders": event.get("leaders") or {}}
+                    for _flat in legacy_flat_keys("leader1"):
+                        _ev_echo_leader[_flat] = leaderAt1
+                    for _flat in legacy_flat_keys("leader12"):
+                        _ev_echo_leader[_flat] = leaderAt12
 
                     instance = {
                         "_id": f"{event.get('_id')}_{exact_date}",
@@ -2716,8 +2782,7 @@ async def get_cell_events(
                         "eventType": "Cells",
                         "eventLeaderName": event.get("Leader") or event.get("eventLeaderName") or event.get("EventLeaderName", ""),
                         "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("EventLeaderEmail") or event.get("Email", ""),
-                        "leader1": leaderAt1,
-                        "leader12": leaderAt12,
+                        **_ev_echo_leader,
                         "day": day_name.capitalize(),
                         "date": exact_date,
                         "display_date": instance_date.strftime("%d - %m - %Y"),
@@ -2750,19 +2815,34 @@ async def get_cell_events(
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
             skip = (page - 1) * limit
             paginated = cell_instances[skip:skip + limit]
+            
+            # Compute hasCell and canAccessEvents based on user role
+            if role == "user":
+                has_cell = await user_has_cell(user_email)
+                has_cell_val = has_cell
+                can_access_events = has_cell
+            else:
+                # Admin, registrant, and leaders can access events
+                has_cell_val = True
+                can_access_events = True
+            
+            user_info_value = {
+                "name": user_name,
+                "email": user_email,
+                "role": role,
+                "is_leader_at_12": is_actual_leader_at_12,
+                "view_mode": "personal" if (personal or show_personal_cells) else "all",
+                "hasCell": has_cell_val,
+                "canAccessEvents": can_access_events
+            }
+            
             return {
                 "events": paginated,
                 "total_events": total_count,
                 "total_pages": total_pages,
                 "current_page": page,
                 "page_size": limit,
-                "user_info": {
-                    "name": user_name,
-                    "email": user_email,
-                    "role": role,
-                    "is_leader_at_12": is_actual_leader_at_12,
-                    "view_mode": "personal" if (personal or show_personal_cells) else "all"
-                }
+                "user_info": user_info_value
             }
         else:
             print("SENDING ALL EVENTS")
@@ -2801,6 +2881,8 @@ async def get_other_events(
         )
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
+
+        hierarchy = await get_org_hierarchy_cached(org_id)
 
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
@@ -2841,7 +2923,7 @@ async def get_other_events(
                     {"isGlobal": "true"},
                     {"eventLeaderEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
                     {"userEmail": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
-                    {"leader1": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
+                    *leader_match_conditions("leader1", f"^{re.escape(user_email)}$"),
                     {"eventLeaderName": {"$regex": f"^{re.escape(user_name)}$", "$options": "i"}},
                     {"Leader": {"$regex": f"^{re.escape(user_name)}$", "$options": "i"}},
                 ]
@@ -2853,7 +2935,7 @@ async def get_other_events(
             query["$and"].append({
                 "$or": [
                     {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
-                    {"leader1": {"$regex": user_email, "$options": "i"}}
+                    *leader_match_conditions("leader1", user_email)
                 ]
             })
         elif user_role == "user":
@@ -2861,7 +2943,7 @@ async def get_other_events(
             query["$and"].append({
                 "$or": [
                     {"eventLeaderEmail": {"$regex": user_email, "$options": "i"}},
-                    {"leader1": {"$regex": user_email, "$options": "i"}}
+                    *leader_match_conditions("leader1", user_email)
                 ]
             })
 
@@ -2887,7 +2969,7 @@ async def get_other_events(
                     {"Leader": {"$regex": safe_search_term, "$options": "i"}},
                     {"eventLeaderName": {"$regex": safe_search_term, "$options": "i"}},
                     {"eventLeaderEmail": {"$regex": safe_search_term, "$options": "i"}},
-                    {"leader1": {"$regex": safe_search_term, "$options": "i"}},
+                    *leader_match_conditions("leader1", safe_search_term),
                     {"Location": {"$regex": safe_search_term, "$options": "i"}},
                     {"location": {"$regex": safe_search_term, "$options": "i"}}
                 ]
@@ -2954,10 +3036,7 @@ async def get_other_events(
                             "email": att.get("email", ""),
                             "phone": att.get("phone", ""),
                             "invitedBy": att.get("invitedBy", ""),
-                            "leader1": att.get("leader1", ""),
-                            "leader12": att.get("leader12", ""),
-                            "leader144": att.get("leader144", ""),
-                            "leader1728": att.get("leader1728", ""),
+                            **legacy_flat_echo(att, ["leader1", "leader12", "leader144", "leader1728"]),
                             "checked_in": att.get("checked_in", False),
                             "decision": att.get("decision", ""),
                             "priceName": att.get("priceName", ""),
@@ -3061,6 +3140,8 @@ async def get_other_events(
 
                             total_attendance = len(weekly_attendees)
 
+                            backfill_leaders(event, hierarchy)
+
                             instance = {
                                 "_id": f"{str(event.get('_id'))}_{exact_date_str}",
                                 "UUID": event.get("UUID", ""),
@@ -3068,8 +3149,8 @@ async def get_other_events(
                                 "eventType": event_type_value,
                                 "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
                                 "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
-                                "leader1": event.get("leader1", ""),
-                                "leader12": event.get("Leader @12") or event.get("Leader at 12", ""),
+                                **legacy_flat_echo(event, ["leader1", "leader12"]),
+                                "leaders": event.get("leaders") or {},
                                 "day": actual_day_value,
                                 "date": exact_date_str,
                                 "location": event.get("Location") or event.get("location", ""),
@@ -3182,10 +3263,7 @@ async def get_other_events(
                                 "email": att.get("email", ""),
                                 "phone": att.get("phone", ""),
                                 "invitedBy": att.get("invitedBy", ""),
-                                "leader1": att.get("leader1", ""),
-                                "leader12": att.get("leader12", ""),
-                                "leader144": att.get("leader144", ""),
-                                "leader1728": att.get("leader1728", ""),
+                                **legacy_flat_echo(att, ["leader1", "leader12", "leader144", "leader1728"]),
                                 "checked_in": att.get("checked_in", False),
                                 "decision": att.get("decision", ""),
                                 "priceName": att.get("priceName", ""),
@@ -3242,6 +3320,8 @@ async def get_other_events(
                     if not isinstance(total_attendance, int) or total_attendance == 0:
                         total_attendance = len(weekly_attendees)
 
+                    backfill_leaders(event, hierarchy)
+
                     instance = {
                         "_id": str(event.get("_id")),
                         "UUID": event.get("UUID", ""),
@@ -3249,8 +3329,8 @@ async def get_other_events(
                         "eventType": event_type_value,
                         "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
                         "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
-                        "leader1": event.get("leader1", ""),
-                        "leader12": event.get("Leader @12") or event.get("Leader at 12", ""),
+                        **legacy_flat_echo(event, ["leader1", "leader12"]),
+                        "leaders": event.get("leaders") or {},
                         "day": actual_day_value,
                         "date": event_date.isoformat(),
                         "location": event.get("Location") or event.get("location", ""),
@@ -3320,6 +3400,8 @@ async def get_weekly_attendance(
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
+
+        scoped(current_user, event)
         
        
         exact_date_str = week 
@@ -3364,7 +3446,7 @@ async def get_weekly_attendance(
 
 
 @app.put("/events/cells/{identifier}")
-async def update_cell_event_working(identifier: str, event_data: dict):
+async def update_cell_event_working(identifier: str, event_data: dict, current_user: dict = Depends(get_current_user)):
     """
     SINGLE EVENT UPDATE: Update ONLY the existing event, NEVER create new ones
     """
@@ -3381,6 +3463,8 @@ async def update_cell_event_working(identifier: str, event_data: dict):
                 status_code=404,
                 detail=f"Event not found with identifier: {identifier}"
             )
+
+        scoped(current_user, event)
         
         # Prepare update fields
         update_fields = {}
@@ -3454,6 +3538,21 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             update_fields['Leader'] = leader_value
             update_fields['eventLeader'] = leader_value
             update_fields['eventLeaderName'] = leader_value
+
+        # M4: canonical leader chain from `leaders`/`hierarchy_leaders`, keyed by org hierarchy.
+        if event_data.get("leaders") or event_data.get("hierarchy_leaders"):
+            _ce_org_id = event.get("org_id") or current_user.get("org_id") or ""
+            _ce_hierarchy = await get_org_hierarchy_cached(_ce_org_id)
+            _ce_leaders = normalize_leaders_input(
+                event_data.get("leaders") or event_data.get("hierarchy_leaders"),
+                _ce_hierarchy,
+            )
+            if _ce_leaders:
+                update_fields["leaders"] = _ce_leaders
+                apply_flat_leaders(update_fields, _ce_leaders)
+            else:
+                update_fields["leaders"] = {}
+            update_fields.pop("hierarchy_leaders", None)
         
         # Status mapping
         if 'status' in event_data or 'Status' in event_data:
@@ -3500,6 +3599,8 @@ async def update_cell_event_working(identifier: str, event_data: dict):
             "event_id": str(event.get("_id"))
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error updating event: {str(e)}")
         import traceback
@@ -3508,7 +3609,7 @@ async def update_cell_event_working(identifier: str, event_data: dict):
 
 
 @app.put("/events/person/{person_name}/event/{event_name}/day/{day_name}")
-async def update_events_by_person_event_and_day(person_name: str, event_name: str, day_name: str, update_data: dict):
+async def update_events_by_person_event_and_day(person_name: str, event_name: str, day_name: str, update_data: dict, current_user: dict = Depends(get_current_user)):
     """
     Update ONLY events for a specific person with a SPECIFIC event name AND SPECIFIC day
     """
@@ -3562,6 +3663,10 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             }
         
         print(f"Found {len(matching_events)} matching events")
+
+        # M4/org-scoping: only allow update of events belonging to the caller's org(s).
+        for matching_event in matching_events:
+            scoped(current_user, matching_event)
         
         # Prepare update with proper field mapping
         update_fields = {}
@@ -3697,6 +3802,8 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             "sample_time_stored": updated_event.get('time') if updated_event else None
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error updating events: {str(e)}")
         import traceback
@@ -4021,33 +4128,6 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
         print(f"Error creating event type: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating event type: {str(e)}")
 
-@app.get("/org-config")
-async def get_org_config(current_user: dict = Depends(get_current_user)):
-    try:
-        org_id = (
-            current_user.get("org_id") or
-            (current_user.get("organization", "").lower().replace(" ", "-")) or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
-
-        config = await org_config_collection.find_one({"_id": org_id})
-        print(f"Config found: {config is not None}")  
-
-        if config is None:
-            raise HTTPException(status_code=404, detail=f"No org config found for org_id: {org_id}")
-        
-        config["org_id"] = str(config["_id"])
-        config.pop("_id", None)
-        return config
-
-    except Exception as e:
-        print(f"ORG CONFIG ERROR: {str(e)}") 
-        import traceback
-        traceback.print_exc()  
-        raise HTTPException(status_code=500, detail=str(e)) 
-     
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
     event_type_name: str,
@@ -4414,22 +4494,13 @@ async def get_all_leaders():
         leaders = []
 
         for person in people:
-            # Leader @12
-            if person.get("Leader @12"):
-                leader_name = person["Leader @12"].strip()
+            backfill_leaders(person)
+            for position, key in ((12, "leader12"), (144, "leader144")):
+                leader_name = legacy_flat_read(person, key).strip()
                 if leader_name:
                     leaders.append({
                         "name": leader_name.title(),
-                        "position": 12
-                    })
-
-            # Leader @144
-            if person.get("Leader @144"):
-                leader_name = person["Leader @144"].strip()
-                if leader_name:
-                    leaders.append({
-                        "name": leader_name.title(),
-                        "position": 144
+                        "position": position
                     })
 
         unique_leaders = [dict(t) for t in {tuple(d.items()) for d in leaders}]
@@ -4620,8 +4691,7 @@ def should_show_cell_for_user(
         instance["eventType"] = instance.get("Event Type", instance.get("eventType", "Cells"))
         instance["eventLeaderName"] = instance.get("Leader", "")
         instance["eventLeaderEmail"] = instance.get("Email", "")
-        instance["leader1"] = instance.get("leader1", "")
-        instance["leader12"] = instance.get("Leader @12", instance.get("Leader at 12", ""))
+        instance.update(legacy_flat_echo(instance, ["leader1", "leader12"]))
         instance["day"] = event_day.capitalize()
        
         # 3. Status Logic
@@ -4723,8 +4793,8 @@ async def get_user_cell_events(current_user: dict = Depends(get_current_user)):
        
         if user_name:
             query_conditions.extend([
-                {"Leader at 12": {"$regex": f".*{user_name}.*", "$options": "i"}},
-                {"Leader at 144": {"$regex": f".*{user_name}.*", "$options": "i"}},
+                *leader_match_conditions("leader12", f".*{user_name}.*"),
+                *leader_match_conditions("leader144", f".*{user_name}.*"),
             ])
        
         query = {
@@ -4821,7 +4891,7 @@ async def get_registrant_events_status_counts(
             query["$or"].extend([
                 {"Event Name": search_regex},
                 {"Leader": search_regex},
-                {"Leader at 12": search_regex}
+                *leader_match_conditions("leader12", search.strip()),
             ])
        
         # Get all matching events
@@ -4968,7 +5038,7 @@ async def get_registrant_events(
                
                 # Get leader info
                 leader_name = event.get("Leader", "").strip()
-                leader_at_12 = event.get("Leader @12", event.get("Leader at 12", "")).strip()
+                leader_at_12 = legacy_flat_read(event, "leader12").strip()
                
                 # Determine status
                 did_not_meet = event.get("did_not_meet", False)
@@ -4989,9 +5059,7 @@ async def get_registrant_events(
                     "eventType": "Cells",
                     "eventLeaderName": leader_name,
                     "eventLeaderEmail": str(event.get("Email", "")).strip(),
-                    "leader1": "",
-                    "leader12": leader_at_12,
-                    "leader144": event.get("Leader @144", event.get("Leader at 144", "")),
+                    **legacy_flat_echo(event, ["leader1", "leader12", "leader144"]),
                     "day": day.capitalize(),
                     "date": most_recent_occurrence.isoformat(),
                     "location": event.get("Location", ""),
@@ -5462,29 +5530,25 @@ async def migrate_persistent_attendees(current_user: dict = Depends(get_current_
 
 @app.get("/check-leader-status", response_model=LeaderStatusResponse)
 async def check_leader_status(current_user: dict = Depends(get_current_user)):
-    """Check if user is a leader OR has a cell"""
+    """Check if user is a leader OR has a cell. Hierarchy-driven (§3.7/M2)."""
     try:
         user_email = current_user.get("email")
         user_role = current_user.get("role", "").lower()
-       
+
         if not user_email:
             raise HTTPException(status_code=401, detail="User email not found")
-       
+
+        org_id = get_org_id(current_user) or ""
+        hierarchy = get_org_hierarchy(await require_org(current_user))
+        top_level = hierarchy[0].get("level", 0) if hierarchy else 0
+
         print(f"Checking access for: {user_email}, role: {user_role}")
-       
-        # Check if user has a cell (for regular users)  roles determination 
-        if user_role == "user":
-            has_cell = await user_has_cell(user_email)
-            print(f"   User has cell: {has_cell}")
-           
-            if not has_cell:
-                print(f"   User {user_email} has no cell - denying Events page access")
-                return {"isLeader": False, "hasCell": False, "canAccessEvents": False}
-            else:
-                print(f"   User {user_email} has cell - granting Events page access")
-                return {"isLeader": False, "hasCell": True, "canAccessEvents": True}
-       
-        # For admin, registrant, and leaders - check leadership status
+
+        # A user is a leader if they carry a leadership capability/role, or if
+        # any person in their org holds them as a leader at any level.
+        is_leader = is_supreme(current_user) or user_role in ("admin", "registrant")
+        levels: list = []
+
         person = await people_collection.find_one({
             "$or": [
                 {"email": user_email},
@@ -5492,25 +5556,72 @@ async def check_leader_status(current_user: dict = Depends(get_current_user)):
             ]
         })
 
+        # Org scope used to match the user's followers (perspective: I lead this org).
+        org_filters = []
+        if org_id:
+            org_filters.append({"org_id": org_id})
+            org_filters.append({"Organization": org_id.replace("-", " ").title()})
+            org_filters.append({"organization": org_id})
+        org_scope = {"$or": org_filters} if org_filters else {}
+
+        identity = {user_email.lower()}
         if person:
-            # Check if they're a leader at any level
-            is_leader = bool(
-                person.get("Leader @12") or
-                person.get("Leader @144") or
-                person.get("Leader @1728")
-            )
-           
-            if is_leader:
-                print(f"   {user_email} is a leader")
-                return {"isLeader": True, "hasCell": True, "canAccessEvents": True}
-       
-        # Fallback for admin/registrant
-        if user_role in ["admin", "registrant"]:
-            print(f"   {user_email} is {user_role} - granting access")
-            return {"isLeader": True, "hasCell": True, "canAccessEvents": True}
+            backfill_leaders(person, hierarchy)
+            name = _safe_str(person.get("Name", "")).title()
+            surname = _safe_str(person.get("Surname", "")).title()
+            for v in (name, surname, f"{name} {surname}".strip(), f"{surname} {name}".strip()):
+                if v:
+                    identity.add(v.lower())
+            # Legacy G12 rule: having a leader at a level above the top makes
+            # this person a cell leader themselves.
+            leaders = person.get("leaders") or {}
+            for h in hierarchy:
+                lvl = int(h.get("level") or 0)
+                if lvl > top_level and leaders.get(h.get("key")):
+                    is_leader = True
+                    levels.append({"key": h["key"], "label": h.get("label", h["key"]), "level": lvl})
+
+        # Leader at ANY level: a follower lists this user as their leader.
+        for h in hierarchy:
+            lvl = int(h.get("level") or 0)
+            if any(ls.get("key") == h["key"] for ls in levels):
+                continue
+            field = f"leaders.{h['key']}"
+            q = dict(org_scope)
+            q[field] = {"$regex": "|".join(re.escape(v) for v in sorted(identity)), "$options": "i"}
+            try:
+                count = await people_collection.count_documents(q)
+            except Exception:
+                count = 0
+            if count:
+                is_leader = True
+                levels.append({"key": h["key"], "label": h.get("label", h["key"]), "level": lvl})
+
+        levels.sort(key=lambda x: int(x["level"] or 0))
+
+        # Check if user has a cell (for regular users)
+        if user_role == "user":
+            has_cell = await user_has_cell(user_email)
+            print(f"   User has cell: {has_cell}")
+
+            if not has_cell and not is_leader:
+                print(f"   User {user_email} has no cell - denying Events page access")
+                return {"isLeader": False, "hasCell": False, "canAccessEvents": False, "levels": []}
+            else:
+                print(f"   User {user_email} has cell - granting Events page access")
+                return {
+                    "isLeader": is_leader,
+                    "hasCell": has_cell,
+                    "canAccessEvents": True,
+                    "levels": levels,
+                }
+
+        if is_leader:
+            print(f"   {user_email} is a leader")
+            return {"isLeader": True, "hasCell": True, "canAccessEvents": True, "levels": levels}
 
         print(f"   {user_email} is not a leader and has no special role")
-        return {"isLeader": False, "hasCell": False, "canAccessEvents": False}
+        return {"isLeader": False, "hasCell": False, "canAccessEvents": False, "levels": []}
 
     except Exception as e:
         print(f"Error checking leader status: {str(e)}")
@@ -5700,6 +5811,8 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                 status_code=404,
                 detail=f"Event not found with identifier: {event_id}"
             )
+
+        scoped(current_user, event)
        
         # =========== FIX: Check if status is being updated ===========
         is_status_update = False
@@ -5726,11 +5839,35 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             'eventType', 'isTicketed', 'isGlobal',
             'priceTiers'
         ]
-       
+        
         for field in updatable_fields:
             if field in event_data and event_data[field] is not None:
                 update_data[field] = event_data[field]
-       
+
+        # M4: canonical leader chain — accept `leaders`/`hierarchy_leaders`, store keyed by hierarchy.
+        if event_data.get("leaders") or event_data.get("hierarchy_leaders"):
+            _ev_org_id = event.get("org_id") or current_user.get("org_id") or ""
+            _ev_hierarchy = await get_org_hierarchy_cached(_ev_org_id)
+            _ev_leaders = normalize_leaders_input(
+                event_data.get("leaders") or event_data.get("hierarchy_leaders"),
+                _ev_hierarchy,
+            )
+            if _ev_leaders:
+                update_data["leaders"] = _ev_leaders
+                _ev_flat_fields = {
+                    flat
+                    for h in _ev_hierarchy
+                    if LEGACY_LEVEL_FIELD_PATTERN.match(h.get("key", ""))
+                    for flat in legacy_flat_keys(h["key"])
+                }
+                for fk in _ev_flat_fields:
+                    if fk not in event_data:
+                        update_data.pop(fk, None)
+                apply_flat_leaders(update_data, _ev_leaders)
+            else:
+                update_data["leaders"] = {}
+            update_data.pop("hierarchy_leaders", None)
+
         if is_status_update and new_status:
             update_data['status'] = new_status
             update_data['Status'] = new_status
@@ -5811,6 +5948,10 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
        
         # Fetch and return the updated event
         updated_event = await events_collection.find_one({"_id": event["_id"]})
+
+        # M4: backfill leaders on the returned event so flat-only records read canonical.
+        await lazy_backfill_leaders(updated_event, event.get("org_id") or current_user.get("org_id") or "")
+
         updated_event["_id"] = str(updated_event["_id"])
         
         # =========== FIX: Return synchronization info ===========
@@ -6178,6 +6319,7 @@ async def get_user_cell_events_fixed_future(
     try:
         email = current_user.get("email")
         role = current_user.get("role", "user").lower()
+        hierarchy = await get_org_hierarchy_cached(current_user.get("org_id") or "")
        
         if not email:
             raise HTTPException(status_code=400, detail="User email not found")
@@ -6302,7 +6444,7 @@ async def get_user_cell_events_fixed_future(
 
                 # Get leader info
                 leader_name = event.get("Leader", "").strip()
-                leader_at_12 = event.get("Leader @12", event.get("Leader at 12", "")).strip()
+                leader_at_12 = legacy_flat_read(event, "leader12").strip()
                
                 # FIX: Get persistent_attendees from the event
                 persistent_attendees = event.get("persistent_attendees", [])
@@ -6322,6 +6464,8 @@ async def get_user_cell_events_fixed_future(
                 if status and status != 'all' and status != status_val:
                     continue
 
+                backfill_leaders(event, hierarchy)
+
                 # Build event object
                 final_event = {
                     "_id": str(event.get("_id", "")),
@@ -6329,9 +6473,8 @@ async def get_user_cell_events_fixed_future(
                     "eventType": event.get("eventType", "Cells"),
                     "eventLeaderName": leader_name,
                     "eventLeaderEmail": str(event.get("Email", "")).strip(),
-                    "leader1": event.get("leader1", ""),
-                    "leader12": leader_at_12,
-                    "leader144": event.get("Leader @144", event.get("Leader at 144", "")),
+                    **legacy_flat_echo(event, ["leader1", "leader12", "leader144"]),
+                    "leaders": event.get("leaders") or {},
                     "day": day.capitalize(),
                     "date": next_occurrence.isoformat(),
                     "location": event.get("Location", ""),
@@ -6807,6 +6950,7 @@ async def get_cell_events_optimized(
         user_email = current_user.get("email", "")
         role = current_user.get("role", "user").lower()
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+        hierarchy = await get_org_hierarchy_cached(current_user.get("org_id") or "")
         
         is_leader_at_12 = (
             "leaderat12" in role or 
@@ -6836,12 +6980,14 @@ async def get_cell_events_optimized(
             if want_personal and not want_disciples:
                 query["Email"] = user_email
             elif want_disciples and not want_personal:
-                query["Leader @12"] = user_name
-                query["Email"] = {"$ne": user_email}
+                query["$and"] = [
+                    {"Email": {"$ne": user_email}},
+                    {"$or": leader_match_conditions("leader12", f"^{re.escape(user_name)}$")},
+                ]
             else:
                 query["$or"] = [
                     {"Email": user_email},
-                    {"Leader @12": user_name}
+                    *leader_match_conditions("leader12", f"^{re.escape(user_name)}$"),
                 ]
         else:
             query["Email"] = user_email
@@ -6914,7 +7060,9 @@ async def get_cell_events_optimized(
                         continue
                     
                     is_overdue = instance_date < today and cell_status == "incomplete"
-                    
+
+                    backfill_leaders(cell, hierarchy)
+
                     instance = {
                         "_id": f"{cell['_id']}_{exact_date_str}",
                         "UUID": cell.get("UUID", ""),
@@ -6922,8 +7070,8 @@ async def get_cell_events_optimized(
                         "eventType": "Cells",
                         "eventLeaderName": cell.get("Leader", ""),
                         "eventLeaderEmail": cell.get("Email", ""),
-                        "leader1": cell.get("leader1", ""),
-                        "leader12": cell.get("Leader @12", ""),
+                        **legacy_flat_echo(cell, ["leader1", "leader12"]),
+                        "leaders": cell.get("leaders") or {},
                         "day": day_name.capitalize(),
                         "date": exact_date_str,
                         "display_date": instance_date.strftime("%d - %m - %Y"),
@@ -7114,8 +7262,8 @@ async def submit_attendance(
                 "fullName": attendee_dict.get("fullName", attendee_dict.get("name", "")),
                 "email": attendee_dict.get("email", ""),
                 "phone": attendee_dict.get("phone", ""),
-                "leader12": attendee_dict.get("leader12", ""),
-                "leader144": attendee_dict.get("leader144", ""),
+                "leaders": attendee_dict.get("leaders") or {},
+                **legacy_flat_echo(attendee_dict, [h["key"] for h in DEFAULT_HIERARCHY]),
                 "invitedBy": attendee_dict.get("invitedBy", ""),
                 "decision": attendee_dict.get("decision", ""),
                 "checked_in": attendee_dict.get("checked_in", True),
@@ -7312,6 +7460,35 @@ async def update_persistent_attendees(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
+        scoped(current_user, event)
+
+        # §3.9: every attendee must belong to the event's org (or be a fresh
+        # new-person entry). Reject attendees that we can resolve to a DIFFERENT org.
+        event_org_id = event.get("org_id") or normalize_org_id(str(event.get("Organization") or ""))
+        if event_org_id:
+            for attendee in persistent_attendees:
+                if not isinstance(attendee, dict):
+                    continue
+                attendee_email = attendee.get("email") or ""
+                attendee_id = attendee.get("id") or ""
+                person = None
+                if ObjectId.is_valid(str(attendee_id)):
+                    person = await people_collection.find_one({"_id": ObjectId(attendee_id)})
+                if not person and attendee_email:
+                    person = await people_collection.find_one({
+                        "$or": [
+                            {"email": {"$regex": f"^{re.escape(attendee_email)}$", "$options": "i"}},
+                            {"Email": {"$regex": f"^{re.escape(attendee_email)}$", "$options": "i"}},
+                        ]
+                    })
+                if person:
+                    person_org = person.get("org_id") or normalize_org_id(str(person.get("Organization") or ""))
+                    if person_org and normalize_org_id(person_org) != event_org_id:
+                        raise HTTPException(
+                            status_code=403,
+                            detail=f"Attendee {attendee_email or attendee_id} belongs to another organisation"
+                        )
+
         # Get the updated persistent attendees from request
         persistent_attendees = update_data.get("persistent_attendees", [])
         
@@ -7350,8 +7527,7 @@ async def update_persistent_attendees(
                 "fullName": attendee.get("fullName", attendee.get("name", "")),
                 "email": attendee.get("email", ""),
                 "phone": attendee.get("phone", ""),
-                "leader12": attendee.get("leader12", ""),
-                "leader144": attendee.get("leader144", ""),
+                **legacy_flat_echo(attendee, ["leader12", "leader144"]),
                 "invitedBy": attendee.get("invitedBy", ""),
                 "isPersistent": True,
                 # Ticket information
@@ -7454,6 +7630,11 @@ async def get_persistent_attendees(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        scoped(current_user, event)
+
+        hierarchy = await get_org_hierarchy_cached(event.get("org_id") or "")
+        backfill_leaders(event, hierarchy)
+
         if not target_date:
             event_date = None
             for date_field in ["date", "Date Of Event", "eventDate", "startDate"]:
@@ -7512,6 +7693,8 @@ async def get_persistent_attendees(
 
             checked_in_data = checked_in_index.get(attendee.get("id"))
 
+            backfill_leaders(attendee, hierarchy)
+
             enriched = {
                 "id":           attendee.get("id", ""),
                 "name":         attendee.get("name", ""),
@@ -7524,10 +7707,8 @@ async def get_persistent_attendees(
                 "email":        attendee.get("email", ""),
                 "phone":        attendee.get("phone", ""),
                 "invitedBy":    attendee.get("invitedBy", ""),
-                "leader1":      attendee.get("leader1", ""),
-                "leader12":     attendee.get("leader12", ""),
-                "leader144":    attendee.get("leader144", ""),
-                "leader1728":   attendee.get("leader1728", ""),
+                **legacy_flat_echo(attendee, ["leader1", "leader12", "leader144", "leader1728"]),
+                "leaders":      attendee.get("leaders") or {},
                 "isPersistent": True,
                 # Base ticket / financial data from the persistent record
                 "priceName":    attendee.get("priceName", ""),
@@ -7585,10 +7766,7 @@ async def get_persistent_attendees(
                     "email":         att.get("email", ""),
                     "phone":         att.get("phone", ""),
                     "invitedBy":     att.get("invitedBy", ""),
-                    "leader1":       att.get("leader1", ""),
-                    "leader12":      att.get("leader12", ""),
-                    "leader144":     att.get("leader144", ""),
-                    "leader1728":    att.get("leader1728", ""),
+                    **legacy_flat_echo(att, ["leader1", "leader12", "leader144", "leader1728"]),
                     "checked_in":    att.get("checked_in", True),
                     "decision":      att.get("decision", ""),
                     "check_in_date": att.get("check_in_date", ""),
@@ -7631,6 +7809,8 @@ async def get_last_attendance(
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
+
+        scoped(current_user, event)
 
         persistent = event.get("persistent_attendees", [])
         if persistent:
@@ -7766,7 +7946,7 @@ async def get_event_statistics(
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.delete("/events/{event_id}")
-async def delete_event(event_id: str = Path(...)):
+async def delete_event(event_id: str = Path(...), current_user: dict = Depends(get_current_user)):
     try:
         print(f" DELETE REQUEST - Event ID: {event_id}")
         print(f" ID length: {len(event_id)}")
@@ -7796,6 +7976,8 @@ async def delete_event(event_id: str = Path(...)):
         print(f"   - ID: {existing_event.get('_id')}")
         print(f"   - Name: {existing_event.get('eventName', 'N/A')}")
         print(f"   - Date: {existing_event.get('dateOfEvent', 'N/A')}")
+
+        scoped(current_user, existing_event)
         
         # Delete the event
         result = await events_collection.delete_one({"_id": ObjectId(event_id)})
@@ -7861,15 +8043,15 @@ async def get_leader_cells(email: str):
             "Event Type": "Cells",
             "$or": [
                 {"Leader": {"$regex": f"^{user_name}$", "$options": "i"}},
-                {"Leader at 12": {"$regex": f"^{user_name}$", "$options": "i"}},
-                {"Leader at 144": {"$regex": f"^{user_name}$", "$options": "i"}}
+                *leader_match_conditions("leader12", f"^{re.escape(user_name)}$"),
+                *leader_match_conditions("leader144", f"^{re.escape(user_name)}$"),
             ]
         }).to_list(None)
 
         result = []
         for cell in cells:
-            leader12_name = cell.get("Leader at 12", "")
-            leader1_name = cell.get("Leader at 1", "")
+            leader12_name = legacy_flat_read(cell, "leader12")
+            leader1_name = legacy_flat_read(cell, "leader1")
 
             # Assign Leader @1 dynamically if missing
             if leader12_name and not leader1_name:
@@ -7880,7 +8062,7 @@ async def get_leader_cells(email: str):
                 "leader": cell.get("Leader"),
                 "leader_email": cell.get("Email"),
                 "leader_at_12": leader12_name,
-                "leader_at_144": cell.get("Leader at 144", ""),
+                "leader_at_144": legacy_flat_read(cell, "leader144"),
                 "leader_at_1": leader1_name,
                 "day": cell.get("Day"),
                 "time": cell.get("Time"),
@@ -7923,15 +8105,13 @@ async def get_event_by_id(event_id: str = Path(...)):
         event.setdefault("hasPersonSteps", False)
         event.setdefault("priceTiers", [])
        
-        # Ensure leader hierarchy fields
-        event.setdefault("leader1", "")
-        event.setdefault("leader12", "")
-        event.setdefault("leader144", "")
-        event.setdefault("leaders", {
-            "1": event.get("leader1", ""),
-            "12": event.get("leader12", ""),
-            "144": event.get("leader144", "")
-        })
+        # M4: backfill canonical leaders from flats (flat-only legacy records),
+        # then ensure the back-compat flat echo + canonical `leaders` are present.
+        hierarchy = await get_org_hierarchy_cached(event.get("org_id") or "")
+        backfill_leaders(event, hierarchy)
+        event.update(legacy_flat_echo(event, [h["key"] for h in hierarchy]))
+        if not event.get("leaders"):
+            event["leaders"] = {h["key"]: legacy_flat_read(event, h["key"]) for h in hierarchy}
        
         return event
     except HTTPException:
@@ -7950,13 +8130,16 @@ async def bulk_assign_leaders(current_user: dict = Depends(get_current_user)):
    
     try:
         # Find all cell events without Leader at 1
+        missing_leader_1 = []
+        for flat in legacy_flat_keys("leader1"):
+            missing_leader_1 += [
+                {flat: {"$exists": False}},
+                {flat: ""},
+                {flat: None},
+            ]
         cell_events = await events_collection.find({
             "eventType": "cell",
-            "$or": [
-                {"leader1": {"$exists": False}},
-                {"leader1": ""},
-                {"leader1": None}
-            ]
+            "$or": missing_leader_1
         }).to_list(length=None)
        
         updated_count = 0
@@ -7965,8 +8148,8 @@ async def bulk_assign_leaders(current_user: dict = Depends(get_current_user)):
         for event in cell_events:
             event_id = event["_id"]
             event_name = event.get("Event Name", "Unknown")
-            leader_at_12 = event.get("Leader at 12", "").strip()
-            leader_at_144 = event.get("Leader at 144", "").strip()
+            leader_at_12 = legacy_flat_read(event, "leader12").strip()
+            leader_at_144 = legacy_flat_read(event, "leader144").strip()
            
             leader_at_1 = ""
            
@@ -7976,10 +8159,10 @@ async def bulk_assign_leaders(current_user: dict = Depends(get_current_user)):
                 leader_at_1 = await get_leader_at_1_for_leader_at_12(leader_at_12)
            
             if leader_at_1:
-                # Update the event
+                # Update the event (dual-write all legacy aliases)
                 await events_collection.update_one(
                     {"_id": event_id},
-                    {"$set": {"leader1": leader_at_1}}
+                    {"$set": {flat: leader_at_1 for flat in legacy_flat_keys("leader1")}}
                 )
                 updated_count += 1
                 results.append({
@@ -8116,6 +8299,33 @@ async def uncapture_person(data: UncaptureRequest):
 
 
 # --- PROFILE PICTURE ENDPOINTS ---
+# -------------------------
+# My capabilities (spec §7)
+# -------------------------
+@app.get("/me/capabilities")
+async def get_my_capabilities(current_user: dict = Depends(get_current_user)):
+    """Return the signed-in user's effective capabilities for their org."""
+    org = None
+    org_id = get_org_id(current_user) or ""
+    if org_id:
+        org = await org_config_collection.find_one({"_id": org_id})
+    role_key, capabilities = resolve_capabilities(current_user, org)
+    org_roles = (org or {}).get("roles") or DEFAULT_ROLES
+    return {
+        "user_id": str(current_user.get("_id") or current_user.get("user_id") or ""),
+        "email": current_user.get("email", ""),
+        "org_id": org_id,
+        "role": role_key,
+        "capabilities": capabilities,
+        "is_admin": "admin" in capabilities,
+        "is_supreme_admin": is_supreme(current_user),
+        "roles": [
+            {"key": r.get("key", ""), "label": r.get("label", ""), "capabilities": r.get("capabilities") or []}
+            for r in org_roles
+        ],
+    }
+
+
 @app.get("/profile/{user_id}", response_model=UserProfile)
 async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     try:
@@ -8586,6 +8796,7 @@ async def get_people(
         )
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
+        hierarchy = await get_org_hierarchy_cached(org_id)
 
         # Build organization conditions
         org_conditions = [
@@ -8665,12 +8876,12 @@ async def get_people(
             query["Address"] = {"$regex": re.escape(location), "$options": "i"}
 
         if leader:
-            leader_conditions = [
-                {"Leader @1": {"$regex": re.escape(leader), "$options": "i"}},
-                {"Leader @12": {"$regex": re.escape(leader), "$options": "i"}},
-                {"Leader @144": {"$regex": re.escape(leader), "$options": "i"}},
-                {"Leader @1728": {"$regex": re.escape(leader), "$options": "i"}}
-            ]
+            # Build leader filter from the org's dynamic hierarchy (leaders.<key>),
+            # falling back to legacy flat fields.
+            hierarchy = await fetch_org_hierarchy(current_user)
+            leader_conditions = []
+            for _h in hierarchy:
+                leader_conditions += leader_match_conditions(_h["key"], re.escape(leader))
             query["$and"] = query.get("$and", [])
             query["$and"].append({"$or": leader_conditions})
 
@@ -8683,29 +8894,13 @@ async def get_people(
         # Calculate pagination
         skip = (page - 1) * perPage
         
-        # Use aggregation for better performance
+        # Use aggregation for better performance (top-level find() would need a
+        # full projection that strips legacy flat leader fields; keep the whole
+        # doc so the §3.1/§9 read-backfill can see them.)
         pipeline = [
             {"$match": query},
             {"$skip": skip},
             {"$limit": perPage},
-            {"$project": {
-                "_id": 1,
-                "Name": 1,
-                "Surname": 1,
-                "Number": 1,
-                "Email": 1,
-                "Address": 1,
-                "Gender": 1,
-                "Birthday": 1,
-                "InvitedBy": 1,
-                "Stage": 1,
-                "org_id": 1,
-                "Organization": 1,
-                "LeaderId": 1,
-                "LeaderPath": 1,
-                "DateCreated": 1,
-                "UpdatedAt": 1
-            }}
         ]
         
         cursor = people_collection.aggregate(pipeline)
@@ -8780,12 +8975,20 @@ async def get_people(
         # Build final response with scoring and sorting
         final_list = []
         for person in people_list:
+            # M4 §3.1: backfill leaders for flat-only/legacy records on read.
+            await lazy_backfill_leaders(person, person.get("org_id") or org_id or "")
             leader_path = person.get("LeaderPath", [])
-            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
-            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
-            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
-            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
+
+            # Resolve the chain from LeaderPath (root-first) when available,
+            # otherwise fall back to canonical `leaders` / legacy flat fields.
+            echo_src = dict(person or {})
+            for _i, _h in enumerate(hierarchy):
+                if _i < len(leader_path) and leader_path[_i]:
+                    _nm = resolve_leader(leader_path[_i])
+                    if _nm:
+                        for _flat in legacy_flat_keys(_h["key"]) or [_h["key"]]:
+                            echo_src[_flat] = _nm
 
             mapped = {
                 "_id": str(person["_id"]),
@@ -8804,10 +9007,8 @@ async def get_people(
                 "LeaderPath": [str(lid) for lid in leader_path],
                 "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "Leader @1": leader1,
-                "Leader @12": leader12,
-                "Leader @144": leader144,
-                "Leader @1728": leader1728,
+                **legacy_flat_echo(echo_src, [h["key"] for h in hierarchy]),
+                "leaders": person.get("leaders") or {},
                 "FullName": full_name,
             }
             # Add score for sorting if name search is used
@@ -8883,14 +9084,7 @@ async def get_all_people_for_event(
                 "Organisation": 1,
                 "LeaderId": 1,
                 "LeaderPath": 1,
-                "Leader @1": 1,
-                "Leader @12": 1,
-                "Leader @144": 1,
-                "Leader @1728": 1,
-                "leader1": 1,
-                "leader12": 1,
-                "leader144": 1,
-                "leader1728": 1,
+                **LEGACY_FLAT_PROJECTION,
                 "DateCreated": 1,
                 "UpdatedAt": 1,
                 "Date Created": 1
@@ -8941,17 +9135,22 @@ async def get_all_people_for_event(
         
         # Build final response with all fields
         final_list = []
+        _ev_hierarchy = await get_org_hierarchy_cached(event.get("org_id") or "")
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
-            
-            # Resolve from LeaderPath if available, otherwise use existing fields
-            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else (person.get("Leader @1") or person.get("leader1") or "")
-            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else (person.get("Leader @12") or person.get("leader12") or "")
-            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else (person.get("Leader @144") or person.get("leader144") or "")
-            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else (person.get("Leader @1728") or person.get("leader1728") or "")
-            
+
+            # Resolve from LeaderPath when available, otherwise use canonical/flats.
+            await lazy_backfill_leaders(person, person.get("org_id") or event.get("org_id") or "")
+            echo_src = dict(person or {})
+            for _i, _h in enumerate(_ev_hierarchy):
+                if _i < len(leader_path) and leader_path[_i]:
+                    _nm = resolve_leader(leader_path[_i])
+                    if _nm:
+                        for _flat in legacy_flat_keys(_h["key"]) or [_h["key"]]:
+                            echo_src[_flat] = _nm
+
             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            
+
             mapped = {
                 "_id": str(person["_id"]),
                 "Name": person.get("Name", ""),
@@ -8969,10 +9168,8 @@ async def get_all_people_for_event(
                 "LeaderPath": [str(lid) for lid in leader_path],
                 "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "Leader @1": leader1,
-                "Leader @12": leader12,
-                "Leader @144": leader144,
-                "Leader @1728": leader1728,
+                **legacy_flat_echo(echo_src, [h["key"] for h in _ev_hierarchy]),
+                "leaders": person.get("leaders") or {},
                 "FullName": full_name
             }
             final_list.append(mapped)
@@ -9034,14 +9231,7 @@ async def get_all_people_with_fields(
                 "Organisation": 1,
                 "LeaderId": 1,
                 "LeaderPath": 1,
-                "Leader @1": 1,
-                "Leader @12": 1,
-                "Leader @144": 1,
-                "Leader @1728": 1,
-                "leader1": 1,
-                "leader12": 1,
-                "leader144": 1,
-                "leader1728": 1,
+                **LEGACY_FLAT_PROJECTION,
                 "DateCreated": 1,
                 "UpdatedAt": 1,
                 "Date Created": 1
@@ -9094,15 +9284,19 @@ async def get_all_people_with_fields(
         final_list = []
         for person in people_list:
             leader_path = person.get("LeaderPath", [])
-            
-            # Resolve from LeaderPath first, fallback to stored fields
-            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else (person.get("Leader @1") or person.get("leader1") or "")
-            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else (person.get("Leader @12") or person.get("leader12") or "")
-            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else (person.get("Leader @144") or person.get("leader144") or "")
-            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else (person.get("Leader @1728") or person.get("leader1728") or "")
-            
+
+            # Resolve from LeaderPath first, fallback to canonical/flats.
+            await lazy_backfill_leaders(person, person.get("org_id") or "")
+            echo_src = dict(person or {})
+            for _i, _h in enumerate(DEFAULT_HIERARCHY):
+                if _i < len(leader_path) and leader_path[_i]:
+                    _nm = resolve_leader(leader_path[_i])
+                    if _nm:
+                        for _flat in legacy_flat_keys(_h["key"]) or [_h["key"]]:
+                            echo_src[_flat] = _nm
+
             full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-            
+
             mapped = {
                 "_id": str(person["_id"]),
                 "Name": person.get("Name", ""),
@@ -9120,10 +9314,8 @@ async def get_all_people_with_fields(
                 "LeaderPath": [str(lid) for lid in leader_path],
                 "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "Leader @1": leader1,
-                "Leader @12": leader12,
-                "Leader @144": leader144,
-                "Leader @1728": leader1728,
+                **legacy_flat_echo(echo_src, [h["key"] for h in DEFAULT_HIERARCHY]),
+                "leaders": person.get("leaders") or {},
                 "FullName": full_name
             }
             final_list.append(mapped)
@@ -9184,6 +9376,7 @@ async def search_people(
             if not org_match:
                 continue
 
+            _flat_search = [flat for h in DEFAULT_HIERARCHY for flat in (legacy_flat_keys(h["key"]) or [h["key"]])]
             leader_names = [
                 (leader.get("name") or "").lower()
                 for leader in person.get("leaders", [])
@@ -9196,35 +9389,21 @@ async def search_people(
                 search_term in person.get("Number", "") or
                 search_term in person.get("Address", "").lower() or
                 search_term in person.get("Stage", "").lower() or
-                search_term in (person.get("Leader @1") or "").lower() or
-                search_term in (person.get("Leader @12") or "").lower() or
-                search_term in (person.get("Leader @144") or "").lower() or
-                search_term in (person.get("Leader @1728") or "").lower() or
+                any(search_term in (person.get(f) or "").lower() for f in _flat_search) or
                 leader_match
             ):
                 person_copy = person.copy()
-                if person_copy.get("leaders") and not person_copy.get("Leader @1"):
+                if person_copy.get("leaders") and not legacy_flat_read(person_copy, "leader1"):
                     for leader in person_copy["leaders"]:
                         level = leader.get("level")
                         name = leader.get("name", "")
                         if not name:
                             continue
-                        if level == 1:
-                            person_copy["Leader @1"] = person_copy.get("Leader @1") or name
-                            person_copy["leader1"] = person_copy.get("leader1") or name
-                            person_copy["Leader at 1"] = person_copy.get("Leader at 1") or name
-                        elif level == 12:
-                            person_copy["Leader @12"] = person_copy.get("Leader @12") or name
-                            person_copy["leader12"] = person_copy.get("leader12") or name
-                            person_copy["Leader at 12"] = person_copy.get("Leader at 12") or name
-                        elif level == 144:
-                            person_copy["Leader @144"] = person_copy.get("Leader @144") or name
-                            person_copy["leader144"] = person_copy.get("leader144") or name
-                            person_copy["Leader at 144"] = person_copy.get("Leader at 144") or name
-                        elif level == 1728:
-                            person_copy["Leader @1728"] = person_copy.get("Leader @1728") or name
-                            person_copy["leader1728"] = person_copy.get("leader1728") or name
-                            person_copy["Leader at 1728"] = person_copy.get("Leader at 1728") or name
+                        for _h in DEFAULT_HIERARCHY:
+                            if _h.get("level") == level:
+                                for flat in legacy_flat_keys(_h["key"]) or [_h["key"]]:
+                                    person_copy[flat] = person_copy.get(flat) or name
+                                break
                 results.append(person_copy)
 
             # Removed early break - search through ALL matching people
@@ -9335,13 +9514,27 @@ async def create_person(
 
         if email:
             existing = await people_collection.find_one(
-                {"Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
+                {
+                    "Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"},
+                    "$or": [
+                        {"org_id": org_id},
+                        {"Organization": {"$regex": f"^{re.escape(organization)}$", "$options": "i"}},
+                    ],
+                }
             )
             if existing:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"A person with email '{email}' already exists."
+                    detail=f"A person with email '{email}' already exists in this organisation."
                 )
+
+        # ── Process dynamic leaders (accept leaders: {key: name}) ───────
+        leaders_clean = {}
+        flat_updates = {}
+        if person_data.get("leaders"):
+            processed = await normalize_leaders_for_org(person_data["leaders"], org_id)
+            leaders_clean = processed["leaders"]
+            flat_updates = processed["flat_updates"]
 
         now = datetime.utcnow()
 
@@ -9357,11 +9550,15 @@ async def create_person(
             "Stage":        (person_data.get("stage")   or "Win"),
             "LeaderId":     leader_id_obj,
             "LeaderPath":   leader_path,
+            "leaders":      leaders_clean,
             "org_id":       org_id,
             "Organization": organization,
             "DateCreated":  now.isoformat(),
             "UpdatedAt":    now.isoformat(),
         }
+        # Dual-write legacy flat fields where the keys match the legacy pattern.
+        for flat_key, flat_val in flat_updates.items():
+            person_doc[flat_key] = flat_val
 
         result      = await people_collection.insert_one(person_doc)
         inserted_id = result.inserted_id
@@ -9576,6 +9773,16 @@ async def update_person(
         if not existing:
             raise HTTPException(status_code=404, detail="Person not found")
 
+        # ── Org scoping: 403 if the person belongs to another org (§3.5) ──
+        org_id = current_user.get("org_id") or (
+            current_user.get("Organization", "").lower().replace(" ", "-")
+        ) or "active-teams"
+        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+        scoped(current_user, existing)
+
+        # ── Capability enforcement (§7): mutating a person requires manage_people ──
+        await require_capability(current_user, "manage_people")
+
         now = datetime.utcnow()
         set_fields: dict = {"UpdatedAt": now.isoformat()}
 
@@ -9597,38 +9804,43 @@ async def update_person(
             if src_key in update_data and update_data[src_key] is not None:
                 set_fields[dest_key] = transform(str(update_data[src_key]))
 
-        # ── Accept legacy/flat leader fields or a `leaders` list from the frontend
-        # When the client sends a `leaders` array or explicit `leader1`/`leader12` etc
-        # update the corresponding legacy string fields so transform_person_full can build names.
+        # ── Accept a `leaders` dict keyed by hierarchy keys (spec §3.5) ──
+        if "leaders" in update_data and isinstance(update_data.get("leaders"), dict):
+            processed = await normalize_leaders_for_org(update_data["leaders"], org_id)
+            for key, val in processed["leaders"].items():
+                set_fields[f"leaders.{key}"] = val
+            for flat_key, flat_val in processed["flat_updates"].items():
+                set_fields[flat_key] = flat_val
+
+        # ── Accept legacy/flat leader fields or a `leaders` list from the frontend.
+        # A positional list maps onto the org hierarchy; each value is dual-written
+        # to the canonical `leaders.{key}` plus its legacy flat aliases.
         leader_names = []
         if "leaders" in update_data and isinstance(update_data.get("leaders"), (list, tuple)):
             leaders_list = update_data.get("leaders")
-            if len(leaders_list) > 0 and leaders_list[0] is not None:
-                set_fields["Leader @1"] = str(leaders_list[0]).strip()
-            if len(leaders_list) > 1 and leaders_list[1] is not None:
-                set_fields["Leader @12"] = str(leaders_list[1]).strip()
-            if len(leaders_list) > 2 and leaders_list[2] is not None:
-                set_fields["Leader @144"] = str(leaders_list[2]).strip()
-            if len(leaders_list) > 3 and leaders_list[3] is not None:
-                set_fields["Leader @1728"] = str(leaders_list[3]).strip()
+            for _i, _h in enumerate(DEFAULT_HIERARCHY):
+                if _i < len(leaders_list) and leaders_list[_i] is not None:
+                    _val = str(leaders_list[_i]).strip()
+                    set_fields[f"leaders.{_h['key']}"] = _val
+                    for _flat in legacy_flat_keys(_h["key"]) or [_h["key"]]:
+                        set_fields[_flat] = _val
             leader_names = [str(x).strip() for x in leaders_list if x and str(x).strip()]
 
-        # Also accept individual legacy keys sent by some clients
-        for legacy_in, legacy_db in (
-            ("leader1", "Leader @1"), ("Leader @1", "Leader @1"),
-            ("leader12", "Leader @12"), ("Leader @12", "Leader @12"),
-            ("leader144", "Leader @144"), ("Leader @144", "Leader @144"),
-            ("leader1728", "Leader @1728"), ("Leader @1728", "Leader @1728"),
-        ):
-            if legacy_in in update_data and update_data[legacy_in] is not None:
-                set_fields[legacy_db] = str(update_data[legacy_in]).strip()
+        # Also accept individual legacy keys sent by some clients.
+        for _h in DEFAULT_HIERARCHY:
+            _k = _h["key"]
+            _input_keys = [_k] + legacy_flat_keys(_k)
+            for _legacy_in in _input_keys:
+                if _legacy_in in update_data and update_data[_legacy_in] is not None:
+                    _val = str(update_data[_legacy_in]).strip()
+                    set_fields[f"leaders.{_k}"] = _val
+                    for _flat in legacy_flat_keys(_k) or [_k]:
+                        set_fields[_flat] = _val
 
         if not leader_names:
             leader_names = [
-                update_data.get("leader1") or update_data.get("Leader @1") or "",
-                update_data.get("leader12") or update_data.get("Leader @12") or "",
-                update_data.get("leader144") or update_data.get("Leader @144") or "",
-                update_data.get("leader1728") or update_data.get("Leader @1728") or "",
+                legacy_flat_read(update_data, _h["key"])
+                for _h in DEFAULT_HIERARCHY
             ]
             leader_names = [str(x).strip() for x in leader_names if x and str(x).strip()]
 
@@ -9782,7 +9994,13 @@ async def delete_person(
     try:
         if not ObjectId.is_valid(person_id):
             raise HTTPException(status_code=400, detail="Invalid person ID")
- 
+
+        existing = await people_collection.find_one({"_id": ObjectId(person_id)})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Person not found")
+        # Org scoping (§3.5)
+        scoped(current_user, existing)
+
         result = await people_collection.delete_one({"_id": ObjectId(person_id)})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Person not found")
@@ -9806,15 +10024,15 @@ async def get_leaders_only():
     """
     try:
         # Find people who appear as leaders in other people's records
+        _match_conds = []
+        for _h in DEFAULT_HIERARCHY:
+            _match_conds.append({f"leaders.{_h['key']}": {"$exists": True, "$ne": ""}})
+            for _flat in legacy_flat_keys(_h["key"]):
+                _match_conds.append({_flat: {"$exists": True, "$ne": ""}})
         pipeline = [
             {
                 "$match": {
-                    "$or": [
-                        {"Leader @1": {"$exists": True, "$ne": ""}},
-                        {"Leader @12": {"$exists": True, "$ne": ""}},
-                        {"Leader @144": {"$exists": True, "$ne": ""}},
-                        {"Leader @1728": {"$exists": True, "$ne": ""}}
-                    ]
+                    "$or": _match_conds
                 }
             },
             {
@@ -9824,18 +10042,15 @@ async def get_leaders_only():
                     "Surname": 1,
                     "Email": 1,
                     "Phone": 1,
-                    "Leader @1": 1,
-                    "Leader @12": 1,
-                    "Leader @144": 1,
-                    "Leader @1728": 1
+                    **LEGACY_FLAT_PROJECTION
                 }
             },
             {"$limit": 500}  # Leaders only, so smaller set
         ]
-       
+
         cursor = people_collection.aggregate(pipeline)
         leaders = []
-       
+
         async for person in cursor:
             leaders.append({
                 "_id": str(person["_id"]),
@@ -9843,10 +10058,7 @@ async def get_leaders_only():
                 "Surname": person.get("Surname", ""),
                 "Email": person.get("Email", ""),
                 "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
+                **legacy_flat_echo(person, [h["key"] for h in DEFAULT_HIERARCHY])
             })
        
         return {"leaders": leaders}
@@ -10727,8 +10939,15 @@ async def create_user(
         if existing_user:
             raise HTTPException(status_code=400, detail="User with this email already exists")
         
-        # Validate role
+        # Validate role against org roles (OrgConfig) ∪ legacy system roles
         valid_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+        target_org = user_data.organization or current_user.get("Organization") or current_user.get("organization")
+        target_org_id = normalize_org_id(str(target_org or ""))
+        if target_org_id:
+            target_config = await org_config_collection.find_one({"_id": target_org_id})
+            for r in (target_config or {}).get("roles") or []:
+                if r.get("key") and r.get("key") not in valid_roles:
+                    valid_roles.append(r["key"])
         if user_data.role not in valid_roles:
             raise HTTPException(status_code=400, detail="Invalid role")
         
@@ -10739,6 +10958,16 @@ async def create_user(
         from passlib.context import CryptContext
         pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
         hashed_password = pwd_context.hash(user_data.password)
+
+        # M4: canonical leader chain from `leaders`/`hierarchy_leaders`, keyed by org hierarchy.
+        leaders_field = None
+        _org_for_leaders = normalize_org_id(str(target_org or "")) or "active-teams"
+        _user_hierarchy = await get_org_hierarchy_cached(_org_for_leaders)
+        if user_data.leaders or user_data.hierarchy_leaders:
+            leaders_field = normalize_leaders_input(
+                user_data.leaders or user_data.hierarchy_leaders,
+                _user_hierarchy,
+            )
         
         # Use lowercase 'organization' for all new users (consistency)
         user_doc = {
@@ -10751,15 +10980,24 @@ async def create_user(
             "home_address": user_data.address,
             "gender": user_data.gender,
             "invited_by": user_data.invitedBy,
-            "leader12": user_data.leader12,
-            "leader144": user_data.leader144,
-            "leader1728": user_data.leader1728,
+            "leaders": leaders_field,
             "stage": user_data.stage or "Win",
             "role": user_data.role,
             "Organization": current_user.get("Organization"),
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
+        if leaders_field:
+            # §3.3 transition: dual-write the legacy flats for leader<N> keys.
+            apply_flat_leaders(user_doc, leaders_field)
+        else:
+            # Legacy client sent only flat leader fields — promote them to the
+            # canonical leaders dict and dual-write for consistency.
+            _flat_input = {h["key"]: getattr(user_data, h["key"], "") for h in DEFAULT_HIERARCHY}
+            _flat_leaders = {k: v for k, v in _flat_input.items() if v}
+            if _flat_leaders:
+                user_doc["leaders"] = _flat_leaders
+                apply_flat_leaders(user_doc, _flat_leaders)
         
         result = await users_collection.insert_one(user_doc)
         
@@ -10832,9 +11070,8 @@ async def get_all_users(
                 "home_address": 1,  # Changed from address
                 "gender": 1,
                 "invited_by": 1,    # Changed from invitedBy
-                "leader12": 1,
-                "leader144": 1,
-                "leader1728": 1,
+                **LEGACY_FLAT_PROJECTION,
+                "leaders": 1,
                 "stage": 1
             }
         ).skip(skip).limit(limit).sort("created_at", -1)
@@ -10856,9 +11093,8 @@ async def get_all_users(
                 "address": user.get("home_address"),  # Map home_address to address for frontend
                 "gender": user.get("gender"),
                 "invitedBy": user.get("invited_by"),  # Map invited_by to invitedBy for frontend
-                "leader12": user.get("leader12"),
-                "leader144": user.get("leader144"),
-                "leader1728": user.get("leader1728"),
+                **legacy_flat_echo(user, [h["key"] for h in DEFAULT_HIERARCHY]),
+                "leaders": user.get("leaders"),
                 "stage": user.get("stage")
             })
         
@@ -10962,8 +11198,17 @@ async def get_distinct_roles(
             raise HTTPException(status_code=400, detail="Organization required")
         
         ACTIVE_CHURCH_NAME = "Active Church"
-        system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
-        
+        legacy_system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+
+        # Org-configured roles (OrgConfig) ∪ legacy system roles.
+        org_id_for_roles = normalize_org_id(str(org_filter or ""))
+        org_config = await org_config_collection.find_one({"_id": org_id_for_roles}) if org_id_for_roles else None
+        org_role_keys = [r.get("key") for r in (org_config or {}).get("roles") or []]
+        if org_role_keys:
+            system_roles = legacy_system_roles + [k for k in org_role_keys if k not in legacy_system_roles]
+        else:
+            system_roles = legacy_system_roles
+
         query = {}
         if org_filter:
             query["Organization"] = org_filter
@@ -10988,7 +11233,7 @@ async def get_distinct_roles(
             count = item["count"]
             is_system = role in system_roles
             
-            if org_filter == ACTIVE_CHURCH_NAME and not is_system:
+            if org_role_keys and role not in system_roles:
                 continue
                 
             color = get_role_color(role)
@@ -10998,7 +11243,7 @@ async def get_distinct_roles(
                 "count": count,
                 "is_system": is_system,
                 "color": color,
-                "can_create_custom": org_filter != ACTIVE_CHURCH_NAME
+                "can_create_custom": bool(org_config) or org_filter != ACTIVE_CHURCH_NAME
             })
         
         roles_with_counts.sort(key=lambda x: (not x["is_system"], x["name"]))
@@ -11006,7 +11251,7 @@ async def get_distinct_roles(
         return {
             "roles": roles_with_counts,
             "organization": org_filter,
-            "can_create_custom_roles": org_filter != ACTIVE_CHURCH_NAME
+            "can_create_custom_roles": bool(org_config) or org_filter != ACTIVE_CHURCH_NAME
         }
         
     except Exception as e:
@@ -11056,65 +11301,26 @@ async def update_user_role(
         new_role = role_update.role
         
         user_org = user.get("Organization")
-        ACTIVE_CHURCH_NAME = "Active Church"
-        system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
-        
-        if user_org == ACTIVE_CHURCH_NAME:
-            if new_role not in system_roles:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Active Church only supports standard roles: {', '.join(system_roles)}"
-                )
-            
-            ROLE_HIERARCHY = {
-                "registrant": 2,
-                "user": 1,
-                "leader": 3,
-                "leaderAt12": 4,
-                "admin": 5,
-                "supreme_admin": 6
-            }
-            
-            # if not is_supreme:
-            #     current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
-            #     target_user_level = ROLE_HIERARCHY.get(old_role, 0)
-            #     new_role_level = ROLE_HIERARCHY.get(new_role, 0)
-                
-            #     if target_user_level >= current_user_role_level:
-            #         raise HTTPException(
-            #             status_code=403,
-            #             detail="Cannot modify users with equal or higher role"
-            #         )
-                
-            #     if new_role_level >= current_user_role_level:
-            #         raise HTTPException(
-            #             status_code=403,
-            #             detail="Cannot assign role equal to or higher than your own"
-            #         )
-        else:
-            if new_role == "admin" and not is_supreme:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cannot assign admin role"
-                )
-            
-            # if new_role in system_roles and not is_supreme:
-            #     ROLE_HIERARCHY = {
-            #         "registrant": 2,
-            #         "user": 1,
-            #         "leader": 3,
-            #         "leaderAt12": 4,
-            #         "admin": 5
-            #     }
-                current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
-                new_role_level = ROLE_HIERARCHY.get(new_role, 0)
-                
-                # if new_role_level >= current_user_role_level:
-                #     raise HTTPException(
-                #         status_code=403,
-                #         detail="Cannot assign system role equal to or higher than your own"
-                #     )
-        
+        legacy_system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
+
+        # Allowed roles = org's configured roles (OrgConfig) ∪ legacy system roles.
+        uorg_id = normalize_org_id(str(user_org or ""))
+        uorg_config = await org_config_collection.find_one({"_id": uorg_id}) if uorg_id else None
+        org_role_keys = [r.get("key") for r in (uorg_config or {}).get("roles") or []]
+        allowed_roles = set(legacy_system_roles) | set(org_role_keys) if org_role_keys else set(legacy_system_roles)
+
+        if new_role not in allowed_roles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid role for this organization. Supported roles: {', '.join(sorted(allowed_roles))}"
+            )
+
+        if new_role == "admin" and not is_supreme:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot assign admin role"
+            )
+
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {
@@ -11194,29 +11400,67 @@ async def update_role_permissions(
     permission_update: PermissionUpdate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Update role permissions - Admin only"""
-    if current_user.get("role") != "admin":
+    """Update role permissions - Admin only. Persists into the org's roles (OrgConfig)."""
+    if not is_supreme(current_user) and current_user.get("role") not in ("admin", "org_admin", "super_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+
     try:
-        # Validate role
+        # Map the legacy flat permission names onto the org capability model (§7).
+        perm_to_cap = {
+            "manage_users": "manage_people",
+            "manage_leaders": "manage_people",
+            "manage_events": "create_events",
+            "view_reports": "view_stats",
+            "system_settings": "manage_org",
+        }
+        cap = perm_to_cap.get(permission_update.permission)
+
+        org_id = get_org_id(current_user) or ""
+        org = await org_config_collection.find_one({"_id": org_id}) if org_id else None
+
+        if org:
+            roles = list(org.get("roles") or DEFAULT_ROLES)
+            hit = False
+            for r in roles:
+                if r.get("key") == role_name:
+                    caps = set(r.get("capabilities") or [])
+                    if cap:
+                        if permission_update.enabled:
+                            caps.add(cap)
+                        else:
+                            caps.discard(cap)
+                    r["capabilities"] = sorted(caps)
+                    hit = True
+                    break
+            if not hit:
+                roles.append({
+                    "key": role_name,
+                    "label": role_name.replace("_", " ").title(),
+                    "capabilities": [cap] if cap and permission_update.enabled else []
+                })
+            await org_config_collection.update_one({"_id": org_id}, {"$set": {"roles": roles}})
+            await log_activity(
+                user_id=str(current_user.get("_id")),
+                action="PERMISSION_UPDATED",
+                details=f"Updated {permission_update.permission} for {role_name} role to {permission_update.enabled}"
+            )
+            return MessageResponse(
+                message=f"Permission {permission_update.permission} updated for role {role_name}"
+            )
+
+        # Legacy fallback (no OrgConfig): update the in-memory model as before.
         if role_name not in ROLE_PERMISSIONS:
             raise HTTPException(status_code=400, detail="Invalid role")
-       
-        # Update in-memory permissions (in production, store in database)
         ROLE_PERMISSIONS[role_name][permission_update.permission] = permission_update.enabled
-       
-        # Log activity
         await log_activity(
             user_id=str(current_user.get("_id")),
             action="PERMISSION_UPDATED",
             details=f"Updated {permission_update.permission} for {role_name} role to {permission_update.enabled}"
         )
-       
         return MessageResponse(
             message=f"Permission {permission_update.permission} updated for role {role_name}"
         )
-       
+
     except HTTPException:
         raise
     except Exception as e:
@@ -11228,13 +11472,30 @@ async def get_role_permissions(
     role_name: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get role permissions - Admin only"""
-    if current_user.get("role") != "admin":
+    """Get role permissions - Admin only. Reads from the org's roles (OrgConfig)."""
+    if not is_supreme(current_user) and current_user.get("role") not in ("admin", "org_admin", "super_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+
+    org_id = get_org_id(current_user) or ""
+    org = await org_config_collection.find_one({"_id": org_id}) if org_id else None
+    if org:
+        for r in org.get("roles") or []:
+            if r.get("key") == role_name:
+                caps = set(r.get("capabilities") or [])
+                return {
+                    "role": role_name,
+                    "permissions": {
+                        "manage_users": "admin" in caps or "manage_people" in caps,
+                        "manage_leaders": "admin" in caps or "manage_people" in caps,
+                        "manage_events": "admin" in caps or "create_events" in caps,
+                        "view_reports": "admin" in caps or "view_stats" in caps,
+                        "system_settings": "admin" in caps or "manage_org" in caps,
+                    }
+                }
+
     if role_name not in ROLE_PERMISSIONS:
         raise HTTPException(status_code=400, detail="Invalid role")
-   
+
     return {"role": role_name, "permissions": ROLE_PERMISSIONS[role_name]}
 
 
@@ -11728,25 +11989,48 @@ async def resolve_leader_from_path(person_context: dict | None, level_index: int
     }
 
 
-async def resolve_leader_at_12_with_fallback(person_context: dict | None, consolidation, current_user: dict) -> dict | None:
+async def resolve_leader_at_12_with_fallback(person_context: dict | None, consolidation, current_user: dict, hierarchy: list = None) -> dict | None:
     """
-    Assignment policy: always assign to Leader @12 (LeaderPath index 1).
-    Fall back to Leader @1 (LeaderPath index 0) if Leader @12 is missing.
-    Falls back further to legacy flat string fields for older records.
+    Assignment policy: always assign to the org's SECOND hierarchy level (e.g.
+    Leader @12), falling back to the TOP level (@1), then to legacy flat fields.
     """
-    # 1. Leader @12 via LeaderPath
+    if hierarchy is None:
+        hierarchy = []
+
+    # 1. Secondary level (hierarchy[1]) via LeaderPath
     resolved = await resolve_leader_from_path(person_context, 1)
     if resolved:
-        resolved["reason"] = "leader_at_12"
+        resolved["reason"] = "leader_at_secondary_level"
         return resolved
 
-    # 2. Leader @1 via LeaderPath
+    # 2. Top level (hierarchy[0]) via LeaderPath
     resolved = await resolve_leader_from_path(person_context, 0)
     if resolved:
-        resolved["reason"] = "fallback_leader_at_1"
+        resolved["reason"] = "fallback_leader_at_top_level"
         return resolved
 
-    # 3. Legacy flat-field fallback (older records without LeaderPath)
+    # 3. Org hierarchy `leaders` object (canonical) …
+    if hierarchy and person_context:
+        leaders = person_context.get("leaders") or {}
+
+        async def _resolve_name_value(name_value: str) -> dict | None:
+            if not name_value:
+                return None
+            return await _resolve_leader_field({"__leader_value__": name_value}, ["__leader_value__"])
+
+        if len(hierarchy) > 1 and leaders.get(hierarchy[1].get("key", "")):
+            resolved = _resolve_name_value(leaders[hierarchy[1]["key"]])
+            if resolved:
+                resolved["reason"] = "leader_at_secondary_level"
+                return resolved
+
+        if leaders.get(hierarchy[0].get("key", "")):
+            resolved = _resolve_name_value(leaders[hierarchy[0]["key"]])
+            if resolved:
+                resolved["reason"] = "fallback_leader_at_top_level"
+                return resolved
+
+    # 4. Legacy flat-field fallback (older records without LeaderPath)
     resolved = await _resolve_leader_field(person_context, ["Leader @12", "leader12", "Leader at 12"])
     if resolved:
         resolved["reason"] = "leader_at_12_legacy"
@@ -11767,6 +12051,10 @@ async def create_consolidation(
 ):
     try:
         consolidation_id = str(ObjectId())
+        org_id = get_org_id(current_user) or ""
+        org = await require_org(current_user) if org_id else None
+        hierarchy = get_org_hierarchy(org)
+
         person_email = _normalize_text(consolidation.person_email)
         if not person_email:
             person_email = f"{_normalize_text(consolidation.person_name).lower()}.{_normalize_text(consolidation.person_surname).lower()}@consolidation.temp"
@@ -11781,7 +12069,7 @@ async def create_consolidation(
             _normalize_text(getattr(consolidation, "event_id", "")).lower(),
         ])
 
-        existing_task = await tasks_collection.find_one({"dedup_key": dedup_key})
+        existing_task = await tasks_collection.find_one({"dedup_key": dedup_key, **({"org_id": org_id} if org_id else {"org_id": {"$exists": False}})})
         if existing_task:
             return {
                 "message": "Consolidation task already exists",
@@ -11791,7 +12079,7 @@ async def create_consolidation(
                 "duplicate": True,
             }
 
-        existing_consolidation = await consolidations_collection.find_one({"dedup_key": dedup_key})
+        existing_consolidation = await consolidations_collection.find_one({"dedup_key": dedup_key, **({"org_id": org_id} if org_id else {"org_id": {"$exists": False}})})
         if existing_consolidation:
             return {
                 "message": "Consolidation already exists",
@@ -11818,6 +12106,9 @@ async def create_consolidation(
         person_lookup_status = "existing_person_found"
         person_context_for_resolver = None
         if existing_person:
+            # §3.10: a consolidation's person must belong to the requester's org.
+            if existing_person.get("org_id") or existing_person.get("Organization"):
+                scoped(current_user, existing_person)
             person_context_for_resolver = existing_person
             person_id = str(existing_person["_id"])
             print(f"Found existing person: {person_id}")
@@ -11855,6 +12146,12 @@ async def create_consolidation(
                 {"$set": update_data}
             )
         else:
+            # Map the positional leader list onto the org's hierarchy keys.
+            leaders_dict = {}
+            for idx, name_val in enumerate(getattr(consolidation, "leaders", None) or []):
+                if idx < len(hierarchy) and name_val:
+                    leaders_dict[hierarchy[idx]["key"]] = name_val
+
             person_doc = {
                 "Name": consolidation.person_name.strip(),
                 "Surname": consolidation.person_surname.strip(),
@@ -11869,12 +12166,15 @@ async def create_consolidation(
                 "Date Created": datetime.utcnow().isoformat(),
                 "UpdatedAt": datetime.utcnow().isoformat(),
                 "InvitedBy": current_user.get("email", ""),
-                "Leader @1": consolidation.leaders[0] if len(consolidation.leaders) > 0 else "",
-                "Leader @12": consolidation.leaders[1] if len(consolidation.leaders) > 1 else "",
-                "Leader @144": consolidation.leaders[2] if len(consolidation.leaders) > 2 else "",
-                "Leader @1728": consolidation.leaders[3] if len(consolidation.leaders) > 3 else "",
+                "leaders": leaders_dict,
+                "org_id": org_id,
                 "ConsolidationSource": getattr(consolidation, 'source', 'manual')
             }
+
+            # Dual-write legacy flat fields for hierarchy keys matching the pattern.
+            for hkey, hval in leaders_dict.items():
+                for flat_key in legacy_flat_keys(hkey):
+                    person_doc[flat_key] = hval
            
             decision_history = [{
                 "type": consolidation.decision_type.value,
@@ -11907,16 +12207,15 @@ async def create_consolidation(
                 "Email": created_doc.get("Email", ""),
                 "Number": created_doc.get("Number", ""),
                 "Gender": created_doc.get("Gender", ""),
-                "Leader @1": created_doc.get("Leader @1", ""),
-                "Leader @12": created_doc.get("Leader @12", ""),
+                **legacy_flat_echo(created_doc, [h["key"] for h in DEFAULT_HIERARCHY]),
                 "FullName": f"{created_doc.get('Name', '')} {created_doc.get('Surname', '')}".strip(),
                 "ConsolidationSource": getattr(consolidation, 'source', 'manual')
             }
             people_cache["data"].append(new_person_cache_entry)
             print(f"Added to cache: {new_person_cache_entry['FullName']}")
 
-        # 2. Resolve leader — always Leader @12, fall back to Leader @1
-        resolved_assignee = await resolve_leader_at_12_with_fallback(person_context_for_resolver, consolidation, current_user)
+        # 2. Resolve leader — always secondary level (e.g. @12), fall back to top level (@1)
+        resolved_assignee = await resolve_leader_at_12_with_fallback(person_context_for_resolver, consolidation, current_user, hierarchy=hierarchy)
         leader_email = resolved_assignee.get("email") if resolved_assignee else None
         leader_user_id = resolved_assignee.get("user_id") if resolved_assignee else None
         assignment_reason = resolved_assignee.get("reason") if resolved_assignee else "no_valid_leader_found"
@@ -11988,6 +12287,7 @@ async def create_consolidation(
             },
             "created_at": datetime.utcnow(),
             "created_by": current_user.get("email", ""),
+            "org_id": org_id,
             "is_consolidation_task": True
         }
 
@@ -12017,6 +12317,7 @@ async def create_consolidation(
             "source": consolidation_source,
             "source_display": source_display,
             "task_id": task_id,
+            "org_id": org_id,
         }
 
         # 5. Add to event — strip date suffix before ObjectId lookup
@@ -12027,6 +12328,8 @@ async def create_consolidation(
 
             if ObjectId.is_valid(base_event_id):
                 event_for_cons = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+                if event_for_cons:
+                    scoped(current_user, event_for_cons)
                 is_recurring_event = bool(event_for_cons.get("recurring_day")) if event_for_cons else False
 
                 # All events (recurring and non-recurring) store consolidations
@@ -12092,7 +12395,8 @@ async def create_consolidation(
             "status": "active",
             "task_id": task_id,
             "source": consolidation_source,
-            "source_display": source_display
+            "source_display": source_display,
+            "org_id": org_id,
         }
 
         consolidations_collection = db["consolidations"]
@@ -12174,7 +12478,14 @@ async def get_all_tasks(
                 }, 403
 
             timezone = pytz.timezone("Africa/Johannesburg")
-            cursor = tasks_collection.find({})  # No filter → ALL tasks
+            org_name = None
+            for key in current_user.keys():
+                if key.lower() == "organization":
+                    org_name = current_user[key]
+                    break
+
+            org_filter = {"Organization": org_name} if org_name else {}
+            cursor = tasks_collection.find(org_filter)  # Org-scoped tasks
             all_tasks = []
 
             async for task in cursor:
@@ -12259,9 +12570,16 @@ async def get_leader_tasks(
 ):
     """Get all consolidation tasks assigned to a specific leader"""
     try:
-        # Find consolidation tasks assigned to this leader
+        # Find consolidation tasks assigned to this leader (org-scoped)
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
         tasks = await tasks_collection.find({
             "is_consolidation_task": True,
+            **({"Organization": org_name} if org_name else {}),
             "$or": [
                 {"assigned_to_email": leader_email},
                 {"assignedfor": leader_email},
@@ -12297,10 +12615,12 @@ async def get_consolidations(
     Get consolidation records with filtering
     """
     try:
-        query = {}
-       
+        org_qid = get_org_id(current_user) or ""
+        query = {"$or": [{"org_id": org_qid}, {"org_id": {"$exists": False}}]} if org_qid else {"$or": [{"org_id": {"$exists": False}}]}
+
         if assigned_to:
             query["assigned_to"] = assigned_to
+
         if status:
             query["status"] = status
        
@@ -12389,7 +12709,8 @@ async def get_consolidation_stats(
     """Get consolidation statistics"""
     try:
         stats_collection = db["consolidation_stats"]
-       
+        org_id = get_org_id(current_user) or ""
+
         if period == "daily":
             date_key = datetime.utcnow().date().isoformat()
             query = {"date": date_key, "type": "daily"}
@@ -12402,7 +12723,9 @@ async def get_consolidation_stats(
         else:  # yearly
             year_key = datetime.utcnow().strftime("%Y")
             query = {"year": year_key, "type": "yearly"}
-       
+
+        if org_id:
+            query["org_id"] = org_id
         stats = await stats_collection.find_one(query)
        
         if not stats:
@@ -12445,7 +12768,9 @@ async def get_person_consolidation_history(
         person = await people_collection.find_one({"_id": ObjectId(person_id)})
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
-       
+
+        scoped(current_user, person)
+
         # Get all consolidations for this person
         consolidations_collection = db["consolidations"]
         consolidations = await consolidations_collection.find({
@@ -12474,12 +12799,19 @@ async def get_person_consolidation_history(
         raise HTTPException(status_code=500, detail=str(e))
    
 @app.get("/events/{event_id}/consolidations")
-async def get_event_consolidations(event_id: str = Path(...)):
-    """Get all consolidations for a specific event"""
+async def get_event_consolidations(
+    event_id: str = Path(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all consolidations for a specific event (org-scoped)"""
     try:
         if not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
-       
+
+        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if event:
+            scoped(current_user, event)
+
         consolidations_collection = db["consolidations"]
         consolidations = await consolidations_collection.find({
             "$or": [
@@ -12586,7 +12918,13 @@ async def get_service_checkin_real_time_data(
         event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
+
+        scoped(current_user, event)
  
+        # M4: expose canonical chain on the event + its attendees.
+        hierarchy = await get_org_hierarchy_cached(event.get("org_id") or "")
+        backfill_leaders(event, hierarchy)
+
         is_recurring = bool(event.get("recurring_day"))
  
         if is_recurring:
@@ -12624,13 +12962,17 @@ async def get_service_checkin_real_time_data(
         attendees = attendees if isinstance(attendees, list) else []
         new_people = new_people if isinstance(new_people, list) else []
         consolidations = consolidations if isinstance(consolidations, list) else []
- 
+        for _a in attendees + new_people:
+            if isinstance(_a, dict):
+                backfill_leaders(_a, hierarchy)
+
         print(f"Real-time data returning: {len(attendees)} attendees, {len(new_people)} new, {len(consolidations)} consolidations")
- 
+
         return {
             "success": True,
             "event_id": event_id,
             "event_name": event.get("eventName", "Unknown Event"),
+            "leaders": event.get("leaders") or {},
             "present_attendees": attendees,
             "new_people": new_people,
             "consolidations": consolidations,
@@ -12659,11 +13001,13 @@ async def validate_removal(
     try:
         if not consolidation_id and not person_id:
             raise HTTPException(status_code=400, detail="Either consolidation_id or person_id is required")
- 
+
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
- 
+
+        scoped(current_user, event)
+
         consolidation = None
         if consolidation_id:
             consolidations = event.get("consolidations", [])
@@ -12709,28 +13053,35 @@ async def service_checkin_person(
  
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
- 
+
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
- 
+
+        scoped(current_user, event)
+
+        await require_capability(current_user, "checkin")
+
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
- 
+
         instance_date = None
         if is_recurring:
             tz = pytz.timezone("Africa/Johannesburg")
             instance_date = datetime.now(tz).date().isoformat()
- 
+
         if checkin_type == "attendee":
             person_id = person_data.get("id") or person_data.get("_id")
             if not person_id or not ObjectId.is_valid(person_id):
                 raise HTTPException(status_code=400, detail="Valid person ID is required")
- 
+
             existing = await people_collection.find_one({"_id": ObjectId(person_id)})
             if not existing:
                 raise HTTPException(status_code=404, detail="Person does not exist")
- 
+
+            if existing.get("org_id") or existing.get("Organization"):
+                scoped(current_user, existing)
+
             attendee_record = {
                 "id": str(existing["_id"]),
                 "name": existing.get("Name", ""),
@@ -12976,18 +13327,20 @@ async def remove_from_service_checkin(
             valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
- 
+
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
- 
+
+        scoped(current_user, event)
+
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
- 
+
         if is_recurring:
             tz = pytz.timezone("Africa/Johannesburg")
             instance_date = datetime.now(tz).date().isoformat()
- 
+
             result = await events_collection.update_one(
                 {"_id": ObjectId(event_id)},
                 {
@@ -13059,14 +13412,16 @@ async def update_service_checkin_person(
         valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
- 
+
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
- 
+
+        scoped(current_user, event)
+
         is_recurring = bool(event.get("recurring_day"))
         now = datetime.utcnow().isoformat()
- 
+
         if is_recurring:
             # ← FIXED: recurring events store data under attendance.{date}.{data_type}
             tz = pytz.timezone("Africa/Johannesburg")
@@ -13435,18 +13790,8 @@ async def get_dashboard_comprehensive(
                             {"$ifNull": ["$eventLeaderEmail", {"$ifNull": ["$EventLeaderEmail", ""]}]}
                         ]
                     },
-                    "leader1": {
-                        "$ifNull": [
-                            "$leader1",
-                            {"$ifNull": ["$Leader @1", ""]}
-                        ]
-                    },
-                    "leader12": {
-                        "$ifNull": [
-                            "$Leader at 12",
-                            {"$ifNull": ["$Leader @12", {"$ifNull": ["$leader12", {"$ifNull": ["$Leader12", ""]}]}]}
-                        ]
-                    },
+                    "leader1": mongo_flat_ifnull("leader1"),
+                    "leader12": mongo_flat_ifnull("leader12"),
                     "day": {
                         "$ifNull": [
                             "$Day",
@@ -14074,6 +14419,15 @@ async def toggle_event_status(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        scoped(current_user, event)
+
+        # Capability enforcement (§7): opening/closing an event needs close_events
+        await require_capability(current_user, "close_events")
+
+        # M4: expose the canonical lead chain on the response.
+        _tg_hierarchy = await get_org_hierarchy_cached(event.get("org_id") or "")
+        backfill_leaders(event, _tg_hierarchy)
+
         if instance_date:
             attendance_data = event.get("attendance", {})
             date_attendance = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
@@ -14138,6 +14492,7 @@ async def toggle_event_status(
             "message": f"Event '{event.get('eventName', 'Unknown')}' {action_msg} successfully",
             "event_id": base_event_id,
             "event_name": event.get("eventName", "Unknown"),
+            "leaders": event.get("leaders") or {},
             "previous_status": current_status,
             "new_status": new_status,
             "action": action_msg,
@@ -14178,6 +14533,8 @@ async def create_consolidation(
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
+        scoped(current_user, event)
+
         is_recurring = bool(event.get("recurring_day"))
 
         # If recurring and no date provided, use today (Joburg time)
@@ -14191,7 +14548,10 @@ async def create_consolidation(
         person_phone = person_data.get("phone", "") or person_data.get("number", "")
         person_id = person_data.get("id", "")
         
-        # ── SERVER-SIDE RESOLUTION: always Leader @12, fall back to Leader @1 ──
+        # ── SERVER-SIDE RESOLUTION: secondary level, fall back to top level ──
+        _org_id = get_org_id(current_user) or ""
+        _org = await require_org(current_user) if _org_id else None
+        _hierarchy = get_org_hierarchy(_org)
         person_context = None
         if person_id and ObjectId.is_valid(person_id):
             person_context = await people_collection.find_one({"_id": ObjectId(person_id)})
@@ -14200,7 +14560,7 @@ async def create_consolidation(
                 {"Email": {"$regex": f"^{re.escape(person_email)}$", "$options": "i"}}
             )
 
-        resolved_assignee = await resolve_leader_at_12_with_fallback(person_context, None, current_user)
+        resolved_assignee = await resolve_leader_at_12_with_fallback(person_context, None, current_user, hierarchy=_hierarchy)
         leader_email = resolved_assignee.get("email") if resolved_assignee else None
         leader_user_id = resolved_assignee.get("user_id") if resolved_assignee else None
         assignment_reason = resolved_assignee.get("reason") if resolved_assignee else "no_valid_leader_found"
@@ -14752,67 +15112,53 @@ async def cleanup_orphaned_tasks(
 # ─────────────────────────────────────────────────────────────
 @app.get("/org-config")
 async def get_org_config(current_user: dict = Depends(get_current_user)):
+    """Return the full org-config contract: org_id, org_name, is_setup, hierarchy, roles, settings."""
     try:
-        org_id = (
-            current_user.get("org_id") or
-            (current_user.get("organization", "").lower().replace(" ", "-")) or
-            "active-teams"
-        )
-        print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
+        org_id = get_org_id(current_user)
+        if not org_id:
+            raise HTTPException(status_code=404, detail="User has no organisation")
 
         config = await org_config_collection.find_one({"_id": org_id})
 
-        if not config:
-            sample_people = await people_collection.find(
-                {"org_id": org_id}
-            ).limit(10).to_list(10)
+        is_setup = bool(config and config.get("is_setup") and config.get("hierarchy"))
 
-            standard_fields = {
-                "_id", "Name", "Surname", "Email", "Number", "Phone", "Gender",
-                "Address", "Birthday", "org_id", "Org_id", "Organisation",
-                "DateCreated", "UpdatedAt", "Stage", "InvitedBy", "LeaderId",
-                "LeaderPath", "FullName", "Date Created"
+        # Build hierarchy from org config or fall back to the default G12 hierarchy.
+        hierarchy = get_org_hierarchy(config)
+
+        roles = (config or {}).get("roles") or DEFAULT_ROLES
+        settings = (config or {}).get("settings") or {}
+        top_leaders = settings.get("top_leaders") or (config or {}).get("top_leaders") or {"male": None, "female": None}
+        if isinstance(top_leaders, dict):
+            top_leaders = {
+                "male": top_leaders.get("male") or None,
+                "female": top_leaders.get("female") or None,
             }
 
-            detected_fields = {}
-            for person in sample_people:
-                for key, value in person.items():
-                    if key not in standard_fields and not key.startswith("_") and value:
-                        detected_fields[key] = True
+        org_name = (
+            (config or {}).get("org_name")
+            or current_user.get("organization")
+            or current_user.get("Organization")
+            or org_id
+        )
 
-            detected_hierarchy = [
-                {
-                    "level": i + 1,
-                    "field": key,
-                    "label": key.replace("_", " ").title()
-                }
-                for i, key in enumerate(detected_fields.keys())
-            ]
+        return {
+            "org_id": org_id,
+            "org_name": org_name,
+            "is_setup": is_setup,
+            "hierarchy": hierarchy,
+            "roles": roles,
+            "recurring_event_type": settings.get("recurring_event_type") or (config or {}).get("recurring_event_type") or "Cells",
+            "top_leaders": top_leaders,
+            "allows_create_event": settings.get("allows_create_event") if "allows_create_event" in settings else (config or {}).get("allows_create_event", True),
+            "allows_create_event_type": settings.get("allows_create_event_type") if "allows_create_event_type" in settings else (config or {}).get("allows_create_event_type", True),
+        }
 
-            print(f"AUTO-DETECTED HIERARCHY for {org_id}: {detected_hierarchy}")
-
-            new_config = {
-                "_id": org_id,
-                "org_id": org_id,
-                "org_name": current_user.get("organization") or current_user.get("org_tag") or org_id,
-                "recurring_event_type": "Gatherings",
-                "hierarchy": detected_hierarchy,
-                "top_leaders": {"male": "", "female": ""},
-                "permissions": {
-                    "admin_create_event": True,
-                    "admin_create_event_type": True,
-                },
-                "created_at": datetime.utcnow(),
-            }
-            await org_config_collection.insert_one(new_config)
-            new_config.pop("_id", None)
-            return new_config
-
-        config["org_id"] = str(config["_id"])
-        config.pop("_id", None)
-        return config
-
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"ORG CONFIG ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/org-config/detect-hierarchy")
@@ -14892,35 +15238,449 @@ async def detect_and_update_hierarchy(current_user: dict = Depends(get_current_u
 
 @app.put("/org-config")
 async def update_org_config(
-    config_data: dict,
+    config_data: dict = Body(...),
     current_user: dict = Depends(get_current_user)
 ):
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    """Org setup wizard save (org admin only). Patch semantics — all fields optional."""
+    org_id = get_org_id(current_user)
+    if not org_id:
+        raise HTTPException(status_code=404, detail="User has no organisation")
+
+    await require_admin(current_user)
 
     try:
-        org_id = (
-            current_user.get("org_id") or
-            (current_user.get("organization", "").lower().replace(" ", "-")) or
-            "active-teams"
-        )
-        allowed_fields = [
-            "org_name", "recurring_event_type", "hierarchy",
-            "top_leaders", "allows_create_event", "allows_create_event_type",
-        ]
-        update = {k: v for k, v in config_data.items() if k in allowed_fields}
-        update["updated_at"] = datetime.utcnow()
-        update["updated_by"] = current_user.get("email")
+        existing = await org_config_collection.find_one({"_id": org_id}) or {}
+
+        update = {"updated_at": datetime.utcnow(), "updated_by": current_user.get("email")}
+
+        warnings = []
+
+        # ── org_name ───────────────────────────────────────────────
+        if "org_name" in config_data and config_data["org_name"]:
+            update["org_name"] = str(config_data["org_name"]).strip()
+
+        # ── hierarchy ──────────────────────────────────────────────
+        if "hierarchy" in config_data:
+            hierarchy = config_data["hierarchy"]
+            errors = _validate_hierarchy(hierarchy)
+            if errors:
+                raise HTTPException(status_code=422, detail=errors)
+
+            old_hierarchy = existing.get("hierarchy") or []
+            old_keys = [str(h.get("key", "")) for h in old_hierarchy if h.get("key")]
+            new_keys = [str(h.get("key", "")) for h in hierarchy if h.get("key")]
+
+            # Warn (don't block) for removed keys that people still use.
+            removed_keys = [k for k in old_keys if k not in new_keys]
+            if removed_keys:
+                # Count people using the removed keys.
+                count_pipeline = [
+                    {"$match": {"org_id": org_id}},
+                    {"$project": {"keys": {"$objectToArray": "$leaders"}}},
+                    {"$limit": 1},
+                ]
+                # Simpler approach: query people and count leaders holding removed keys.
+                removed_counts = {k: 0 for k in removed_keys}
+                people_using = await people_collection.find(
+                    {"org_id": org_id, "leaders": {"$exists": True}}
+                ).to_list(length=None)
+                for p in people_using:
+                    leaders = p.get("leaders") or {}
+                    for k in removed_keys:
+                        if leaders.get(k):
+                            removed_counts[k] += 1
+                for k in removed_keys:
+                    if removed_counts.get(k):
+                        warnings.append({
+                            "key": k,
+                            "affected_people": removed_counts[k],
+                        })
+
+            # Normalize entries: key, label, level, plus field=key.
+            update["hierarchy"] = [
+                {
+                    "key": str(h["key"]).strip(),
+                    "label": str(h.get("label", str(h["key"]))).strip(),
+                    "level": int(h.get("level", i + 1)),
+                    "field": str(h["key"]).strip(),
+                }
+                for i, h in enumerate(hierarchy)
+            ]
+
+        # ── roles ──────────────────────────────────────────────────
+        if "roles" in config_data:
+            raw_roles = config_data["roles"] or []
+            normalized_roles = []
+            for role in raw_roles:
+                normalized_roles.append({
+                    "key": str(role.get("key", "")).strip(),
+                    "label": str(role.get("label", role.get("key", ""))).strip(),
+                    "capabilities": list(role.get("capabilities") or []),
+                })
+            update["roles"] = normalized_roles
+
+        # ── settings.flattened ─────────────────────────────────────
+        # Keep existing settings and merge new values.
+        settings = existing.get("settings") or {}
+        top_leaders = dict(settings.get("top_leaders") or existing.get("top_leaders") or {"male": None, "female": None})
+
+        if "recurring_event_type" in config_data:
+            settings["recurring_event_type"] = config_data["recurring_event_type"]
+        if "top_leaders" in config_data and isinstance(config_data["top_leaders"], dict):
+            tl = config_data["top_leaders"]
+            top_leaders["male"] = tl.get("male", top_leaders.get("male"))
+            top_leaders["female"] = tl.get("female", top_leaders.get("female"))
+        settings["top_leaders"] = top_leaders
+        if "allows_create_event" in config_data:
+            settings["allows_create_event"] = bool(config_data["allows_create_event"])
+        if "allows_create_event_type" in config_data:
+            settings["allows_create_event_type"] = bool(config_data["allows_create_event_type"])
+        update["settings"] = settings
+
+        # ── is_setup ───────────────────────────────────────────────
+        if "is_setup" in config_data:
+            update["is_setup"] = bool(config_data["is_setup"])
+        elif "hierarchy" in config_data and config_data["hierarchy"]:
+            # Saving a hierarchy implicitly marks the org as set up unless explicitly false.
+            update["is_setup"] = True
+
+        # Also store flattened legacy keys for backward compat with existing readers.
+        if "org_name" in update:
+            update["org_name"] = update["org_name"]
+        if "recurring_event_type" in config_data:
+            update["recurring_event_type"] = config_data["recurring_event_type"]
+        if "top_leaders" in config_data and isinstance(config_data["top_leaders"], dict):
+            update["top_leaders"] = {
+                "male": config_data["top_leaders"].get("male", top_leaders.get("male")),
+                "female": config_data["top_leaders"].get("female", top_leaders.get("female")),
+            }
+        if "allows_create_event" in config_data:
+            update["allows_create_event"] = bool(config_data["allows_create_event"])
+        if "allows_create_event_type" in config_data:
+            update["allows_create_event_type"] = bool(config_data["allows_create_event_type"])
 
         await org_config_collection.update_one(
             {"_id": org_id},
             {"$set": update},
             upsert=True
         )
-        return {"success": True, "message": "Config updated"}
 
+        # Return the full updated org-config (same shape as GET).
+        updated = await org_config_collection.find_one({"_id": org_id})
+        explicit_setup = config_data.get("is_setup") if "is_setup" in config_data else None
+        final_setup = (
+            bool(explicit_setup) if explicit_setup is not None
+            else bool((updated or {}).get("is_setup"))
+        )
+        response = {
+            "org_id": org_id,
+            "org_name": update.get("org_name") or (updated or {}).get("org_name") or org_id,
+            "is_setup": final_setup,
+            "hierarchy": get_org_hierarchy(updated),
+            "roles": (updated or {}).get("roles") or DEFAULT_ROLES,
+            "recurring_event_type": (updated or {}).get("settings", {}).get("recurring_event_type") or (updated or {}).get("recurring_event_type") or "Cells",
+            "top_leaders": (updated or {}).get("settings", {}).get("top_leaders") or (updated or {}).get("top_leaders") or {"male": None, "female": None},
+            "allows_create_event": (updated or {}).get("settings", {}).get("allows_create_event", (updated or {}).get("allows_create_event", True)),
+            "allows_create_event_type": (updated or {}).get("settings", {}).get("allows_create_event_type", (updated or {}).get("allows_create_event_type", True)),
+        }
+        if warnings:
+            response["warnings"] = warnings
+        return response
+
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error updating org config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _validate_hierarchy(hierarchy: list) -> list:
+    """Validate hierarchy entries. Return list of error detail strings (empty if valid)."""
+    errors = []
+    if not hierarchy:
+        return ["hierarchy must have at least 1 level"]
+    levels = []
+    keys = []
+    labels = []
+    if len(hierarchy) > 16:
+        errors.append("hierarchy must have at most 16 levels")
+    for i, h in enumerate(hierarchy):
+        key = str(h.get("key", "")).strip()
+        label = str(h.get("label", "")).strip()
+        try:
+            level = int(h.get("level", i + 1))
+        except (TypeError, ValueError):
+            level = None
+        if not key:
+            errors.append(f"hierarchy[{i}].key is required")
+        elif not KEY_REGEX.match(key):
+            errors.append(f"hierarchy[{i}].key '{key}' must be snake_case matching ^[a-z][a-z0-9_]*$")
+        if key in keys:
+            errors.append(f"hierarchy key '{key}' is duplicated")
+        keys.append(key)
+        if not label:
+            errors.append(f"hierarchy[{i}].label is required")
+        elif len(label) > 48:
+            errors.append(f"hierarchy[{i}].label must be at most 48 chars")
+        if label and label in labels:
+            errors.append(f"hierarchy label '{label}' is duplicated")
+        labels.append(label)
+        if level is None or level < 1:
+            errors.append(f"hierarchy[{i}].level must be an integer >= 1")
+        elif level in levels:
+            errors.append(f"hierarchy level '{level}' is duplicated")
+        levels.append(level)
+    return errors
+
+
+LEGACY_LEVEL_FIELD_PATTERN = re.compile(r"^leader(\d+)$", re.IGNORECASE)
+
+# Matches the other documented legacy field styles: "Leader @1", "Leader at 12",
+# "Leader12", "LeaderAt12", "leader at 1", "leader @144", …
+RE_LEGACY_FLAT_ALIAS = re.compile(r"^[Ll]eader\s*[@a]\s*(\d+)$", re.IGNORECASE)
+
+
+def legacy_flat_keys(key: str) -> list:
+    """
+    Given a hierarchy key like 'leader1' or 'leader12', return the legacy flat
+    field names to dual-write: ['leader1', 'Leader @1', 'Leader at 1'].
+    Returns [] if the key doesn't match the legacy leader<N> pattern.
+    """
+    key_clean = (key or "").strip()
+    m = LEGACY_LEVEL_FIELD_PATTERN.match(key_clean)
+    if not m:
+        return []
+    num = m.group(1)
+    return [
+        f"leader{num}",
+        f"Leader @{num}",
+        f"Leader at {num}",
+    ]
+
+
+def legacy_flat_read(doc: dict, key: str) -> str:
+    """Resolve the value for a legacy leader<N> hierarchy key, preferring the
+    canonical `leaders` dict, then the legacy flat aliases. Returns '' if none."""
+    leaders = (doc or {}).get("leaders") or {}
+    if isinstance(leaders, dict) and leaders.get(key):
+        val = leaders[key]
+        if val:
+            return str(val)
+    if isinstance(leaders, list):
+        for i, h in enumerate(DEFAULT_HIERARCHY):
+            if h.get("key") == key and i < len(leaders) and leaders[i]:
+                return str(leaders[i])
+    for flat in legacy_flat_keys(key):
+        val = (doc or {}).get(flat)
+        if val:
+            return str(val)
+    # Read-only legacy variants from very old records (never dual-written).
+    m = LEGACY_LEVEL_FIELD_PATTERN.match(key or "")
+    if m:
+        num = m.group(1)
+        for variant in (f"Leader{num}", f"LeaderAt{num}", f"leader at {num}", f"leader @{num}"):
+            val = (doc or {}).get(variant)
+            if val:
+                return str(val)
+    return ""
+
+
+def legacy_flat_echo(doc: dict, keys: list) -> dict:
+    """Back-compat flat-field echo for the given hierarchy keys. All legacy
+    aliases of each key are emitted with the resolved value, so no previously
+    returned field disappears (superset only)."""
+    out = {}
+    for key in keys:
+        resolved = legacy_flat_read(doc, key)
+        for flat in legacy_flat_keys(key) or [key]:
+            out[flat] = resolved
+    return out
+
+
+def mongo_flat_ifnull(canon_key: str, default: str = "") -> dict:
+    """Mongo $ifNull chain resolving a hierarchy key from $<canon_key> and every
+    legacy flat alias (incl. read-only variants), ending at `default`."""
+    fields = [f"${canon_key}"] + [f"${f}" for f in (legacy_flat_keys(canon_key) or [])]
+    m = LEGACY_LEVEL_FIELD_PATTERN.match(canon_key or "")
+    if m:
+        num = m.group(1)
+        fields += [f"${v}" for v in (f"Leader{num}", f"LeaderAt{num}", f"leader at {num}", f"leader @{num}")]
+    acc = default
+    for f in reversed(fields):
+        acc = {"$ifNull": [f, acc]}
+    return acc
+
+
+def leader_match_conditions(key: str, regex: str, opts: str = "i") -> list:
+    """$or conditions matching a leader by hierarchy key across canonical + legacy
+    flat fields (so flat-only legacy docs are still found during transition)."""
+    conds = [{"leaders.%s" % key: {"$regex": regex, "$options": opts}}]
+    for flat in legacy_flat_keys(key) or [key]:
+        conds.append({flat: {"$regex": regex, "$options": opts}})
+    return conds
+
+
+def legacy_leader_keys(doc: dict) -> list:
+    """Hierarchy (leader<N>) keys present as flat fields in a legacy doc,
+    matched across every legacy field style (leader12, Leader @12, Leader at 12,
+    Leader12, LeaderAt12, …). Returns canonical lower keys like 'leader12'."""
+    if not doc:
+        return []
+    keys = []
+    for f in doc:
+        m = LEGACY_LEVEL_FIELD_PATTERN.match(str(f))
+        if not m:
+            m = RE_LEGACY_FLAT_ALIAS.match(str(f))
+        if m and m.group(1) not in keys:
+            keys.append(f"leader{m.group(1)}")
+    return keys
+
+
+LEGACY_FLAT_PROJECTION = {
+    flat: 1
+    for h in DEFAULT_HIERARCHY
+    for flat in (legacy_flat_keys(h["key"]) or [h["key"]])
+}
+
+
+# M4: small org-hierarchy cache to avoid a DB read per event/person on hot paths.
+_hierarchy_cache: dict = {}
+_HIERARCHY_CACHE_TTL = 60
+
+
+async def get_org_hierarchy_cached(org_id: str) -> list:
+    """Return the org's hierarchy (default G12 when unconfigured), cached in memory."""
+    org_id = normalize_org_id(str(org_id or ""))
+    now = time.time()
+    cached = _hierarchy_cache.get(org_id)
+    if cached and now - cached[0] < _HIERARCHY_CACHE_TTL:
+        return cached[1]
+    try:
+        org = await org_config_collection.find_one({"_id": org_id}) if org_id else None
+    except Exception:
+        org = None
+    hierarchy = get_org_hierarchy(org)
+    _hierarchy_cache[org_id] = (now, hierarchy)
+    return hierarchy
+
+
+def backfill_leaders(doc: dict, hierarchy: list | None = None) -> dict:
+    """
+    (§9 / M4) Populate doc['leaders'] from leader sources when it's empty/missing.
+    Source precedence: leaders (dict or positional list) → hierarchy_leaders → flats.
+    Keys not in the org hierarchy are dropped. In-place on doc; returns the leaders dict.
+    """
+    hierarchy = hierarchy or DEFAULT_HIERARCHY
+    leaders = doc.get("leaders") or {}
+    if isinstance(leaders, list):
+        leaders = {
+            h["key"]: (str(leaders[i]).strip() or "") if i < len(leaders) else ""
+            for i, h in enumerate(hierarchy)
+        }
+    elif not isinstance(leaders, dict):
+        leaders = {}
+    # Drop blank values now so `leaders` doesn't render without content.
+    leaders = {k: str(v).strip() for k, v in leaders.items() if k and v}
+
+    if not leaders:
+        hl = doc.get("hierarchy_leaders") or {}
+        if isinstance(hl, dict):
+            leaders = {k: str(v).strip() for k, v in hl.items() if k and v}
+
+    if not leaders:
+        for h in hierarchy:
+            key = h.get("key", "")
+            m = LEGACY_LEVEL_FIELD_PATTERN.match(key)
+            value = doc.get(key, "") or ""
+            if not m:
+                if value:
+                    leaders[key] = str(value).strip()
+                continue
+            if not value:
+                num = m.group(1)
+                for flat in (f"Leader @{num}", f"Leader at {num}", f"leader_{num}"):
+                    value = doc.get(flat, "") or ""
+                    if value:
+                        break
+            if value:
+                leaders[key] = str(value).strip()
+
+    if leaders:
+        doc["leaders"] = leaders
+    return leaders
+
+
+def normalize_leaders_input(raw: dict | list | None, hierarchy: list) -> dict:
+    """
+    Normalize a leaders payload (keyed dict or positional list) against the org
+    hierarchy. Returns {key: value} keyed by hierarchy keys (blanks dropped).
+    """
+    hierarchy = hierarchy or DEFAULT_HIERARCHY
+    if isinstance(raw, dict):
+        return {k: str(v).strip() for k, v in raw.items() if k and v}
+    if isinstance(raw, list):
+        return {
+            h["key"]: str(raw[i]).strip()
+            for i, h in enumerate(hierarchy)
+            if i < len(raw) and raw[i]
+        }
+    return {}
+
+
+def apply_flat_leaders(doc: dict, leaders: dict) -> None:
+    """Dual-write (§9): mirror leaders onto legacy flat fields for keys matching ^leader<N>$."""
+    for key, value in leaders.items():
+        for flat_key in legacy_flat_keys(key):
+            doc[flat_key] = value
+
+
+async def normalize_leaders_for_org(leaders: dict | list | None, org_id: str) -> dict:
+    """
+    Validate + clean a leaders payload (keyed dict or positional list) against the
+    org's hierarchy.
+    - Unknown keys (not in org hierarchy) are ignored + logged, not rejected.
+    - Returns {leaders: {validated…}, flat_updates: {legacy flat field: value}}.
+    """
+    from auth.utils import require_org, get_org_hierarchy
+    org = await require_org({"org_id": org_id}) if org_id else None
+    hierarchy = get_org_hierarchy(org)
+    valid_keys = {h["key"] for h in hierarchy}
+
+    if isinstance(leaders, list):
+        leaders = {
+            h["key"]: (str(leaders[i]).strip() or "") if i < len(leaders) else ""
+            for i, h in enumerate(hierarchy)
+        }
+
+    cleaned = {}
+    flat_updates = {}
+    if not isinstance(leaders, dict):
+        return {"leaders": cleaned, "flat_updates": flat_updates}
+
+    for key, value in leaders.items():
+        if not key or value is None:
+            continue
+        key_str = str(key).strip()
+        if key_str not in valid_keys:
+            print(f"WARNING: ignoring unknown leader key '{key_str}' for org '{org_id}' (not in hierarchy)")
+            continue
+        cleaned[key_str] = str(value).strip() or ""
+        for flat_key in legacy_flat_keys(key_str):
+            flat_updates[flat_key] = cleaned[key_str]
+    return {"leaders": cleaned, "flat_updates": flat_updates}
+
+
+async def lazy_backfill_leaders(person: dict, org_id: str) -> dict:
+    """
+    (§9 migration / M4 §3.1) Populate person['leaders'] from legacy flat leader
+    fields when leaders is empty/missing. In-place and returns the person dict.
+    """
+    if person.get("leaders"):
+        return person
+    hierarchy = await get_org_hierarchy_cached(org_id)
+    backfill_leaders(person, hierarchy)
+    return person
+
 
 @app.post("/admin/detect-hierarchy")
 async def detect_hierarchy_from_people(
@@ -14985,19 +15745,20 @@ async def get_top_leader_dynamic(gender: str, org_id: str = "active-teams") -> s
 
         if config and config.get("top_leaders"):
             top = config["top_leaders"]
-            if is_female: return top.get("female", "")
-            if is_male:   return top.get("male", "")
+            if is_female: return top.get("female") or ""
+            if is_male:   return top.get("male") or ""
+            return ""
+        if config and config.get("settings") and config["settings"].get("top_leaders"):
+            top = config["settings"]["top_leaders"]
+            if is_female: return top.get("female") or ""
+            if is_male:   return top.get("male") or ""
             return ""
 
-        # Fallback
-        if is_female: return "Vicky Enslin"
-        if is_male:   return "Gavin Enslin"
+        # No hardcoded global defaults — top leaders are org-specific.
         return ""
 
     except Exception as e:
         print(f"Error in get_top_leader_dynamic: {e}")
-        if "female" in gender.lower(): return "Vicky Enslin"
-        if "male" in gender.lower():   return "Gavin Enslin"
         return ""
     
 COLUMN_MAP: dict[str, str] = {
@@ -15106,16 +15867,65 @@ def _clean_col(col: str) -> str:
     return re.sub(r"\s+", " ", str(col).strip().lower())
 
 
-def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    rename, drop = {}, []
+def match_hierarchy_column(raw_col: str, hierarchy: list) -> Optional[str]:
+    """
+    Match a spreadsheet header to an org hierarchy level. Returns the hierarchy
+    key, or None if no match. Matching is case-insensitive and tolerates the
+    legacy G12 header styles: 'Leader @1', 'Leader at 1', 'Leader@1', 'leader1'.
+    """
+    raw = _clean_col(raw_col)
+    if not raw or not hierarchy:
+        return None
+
+    # Direct label / key matches first.
+    for h in hierarchy:
+        label = _clean_col(h.get("label", ""))
+        key = _clean_col(h.get("key", ""))
+        if raw == label or raw == key:
+            return h.get("key")
+
+    # Tolerated legacy styles: 'leader @N', 'leader at N', 'leader@N', 'leaderN'.
+    # Only treat as a leader-style header when the text contains 'leader'
+    # (or is purely the level number with an @ sign).
+    is_leader_style = "leader" in raw or "@" in raw
+    if not is_leader_style:
+        return None
+
+    # Pull the trailing number out of the header.
+    num_m = re.search(r"(\d+)", raw)
+    if not num_m:
+        return None
+    header_num = num_m.group(1)
+    for h in hierarchy:
+        level_num = re.search(r"(\d+)$", str(h.get("level", "")))
+        if not level_num:
+            continue
+        if header_num == level_num.group(1):
+            return h.get("key")
+    return None
+
+
+def _normalise_columns(df: pd.DataFrame, hierarchy: list = None) -> pd.DataFrame:
+    if hierarchy is None:
+        hierarchy = []
+    hierarchy_renames = {}
+    for col in df.columns:
+        key = match_hierarchy_column(col, hierarchy)
+        if key:
+            hierarchy_renames[col] = key
+
+    rename, drop = {}, {}
     for col in df.columns:
         key = _clean_col(col)
         mapped = COLUMN_MAP.get(key)
         if mapped is None or mapped == "_ignore":
-            drop.append(col)
+            if col in hierarchy_renames:
+                rename[col] = hierarchy_renames[col]
+            else:
+                drop[col] = True
         else:
             rename[col] = mapped
-    df = df.drop(columns=drop, errors="ignore")
+    df = df.drop(columns=list(drop), errors="ignore")
     df = df.rename(columns=rename)
     df = df.loc[:, ~df.columns.duplicated()]
     return df
@@ -15193,9 +16003,12 @@ async def _import_rows(
     default_organization: str,
     dry_run: bool,
     current_user: dict,
+    hierarchy: list = None,
 ) -> dict:
     now = datetime.utcnow()
     results = {"inserted": 0, "skipped": 0, "errors": 0, "dry_run": dry_run, "rows": []}
+    if hierarchy is None:
+        hierarchy = []
 
     # ── PASS 1: pre-assign a stable ObjectId to every row ─────────────────
     # These IDs are used as references in LeaderPath *before* anything is
@@ -15231,7 +16044,10 @@ async def _import_rows(
 
     # ── PASS 4: validate + insert ──────────────────────────────────────────
     for idx, row in df.iterrows():
-        row_num = idx + 2   # 1-indexed + header row
+        try:
+            row_num = int(idx) + 2   # 1-indexed + header row
+        except (TypeError, ValueError):
+            row_num = df.index.get_loc(idx) + 2
 
         name         = _safe_str(row.get("name",         "")).title()
         surname      = _safe_str(row.get("surname",      "")).title()
@@ -15306,6 +16122,16 @@ async def _import_rows(
             except Exception:
                 pass
 
+        # ── leaders: {hierarchy_key: name} from hierarchy-mapped columns ───
+        leaders = {}
+        for h in hierarchy:
+            hkey = h.get("key", "")
+            if not hkey:
+                continue
+            val = _safe_str(row.get(hkey, ""))
+            if val:
+                leaders[hkey] = val
+
         # ── build document ──────────────────────────────────────────────────
         person_doc = {
             "_id":          ObjectId(pre_assigned_id),  # stable pre-assigned ID
@@ -15322,10 +16148,17 @@ async def _import_rows(
             "Organization": org,
             "LeaderId":     leader_id_obj,              # ObjectId | None
             "LeaderPath":   leader_path,                # [ObjectId, ...] root-first
+            "leaders":      leaders,                    # org hierarchy keyed
             "DateCreated":  dc_str,
             "UpdatedAt":    now.isoformat(),
             "imported_by":  current_user.get("email", "unknown"),
         }
+
+        # Dual-write legacy flat fields (spec §9) for matching hierarchy keys.
+        for hkey, hval in leaders.items():
+            for flat_key in legacy_flat_keys(hkey):
+                person_doc[flat_key] = hval
+        person_doc["org_id"] = normalize_org_id(org) if org else (current_user.get("org_id") or "")
 
         if dry_run:
             results["inserted"] += 1
@@ -15403,6 +16236,7 @@ async def import_people_from_spreadsheet(
             df = pd.read_csv(
                 io.StringIO(raw_bytes.decode("utf-8-sig", errors="replace")),
                 dtype=str,
+                index_col=False,
             )
         else:
             raise HTTPException(
@@ -15417,8 +16251,11 @@ async def import_people_from_spreadsheet(
     if df.empty:
         raise HTTPException(status_code=400, detail="The file contains no data rows.")
 
+    # Derive the org's hierarchy to drive column mapping (§3.6).
+    hierarchy = get_org_hierarchy(await require_org(current_user))
+
     original_columns = list(df.columns)
-    df = _normalise_columns(df)
+    df = _normalise_columns(df, hierarchy=hierarchy)
     df = df.where(pd.notna(df), None)
 
     results = await _import_rows(
@@ -15426,6 +16263,7 @@ async def import_people_from_spreadsheet(
         default_organization=organization or "",
         dry_run=dry_run,
         current_user=current_user,
+        hierarchy=hierarchy,
     )
     
     if not dry_run:
@@ -15453,6 +16291,7 @@ async def import_people_from_spreadsheet(
 @app.post("/people/import/preview-columns")
 async def preview_spreadsheet_columns(
     file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
 ):
     filename  = file.filename or ""
     ext       = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -15466,6 +16305,7 @@ async def preview_spreadsheet_columns(
             df = pd.read_csv(
                 io.StringIO(raw_bytes.decode("utf-8-sig", errors="replace")),
                 dtype=str,
+                index_col=False,
             )
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported file type '.{ext}'.")
@@ -15474,18 +16314,24 @@ async def preview_spreadsheet_columns(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
+    # Derive hierarchy-driven leader column hints (§3.6).
+    hierarchy = get_org_hierarchy(await require_org(current_user))
+
     original_columns = list(df.columns)
     column_mapping = []
 
     for col in original_columns:
         key    = _clean_col(col)
         mapped = COLUMN_MAP.get(key)
-        if mapped is None or mapped == "_ignore":
+        hier_key = match_hierarchy_column(col, hierarchy)
+        if hier_key:
+            column_mapping.append({"original": col, "maps_to": hier_key, "status": "leader", "label": next((h.get("label") for h in hierarchy if h.get("key") == hier_key), "")})
+        elif mapped is None or mapped == "_ignore":
             column_mapping.append({"original": col, "maps_to": None, "status": "ignored"})
         else:
             column_mapping.append({"original": col, "maps_to": mapped, "status": "mapped"})
 
-    df_mapped = _normalise_columns(df)
+    df_mapped = _normalise_columns(df, hierarchy=hierarchy)
     df_mapped = df_mapped.where(pd.notna(df_mapped), None)
 
     raw_sample = df_mapped.head(3).to_dict(orient="records")
@@ -15501,6 +16347,7 @@ async def preview_spreadsheet_columns(
         "file":           filename,
         "total_rows":     len(df),
         "column_mapping": column_mapping,
+        "leader_hints":   [h["label"] for h in hierarchy],
         "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
         "sample_rows":    sample,
     }  

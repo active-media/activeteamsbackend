@@ -1,6 +1,7 @@
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,13 +25,26 @@ async def seed_organizations():
         {"name": "Victory Outreach", "tag": "Victory Outreach"},
         {"name": "New Life Fellowship", "tag": "New Life Fellowship"}
     ]
-    
+
     print(f"Seeding {len(test_orgs)} organizations into '{DB_NAME}.organizations'...")
-    
+
     for org in test_orgs:
         # Avoid duplicates by checking name
         existing = await org_collection.find_one({"name": org["name"]})
         if not existing:
+            slug = org["name"].lower().replace(" ", "-")
+            org["slug"] = slug
+            org["org_id"] = slug
+            org["is_setup"] = False
+            org["hierarchy"] = []
+            org["settings"] = {
+                "recurring_event_type": "Cells",
+                "top_leaders": {"male": None, "female": None},
+                "allows_create_event": True,
+                "allows_create_event_type": True,
+            }
+            org["created_at"] = datetime.utcnow().isoformat()
+            org["updated_at"] = datetime.utcnow().isoformat()
             await org_collection.insert_one(org)
             print(f"  [+] Added: {org['name']}")
         else:

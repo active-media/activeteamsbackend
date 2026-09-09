@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
-DB_NAME = "test-data-active-teams"
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/")
+DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 
 client = AsyncIOMotorClient(MONGO_URI)
 db = client[DB_NAME]
@@ -24,14 +24,28 @@ async def seed():
     config = {
         "_id": "active-teams",
         "org_name": "Active Teams",
+        "slug": "active-teams",
+        "is_setup": True,
         "events_collection": "Events",
         "people_collection": "People",
         "recurring_event_type": "Cells",
         "hierarchy": [
-            {"level": 1, "field": "leader1",   "label": "Leader @1"},
-            {"level": 2, "field": "leader12",  "label": "Leader @12"},
-            {"level": 3, "field": "leader144", "label": "Leader @144"}
+            {"key": "leader1",   "level": 1,   "field": "leader1",   "label": "Leader @1"},
+            {"key": "leader12",  "level": 12,  "field": "leader12",  "label": "Leader @12"},
+            {"key": "leader144", "level": 144, "field": "leader144", "label": "Leader @144"},
+            {"key": "leader1728","level": 1728,"field": "leader1728","label": "Leader @1728"}
         ],
+        "roles": [
+            {"key": "admin",      "label": "Admin",  "capabilities": ["admin"]},
+            {"key": "leader",     "label": "Leader", "capabilities": ["view_people", "manage_people", "create_events", "close_events", "view_stats", "checkin"]},
+            {"key": "user",       "label": "Member", "capabilities": ["checkin"]}
+        ],
+        "settings": {
+            "recurring_event_type": "Cells",
+            "top_leaders": {"male": "Gavin Enslin", "female": "Vicky Enslin"},
+            "allows_create_event": True,
+            "allows_create_event_type": True,
+        },
         "top_leaders": {"male": "Gavin Enslin", "female": "Vicky Enslin"},
         "allows_create_event": True,
         "allows_create_event_type": True,

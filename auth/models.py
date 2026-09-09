@@ -5,7 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from enum import Enum
-from typing import Optional, List, Literal, Dict
+from typing import Optional, List, Literal, Dict, Union
 from datetime import datetime, date
 from bson import ObjectId
 import uuid
@@ -139,6 +139,8 @@ class EventBase(BaseModel):
     eventLeaderEmail: Optional[str] = None  
     leader1: Optional[str] = None
     leader12: Optional[str] = None
+    leaders: Optional[Union[Dict[str, str], list]] = None
+    hierarchy_leaders: Optional[Dict[str, str]] = None
     is_active: bool = True
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
@@ -150,6 +152,8 @@ class EventCreate(EventBase):
 class EventUpdate(BaseModel):
     eventType: Optional[str] = None
     eventName: Optional[str] = None
+    leaders: Optional[Union[Dict[str, str], list]] = None
+    hierarchy_leaders: Optional[Dict[str, str]] = None
     date: Optional[datetime] = None
     time: Optional[str] = None
     recurring_day: Optional[List[str]] = None
@@ -338,6 +342,7 @@ class UserListResponse(BaseModel):
     leader12: Optional[str] = None
     leader144: Optional[str] = None
     leader1728: Optional[str] = None
+    leaders: Optional[Union[Dict[str, str], List]] = None
     stage: Optional[str] = None
     Organization: Optional[str] = None  
     created_at: Optional[datetime] = None
@@ -378,6 +383,7 @@ class LeaderStatusResponse(BaseModel):
     isLeader: bool
     hasCell: bool
     canAccessEvents: bool
+    levels: list[dict] = []
 
 class UserCreater(BaseModel):
     name: str
@@ -392,6 +398,8 @@ class UserCreater(BaseModel):
     leader12: Optional[str] = None
     leader144: Optional[str] = None
     leader1728: Optional[str] = None
+    leaders: Optional[Union[Dict[str, str], List]] = None
+    hierarchy_leaders: Optional[Union[Dict[str, str], List]] = None
     stage: Optional[str] = "Win"
     role: str = "user"
     organization: Optional[str] = None 
