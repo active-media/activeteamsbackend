@@ -10198,6 +10198,231 @@ async def get_user_tasks(
         logging.error(f"Error in get_user_tasks: {e}", exc_info=True)
         return {"error": str(e), "status": "failed"}
 
+# ====================== GET /tasks/team (TEAM TASK VIEWING FOR LEADERS) ======================
+
+@app.get("/tasks/team")
+async def get_team_tasks(
+    leader_email: str = Query(..., description="Email of the leader requesting team tasks"),
+    person_email: Optional[str] = Query(None, description="Filter to this person + their subordinates"),
+    start_date: Optional[str] = Query(None, description="ISO date string, filter tasks from this date"),
+    end_date: Optional[str] = Query(None, description="ISO date string, filter tasks up to this date"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get tasks for a leader's team members (full hierarchy).
+    Supports optional person drill-down and date range filtering.
+    """
+    try:
+        org_name = None
+        for key in current_user.keys():
+            if key.lower() == "organization":
+                org_name = current_user[key]
+                break
+
+        if not org_name:
+            raise HTTPException(status_code=403, detail="You don't have access to this church's data.")
+
+        timezone = pytz.timezone("Africa/Johannesburg")
+
+        # ── Helper: find direct reports by LeaderPath (ObjectId-based) ─────
+        async def _find_direct_reports_by_path(leader_person_id: ObjectId) -> list:
+            """Find people whose LeaderPath contains the leader's ObjectId."""
+            people = await people_collection.find(
+                {"LeaderPath": leader_person_id},
+                {"_id": 1, "Email": 1}
+            ).to_list(length=None)
+            return [p for p in people if p.get("Email")]
+
+        # ── Helper: recursively collect all subordinates ───────────────────
+        async def _collect_all_subordinates(leader_person_id: ObjectId) -> set:
+            """Recursively collect all subordinate emails under a leader."""
+            all_emails = set()
+            queue = [leader_person_id]
+
+            while queue:
+                current_id = queue.pop(0)
+                directs = await _find_direct_reports_by_path(current_id)
+                for p in directs:
+                    email = p["Email"].strip().lower()
+                    if email not in all_emails:
+                        all_emails.add(email)
+                        queue.append(p["_id"])
+            return all_emails
+
+        leader_email_lower = leader_email.strip().lower()
+
+        # ── Find the leader's person record ────────────────────────────────
+        leader_person = await people_collection.find_one(
+            {"Email": {"$regex": f"^{re.escape(leader_email_lower)}$", "$options": "i"}}
+        )
+
+        team_emails = set()
+
+        if leader_person:
+            leader_person_id = leader_person.get("_id")
+            leader_name = f"{leader_person.get('Name', '')} {leader_person.get('Surname', '')}".strip()
+
+            # Method 1: LeaderPath (modern ObjectId-based hierarchy)
+            if leader_person_id:
+                path_based = await _collect_all_subordinates(leader_person_id)
+                team_emails.update(path_based)
+
+            # Method 2: Legacy name-based hierarchy (Leader @1, @12, @144, @1728)
+            if leader_name:
+                legacy_query = {"$or": [
+                    {"Leader @1": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"Leader @12": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"Leader @144": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"Leader @1728": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"leader1": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"leader12": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"leader144": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                    {"leader1728": {"$regex": f"^{re.escape(leader_name)}$", "$options": "i"}},
+                ]}
+                legacy_cursor = people_collection.find(
+                    legacy_query,
+                    {"_id": 1, "Email": 1, "Name": 1, "Surname": 1}
+                )
+                async for p in legacy_cursor:
+                    email = p.get("Email", "").strip().lower()
+                    if email and email not in team_emails:
+                        team_emails.add(email)
+                        # Recursively find subordinates of this person too
+                        if p.get("_id"):
+                            sub_emails = await _collect_all_subordinates(p["_id"])
+                            team_emails.update(sub_emails)
+
+        # ── If person_email is provided, narrow to that person + subordinates ─
+        if person_email and leader_person:
+            person_email_lower = person_email.strip().lower()
+
+            person_target = await people_collection.find_one(
+                {"Email": {"$regex": f"^{re.escape(person_email_lower)}$", "$options": "i"}}
+            )
+
+            if person_target:
+                narrow_emails = {person_email_lower}
+                # Recursively get all subordinates of this person
+                if person_target.get("_id"):
+                    sub_emails = await _collect_all_subordinates(person_target["_id"])
+                    narrow_emails.update(sub_emails)
+                team_emails = team_emails.intersection(narrow_emails)
+            else:
+                # Person not found — still include them in case they have tasks
+                team_emails = {person_email_lower}
+
+        # ── Ensure leader_email is always in the team ───────────────────────
+        team_emails.add(leader_email_lower)
+
+        if not team_emails:
+            return {
+                "leader_email": leader_email,
+                "tasks": [],
+                "total": 0,
+                "status": "success"
+            }
+
+        # ── Build task query ────────────────────────────────────────────────
+        email_conditions = []
+        for email in team_emails:
+            regex = {"$regex": f"^{re.escape(email)}$", "$options": "i"}
+            email_conditions.append({"assignedfor": regex})
+            email_conditions.append({"assigned_to_email": regex})
+
+        query = {
+            "Organization": org_name,
+            "$or": email_conditions
+        }
+
+        # ── Apply date filters on followup_date ─────────────────────────────
+        if start_date or end_date:
+            date_filter = {}
+            if start_date:
+                try:
+                    start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+                    date_filter["$gte"] = start_dt
+                except ValueError:
+                    pass
+            if end_date:
+                try:
+                    end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                    date_filter["$lte"] = end_dt
+                except ValueError:
+                    pass
+            if date_filter:
+                query["followup_date"] = date_filter
+
+        # ── Fetch tasks ─────────────────────────────────────────────────────
+        cursor = tasks_collection.find(query).sort("followup_date", -1).limit(500)
+        all_tasks = []
+
+        async for task in cursor:
+            task_date_raw = task.get("followup_date")
+            task_datetime = None
+
+            if task_date_raw:
+                try:
+                    if isinstance(task_date_raw, datetime):
+                        task_datetime = task_date_raw.astimezone(timezone)
+                    elif isinstance(task_date_raw, str):
+                        task_datetime = datetime.fromisoformat(
+                            task_date_raw.replace("Z", "+00:00")
+                        ).astimezone(timezone)
+                    elif isinstance(task_date_raw, dict) and "$date" in task_date_raw:
+                        task_datetime = datetime.fromisoformat(
+                            str(task_date_raw["$date"]).replace("Z", "+00:00")
+                        ).astimezone(timezone)
+                except (ValueError, TypeError, AttributeError):
+                    task_datetime = None
+
+            task_type_raw = task.get("taskType", "")
+            task_type_lower = task_type_raw.lower()
+
+            is_consolidation = bool(task.get("is_consolidation_task")) or task_type_lower == "consolidation"
+            is_new_person = (
+                task_type_lower in ("service follow up", "new_person", "new person")
+                or bool(task.get("is_new_person_task"))
+            )
+
+            all_tasks.append({
+                "_id": str(task["_id"]),
+                "name": task.get("name", "Unnamed Task"),
+                "taskType": task_type_raw,
+                "followup_date": task_datetime.isoformat() if task_datetime else None,
+                "status": task.get("status", "Open"),
+                "assignedfor": task.get("assignedfor", ""),
+                "assigned_to_email": task.get("assigned_to_email", ""),
+                "created_by_email": task.get("created_by_email", ""),
+                "created_by_name": task.get("created_by_name", ""),
+                "leader_name": task.get("leader_name", ""),
+                "leader_assigned": task.get("leader_assigned", ""),
+                "type": task.get("type", "call"),
+                "contacted_person": task.get("contacted_person", {}),
+                "isRecurring": bool(task.get("recurring_day")),
+                "is_consolidation_task": is_consolidation,
+                "is_new_person_task": is_new_person,
+                "consolidation_source": task.get("consolidation_source", "manual"),
+                "source_display": task.get("source_display", "Manual"),
+                "createdAt": task.get("createdAt").isoformat() if isinstance(task.get("createdAt"), datetime) else str(task.get("createdAt", "")),
+                "completedAt": task.get("completedAt").isoformat() if isinstance(task.get("completedAt"), datetime) else str(task.get("completedAt", "")),
+                "decision_date": task.get("decision_date", ""),
+            })
+
+        all_tasks.sort(key=lambda t: t["followup_date"] or "", reverse=True)
+
+        return {
+            "leader_email": leader_email,
+            "person_email": person_email,
+            "team_size": len(team_emails),
+            "total": len(all_tasks),
+            "tasks": all_tasks,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logging.error(f"Error in get_team_tasks: {e}", exc_info=True)
+        return {"error": str(e), "status": "failed"}
+
 # ====================== GET /tasktypes (NOW FETCHES BY ORGANIZATION) ======================
 
 @app.get("/tasktypes", response_model=List[TaskTypeOut])
