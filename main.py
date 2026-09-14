@@ -18,6 +18,7 @@ from database import db, events_collection, people_collection, users_collection,
 from bson import ObjectId
 from supabase_helpers.supabase_client import supabase
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
+from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
 from auth.email_utils import send_reset_email
 from typing import List, Optional, Dict
 from collections import Counter
@@ -41,6 +42,17 @@ from supabase_helpers.supabase_stats import (
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
 )
+from supabase_helpers.twelve_tasks import sb_get_twelve_tasks_report
+from supabase_helpers.service_targets import (
+    sb_upsert_service_target,
+    sb_delete_service_target,
+    sb_list_service_targets,
+    sb_get_service_target_report,
+)
+from supabase_helpers.school_cell_report import (
+    sb_get_school_cell_report,
+    build_school_cell_excel,
+)
 from supabase_helpers.service_checkin_routes import router as service_checkin_router
 from fastapi.responses import StreamingResponse
 from events import router as events_router
@@ -52,6 +64,7 @@ from admin import auto_reactivate_expired_events as admin_auto_reactivate_expire
 
 from contextlib import asynccontextmanager
 from daily_tasks import router as tasks_router
+from people import router as people_router
 from task_types import router as task_types_router
 
 oauth2_scheme = HTTPBearer()
@@ -248,6 +261,12 @@ async def user_has_cell(user_email: str) -> bool:
         return bool(sample)
     except Exception:
         return False
+
+@app.post("/check-user-cell")
+async def check_user_cell(email: str = Body(...)):
+    """Check if a user has a cell event (alternative to direct Supabase query)."""
+    result = user_has_cell(email)
+    return {"hasCell": result}
 
 
 def build_event_object(event: dict, timezone, today_date: date) -> dict:
@@ -934,6 +953,7 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else None
+            current_data = people_cache["data"].copy() if people_cache["data"] else None
             background_tasks.add_task(background_refresh_people_cache, current_data)
  
             return {
@@ -1052,6 +1072,50 @@ async def reset_password(data: ResetPasswordRequest):
         "token_type": "bearer"
     }
 
+@app.post("/change-password")
+async def change_password(payload: dict = Body(...)):
+    """Change password for the current user using access token."""
+    token = payload.get("token")
+    new_password = payload.get("new_password")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Missing token or new password")
+    
+    try:
+        # Decode the token to get user info
+        payload_data = decode_access_token(token)
+        user_id = payload_data.get("user_id")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Invalid token payload")
+        
+        hashed_pw = hash_password(new_password)
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found or password unchanged")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        access_token = create_access_token(
+            {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+            expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+        )
+        
+        logger.info(f"Password changed successfully for {user['email']}")
+        return {
+            "message": "Password has been changed successfully.",
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change password error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
 # ---------------- Refresh Token ----------------
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
@@ -1069,7 +1133,10 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         }
     except HTTPException:
         raise
+        raise
     except Exception as e:
+        logger.warning(f"Refresh token invalid/expired: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
         logger.warning(f"Refresh token invalid/expired: {e}")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
@@ -1168,11 +1235,7 @@ async def login(user: UserLogin):
     except Exception as e:
         logger.error(f"Login error for {user.email}: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    
 
-
-# ---------------- Logout ----------------
-@app.post("/logout")
 async def logout(user_id: str = Body(..., embed=True)):
     await users_collection.update_one(
         {"_id": ObjectId(user_id)},
@@ -1486,6 +1549,7 @@ def generate_current_week_instances(event: dict) -> list:
                 "_is_overdue": current_date < today and event_status == "incomplete",
                 "is_recurring": True,
                 "week_identifier": current_date.strftime("%G-W%V"),
+                "week_identifier": current_date.strftime("%G-W%V"),
                 "original_event_id": str(event.get("_id"))
             }
             
@@ -1676,6 +1740,8 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 event_data["hasPersonSteps"] = False
                 event_data["isTicketed"] = False
                 event_data["status"] = "open"
+
+        event_data["is_school_cell"] = event_data.get("isSchoolCell", False)
 
         print(f"Using day value from frontend: {event_data.get('day')}")
 
@@ -1933,6 +1999,7 @@ async def get_cell_events(
     userSurname: Optional[str] = Query(None),
     must_paginate: Optional[bool] = Query(True)
 ):
+    pass
     pass
 
 
@@ -3037,6 +3104,45 @@ async def lifespan(app: FastAPI):
     yield
 
     scheduler.shutdown()
+
+
+app.router.lifespan_context = lifespan
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://teams.theactivechurch.org",
+        "http://localhost:8000",
+        "http://localhost:5173",
+        "https://new-active-teams.netlify.app",
+        "https://activeteams.netlify.app",
+        "https://activeteamsbackend2.0.onrender.com"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(events_router)
+app.include_router(tasks_router)
+app.include_router(task_types_router)
+app.include_router(service_checkin_router)
+app.include_router(supreme_admin_router)
+app.include_router(admin_router)
+app.include_router(admin_event_type_router)
+app.include_router(admin_task_type_router)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 
 
 app.router.lifespan_context = lifespan
@@ -7660,276 +7766,6 @@ async def change_password(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
-# PEOPLE ENDPOINTS
-@app.get("/people")
-async def get_people(
-    page: int = Query(1, ge=1),
-    perPage: int = Query(50, ge=1, le=200),  # Changed default to 50, max 200
-    name: Optional[str] = None,
-    gender: Optional[str] = None,
-    dob: Optional[str] = None,
-    location: Optional[str] = None,
-    leader: Optional[str] = None,
-    stage: Optional[str] = None,
-    current_user: dict = Depends(get_current_user)
-):
-    try:
-        org_id = (
-            current_user.get("org_id") or
-            current_user.get("organization", "").lower().replace(" ", "-") or
-            "active-teams"
-        )
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
-
-        # Build organization conditions
-        org_conditions = [
-            {"org_id": org_id},
-            {"Org_id": {"$regex": f"^{re.escape(org_id)}$", "$options": "i"}},
-        ]
-
-        if organization:
-            org_conditions.append({"Organization": {"$regex": re.escape(organization), "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": re.escape(organization), "$options": "i"}})
-            org_id_from_name = organization.lower().replace(" ", "-")
-            if org_id_from_name != org_id:
-                org_conditions.append({"org_id": org_id_from_name})
-
-        org_name_from_id = org_id.replace("-", " ")
-        if org_name_from_id != org_id:
-            org_conditions.append({"Organization": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
-            org_conditions.append({"Organisation": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
-            org_conditions.append({"org_id": {"$regex": re.escape(org_name_from_id), "$options": "i"}})
-
-        if org_id == "active-teams":
-            org_conditions.append({"Organisation": {"$regex": "active church", "$options": "i"}})
-            org_conditions.append({"Organization": {"$regex": "active church", "$options": "i"}})
-            org_conditions.append({"org_id": {"$exists": False}})
-
-        query = {"$or": org_conditions}
-
-        # Build search filters
-        if name:
-            name_parts = name.strip().split()
-            full_query = name.strip()
-            query["$and"] = query.get("$and", [])
-            if len(name_parts) >= 2:
-                # Multi-word: match if all parts are in Name or all in Surname, or split between Name/Surname, or full query matches either field
-                part_regexes = [
-                    {"Name": {"$regex": re.escape(part), "$options": "i"}} for part in name_parts
-                ]
-                surname_regexes = [
-                    {"Surname": {"$regex": re.escape(part), "$options": "i"}} for part in name_parts
-                ]
-                query["$and"].append({
-                    "$or": [
-                        # All parts in Name
-                        {"$and": part_regexes},
-                        # All parts in Surname
-                        {"$and": surname_regexes},
-                        # Each part split between Name and Surname (order-insensitive, pairwise)
-                        *[
-                            {"$and": [
-                                {"Name": {"$regex": re.escape(part1), "$options": "i"}},
-                                {"Surname": {"$regex": re.escape(part2), "$options": "i"}}
-                            ]}
-                            for i, part1 in enumerate(name_parts) for j, part2 in enumerate(name_parts) if i != j
-                        ],
-                        # Full query in Name or Surname
-                        {"Name": {"$regex": re.escape(full_query), "$options": "i"}},
-                        {"Surname": {"$regex": re.escape(full_query), "$options": "i"}}
-                    ]
-                })
-            else:
-                # Single part: match either Name or Surname
-                part = name_parts[0]
-                query["$and"].append({
-                    "$or": [
-                        {"Name": {"$regex": re.escape(part), "$options": "i"}},
-                        {"Surname": {"$regex": re.escape(part), "$options": "i"}}
-                    ]
-                })
-
-        if gender:
-            query["Gender"] = {"$regex": re.escape(gender), "$options": "i"}
-
-        if dob:
-            query["Birthday"] = dob
-
-        if location:
-            query["Address"] = {"$regex": re.escape(location), "$options": "i"}
-
-        if leader:
-            leader_conditions = [
-                {"Leader @1": {"$regex": re.escape(leader), "$options": "i"}},
-                {"Leader @12": {"$regex": re.escape(leader), "$options": "i"}},
-                {"Leader @144": {"$regex": re.escape(leader), "$options": "i"}},
-                {"Leader @1728": {"$regex": re.escape(leader), "$options": "i"}}
-            ]
-            query["$and"] = query.get("$and", [])
-            query["$and"].append({"$or": leader_conditions})
-
-        if stage:
-            query["Stage"] = {"$regex": re.escape(stage), "$options": "i"}
-
-        # Get total count first (using count_documents which is fast)
-        total_count = await people_collection.count_documents(query)
-        
-        # Calculate pagination
-        skip = (page - 1) * perPage
-        
-        # Use aggregation for better performance
-        pipeline = [
-            {"$match": query},
-            {"$skip": skip},
-            {"$limit": perPage},
-            {"$project": {
-                "_id": 1,
-                "Name": 1,
-                "Surname": 1,
-                "Number": 1,
-                "Email": 1,
-                "Address": 1,
-                "Gender": 1,
-                "Birthday": 1,
-                "InvitedBy": 1,
-                "Stage": 1,
-                "org_id": 1,
-                "Organization": 1,
-                "LeaderId": 1,
-                "LeaderPath": 1,
-                "DateCreated": 1,
-                "UpdatedAt": 1
-            }}
-        ]
-        
-        cursor = people_collection.aggregate(pipeline)
-        people_list = []
-        async for person in cursor:
-            people_list.append(person)
-        
-        # Get leader names efficiently with a single query
-        all_leader_ids = set()
-        for person in people_list:
-            leader_path = person.get("LeaderPath", [])
-            for lid in leader_path:
-                if lid:
-                    try:
-                        if isinstance(lid, ObjectId):
-                            all_leader_ids.add(lid)
-                        else:
-                            all_leader_ids.add(ObjectId(str(lid)))
-                    except Exception:
-                        pass
-
-        name_map = {}
-        if all_leader_ids:
-            # Only fetch the leaders we need, with a timeout
-            try:
-                leader_cursor = people_collection.find(
-                    {"_id": {"$in": list(all_leader_ids)}},
-                    {"_id": 1, "Name": 1, "Surname": 1}
-                )
-                async for leader_doc in leader_cursor:
-                    name_map[leader_doc["_id"]] = f"{leader_doc.get('Name', '')} {leader_doc.get('Surname', '')}".strip()
-            except Exception as e:
-                print(f"Error fetching leaders: {e}")
-
-        def resolve_leader(lid):
-            if not lid:
-                return ""
-            try:
-                if isinstance(lid, ObjectId):
-                    return name_map.get(lid, "")
-                return name_map.get(ObjectId(str(lid)), "")
-            except Exception:
-                return ""
-
-        # --- Enhanced scoring for name/surname search ---
-        def score_person(person, name_query):
-            if not name_query:
-                return 0
-            name = (person.get("Name") or "").strip().lower()
-            surname = (person.get("Surname") or "").strip().lower()
-            full_name = f"{name} {surname}".strip()
-            query = name_query.strip().lower()
-            parts = query.split()
-            score = 0
-            # Exact full name match
-            if full_name == query:
-                score += 100
-            # Both parts match (order-insensitive)
-            elif len(parts) == 2 and ((name == parts[0] and surname == parts[1]) or (name == parts[1] and surname == parts[0])):
-                score += 80
-            # Name and surname partial matches
-            if all(part in full_name for part in parts):
-                score += 40
-            # Individual part matches
-            for part in parts:
-                if part == name or part == surname:
-                    score += 20
-                elif part in name or part in surname:
-                    score += 10
-            return score
-
-        # Build final response with scoring and sorting
-        final_list = []
-        for person in people_list:
-            leader_path = person.get("LeaderPath", [])
-            leader1 = resolve_leader(leader_path[0]) if len(leader_path) > 0 else ""
-            leader12 = resolve_leader(leader_path[1]) if len(leader_path) > 1 else ""
-            leader144 = resolve_leader(leader_path[2]) if len(leader_path) > 2 else ""
-            leader1728 = resolve_leader(leader_path[3]) if len(leader_path) > 3 else ""
-            full_name = f"{person.get('Name', '')} {person.get('Surname', '')}".strip()
-
-            mapped = {
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Number": person.get("Number", ""),
-                "Email": person.get("Email", ""),
-                "Address": person.get("Address", ""),
-                "Gender": person.get("Gender", ""),
-                "Birthday": person.get("Birthday", ""),
-                "InvitedBy": person.get("InvitedBy", ""),
-                "Stage": person.get("Stage", "Win"),
-                "org_id": person.get("org_id") or person.get("Org_id", ""),
-                "Organization": person.get("Organization") or person.get("Organisation", ""),
-                "LeaderId": str(person["LeaderId"]) if person.get("LeaderId") else "",
-                "LeaderPath": [str(lid) for lid in leader_path],
-                "Date Created": person.get("DateCreated") or person.get("Date Created") or datetime.utcnow().isoformat(),
-                "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
-                "Leader @1": leader1,
-                "Leader @12": leader12,
-                "Leader @144": leader144,
-                "Leader @1728": leader1728,
-                "FullName": full_name,
-            }
-            # Add score for sorting if name search is used
-            if name:
-                mapped["_score"] = score_person(person, name)
-            final_list.append(mapped)
-
-        # Sort by score if searching by name
-        if name:
-            final_list.sort(key=lambda x: x.get("_score", 0), reverse=True)
-            for f in final_list:
-                if "_score" in f:
-                    del f["_score"]
-
-        return {
-            "page": page,
-            "perPage": perPage,
-            "total": total_count,
-            "total_pages": (total_count + perPage - 1) // perPage,
-            "results": final_list
-        }
-        
-    except Exception as e:
-        print(f"Error in get_people: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error fetching people: {str(e)}")
 
 # ========== EVENT-SPECIFIC PEOPLE ENDPOINT - RETURNS ALL PEOPLE WITH COMPLETE FIELDS ==========
 @app.get("/events/{event_id}/all-people-for-attendance")
@@ -8341,210 +8177,6 @@ async def search_people(
     except Exception as e:
         return {"success": False, "error": str(e), "results": []}
 
-@app.post("/people")
-async def create_person(
-    person_data: dict = Body(...),
-    current_user: dict = Depends(get_current_user)
-): 
-    try:
-        org_id = current_user.get("org_id") or (
-            current_user.get("Organization", "").lower().replace(" ", "-")
-        ) or "active-teams"
-        org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
-        organization = current_user.get("Organization") or current_user.get("organization", "")
-
-        # ── Resolve LeaderPath ──────────────────────────────────────────
-        leader_path: list = []
-        leader_id_obj     = None
-
-        raw_leader = (
-            person_data.get("leaderId") or
-            person_data.get("leader_id") or
-            person_data.get("invitedById") or
-            None
-        )
-
-        if raw_leader:
-            try:
-                leader_id_obj = ObjectId(str(raw_leader))
-            except Exception:
-                leader_id_obj = None
-
-        # Always re-fetch inviter from DB to get their FULL LeaderPath.
-        # LeaderPath is root-first: [root_id, ..., direct_parent_id]
-        # New person's path = inviter's ancestors + inviter (inviter is their direct leader)
-        if leader_id_obj:
-            try:
-                inviter_doc = await people_collection.find_one(
-                    {"_id": leader_id_obj},
-                    {"_id": 1, "LeaderPath": 1}
-                )
-                if inviter_doc:
-                    inv_own_path = [
-                        ObjectId(str(x)) for x in inviter_doc.get("LeaderPath", []) if x
-                    ]
-                    # Root-first order: [root, ..., inviter's_parent, inviter]
-                    leader_path = inv_own_path + [leader_id_obj]
-                else:
-                    leader_path = [leader_id_obj]
-            except Exception as e:
-                print(f"Warning: could not fetch inviter LeaderPath: {e}")
-                leader_path = [leader_id_obj]
-        else:
-            # Fallback: resolve by name if no ObjectId supplied
-            if person_data.get("invitedBy"):
-                inviter_name = person_data["invitedBy"].strip()
-                if inviter_name:
-                    parts = inviter_name.split()
-                    first = parts[0] if parts else ""
-                    last  = " ".join(parts[1:]) if len(parts) > 1 else ""
-
-                    inviter_query = {
-                        "Name": {"$regex": f"^{re.escape(first)}$", "$options": "i"}
-                    }
-                    if last:
-                        inviter_query["Surname"] = {
-                            "$regex": f"^{re.escape(last)}$", "$options": "i"
-                        }
-
-                    inviter = await people_collection.find_one(
-                        inviter_query,
-                        {"_id": 1, "LeaderPath": 1}
-                    )
-                    if inviter:
-                        inv_id       = inviter["_id"]
-                        inv_own_path = [
-                            ObjectId(str(x)) for x in inviter.get("LeaderPath", []) if x
-                        ]
-                        # Root-first: ancestors + inviter
-                        leader_path   = inv_own_path + [inv_id]
-                        leader_id_obj = inv_id
-
-        # ── Validate required fields ────────────────────────────────────
-        name    = (person_data.get("name")    or "").strip()
-        surname = (person_data.get("surname") or "").strip()
-        email   = (person_data.get("email")   or "").strip().lower()
-
-        if not name or not surname:
-            raise HTTPException(status_code=400, detail="name and surname are required")
-
-        if email:
-            existing = await people_collection.find_one(
-                {"Email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}}
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"A person with email '{email}' already exists."
-                )
-        # ── Surgical in-memory cache update — no full refresh ───────────
-        # Only touch the one record that changed. This is instant and
-        # avoids triggering a full background reload on every PATCH.
-        if people_cache.get("data"):
-            for i, p in enumerate(people_cache["data"]):
-                if str(p.get("_id")) == person_id:
-                    # Apply every changed DB field directly onto the cached doc
-                    for db_field, new_val in set_fields.items():
-                        people_cache["data"][i][db_field] = new_val
-                    # Keep the resolved leaders array in sync too
-                    people_cache["data"][i]["leaders"] = person_out.get("leaders", [])
-                    break
-
-        return {
-            "success": True,
-            "message": "Person updated successfully",
-            "person":  person_out,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating person {person_id}: {e}")
-        import traceback; traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
-
-@app.delete("/people/{person_id}")
-async def delete_person(
-    person_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    try:
-        if not ObjectId.is_valid(person_id):
-            raise HTTPException(status_code=400, detail="Invalid person ID")
- 
-        result = await people_collection.delete_one({"_id": ObjectId(person_id)})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Person not found")
- 
-        asyncio.create_task(
-            invalidate_people_cache("delete", {"person_id": person_id})
-        )
-        return {"success": True, "message": "Person deleted successfully"}
- 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/people/leaders-only")
-async def get_leaders_only():
-    """
-    Get only people who are leaders (have people under them)
-    Optimized for signup form where we mostly need leaders
-    """
-    try:
-        # Find people who appear as leaders in other people's records
-        pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"Leader @1": {"$exists": True, "$ne": ""}},
-                        {"Leader @12": {"$exists": True, "$ne": ""}},
-                        {"Leader @144": {"$exists": True, "$ne": ""}},
-                        {"Leader @1728": {"$exists": True, "$ne": ""}}
-                    ]
-                }
-            },
-            {
-                "$project": {
-                    "_id": 1,
-                    "Name": 1,
-                    "Surname": 1,
-                    "Email": 1,
-                    "Phone": 1,
-                    "Leader @1": 1,
-                    "Leader @12": 1,
-                    "Leader @144": 1,
-                    "Leader @1728": 1
-                }
-            },
-            {"$limit": 500}  # Leaders only, so smaller set
-        ]
-       
-        cursor = people_collection.aggregate(pipeline)
-        leaders = []
-       
-        async for person in cursor:
-            leaders.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
-            })
-       
-        return {"leaders": leaders}
-       
-    except Exception as e:
-        print(f"Error fetching leaders: {e}")
-        return {"leaders": []}
-
-
 # -------------------------
 # Tasks Management
 # -------------------------
@@ -8950,64 +8582,6 @@ async def delete_person(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/people/leaders-only")
-async def get_leaders_only():
-    """
-    Get only people who are leaders (have people under them)
-    Optimized for signup form where we mostly need leaders
-    """
-    try:
-        # Find people who appear as leaders in other people's records
-        pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"Leader @1": {"$exists": True, "$ne": ""}},
-                        {"Leader @12": {"$exists": True, "$ne": ""}},
-                        {"Leader @144": {"$exists": True, "$ne": ""}},
-                        {"Leader @1728": {"$exists": True, "$ne": ""}}
-                    ]
-                }
-            },
-            {
-                "$project": {
-                    "_id": 1,
-                    "Name": 1,
-                    "Surname": 1,
-                    "Email": 1,
-                    "Phone": 1,
-                    "Leader @1": 1,
-                    "Leader @12": 1,
-                    "Leader @144": 1,
-                    "Leader @1728": 1
-                }
-            },
-            {"$limit": 500}  # Leaders only, so smaller set
-        ]
-       
-        cursor = people_collection.aggregate(pipeline)
-        leaders = []
-       
-        async for person in cursor:
-            leaders.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
-            })
-       
-        return {"leaders": leaders}
-       
-    except Exception as e:
-        print(f"Error fetching leaders: {e}")
-        return {"leaders": []}
 
 
 # -------------------------
@@ -10847,6 +10421,22 @@ async def create_consolidation(
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
 
+
+        return {
+            "success": True,
+            "message": "Consolidation created successfully",
+            "consolidation_id": consolidation_id,
+            "person_id": person_id,
+            "task_id": task_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating consolidation: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -10857,6 +10447,19 @@ async def create_consolidation(
 #   task_types.py   →  /tasktypes  (GET / POST / PUT / DELETE)
 # Both routers are registered in include_router() above.
 # ─────────────────────────────────────────────────────────────────────────────
+# @app.get("/stats/dashboard-comprehensive")
+# async def get_dashboard_comprehensive(
+#     period: str = Query(
+#         "today",
+#         pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"
+#     ),
+#     limit: int = Query(100, ge=1, le=1000),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         org_name = current_user.get("Organization")
+#         if not org_name:
+#             raise HTTPException(status_code=403, detail="Organization not associated with user")
 # @app.get("/stats/dashboard-comprehensive")
 # async def get_dashboard_comprehensive(
 #     period: str = Query(
@@ -10891,7 +10494,32 @@ async def create_consolidation(
 #             "source_display": source_display,
 #             "task_id": task_id,
 #         }
+#         # 4. Build consolidation record
+#         consolidation_record = {
+#             "id": consolidation_id,
+#             "person_id": person_id,
+#             "person_name": consolidation.person_name,
+#             "person_surname": consolidation.person_surname,
+#             "person_email": person_email,
+#             "person_phone": consolidation.person_phone or "",
+#             "decision_type": consolidation.decision_type.value,
+#             "decision_display_name": decision_display_name,
+#             "assigned_to": consolidation.assigned_to,
+#             "assigned_to_email": leader_email,
+#             "created_at": datetime.utcnow().isoformat(),
+#             "type": "consolidation",
+#             "status": "active",
+#             "notes": consolidation.notes,
+#             "source": consolidation_source,
+#             "source_display": source_display,
+#             "task_id": task_id,
+#         }
 
+#         # 5. Add to event — strip date suffix before ObjectId lookup
+#         if consolidation.event_id:
+#             parts = consolidation.event_id.split("_")
+#             base_event_id = parts[0]
+#             instance_date = parts[1] if len(parts) > 1 else None
 #         # 5. Add to event — strip date suffix before ObjectId lookup
 #         if consolidation.event_id:
 #             parts = consolidation.event_id.split("_")
@@ -10901,7 +10529,14 @@ async def create_consolidation(
 #             if ObjectId.is_valid(base_event_id):
 #                 event_for_cons = await events_collection.find_one({"_id": ObjectId(base_event_id)})
 #                 is_recurring_event = bool(event_for_cons.get("recurring_day")) if event_for_cons else False
+#             if ObjectId.is_valid(base_event_id):
+#                 event_for_cons = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+#                 is_recurring_event = bool(event_for_cons.get("recurring_day")) if event_for_cons else False
 
+#                 if is_recurring_event:
+#                     if not instance_date:
+#                         timezone = pytz.timezone("Africa/Johannesburg")
+#                         instance_date = datetime.now(timezone).date().isoformat()
 #                 if is_recurring_event:
 #                     if not instance_date:
 #                         timezone = pytz.timezone("Africa/Johannesburg")
@@ -10924,7 +10559,33 @@ async def create_consolidation(
 #                         }
 #                     )
 #                     print(f"Added consolidation to non-recurring event root")
+#                     await events_collection.update_one(
+#                         {"_id": ObjectId(base_event_id)},
+#                         {
+#                             "$push": {f"attendance.{instance_date}.consolidations": consolidation_record},
+#                             "$set": {"updated_at": datetime.utcnow().isoformat()}
+#                         }
+#                     )
+#                     print(f"Added consolidation to recurring event attendance[{instance_date}]")
+#                 else:
+#                     await events_collection.update_one(
+#                         {"_id": ObjectId(base_event_id)},
+#                         {
+#                             "$push": {"consolidations": consolidation_record},
+#                             "$set": {"updated_at": datetime.utcnow().isoformat()}
+#                         }
+#                     )
+#                     print(f"Added consolidation to non-recurring event root")
 
+#                 # Verify write
+#                 verification = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+#                 if is_recurring_event:
+#                     att = verification.get("attendance", {}).get(instance_date, {})
+#                     print(f"VERIFY: attendance[{instance_date}].consolidations = {len(att.get('consolidations', []))}")
+#                 else:
+#                     print(f"VERIFY: root consolidations = {len(verification.get('consolidations', []))}")
+#             else:
+#                 print(f"Invalid base event ID: {base_event_id}")
 #                 # Verify write
 #                 verification = await events_collection.find_one({"_id": ObjectId(base_event_id)})
 #                 if is_recurring_event:
@@ -10958,11 +10619,38 @@ async def create_consolidation(
 #             "source": consolidation_source,
 #             "source_display": source_display
 #         }
+#         # 6. Save to consolidations collection
+#         consolidation_doc = {
+#             "_id": ObjectId(consolidation_id),
+#             "person_id": person_id,
+#             "person_name": consolidation.person_name,
+#             "person_surname": consolidation.person_surname,
+#             "person_email": person_email,
+#             "person_phone": consolidation.person_phone,
+#             "decision_type": consolidation.decision_type.value,
+#             "decision_display_name": decision_display_name,
+#             "decision_date": consolidation.decision_date,
+#             "assigned_to": consolidation.assigned_to,
+#             "assigned_to_email": leader_email,
+#             "assigned_to_user_id": leader_user_id,
+#             "event_id": consolidation.event_id,
+#             "notes": consolidation.notes,
+#             "created_by": current_user.get("email", ""),
+#             "created_at": datetime.utcnow().isoformat(),
+#             "status": "active",
+#             "task_id": task_id,
+#             "source": consolidation_source,
+#             "source_display": source_display
+#         }
 
 #         consolidations_collection = db["consolidations"]
 #         await consolidations_collection.insert_one(consolidation_doc)
 #         print(f"Created consolidation record: {consolidation_id}")
+#         consolidations_collection = db["consolidations"]
+#         await consolidations_collection.insert_one(consolidation_doc)
+#         print(f"Created consolidation record: {consolidation_id}")
 
+#         total_people_count = await people_collection.count_documents({})
 #         total_people_count = await people_collection.count_documents({})
 
 #         return {
@@ -10977,7 +10665,24 @@ async def create_consolidation(
 #             "people_count_updated": total_people_count,
 #             "success": True
 #         }
+#         return {
+#             "message": f"{decision_display_name} recorded successfully and assigned to {consolidation.assigned_to}",
+#             "consolidation_id": consolidation_id,
+#             "person_id": person_id,
+#             "task_id": task_id,
+#             "decision_type": consolidation.decision_type.value,
+#             "assigned_to": consolidation.assigned_to,
+#             "assigned_to_email": leader_email,
+#             "leader_user_id": leader_user_id,
+#             "people_count_updated": total_people_count,
+#             "success": True
+#         }
 
+#     except Exception as e:
+#         print(f"Error creating consolidation: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
 #     except Exception as e:
 #         print(f"Error creating consolidation: {str(e)}")
 #         import traceback
@@ -11583,6 +11288,123 @@ async def get_dashboard_comprehensive(
             status_code=500,
             detail=f"Error fetching comprehensive stats: {str(e)}",
         )
+
+
+# ── Twelve Tasks ─────────────────────────────────────────────────────────
+@app.get("/stats/twelve-tasks")
+async def get_twelve_tasks_report(
+    period: str = Query("thisWeek", pattern="^(today|thisWeek|thisMonth|previousWeek|previousMonth)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_twelve_tasks_report, period, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching Twelve Tasks report: {str(e)}")
+
+
+# ── School Cell ──────────────────────────────────────────────────────────
+@app.get("/stats/school-cell")
+async def get_school_cell_report(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_school_cell_report, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching School Cell report: {str(e)}")
+
+
+@app.get("/stats/school-cell/export-excel")
+async def export_school_cell_excel(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        excel_bytes = await asyncio.to_thread(build_school_cell_excel, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"School Cell Excel generation failed: {str(e)}")
+
+    filename = f"school_cells_{start_date}_to_{end_date}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+# ── Service Target ───────────────────────────────────────────────────────
+@app.post("/service-targets")
+async def create_or_update_service_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        result = await asyncio.to_thread(
+            sb_upsert_service_target,
+            payload.get("leader_name"),
+            payload.get("target_count"),
+            current_user.get("email", ""),
+            org_filter,
+            payload.get("week_identifier"),
+        )
+        return {"success": True, "target": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving service target: {str(e)}")
+
+
+@app.get("/service-targets")
+async def list_service_targets(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return {"targets": await asyncio.to_thread(sb_list_service_targets, week, org_filter)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service targets: {str(e)}")
+
+
+@app.delete("/service-targets/{target_id}")
+async def delete_service_target(
+    target_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        deleted = await asyncio.to_thread(sb_delete_service_target, target_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Target not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting service target: {str(e)}")
+
+
+@app.get("/stats/service-target-report")
+async def get_service_target_report(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_service_target_report, week, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service target report: {str(e)}")
+
+
 
 # ====================== QUICK DASHBOARD (MULTI-TENANT) ======================
 @app.get("/stats/dashboard-quick")
@@ -12502,4 +12324,4 @@ async def preview_spreadsheet_columns(
         "column_mapping": column_mapping,
         "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
         "sample_rows":    sample,
-    }  
+    } 

@@ -31,10 +31,10 @@ python-http-client==3.3.7
 sendgrid==6.12.4
 
 # Supabase
-supabase==2.4.0
-python-gotrue==1.4.0
-postgrest-py==0.16.2
-realtime-py==1.2.0
+supabase>=2.31.0
+# python-gotrue==1.4.0
+# postgrest-py==0.16.2
+# realtime-py==1.2.0
 
 # Async / networking
 anyio==4.10.0
