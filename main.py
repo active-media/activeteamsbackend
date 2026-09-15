@@ -9910,6 +9910,9 @@ async def create_task(task: TaskModel, current_user: dict = Depends(get_current_
 
 @app.get("/tasks/my-special-tasks")
 async def get_my_special_tasks(
+    email: str = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -9922,8 +9925,22 @@ async def get_my_special_tasks(
         if not org_name:
             raise HTTPException(status_code=403, detail="No organization found")
 
-        user_email = current_user.get("email", "").strip().lower()
+        is_leader = current_user.get("role") in ["admin", "leader", "manager", "org_admin", "super_admin"]
+
+        user_email = (email or current_user.get("email", "")).strip().lower()
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+
+        # Look up the target person's name when a leader/manager fetches someone else's special tasks
+        if email and (email.strip().lower() != current_user.get("email", "").strip().lower()):
+            if not is_leader:
+                raise HTTPException(status_code=403, detail="You can only view your own special tasks")
+            target_user = await users_collection.find_one(
+                {"email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}},
+                {"name": 1, "surname": 1},
+            )
+            if target_user:
+                user_name = f"{target_user.get('name', '')} {target_user.get('surname', '')}".strip()
+
         timezone = pytz.timezone("Africa/Johannesburg")
 
         email_regex = {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}
@@ -9963,7 +9980,10 @@ async def get_my_special_tasks(
             ]
         }
 
-        cursor = tasks_collection.find(query).sort("followup_date", -1).limit(200)
+        # Pagination: count all matching docs, then fetch the requested page slice
+        total = await tasks_collection.count_documents(query)
+        skip = (page - 1) * limit
+        cursor = tasks_collection.find(query).sort("followup_date", -1).skip(skip).limit(limit)
         all_tasks = []
 
         async for task in cursor:
@@ -10042,7 +10062,11 @@ async def get_my_special_tasks(
 
         return {
             "tasks": all_tasks,
-            "total": len(all_tasks),
+            "total": total,
+            "email": user_email,
+            "page": page,
+            "limit": limit,
+            "has_more": (skip + len(all_tasks)) < total,
             "status": "success"
         }
 
@@ -10057,6 +10081,8 @@ async def get_user_tasks(
     assignedfor: str = Query(None),          # add this param
     userId: str = Query(None),
     view_all: bool = Query(False),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -10120,7 +10146,10 @@ async def get_user_tasks(
                 ]
             }
 
-        cursor = tasks_collection.find(query).sort("followup_date", -1).limit(500)
+        # Pagination: count all matching docs, then fetch the requested page slice
+        total_tasks = await tasks_collection.count_documents(query)
+        skip = (page - 1) * limit
+        cursor = tasks_collection.find(query).sort("followup_date", -1).skip(skip).limit(limit)
         all_tasks = []
 
         async for task in cursor:
@@ -10187,11 +10216,14 @@ async def get_user_tasks(
 
         return {
             "user_email": "all_users" if (is_leader and view_all) else current_user.get("email"),
-            "total_tasks": len(all_tasks),
+            "total_tasks": total_tasks,
             "tasks": all_tasks,
             "status": "success",
             "is_leader_view": is_leader and view_all,
-            "Organization": org_name
+            "Organization": org_name,
+            "page": page,
+            "limit": limit,
+            "has_more": (skip + len(all_tasks)) < total_tasks,
         }
 
     except Exception as e:
@@ -10206,6 +10238,8 @@ async def get_team_tasks(
     person_email: Optional[str] = Query(None, description="Filter to this person + their subordinates"),
     start_date: Optional[str] = Query(None, description="ISO date string, filter tasks from this date"),
     end_date: Optional[str] = Query(None, description="ISO date string, filter tasks up to this date"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -10353,7 +10387,10 @@ async def get_team_tasks(
                 query["followup_date"] = date_filter
 
         # ── Fetch tasks ─────────────────────────────────────────────────────
-        cursor = tasks_collection.find(query).sort("followup_date", -1).limit(500)
+        # Pagination: count all matching docs, then fetch the requested page slice
+        total = await tasks_collection.count_documents(query)
+        skip = (page - 1) * limit
+        cursor = tasks_collection.find(query).sort("followup_date", -1).skip(skip).limit(limit)
         all_tasks = []
 
         async for task in cursor:
@@ -10414,8 +10451,11 @@ async def get_team_tasks(
             "leader_email": leader_email,
             "person_email": person_email,
             "team_size": len(team_emails),
-            "total": len(all_tasks),
+            "total": total,
             "tasks": all_tasks,
+            "page": page,
+            "limit": limit,
+            "has_more": (skip + len(all_tasks)) < total,
             "status": "success"
         }
 
@@ -13575,13 +13615,59 @@ def get_period_range(period: str):
 
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
 
+
+def parse_custom_period(start_date, end_date):
+    """
+    Build (start, end) datetimes for a custom range used by dashboard stats:
+    - start -> 00:00:00 of start_date
+    - end   -> 23:59:59.999999 of end_date
+    Falls back to today's range on any parse error.
+    """
+    try:
+        start = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return get_period_range("today")
+    start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return start, end
+
+
+def build_dashboard_task_match(status, task_type, consolidation_only):
+    """
+    Builds the $match stage applied to dashboard tasks after their computed
+    fields (is_completed / is_overdue / task_type_label / is_consolidation_ish)
+    are added. Kept as a pure helper so it can be unit tested.
+    """
+    match = {}
+    if status == "completed":
+        match["is_completed"] = True
+    elif status == "incomplete":
+        match["is_completed"] = False
+    elif status == "overdue":
+        match["is_overdue"] = True
+
+    if task_type:
+        match["task_type_label"] = {"$regex": f"^{re.escape(task_type)}$", "$options": "i"}
+
+    if consolidation_only:
+        match["is_consolidation_ish"] = True
+
+    return match
+
+
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
 @app.get("/stats/dashboard-comprehensive")
 async def get_dashboard_comprehensive(
     period: str = Query(
         "today",
-        pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"
+        pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth|custom)$"
     ),
+    start_date: Optional[str] = Query(None, description="Custom range start (YYYY-MM-DD), used when period=custom"),
+    end_date: Optional[str] = Query(None, description="Custom range end (YYYY-MM-DD), used when period=custom"),
+    status: str = Query("all", pattern="^(all|completed|incomplete|overdue)$"),
+    task_type: Optional[str] = Query(None, description="Filter tasks to a single task type"),
+    consolidation_only: bool = Query(False, description="Only show consolidation / new-person tasks"),
     limit: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(get_current_user)
 ):
@@ -13593,9 +13679,12 @@ async def get_dashboard_comprehensive(
         is_super_admin = current_user.get("role") == "super_admin"
         org_filter = {} if is_super_admin else {"Organization": org_name}
 
-        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, Org: {org_name}, SuperAdmin: {is_super_admin}")
+        print(f"[DASHBOARD] Comprehensive stats requested - Period: {period}, Start: {start_date}, End: {end_date}, Status: {status}, TaskType: {task_type}, ConsOnly: {consolidation_only}, Org: {org_name}, SuperAdmin: {is_super_admin}")
 
-        start, end = get_period_range(period)
+        if period == "custom" and start_date and end_date:
+            start, end = parse_custom_period(start_date, end_date)
+        else:
+            start, end = get_period_range(period)
         start_date_str = start.date().isoformat()
         end_date_str = end.date().isoformat()
 
@@ -13702,6 +13791,9 @@ async def get_dashboard_comprehensive(
             }
         ]
 
+        # Task filter applied after computed fields (status / task type / overdue / consolidation)
+        dashboard_task_match = build_dashboard_task_match(status, task_type, consolidation_only)
+
         # Tasks pipeline
         tasks_pipeline = [
             {
@@ -13796,8 +13888,49 @@ async def get_dashboard_comprehensive(
                             True,
                             False
                         ]
+                    },
+                    "is_overdue": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$ne": ["$followup_date", None]},
+                                    {"$lt": ["$followup_date", "$$NOW"]},
+                                    {
+                                        "$not": [
+                                            {
+                                                "$in": [
+                                                    {"$toLower": {"$ifNull": ["$status", "pending"]}},
+                                                    ["completed", "done", "closed", "finished"]
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            True,
+                            False
+                        ]
+                    },
+                    "is_consolidation_ish": {
+                        "$cond": [
+                            {
+                                "$or": [
+                                    {"$in": [
+                                        {"$toLower": {"$ifNull": ["$taskType", ""]}},
+                                        ["consolidation", "cell consolidation", "service follow up", "new_person", "new person"]
+                                    ]},
+                                    {"$eq": [{"$ifNull": ["$is_consolidation_task", False]}, True]},
+                                    {"$eq": [{"$ifNull": ["$is_new_person_task", False]}, True]}
+                                ]
+                            },
+                            True,
+                            False
+                        ]
                     }
                 }
+            },
+            {
+                "$match": dashboard_task_match
             },
             {
                 "$group": {
@@ -13827,6 +13960,8 @@ async def get_dashboard_comprehensive(
                             "is_completed": "$is_completed",
                             "is_due_in_period": "$is_due_in_period",
                             "completed_in_period": "$completed_in_period",
+                            "is_overdue": "$is_overdue",
+                            "is_consolidation_ish": "$is_consolidation_ish",
                             "is_excluded_type": "$is_excluded_type",
                             "description": "$description"
                         }
@@ -14069,6 +14204,11 @@ async def get_dashboard_comprehensive(
             "available_task_types": all_task_types,
             "task_types_found": unique_task_types_found,
             "excluded_task_types": EXCLUDED_TASK_TYPES_FROM_COMPLETED,
+            "applied_filters": {
+                "status": status,
+                "task_type": task_type,
+                "consolidation_only": consolidation_only,
+            },
             "timestamp": datetime.utcnow().isoformat()
         }
 
