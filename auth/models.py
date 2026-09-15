@@ -75,6 +75,7 @@ class AttendanceSubmission(BaseModel):
     did_not_meet: bool = False
     isTicketed: bool = False
     invitedBy: Optional[str] = None
+    headcount: Optional[int] = 0
 
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
