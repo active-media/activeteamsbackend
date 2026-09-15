@@ -42,7 +42,7 @@ from supabase_helpers.supabase_stats import (
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
 )
-from supabase_helpers.twelve_tasks import sb_get_twelve_tasks_report
+from Reports.twelve_tasks import sb_get_twelve_tasks_report
 from supabase_helpers.service_targets import (
     sb_upsert_service_target,
     sb_delete_service_target,
