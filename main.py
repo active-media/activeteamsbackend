@@ -7311,7 +7311,10 @@ async def update_persistent_attendees(
         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
+
+        recurring_days = event.get("recurring_day", [])
+        is_recurring_event = isinstance(recurring_days, list) and len(recurring_days) > 0
+
         # Get the updated persistent attendees from request
         persistent_attendees = update_data.get("persistent_attendees", [])
         
@@ -7395,7 +7398,50 @@ async def update_persistent_attendees(
             update_fields[f"attendance.{target_date}.persistent_attendees"] = enriched_attendees
             update_fields[f"attendance.{target_date}.statistics.total_associated"] = len(enriched_attendees)
             update_fields[f"attendance.{target_date}.updated_at"] = datetime.utcnow()
-        
+
+        # ── Persist checked-in state for the attendance modal ─────────────────
+        # The modal sends its own checked-in snapshots so checkmarks survive a
+        # close/reopen for every event type (not only service-check-in events).
+        checked_in_attendees = update_data.get("checked_in_attendees")
+        if checked_in_attendees is not None:
+            normalized_checked_in = []
+            for att in checked_in_attendees:
+                if not isinstance(att, dict):
+                    continue
+                normalized_checked_in.append({
+                    "id": att.get("id", att.get("person_id", "")),
+                    "name": att.get("name", att.get("fullName", "")),
+                    "surname": att.get("surname", ""),
+                    "fullName": att.get("fullName", att.get("name", "")),
+                    "email": att.get("email", ""),
+                    "phone": att.get("phone", ""),
+                    "leader12": att.get("leader12", ""),
+                    "leader144": att.get("leader144", ""),
+                    "checked_in": True,
+                    "decision": att.get("decision", ""),
+                    "check_in_date": att.get("check_in_date", ""),
+                    "priceName": att.get("priceName", ""),
+                    "price": float(att.get("price") or 0),
+                    "ageGroup": att.get("ageGroup", ""),
+                    "paymentMethod": att.get("paymentMethod", ""),
+                    "paid": float(att.get("paid") or att.get("paidAmount") or 0),
+                    "time": datetime.utcnow().isoformat(),
+                })
+            if target_date and event.get("attendance", {}).get(target_date):
+                update_fields[f"attendance.{target_date}.attendees"] = normalized_checked_in
+                update_fields[f"attendance.{target_date}.checked_in_count"] = len(normalized_checked_in)
+                update_fields[f"attendance.{target_date}.statistics.weekly_attendance"] = len(normalized_checked_in)
+            elif is_recurring_event:
+                write_date = datetime.now(pytz.timezone("Africa/Johannesburg")).date().isoformat()
+                update_fields[f"attendance.{write_date}.attendees"] = normalized_checked_in
+                update_fields[f"attendance.{write_date}.checked_in_count"] = len(normalized_checked_in)
+                update_fields[f"attendance.{write_date}.statistics.weekly_attendance"] = len(normalized_checked_in)
+            else:
+                update_fields["attendees"] = normalized_checked_in
+                update_fields["last_attendance_count"] = len(normalized_checked_in)
+                update_fields["statistics.weekly_attendance"] = len(normalized_checked_in)
+            update_fields["statistics.total_checked_in"] = len(normalized_checked_in)
+
         # Execute the update
         result = await events_collection.update_one(
             {"_id": ObjectId(actual_event_id)},
@@ -7418,6 +7464,103 @@ async def update_persistent_attendees(
         raise
     except Exception as e:
         print(f"Error updating persistent attendees: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.put("/events/{event_id}/headcount")
+async def update_event_headcount(
+    event_id: str,
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Lightweight auto-save for attendee headcount.
+
+    Persists just the headcount without closing/finalizing the event, so it
+    behaves like ticket and money edits (which save immediately). This never
+    touches the attendee roster, attendance status, or other statistics.
+    """
+    try:
+        print(f"PUT /events/{event_id}/headcount - User: {current_user.get('email')}")
+
+        raw_headcount = update_data.get("headcount")
+        try:
+            headcount = int(raw_headcount) if raw_headcount is not None else None
+        except (TypeError, ValueError):
+            headcount = None
+        if headcount is None:
+            raise HTTPException(status_code=400, detail="Invalid or missing headcount")
+
+        actual_event_id = event_id
+        target_date = None
+        if "_" in event_id:
+            parts = event_id.split("_")
+            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
+                actual_event_id = parts[0]
+            if len(parts) >= 2:
+                try:
+                    target_date = datetime.strptime(parts[1], "%Y-%m-%d").date().isoformat()
+                except Exception:
+                    target_date = None
+
+        if not ObjectId.is_valid(actual_event_id):
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+
+        event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        now = datetime.now(timezone.utc)
+
+        if target_date is None:
+            target_date = event.get("date") or now.strftime("%Y-%m-%d")
+            if hasattr(target_date, "date"):
+                target_date = target_date.date().isoformat()
+
+        update_fields = {
+            "last_headcount": headcount,
+            "updated_at": now,
+        }
+
+        date_attendance = get_attendance_by_date(event.get("attendance", {}) or {}, target_date)
+        if date_attendance:
+            update_fields[f"attendance.{target_date}.total_headcounts"] = headcount
+            update_fields[f"attendance.{target_date}.statistics.total_headcounts"] = headcount
+            update_fields[f"attendance.{target_date}.updated_at"] = now
+        else:
+            statistics = {}
+            if isinstance(date_attendance, dict) and isinstance(date_attendance.get("statistics"), dict):
+                statistics = dict(date_attendance["statistics"])
+            statistics["total_headcounts"] = headcount
+            update_fields[f"attendance.{target_date}"] = {
+                "event_date_iso": target_date,
+                "event_date_exact": target_date,
+                "total_headcounts": headcount,
+                "checked_in_count": 0,
+                "is_did_not_meet": False,
+                "statistics": statistics,
+                "updated_at": now,
+            }
+
+        result = await events_collection.update_one(
+            {"_id": ObjectId(actual_event_id)},
+            {"$set": update_fields},
+        )
+
+        if result.matched_count != 1:
+            raise HTTPException(status_code=500, detail="Failed to update headcount")
+
+        return {
+            "success": True,
+            "headcount": headcount,
+            "message": f"Headcount saved: {headcount}",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating headcount: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -7494,9 +7637,6 @@ async def get_persistent_attendees(
             checked_in_from_db  = []
             total_headcounts    = 0
 
-        # Only expose checked-in attendees when the week is actually complete.
-        is_complete = attendance_status == "complete"
-
         # ── Build enriched persistent list ───────────────────────────────────
         # Index the checked-in rows by id for O(1) lookup.
         checked_in_index = {
@@ -7544,8 +7684,9 @@ async def get_persistent_attendees(
                 "check_in_date": "",
             }
 
-            # Only override with per-week data when this week is complete
-            if is_complete and checked_in_data:
+            # Override with per-week data whenever the date has a record
+            # (in-progress weeks checkpoint the same data as completed ones)
+            if checked_in_data:
                 enriched["checked_in"]    = checked_in_data.get("checked_in", True)
                 enriched["decision"]      = checked_in_data.get("decision", "")
                 enriched["check_in_date"] = checked_in_data.get("check_in_date", "")
@@ -7567,13 +7708,12 @@ async def get_persistent_attendees(
 
             enriched_attendees.append(enriched)
 
-        # ── Build checked-in list (only meaningful when complete) ────────────
+        # ── Build checked-in list from the dated record ─────────────────────
         checked_in_list = []
-        if is_complete:
-            for att in checked_in_from_db:
-                if not isinstance(att, dict):
-                    continue
-                checked_in_list.append({
+        for att in checked_in_from_db:
+            if not isinstance(att, dict):
+                continue
+            checked_in_list.append({
                     "id":            att.get("id", ""),
                     "name":          att.get("name", ""),
                     "fullName":      att.get("fullName", att.get("name", "")),
