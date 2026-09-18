@@ -30,9 +30,14 @@ from apscheduler.schedulers.background import BackgroundScheduler, BlockingSched
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 from supreme_admin import router as supreme_admin_router
+from people import router as people_router
 app = FastAPI()
 
-import pandas as pd
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+    logging.warning("pandas not available; related endpoints may be disabled")
 import io
 
 app.add_middleware(
@@ -52,6 +57,7 @@ app.add_middleware(
 )
 
 app.include_router(supreme_admin_router)
+app.include_router(people_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -68,6 +74,21 @@ ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
 }
+
+def normalize_user_role(role: str) -> Optional[str]:
+    """Normalize accepted role variants for user search filters."""
+    if not role:
+        return None
+
+    normalized = role.lower().replace("-", "").replace("_", "").replace(" ", "")
+    role_map = {
+        "leaderat1": "leaderAt1",
+        "leaderat12": "leaderAt12",
+        "leaderat144": "leaderAt144",
+        "leaderat1728": "leaderAt1728",
+    }
+
+    return role_map.get(normalized)
 
 def get_org_from_user(current_user: dict):
     if current_user.get("role") == "super_admin":
@@ -1933,7 +1954,7 @@ def generate_current_week_instances(event: dict) -> list:
                 "eventLeaderName": event.get("Leader") or event.get("eventLeaderName", ""),
                 "eventLeaderEmail": event.get("eventLeaderEmail") or event.get("Email", ""),
                 "leader1": event.get("leader1", ""),
-                "leader12": event.get("Leader @12") or event.get("Leader at 12") or event.get("leader12", ""),
+                "leader12": event.get("Leader @12") or event.get("leader12", ""),
                 "day": day_name,
                 "date": instance_date_iso,
                 "display_date": current_date.strftime("%d - %m - %Y"),
@@ -2178,8 +2199,87 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         if event_data.get("hasPersonSteps"):
             event_data.setdefault("leader1", "")
             event_data.setdefault("leader12", "")
+            event_data.setdefault("leader144", "")
+            event_data.setdefault("leader1728", "")
             event_data.setdefault("persistent_attendees", [])
 
+            leader_name_variants = {
+                "leader1":    ["leader1Name",    "leaderAt1Name"],
+                "leader12":   ["leader12Name",   "leaderAt12Name"],
+                "leader144":  ["leader144Name",  "leaderAt144Name"],
+                "leader1728": ["leader1728Name", "leaderAt1728Name"],
+            }
+          
+            for leader_field, name_fields in leader_name_variants.items():
+                # Try to find a non-empty name from the Name fields first
+                resolved_name = ""
+                for name_field in name_fields:
+                    val = str(event_data.get(name_field) or "").strip()
+                    if val:
+                        resolved_name = val
+                        break
+
+                # If still empty, check the raw field — but reject it if it looks like a MongoDB ObjectId
+                if not resolved_name:
+                    raw = str(event_data.get(leader_field) or "").strip()
+                    if raw and not re.match(r'^[0-9a-fA-F]{24}$', raw):
+                        resolved_name = raw
+
+                # Write the resolved name to all four variants so any field access works
+                suffix = leader_field.replace("leader", "")  # "1", "12", "144", "1728"
+                event_data[leader_field]                  = resolved_name
+                event_data[f"{leader_field}Name"]         = resolved_name
+                event_data[f"leaderAt{suffix}"]           = resolved_name
+                event_data[f"leaderAt{suffix}Name"]       = resolved_name
+                
+                if event_data.get("hasPersonSteps"):
+                     # If leader12 is still empty, try to resolve from event leader's LeaderPath
+                     if not event_data.get("leader12") and event_data.get("eventLeaderEmail"):
+                         leader_email = event_data.get("eventLeaderEmail", "").strip().lower()
+                         leader_person = await people_collection.find_one(
+                             {"Email": {"$regex": f"^{re.escape(leader_email)}$", "$options": "i"}},
+                             {"_id": 1, "LeaderPath": 1}
+                         )
+                         if leader_person and leader_person.get("LeaderPath"):
+                             path = leader_person["LeaderPath"]
+                             # LeaderPath is root-first: index 0 = level1, index 1 = level12
+                             if len(path) > 1:
+                                 leader12_id = path[1]  # level 12
+                                 try:
+                                     leader12_doc = await people_collection.find_one(
+                                         {"_id": ObjectId(str(leader12_id)) if not isinstance(leader12_id, ObjectId) else leader12_id},
+                                         {"Name": 1, "Surname": 1}
+                                     )
+                                     if leader12_doc:
+                                         leader12_name = f"{leader12_doc.get('Name', '')} {leader12_doc.get('Surname', '')}".strip()
+                                         event_data["leader12"] = leader12_name
+                                         event_data["leader12Name"] = leader12_name
+                                         event_data["leaderAt12"] = leader12_name
+                                         event_data["leaderAt12Name"] = leader12_name
+                                         event_data["Leader @12"] = leader12_name
+                                         event_data["Leader at 12"] = leader12_name
+                                         print(f"Auto-resolved leader12 from LeaderPath: {leader12_name}")
+                                 except Exception as e:
+                                     print(f"Could not resolve leader12 from path: {e}")
+
+                             # Also ensure leader1 from path index 0
+                             if len(path) > 0 and not event_data.get("leader1"):
+                                 leader1_id = path[0]
+                                 try:
+                                     leader1_doc = await people_collection.find_one(
+                                         {"_id": ObjectId(str(leader1_id)) if not isinstance(leader1_id, ObjectId) else leader1_id},
+                                         {"Name": 1, "Surname": 1}
+                                     )
+                                     if leader1_doc:
+                                         leader1_name = f"{leader1_doc.get('Name', '')} {leader1_doc.get('Surname', '')}".strip()
+                                         event_data["leader1"] = leader1_name
+                                         event_data["leader1Name"] = leader1_name
+                                         event_data["leaderAt1"] = leader1_name
+                                         event_data["leaderAt1Name"] = leader1_name
+                                         print(f"Auto-resolved leader1 from LeaderPath: {leader1_name}")
+                                 except Exception as e:
+                                     print(f"Could not resolve leader1 from path: {e}")
+            
         if event_data.get("isTicketed") and event_data.get("priceTiers"):
             event_data["priceTiers"] = [
                 {k: (float(v) if k == "price" else v) for k, v in tier.items()}
@@ -5659,6 +5759,10 @@ async def create_indexes_on_startup():
         # Indexes for faster admin user queries
         await users_collection.create_index([("organization", 1)], name="users_org_idx")
         await users_collection.create_index([("Organization", 1)], name="users_Org_idx")
+        await users_collection.create_index([("org_id", 1)], name="users_org_id_idx")
+        await users_collection.create_index([("role", 1)], name="users_role_idx")
+        await users_collection.create_index([("name", 1)], name="users_name_idx")
+        await users_collection.create_index([("surname", 1)], name="users_surname_idx")
         await users_collection.create_index([("email", 1)], name="users_email_idx")
        
         print("Indexes created successfully")
@@ -6914,6 +7018,27 @@ async def get_cell_events_optimized(
                         continue
                     
                     is_overdue = instance_date < today and cell_status == "incomplete"
+                    
+                    def _resolve_name_field(val: str) -> str:
+                        """Return val only if it looks like a human name, not a Mongo ObjectId."""
+                        if not val:
+                            return ""
+                        if re.match(r'^[0-9a-fA-F]{24}$', str(val).strip()):
+                            return ""
+                        return str(val).strip()
+
+                    leaderAt12 = (
+                        _resolve_name_field(event.get("Leader at 12")) or
+                        _resolve_name_field(event.get("Leader @12")) or
+                        _resolve_name_field(event.get("leader12")) or
+                        _resolve_name_field(event.get("leader12Name")) or
+                        _resolve_name_field(event.get("leaderAt12Name")) or
+                        _resolve_name_field(event.get("Leader12")) or
+                        _resolve_name_field(event.get("LeaderAt12")) or
+                        _resolve_name_field(event.get("leader at 12")) or
+                        _resolve_name_field(event.get("leader @12")) or
+                        ""
+                    )
                     
                     instance = {
                         "_id": f"{cell['_id']}_{exact_date_str}",
@@ -8605,6 +8730,95 @@ async def get_users_by_organization(
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")    
+
+@app.get("/users/search")
+async def search_users_by_role(
+    role: Optional[str] = Query(None, description="Role filter for leader dropdowns, e.g. leader_at_1"),
+    search: Optional[str] = Query(None, description="Case-insensitive partial search text for name or email"),
+    page: int = Query(1, ge=1, description="Page number for pagination"),
+    perPage: int = Query(50, ge=1, le=200, description="Results per page"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Search users by role and partial name/email for autocomplete dropdowns."""
+    try:
+        if not role and not search:
+            raise HTTPException(status_code=400, detail="Either role or search query is required")
+
+        normalized_role = normalize_user_role(role) if role else None
+        if role and not normalized_role:
+            raise HTTPException(status_code=400, detail=f"Invalid role: {role}")
+
+        query = {}
+        if normalized_role:
+            query["role"] = {"$regex": f"^{re.escape(normalized_role)}$", "$options": "i"}
+
+        search_term = (search or "").strip()
+        if search_term and len(search_term) < 2:
+            raise HTTPException(status_code=400, detail="Search query must be at least 2 characters")
+
+        if search_term:
+            regex = {"$regex": re.escape(search_term), "$options": "i"}
+            query["$or"] = [
+                {"name": regex},
+                {"surname": regex},
+                {"email": regex},
+                {
+                    "$expr": {
+                        "$regexMatch": {
+                            "input": {"$concat": ["$name", " ", "$surname"]},
+                            "regex": search_term,
+                            "options": "i"
+                        }
+                    }
+                }
+            ]
+
+        # Restrict non-admins to their own organization
+        if current_user.get("role") != "admin":
+            org_id = current_user.get("org_id") or ""
+            org_name = (current_user.get("Organization") or current_user.get("organization") or "").strip()
+            org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+
+            if org_id or org_name:
+                org_filters = []
+                if org_id:
+                    org_filters.append({"org_id": {"$regex": f"^{re.escape(org_id)}$", "$options": "i"}})
+                if org_name:
+                    org_filters.append({"organization": {"$regex": f"^{re.escape(org_name)}$", "$options": "i"}})
+                    org_filters.append({"Organization": {"$regex": f"^{re.escape(org_name)}$", "$options": "i"}})
+
+                if org_filters:
+                    query["$and"] = [query.copy()] if query else []
+                    query["$and"].append({"$or": org_filters})
+
+        skip = (page - 1) * perPage
+        cursor = users_collection.find(query, {"password": 0}).sort([("name", 1), ("surname", 1)])
+        total_count = await users_collection.count_documents(query)
+        results = await cursor.skip(skip).limit(perPage).to_list(length=perPage)
+
+        formatted_results = []
+        for user in results:
+            full_name = " ".join(filter(None, [user.get("name", ""), user.get("surname", "")])).strip()
+            formatted_results.append({
+                "_id": str(user.get("_id")),
+                "fullName": full_name,
+                "email": user.get("email", ""),
+                "role": user.get("role", "user")
+            })
+
+        return {
+            "results": formatted_results,
+            "page": page,
+            "perPage": perPage,
+            "total": total_count,
+            "role": normalized_role,
+            "search": search_term
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error searching users: {str(e)}")
 
 @app.post("/users/{user_id}/avatar")
 async def upload_avatar(
@@ -11663,6 +11877,10 @@ async def create_indexes():
         print("✓ Index created on email field")
         
         # Index for refresh_token_id for token management
+        await users_collection.create_index([("role", 1)], name="users_role_idx")
+        print("✓ Index created on role field")
+        await users_collection.create_index([("name", 1), ("surname", 1)], name="users_name_idx")
+        print("✓ Compound index created on name + surname fields")
         await users_collection.create_index("refresh_token_id")
         print("✓ Index created on refresh_token_id field")
         
