@@ -286,7 +286,7 @@ def get_database_client():
     return AsyncIOMotorClient(mongo_uri)
 
 
-def convert_datetime_to_iso(doc: dict) -> dict:
+def convert_datetime_to_iso(doc: dict) -> dict: 
     """Recursively convert datetime values in a document to ISO strings."""
     if not isinstance(doc, dict):
         return doc
