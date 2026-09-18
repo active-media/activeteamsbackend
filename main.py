@@ -13376,9 +13376,11 @@ async def remove_from_service_checkin(
  
         if not event_id or not ObjectId.is_valid(event_id):
             raise HTTPException(status_code=400, detail="Invalid event ID")
- 
+
         if not person_id or not data_type:
-            valid_types = ["attendees", "new_people", "consolidations"]
+            raise HTTPException(status_code=400, detail="Person ID and type are required")
+
+        valid_types = ["attendees", "new_people", "consolidations"]
         if data_type not in valid_types:
             raise HTTPException(status_code=400, detail=f"Type must be one of: {valid_types}")
  
