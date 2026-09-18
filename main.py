@@ -13135,7 +13135,32 @@ async def service_checkin_person(
             existing = await people_collection.find_one({"_id": ObjectId(person_id)})
             if not existing:
                 raise HTTPException(status_code=404, detail="Person does not exist")
- 
+
+            # Prevent double-capture when duplicate record(s) of the same person
+            # exist (duplicate rows have different _ids, so id-based dedupe in
+            # the $pull/$push below can't catch it). Reject if someone with the
+            # same email is already on tonight's door list.
+            person_email = (existing.get("Email") or existing.get("email") or "").lower().strip()
+            if person_email:
+                if is_recurring:
+                    dup = await events_collection.find_one(
+                        {
+                            "_id": ObjectId(event_id),
+                            f"attendance.{instance_date}.attendees.email": {
+                                "$regex": f"^{re.escape(person_email)}$", "$options": "i"
+                            }
+                        }
+                    )
+                else:
+                    dup = await events_collection.find_one(
+                        {
+                            "_id": ObjectId(event_id),
+                            "attendees.email": {"$regex": f"^{re.escape(person_email)}$", "$options": "i"}
+                        }
+                    )
+                if dup:
+                    raise HTTPException(status_code=400, detail=f"{existing.get('Name')} is already checked in")
+
             attendee_record = {
                 "id": str(existing["_id"]),
                 "name": existing.get("Name", ""),
@@ -13193,6 +13218,30 @@ async def service_checkin_person(
             }
  
         elif checkin_type == "new_person":
+            new_person_email = (person_data.get("email") or "").lower().strip()
+
+            # Prevent duplicate New People records for the same visitor (e.g. a
+            # person recorded twice at the door under different temp ids).
+            if new_person_email:
+                if is_recurring:
+                    dup = await events_collection.find_one(
+                        {
+                            "_id": ObjectId(event_id),
+                            f"attendance.{instance_date}.new_people.email": {
+                                "$regex": f"^{re.escape(new_person_email)}$", "$options": "i"
+                            }
+                        }
+                    )
+                else:
+                    dup = await events_collection.find_one(
+                        {
+                            "_id": ObjectId(event_id),
+                            "new_people.email": {"$regex": f"^{re.escape(new_person_email)}$", "$options": "i"}
+                        }
+                    )
+                if dup:
+                    raise HTTPException(status_code=400, detail="Visitor is already recorded as a new person")
+
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
             new_person_record = {
                 "id": new_person_id,
