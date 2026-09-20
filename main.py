@@ -12993,38 +12993,53 @@ async def get_service_checkin_real_time_data(
             raise HTTPException(status_code=404, detail="Event not found")
  
         is_recurring = bool(event.get("recurring_day"))
- 
+
+        attendance_data = event.get("attendance", {}) or {}
+        if not isinstance(attendance_data, dict):
+            attendance_data = {}
+
         if is_recurring:
             if not instance_date:
                 tz = pytz.timezone("Africa/Johannesburg")
                 instance_date = datetime.now(tz).date().isoformat()
 
-        # This is the common live read source for every event type.
-        attendance_data = event.get("attendance", {}) or {}
-        date_data = attendance_data.get(instance_date, {}) if isinstance(attendance_data, dict) else {}
+            date_data = attendance_data.get(instance_date, {})
 
-        # If no data under the resolved date, try every attendance key so
-        # consolidations/check-ins written under a different date are not lost.
-        if not date_data and isinstance(attendance_data, dict):
-            for _key, _val in attendance_data.items():
-                if isinstance(_val, dict) and (
-                    _val.get("attendees") or _val.get("consolidations") or _val.get("new_people")
-                ):
-                    date_data = _val
-                    instance_date = _key
-                    break
+            # If no data under the resolved date, try every attendance key so
+            # consolidations/check-ins written under a different date are not lost.
+            if not date_data:
+                for _key, _val in attendance_data.items():
+                    if isinstance(_val, dict) and (
+                        _val.get("attendees") or _val.get("consolidations") or _val.get("new_people")
+                    ):
+                        date_data = _val
+                        instance_date = _key
+                        break
 
-        if date_data:
-            attendees = date_data.get("attendees", [])
-            new_people = date_data.get("new_people", [])
-            consolidations = date_data.get("consolidations", [])
- 
-            print(f"Recurring [{instance_date}]: {len(attendees)} att, {len(new_people)} new, {len(consolidations)} cons")
+            if date_data:
+                attendees = date_data.get("attendees", [])
+                new_people = date_data.get("new_people", [])
+                consolidations = date_data.get("consolidations", [])
+
+                print(f"Recurring [{instance_date}]: {len(attendees)} att, {len(new_people)} new, {len(consolidations)} cons")
+            else:
+                # Root-array fallback for legacy records written before date-scoping
+                attendees = event.get("attendees", [])
+                new_people = event.get("new_people", [])
+                consolidations = event.get("consolidations", [])
         else:
-            # Root-array fallback for legacy records written before date-scoping
+            # NON-recurring live data: check-in writes attendees/new_people to the
+            # event ROOT arrays, so the door list must read from root. Only the
+            # consolidations are stored date-scoped (attendance.<date>), mirroring
+            # service-checkin/create-consolidation.
             attendees = event.get("attendees", [])
             new_people = event.get("new_people", [])
             consolidations = event.get("consolidations", [])
+
+            for _val in attendance_data.values():
+                if isinstance(_val, dict) and _val.get("consolidations"):
+                    consolidations = _val.get("consolidations", [])
+                    break
  
         attendees = attendees if isinstance(attendees, list) else []
         new_people = new_people if isinstance(new_people, list) else []
