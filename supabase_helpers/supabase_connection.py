@@ -4,9 +4,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+load_dotenv()
+
+print("========== SUPABASE DEBUG ==========")
+print("SUPABASE URL:", os.getenv("SUPABASE_URL"))
+print("SUPABASE ANON KEY LOADED:", bool(os.getenv("SUPABASE_KEY")))
+print("SUPABASE SERVICE KEY LOADED:", bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")))
+print("=====================================")
+
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_KEY must be set in environment')

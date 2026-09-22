@@ -18,6 +18,7 @@ from database import db, events_collection, people_collection, users_collection,
 from bson import ObjectId
 from supabase_helpers.supabase_client import supabase
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
+from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
 from auth.email_utils import send_reset_email
 from typing import List, Optional, Dict
 from collections import Counter
@@ -41,6 +42,17 @@ from supabase_helpers.supabase_stats import (
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
 )
+from Reports.twelve_tasks import sb_get_twelve_tasks_report
+from supabase_helpers.service_targets import (
+    sb_upsert_service_target,
+    sb_delete_service_target,
+    sb_list_service_targets,
+    sb_get_service_target_report,
+)
+from supabase_helpers.school_cell_report import (
+    sb_get_school_cell_report,
+    build_school_cell_excel,
+)
 from supabase_helpers.service_checkin_routes import router as service_checkin_router
 from fastapi.responses import StreamingResponse
 from events import router as events_router
@@ -58,7 +70,6 @@ from task_types import router as task_types_router
 oauth2_scheme = HTTPBearer()
 
 app = FastAPI()
-app.include_router(people_router)
 
 ORG_ID_MAP = {
     "active-church": "active-teams",
@@ -250,6 +261,12 @@ async def user_has_cell(user_email: str) -> bool:
         return bool(sample)
     except Exception:
         return False
+
+@app.post("/check-user-cell")
+async def check_user_cell(email: str = Body(...)):
+    """Check if a user has a cell event (alternative to direct Supabase query)."""
+    result = user_has_cell(email)
+    return {"hasCell": result}
 
 
 def build_event_object(event: dict, timezone, today_date: date) -> dict:
@@ -936,6 +953,7 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else None
+            current_data = people_cache["data"].copy() if people_cache["data"] else None
             background_tasks.add_task(background_refresh_people_cache, current_data)
  
             return {
@@ -1054,6 +1072,50 @@ async def reset_password(data: ResetPasswordRequest):
         "token_type": "bearer"
     }
 
+@app.post("/change-password")
+async def change_password(payload: dict = Body(...)):
+    """Change password for the current user using access token."""
+    token = payload.get("token")
+    new_password = payload.get("new_password")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Missing token or new password")
+    
+    try:
+        # Decode the token to get user info
+        payload_data = decode_access_token(token)
+        user_id = payload_data.get("user_id")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Invalid token payload")
+        
+        hashed_pw = hash_password(new_password)
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found or password unchanged")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        access_token = create_access_token(
+            {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+            expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+        )
+        
+        logger.info(f"Password changed successfully for {user['email']}")
+        return {
+            "message": "Password has been changed successfully.",
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change password error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
 # ---------------- Refresh Token ----------------
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
@@ -1071,7 +1133,10 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         }
     except HTTPException:
         raise
+        raise
     except Exception as e:
+        logger.warning(f"Refresh token invalid/expired: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
         logger.warning(f"Refresh token invalid/expired: {e}")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
@@ -1170,11 +1235,7 @@ async def login(user: UserLogin):
     except Exception as e:
         logger.error(f"Login error for {user.email}: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    
 
-
-# ---------------- Logout ----------------
-@app.post("/logout")
 async def logout(user_id: str = Body(..., embed=True)):
     await users_collection.update_one(
         {"_id": ObjectId(user_id)},
@@ -1488,6 +1549,7 @@ def generate_current_week_instances(event: dict) -> list:
                 "_is_overdue": current_date < today and event_status == "incomplete",
                 "is_recurring": True,
                 "week_identifier": current_date.strftime("%G-W%V"),
+                "week_identifier": current_date.strftime("%G-W%V"),
                 "original_event_id": str(event.get("_id"))
             }
             
@@ -1678,6 +1740,8 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 event_data["hasPersonSteps"] = False
                 event_data["isTicketed"] = False
                 event_data["status"] = "open"
+
+        event_data["is_school_cell"] = event_data.get("isSchoolCell", False)
 
         print(f"Using day value from frontend: {event_data.get('day')}")
 
@@ -1935,6 +1999,7 @@ async def get_cell_events(
     userSurname: Optional[str] = Query(None),
     must_paginate: Optional[bool] = Query(True)
 ):
+    pass
     pass
 
 
@@ -3039,6 +3104,45 @@ async def lifespan(app: FastAPI):
     yield
 
     scheduler.shutdown()
+
+
+app.router.lifespan_context = lifespan
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://teams.theactivechurch.org",
+        "http://localhost:8000",
+        "http://localhost:5173",
+        "https://new-active-teams.netlify.app",
+        "https://activeteams.netlify.app",
+        "https://activeteamsbackend2.0.onrender.com"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(events_router)
+app.include_router(tasks_router)
+app.include_router(task_types_router)
+app.include_router(service_checkin_router)
+app.include_router(supreme_admin_router)
+app.include_router(admin_router)
+app.include_router(admin_event_type_router)
+app.include_router(admin_task_type_router)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 
 
 app.router.lifespan_context = lifespan
@@ -8079,6 +8183,17 @@ async def search_people(
 
 # ====================== POST /tasks ======================
     
+    
+@app.get("/people/search-fast")
+async def search_people_fast(
+    query: str = Query(..., min_length=2),
+    limit: int = Query(25, le=50)
+):
+    try:
+        return {"results": []}
+    except Exception as e:
+        print(f"Error in search_people_fast: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
 SUPREME_ADMIN_EMAIL = "plaatjiessamuel98@gmail.com"
 
 ROLE_HIERARCHY = {
@@ -10306,6 +10421,22 @@ async def create_consolidation(
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
 
+
+        return {
+            "success": True,
+            "message": "Consolidation created successfully",
+            "consolidation_id": consolidation_id,
+            "person_id": person_id,
+            "task_id": task_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating consolidation: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -10316,6 +10447,19 @@ async def create_consolidation(
 #   task_types.py   →  /tasktypes  (GET / POST / PUT / DELETE)
 # Both routers are registered in include_router() above.
 # ─────────────────────────────────────────────────────────────────────────────
+# @app.get("/stats/dashboard-comprehensive")
+# async def get_dashboard_comprehensive(
+#     period: str = Query(
+#         "today",
+#         pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"
+#     ),
+#     limit: int = Query(100, ge=1, le=1000),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         org_name = current_user.get("Organization")
+#         if not org_name:
+#             raise HTTPException(status_code=403, detail="Organization not associated with user")
 # @app.get("/stats/dashboard-comprehensive")
 # async def get_dashboard_comprehensive(
 #     period: str = Query(
@@ -10350,7 +10494,32 @@ async def create_consolidation(
 #             "source_display": source_display,
 #             "task_id": task_id,
 #         }
+#         # 4. Build consolidation record
+#         consolidation_record = {
+#             "id": consolidation_id,
+#             "person_id": person_id,
+#             "person_name": consolidation.person_name,
+#             "person_surname": consolidation.person_surname,
+#             "person_email": person_email,
+#             "person_phone": consolidation.person_phone or "",
+#             "decision_type": consolidation.decision_type.value,
+#             "decision_display_name": decision_display_name,
+#             "assigned_to": consolidation.assigned_to,
+#             "assigned_to_email": leader_email,
+#             "created_at": datetime.utcnow().isoformat(),
+#             "type": "consolidation",
+#             "status": "active",
+#             "notes": consolidation.notes,
+#             "source": consolidation_source,
+#             "source_display": source_display,
+#             "task_id": task_id,
+#         }
 
+#         # 5. Add to event — strip date suffix before ObjectId lookup
+#         if consolidation.event_id:
+#             parts = consolidation.event_id.split("_")
+#             base_event_id = parts[0]
+#             instance_date = parts[1] if len(parts) > 1 else None
 #         # 5. Add to event — strip date suffix before ObjectId lookup
 #         if consolidation.event_id:
 #             parts = consolidation.event_id.split("_")
@@ -10360,7 +10529,14 @@ async def create_consolidation(
 #             if ObjectId.is_valid(base_event_id):
 #                 event_for_cons = await events_collection.find_one({"_id": ObjectId(base_event_id)})
 #                 is_recurring_event = bool(event_for_cons.get("recurring_day")) if event_for_cons else False
+#             if ObjectId.is_valid(base_event_id):
+#                 event_for_cons = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+#                 is_recurring_event = bool(event_for_cons.get("recurring_day")) if event_for_cons else False
 
+#                 if is_recurring_event:
+#                     if not instance_date:
+#                         timezone = pytz.timezone("Africa/Johannesburg")
+#                         instance_date = datetime.now(timezone).date().isoformat()
 #                 if is_recurring_event:
 #                     if not instance_date:
 #                         timezone = pytz.timezone("Africa/Johannesburg")
@@ -10383,7 +10559,33 @@ async def create_consolidation(
 #                         }
 #                     )
 #                     print(f"Added consolidation to non-recurring event root")
+#                     await events_collection.update_one(
+#                         {"_id": ObjectId(base_event_id)},
+#                         {
+#                             "$push": {f"attendance.{instance_date}.consolidations": consolidation_record},
+#                             "$set": {"updated_at": datetime.utcnow().isoformat()}
+#                         }
+#                     )
+#                     print(f"Added consolidation to recurring event attendance[{instance_date}]")
+#                 else:
+#                     await events_collection.update_one(
+#                         {"_id": ObjectId(base_event_id)},
+#                         {
+#                             "$push": {"consolidations": consolidation_record},
+#                             "$set": {"updated_at": datetime.utcnow().isoformat()}
+#                         }
+#                     )
+#                     print(f"Added consolidation to non-recurring event root")
 
+#                 # Verify write
+#                 verification = await events_collection.find_one({"_id": ObjectId(base_event_id)})
+#                 if is_recurring_event:
+#                     att = verification.get("attendance", {}).get(instance_date, {})
+#                     print(f"VERIFY: attendance[{instance_date}].consolidations = {len(att.get('consolidations', []))}")
+#                 else:
+#                     print(f"VERIFY: root consolidations = {len(verification.get('consolidations', []))}")
+#             else:
+#                 print(f"Invalid base event ID: {base_event_id}")
 #                 # Verify write
 #                 verification = await events_collection.find_one({"_id": ObjectId(base_event_id)})
 #                 if is_recurring_event:
@@ -10417,11 +10619,38 @@ async def create_consolidation(
 #             "source": consolidation_source,
 #             "source_display": source_display
 #         }
+#         # 6. Save to consolidations collection
+#         consolidation_doc = {
+#             "_id": ObjectId(consolidation_id),
+#             "person_id": person_id,
+#             "person_name": consolidation.person_name,
+#             "person_surname": consolidation.person_surname,
+#             "person_email": person_email,
+#             "person_phone": consolidation.person_phone,
+#             "decision_type": consolidation.decision_type.value,
+#             "decision_display_name": decision_display_name,
+#             "decision_date": consolidation.decision_date,
+#             "assigned_to": consolidation.assigned_to,
+#             "assigned_to_email": leader_email,
+#             "assigned_to_user_id": leader_user_id,
+#             "event_id": consolidation.event_id,
+#             "notes": consolidation.notes,
+#             "created_by": current_user.get("email", ""),
+#             "created_at": datetime.utcnow().isoformat(),
+#             "status": "active",
+#             "task_id": task_id,
+#             "source": consolidation_source,
+#             "source_display": source_display
+#         }
 
 #         consolidations_collection = db["consolidations"]
 #         await consolidations_collection.insert_one(consolidation_doc)
 #         print(f"Created consolidation record: {consolidation_id}")
+#         consolidations_collection = db["consolidations"]
+#         await consolidations_collection.insert_one(consolidation_doc)
+#         print(f"Created consolidation record: {consolidation_id}")
 
+#         total_people_count = await people_collection.count_documents({})
 #         total_people_count = await people_collection.count_documents({})
 
 #         return {
@@ -10436,7 +10665,24 @@ async def create_consolidation(
 #             "people_count_updated": total_people_count,
 #             "success": True
 #         }
+#         return {
+#             "message": f"{decision_display_name} recorded successfully and assigned to {consolidation.assigned_to}",
+#             "consolidation_id": consolidation_id,
+#             "person_id": person_id,
+#             "task_id": task_id,
+#             "decision_type": consolidation.decision_type.value,
+#             "assigned_to": consolidation.assigned_to,
+#             "assigned_to_email": leader_email,
+#             "leader_user_id": leader_user_id,
+#             "people_count_updated": total_people_count,
+#             "success": True
+#         }
 
+#     except Exception as e:
+#         print(f"Error creating consolidation: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
 #     except Exception as e:
 #         print(f"Error creating consolidation: {str(e)}")
 #         import traceback
@@ -11042,6 +11288,123 @@ async def get_dashboard_comprehensive(
             status_code=500,
             detail=f"Error fetching comprehensive stats: {str(e)}",
         )
+
+
+# ── Twelve Tasks ─────────────────────────────────────────────────────────
+@app.get("/stats/twelve-tasks")
+async def get_twelve_tasks_report(
+    period: str = Query("thisWeek", pattern="^(today|thisWeek|thisMonth|previousWeek|previousMonth)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_twelve_tasks_report, period, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching Twelve Tasks report: {str(e)}")
+
+
+# ── School Cell ──────────────────────────────────────────────────────────
+@app.get("/stats/school-cell")
+async def get_school_cell_report(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_school_cell_report, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching School Cell report: {str(e)}")
+
+
+@app.get("/stats/school-cell/export-excel")
+async def export_school_cell_excel(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        excel_bytes = await asyncio.to_thread(build_school_cell_excel, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"School Cell Excel generation failed: {str(e)}")
+
+    filename = f"school_cells_{start_date}_to_{end_date}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+# ── Service Target ───────────────────────────────────────────────────────
+@app.post("/service-targets")
+async def create_or_update_service_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        result = await asyncio.to_thread(
+            sb_upsert_service_target,
+            payload.get("leader_name"),
+            payload.get("target_count"),
+            current_user.get("email", ""),
+            org_filter,
+            payload.get("week_identifier"),
+        )
+        return {"success": True, "target": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving service target: {str(e)}")
+
+
+@app.get("/service-targets")
+async def list_service_targets(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return {"targets": await asyncio.to_thread(sb_list_service_targets, week, org_filter)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service targets: {str(e)}")
+
+
+@app.delete("/service-targets/{target_id}")
+async def delete_service_target(
+    target_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        deleted = await asyncio.to_thread(sb_delete_service_target, target_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Target not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting service target: {str(e)}")
+
+
+@app.get("/stats/service-target-report")
+async def get_service_target_report(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_service_target_report, week, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service target report: {str(e)}")
+
+
 
 # ====================== QUICK DASHBOARD (MULTI-TENANT) ======================
 @app.get("/stats/dashboard-quick")
