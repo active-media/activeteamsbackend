@@ -30,6 +30,8 @@ from apscheduler.schedulers.background import BackgroundScheduler, BlockingSched
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 from supreme_admin import router as supreme_admin_router
+from daily_tasks import router as tasks_router
+from task_types import router as task_types_router
 app = FastAPI()
 
 import pandas as pd
@@ -52,6 +54,11 @@ app.add_middleware(
 )
 
 app.include_router(supreme_admin_router)
+
+# Supabase-backed daily-tasks routers. Must be registered before the legacy
+# MongoDB task routes below so they take precedence for /tasks and /tasktypes.
+app.include_router(tasks_router)
+app.include_router(task_types_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

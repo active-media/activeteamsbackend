@@ -214,7 +214,11 @@ async def create_task(
 
 # GET /tasks/my-special-tasks
 @router.get("/tasks/my-special-tasks")
-async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
+async def get_my_special_tasks(
+    page:          int = Query(1, ge=1),
+    limit:         int = Query(50, ge=1, le=500),
+    current_user:  dict = Depends(get_current_user),
+):
     try:
         org_name   = _org_name_from_user(current_user)
         user_email = current_user.get("email", "").strip().lower()
@@ -236,7 +240,7 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
                 'consolidation_source.eq.service_consolidation'
             )
             .order("followup_date", desc=True)
-            .limit(200)
+            .limit(500)
             .execute()
         )
 
@@ -252,7 +256,18 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
             )
 
         tasks = [_format_task_row(r) for r in rows if is_mine(r)]
-        return {"tasks": tasks, "total": len(tasks), "status": "success"}
+        total = len(tasks)
+        start = (page - 1) * limit
+        page_tasks = tasks[start:start + limit]
+        return {
+            "tasks": page_tasks,
+            "total": total,
+            "total_tasks": total,
+            "has_more": start + limit < total,
+            "page": page,
+            "limit": limit,
+            "status": "success",
+        }
 
     except HTTPException:
         raise
@@ -269,6 +284,8 @@ async def get_user_tasks(
     assignedfor:       Optional[str] = Query(None),
     userId:            Optional[str] = Query(None),
     view_all:          bool          = Query(False),
+    page:              int           = Query(1, ge=1),
+    limit:             int           = Query(50, ge=1, le=500),
     current_user:      dict          = Depends(get_current_user),
 ):
     try:
@@ -328,10 +345,18 @@ async def get_user_tasks(
             reverse=True,
         )
 
+        total = len(tasks)
+        start = (page - 1) * limit
+        page_tasks = tasks[start:start + limit]
+
         return {
             "user_email":     "all_users" if (is_leader and view_all) else current_user.get("email"),
-            "total_tasks":    len(tasks),
-            "tasks":          tasks,
+            "total_tasks":    total,
+            "total":          total,
+            "has_more":       start + limit < total,
+            "page":           page,
+            "limit":          limit,
+            "tasks":          page_tasks,
             "status":         "success",
             "is_leader_view": is_leader and view_all,
             "Organization":   org_name,
