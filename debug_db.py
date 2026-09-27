@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
+from database import resolve_mongo_uri
+
+MONGO_URI = resolve_mongo_uri()
 
 async def check_db(db_name):
     client = AsyncIOMotorClient(MONGO_URI)

@@ -4,7 +4,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
 from datetime import datetime
 
-MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
+from database import resolve_mongo_uri
+
+MONGO_URI = resolve_mongo_uri()
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["test-data-active-teams"]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

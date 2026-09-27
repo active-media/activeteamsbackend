@@ -5,12 +5,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI = "mongodb+srv://activeteams:helloactiveteams@active-teams.ykghvqr.mongodb.net/"
+from database import resolve_mongo_uri, redact_uri
+
+MONGO_URI = resolve_mongo_uri()
 # Make sure to set DB_NAME in your .env or it will default to active-teams-db
 DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 
 async def seed_organizations():
-    print(f"Connecting to MongoDB at {MONGO_URI}")
+    print(f"Connecting to MongoDB at {redact_uri(MONGO_URI)}")
     print(f"Target Database: {DB_NAME}")
     
     client = AsyncIOMotorClient(MONGO_URI)

@@ -1,14 +1,78 @@
-import os 
+import os
+import sys
 from motor.motor_asyncio import AsyncIOMotorClient 
 from dotenv import load_dotenv 
 
 load_dotenv() 
 
+# Values that mean "this was never really configured". A Render dashboard with a
+# placeholder left in it, or a doc snippet that got pasted straight into the env
+# var, used to reach the driver and surface as a cryptic DNS failure against a
+# host literally called "none". Treat them as unset so the real cause is obvious.
+_PLACEHOLDERS = {"", "none", "null", "undefined", "changeme", "your-mongodb-uri"}
 
-MONGO_URI = os.getenv("MONGO_URI","None")
+DEFAULT_MONGO_URI = "mongodb://localhost:27017"
+
+
+def _is_placeholder(value: str) -> bool:
+    """True if the value is missing, or is a URI pointing at a placeholder host."""
+    value = value.strip()
+    if value.lower() in _PLACEHOLDERS:
+        return True
+    # Catch a well-formed URI whose *host* is the placeholder, e.g.
+    # "mongodb://None:27017" - which is what reaches the driver as host "none".
+    rest = value.partition("://")[2] or value
+    host = rest.rpartition("@")[2].split("/")[0].split(":")[0]
+    return host.lower() in _PLACEHOLDERS
+
+
+def resolve_mongo_uri(default: str = DEFAULT_MONGO_URI) -> str:
+    """Return the configured Mongo URI.
+
+    MONGODB_URI is the canonical name, but MONGO_URI has been used throughout this
+    project (and is what .env still ships), so accept either. Reading one variable
+    in one place is what stops half the codebase talking to a different database
+    than the other half.
+    """
+    present = False
+    for name in ("MONGODB_URI", "MONGO_URI"):
+        value = os.getenv(name)
+        if value is None:
+            continue
+        present = True
+        if not _is_placeholder(value):
+            return value.strip()
+        print(
+            f"WARNING: {name} is set to the placeholder value {value.strip()!r}, "
+            f"so it was ignored. Set {name} to a real MongoDB connection string.",
+            file=sys.stderr,
+        )
+
+    if not present:
+        print(
+            f"WARNING: neither MONGODB_URI nor MONGO_URI is set. Falling back to "
+            f"{default} - set MONGODB_URI (or MONGO_URI) in the environment.",
+            file=sys.stderr,
+        )
+
+    return default
+
+
+def redact_uri(uri: str) -> str:
+    """Strip the password from a Mongo URI so it is safe to print to logs."""
+    scheme, sep, rest = uri.partition("://")
+    credentials, at, host = rest.rpartition("@")
+    if not at:
+        return uri
+    user = credentials.split(":", 1)[0]
+    return f"{scheme}{sep}{user}:***@{host}" if sep else f"{user}:***@{host}"
+
+
+MONGO_URI = resolve_mongo_uri()
 DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 
 print(f"--- CONNECTING TO DB: {DB_NAME} ---")
+print(f"--- MONGO URI: {redact_uri(MONGO_URI)} ---")
 
 client = AsyncIOMotorClient(MONGO_URI)
 
