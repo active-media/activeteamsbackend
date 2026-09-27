@@ -1,13 +1,11 @@
 from fastapi import FastAPI, HTTPException, Request, APIRouter, Body, Path
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from enum import Enum
 from typing import Optional, List, Literal, Dict
 from datetime import datetime, date
-from bson import ObjectId
 import uuid
 from urllib.parse import unquote
 
@@ -75,7 +73,6 @@ class AttendanceSubmission(BaseModel):
     did_not_meet: bool = False
     isTicketed: bool = False
     invitedBy: Optional[str] = None
-    headcount: Optional[int] = 0
 
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
@@ -310,6 +307,7 @@ class TaskTypeIn(BaseModel):
 class TaskTypeOut(BaseModel):
     id: str
     name: str
+    organization: str
 
 class PersonInfo(BaseModel):
     name: Optional[str]
@@ -485,5 +483,3 @@ class SupremeAdminResponse(BaseModel):
 class SupremeAdminList(BaseModel):
     admins: List[SupremeAdminResponse]
     total: int
-
-
