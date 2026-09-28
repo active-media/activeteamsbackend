@@ -68,6 +68,30 @@ uvicorn main:app --reload
 
 ---
 
+## Cell Reports
+
+`GET /reports/cell-report` returns cell reporting data independently from the dashboard stats endpoints.
+
+Supported query parameters:
+
+- `period`: `weekly`, `previous_week`, `monthly`, `previous_month`, `three_months`, `six_months`, or `yearly`. Previous week is Monday-Sunday; previous month is the complete prior calendar month.
+- `start_date` and `end_date`: optional inclusive `YYYY-MM-DD` dates. Provide both to override the preset.
+- `scope`: `all`, `leader1`, `leader12`, `leader144`, or `leader1728`.
+- `leader_id`: required when `scope` is not `all`; descendant cells are included recursively.
+- `cell_id`: optional exact event/cell ID filter that remains subject to the authenticated user's visibility.
+
+The response contains `summary` totals and `buckets` for trend charts. Metrics are defined as:
+
+- `new_cells`: distinct cell events whose `events.event_date` is in the selected range.
+- `new_people`: distinct people in `event_new_people` whose `added_at` is in the selected range.
+- `lives_given`: distinct `first_time` records in `event_consolidations`.
+- `unique_attendees`: distinct checked-in people.
+- `attendance_visits`: total checked-in attendance records.
+
+All non-admin reports are restricted to the authenticated user's recursive hierarchy and organization.
+
+---
+
 ## 🔐 Authenticated Route Example
 
 To test protected Firebase-authenticated routes, send a `GET` request to:

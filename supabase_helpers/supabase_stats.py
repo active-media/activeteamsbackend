@@ -36,10 +36,10 @@ Key field-name notes
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional, Sequence
 
-from supabase_helpers.supabase_connection import supabase
+from supabase_helpers.supabase_connection import supabase, supabase_admin
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -53,6 +53,9 @@ _STATUS_COMPLETED_LIST = list(_STATUS_COMPLETED)
 
 # The three cell-type values we match against events.event_type_name
 _CELL_TYPE_VALUES = ["Cells", "cells", "CELLS"]
+_CELL_GRAPH_ENTITY_TYPES = {"leader1", "leader12", "leader144"}
+_CELL_GRAPH_PERIOD_TYPES = {"monthly", "yearly"}
+_CELL_REPORT_PERIODS = {"weekly", "monthly", "three_months", "six_months", "yearly"}
 
 
 # ---------------------------------------------------------------------------
@@ -119,35 +122,472 @@ def _apply_org(query, org_filter: Optional[dict]):
 
     org_filter can be:
       None / {}                            → no restriction (super-admin)
-      {"Organization": "Active Church"}    → filter on capital-O column
-      {"Organization": "Active Church"}    → same, lower-case key accepted
+    {"Organization": "Active Church"}    → filter on the table's org column
+    {"organization": "Active Church"}    → same, lower-case key accepted
     """
     if not org_filter:
         return query
-    # Normalise key: both "Organization" and "Organization" are accepted
-    org_value = org_filter.get("Organization")
+    # Normalise key: both casing variants are accepted from callers.
+    org_value = org_filter.get("Organization") or org_filter.get("organization")
     if org_value:
-        # Tasks / Task Types / Users / people all use "Organization" (capital O)
-        # events uses "Organization" (lower-case) — we try both via ilike-fallback
-        # but .eq() on the actual column name is what matters; callers must pass
-        # the right key for the right table.  We expose two helpers below.
+        # Tasks / Task Types / Users / people use the capitalized column.
         query = query.eq("Organization", org_value)
     return query
 
 
 def _apply_org_events(query, org_filter: Optional[dict]):
-    """Same as _apply_org but for the `events` table which uses lower-case `Organization`."""
+    """Apply the organization filter to the lowercase events.organization column."""
     if not org_filter:
         return query
-    org_value = org_filter.get("Organization")
+    org_value = org_filter.get("Organization") or org_filter.get("organization")
     if org_value:
-        query = query.eq("Organization", org_value)
+        query = query.eq("organization", org_value)
     return query
 
 
 def _is_completed_flag(status: str, task_type: str) -> bool:
     """Return True if the task counts as completed (not excluded by type)."""
     return (status or "").lower() in _STATUS_COMPLETED and task_type not in EXCLUDED_TASK_TYPES
+
+
+def _cells_graph_period_value(period_type: str, value: datetime) -> str:
+    """Format a period using the public Cells Graph contract."""
+    if period_type == "monthly":
+        return value.strftime("%Y-%m")
+    return value.strftime("%Y")
+
+
+def _validate_cells_graph_dimensions(entity_type: str, period_type: str) -> None:
+    if entity_type not in _CELL_GRAPH_ENTITY_TYPES:
+        raise ValueError("entity_type must be leader1, leader12, or leader144")
+    if period_type not in _CELL_GRAPH_PERIOD_TYPES:
+        raise ValueError("period_type must be monthly or yearly")
+
+
+def _validate_cells_graph_period(period: Optional[str], period_type: str) -> None:
+    if not period:
+        return
+    try:
+        parsed = datetime.strptime(period, "%Y-%m" if period_type == "monthly" else "%Y")
+    except ValueError as exc:
+        expected = "YYYY-MM" if period_type == "monthly" else "YYYY"
+        raise ValueError(f"period must use {expected} format") from exc
+    if _cells_graph_period_value(period_type, parsed) != period:
+        raise ValueError("period is not a valid calendar period")
+
+
+def _cells_graph_row(row: dict) -> dict:
+    return {
+        "period": str(row.get("period", "")),
+        "total_cells": int(row.get("total_cells") or 0),
+        "total_attendance": int(row.get("total_attendance") or 0),
+        "growth_rate": float(row.get("growth_rate") or 0),
+    }
+
+
+def get_closed_cells_growth_metrics(
+    user_id: str,
+    entity_type: str,
+    period_type: str,
+    start_period: Optional[str] = None,
+    end_period: Optional[str] = None,
+    visible_user_ids: Optional[Sequence[str]] = None,
+) -> list[dict]:
+    """Return chart-ready, closed growth metrics for one visible leader."""
+    _validate_cells_graph_dimensions(entity_type, period_type)
+    _validate_cells_graph_period(start_period, period_type)
+    _validate_cells_graph_period(end_period, period_type)
+    if start_period and end_period and start_period > end_period:
+        raise ValueError("start_period must be before or equal to end_period")
+    if visible_user_ids is not None and user_id not in visible_user_ids:
+        return []
+
+    query = (
+        supabase_admin.table("growth_metrics")
+        .select("period, total_cells, total_attendance, growth_rate")
+        .eq("user_id", user_id)
+        .eq("entity_type", entity_type)
+        .eq("period_type", period_type)
+    )
+    if start_period:
+        query = query.gte("period", start_period)
+    if end_period:
+        query = query.lte("period", end_period)
+
+    rows = [_cells_graph_row(row) for row in (query.order("period").execute().data or [])]
+    return sorted(rows, key=lambda row: row["period"])
+
+
+def _cells_graph_live_window(period_type: str, as_of: Optional[datetime]) -> tuple[str, str, str]:
+    now = as_of or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    period = _cells_graph_period_value(period_type, now)
+    if period_type == "monthly":
+        start = now.replace(day=1).date()
+        if now.month == 12:
+            end = now.replace(year=now.year + 1, month=1, day=1).date() - timedelta(days=1)
+        else:
+            end = now.replace(month=now.month + 1, day=1).date() - timedelta(days=1)
+    else:
+        start = now.replace(month=1, day=1).date()
+        end = now.replace(month=12, day=31).date()
+    return period, start.isoformat(), end.isoformat()
+
+
+def get_growth_visible_user_ids(current_user: dict) -> set[str]:
+    """Resolve the authenticated user's self and recursive Users hierarchy."""
+    current_id = str(current_user.get("user_id") or current_user.get("_id") or "")
+    if not current_id:
+        return set()
+    if current_user.get("is_supreme_admin") or current_user.get("role") in {"admin", "super_admin"}:
+        return set()
+
+    rows = (
+        supabase.table("Users")
+        .select("_id, leader12, leader144, leader1728")
+        .execute()
+        .data or []
+    )
+    visible = {current_id}
+    changed = True
+    while changed:
+        changed = False
+        for row in rows:
+            row_id = str(row.get("_id") or "")
+            leaders = {str(row.get(field)) for field in ("leader12", "leader144", "leader1728") if row.get(field)}
+            if row_id and row_id not in visible and leaders & visible:
+                visible.add(row_id)
+                changed = True
+    return visible
+
+
+def get_current_cells_growth_metric(
+    user_id: str,
+    entity_type: str,
+    period_type: str,
+    as_of: Optional[datetime] = None,
+    org_filter: Optional[dict] = None,
+) -> dict:
+    """Compute the in-progress period from live Cells event sessions."""
+    _validate_cells_graph_dimensions(entity_type, period_type)
+    period, start_date, end_date = _cells_graph_live_window(period_type, as_of)
+    user_query = supabase_admin.table("Users").select("_id, email, name, surname").eq("_id", user_id).limit(1)
+    user_rows = user_query.execute().data or []
+    target = user_rows[0] if user_rows else {}
+    target_email = (target.get("email") or "").strip().lower()
+    target_name = " ".join(filter(None, [target.get("name"), target.get("surname")])).strip().lower()
+
+    response = (
+        supabase_admin.table("event_sessions")
+        .select(
+            "event_id, session_date, checked_in_count, is_did_not_meet, "
+            "events!inner(event_type_name, event_leader, event_leader_email, organization)"
+        )
+        .gte("session_date", start_date)
+        .lte("session_date", end_date)
+        .eq("status", "complete")
+        .execute()
+    )
+    event_ids: set[str] = set()
+    attendance = 0
+    org_value = str((org_filter or {}).get("organization") or (org_filter or {}).get("Organization") or "").lower()
+    for row in response.data or []:
+        if row.get("is_did_not_meet"):
+            continue
+        event = row.get("events") or {}
+        if (event.get("event_type_name") or "").strip().lower() != "cells":
+            continue
+        if org_value and (event.get("organization") or "").strip().lower() != org_value:
+            continue
+        leader_email = (event.get("event_leader_email") or "").strip().lower()
+        leader_name = (event.get("event_leader") or "").strip().lower()
+        if target_email and leader_email != target_email and target_name != leader_name:
+            continue
+        event_id = str(row.get("event_id") or "")
+        if event_id:
+            event_ids.add(event_id)
+        attendance += int(row.get("checked_in_count") or 0)
+
+    current_date = (as_of or datetime.now(timezone.utc)).date()
+    if period_type == "monthly":
+        previous_period = (current_date.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    else:
+        previous_period = str(current_date.year - 1)
+    previous = (
+        supabase_admin.table("growth_metrics")
+        .select("total_cells")
+        .eq("user_id", user_id)
+        .eq("entity_type", entity_type)
+        .eq("period_type", period_type)
+        .eq("period", previous_period)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    previous_cells = int(previous[0].get("total_cells") or 0) if previous else 0
+    total_cells = len(event_ids)
+    growth_rate = ((total_cells - previous_cells) / previous_cells) if previous_cells else (1.0 if total_cells else 0.0)
+    return {
+        "period": period,
+        "total_cells": total_cells,
+        "total_attendance": attendance,
+        "growth_rate": round(growth_rate, 4),
+    }
+
+
+def merge_cells_growth_metrics(closed_rows: Sequence[dict], current_row: dict) -> list[dict]:
+    """Merge history with the live bucket, preferring live data on collision."""
+    merged = {row["period"]: _cells_graph_row(row) for row in closed_rows if row.get("period")}
+    if current_row.get("period"):
+        merged[current_row["period"]] = _cells_graph_row(current_row)
+    return [merged[key] for key in sorted(merged)]
+
+
+def get_cells_growth_timeseries(
+    user_id: str,
+    entity_type: str,
+    period_type: str,
+    start_period: Optional[str] = None,
+    end_period: Optional[str] = None,
+    visible_user_ids: Optional[Sequence[str]] = None,
+    org_filter: Optional[dict] = None,
+) -> list[dict]:
+    """Return closed history merged with the live current period."""
+    closed = get_closed_cells_growth_metrics(
+        user_id,
+        entity_type,
+        period_type,
+        start_period,
+        end_period,
+        visible_user_ids,
+    )
+    current = get_current_cells_growth_metric(user_id, entity_type, period_type, org_filter=org_filter)
+    return merge_cells_growth_metrics(closed, current)
+
+
+def _cell_report_window(
+    period: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> tuple[datetime, datetime]:
+    """Resolve report presets or explicit inclusive UTC dates."""
+    if start_date or end_date:
+        if not start_date or not end_date:
+            raise ValueError("start_date and end_date must be provided together")
+        try:
+            start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+            end = datetime.fromisoformat(end_date).replace(
+                hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc
+            )
+        except ValueError as exc:
+            raise ValueError("start_date and end_date must use YYYY-MM-DD format") from exc
+    else:
+        today = datetime.now(timezone.utc).date()
+        if period == "weekly":
+            start_date_value = today - timedelta(days=today.weekday())
+        elif period == "monthly":
+            start_date_value = today.replace(day=1)
+        elif period == "three_months":
+            start_date_value = today - timedelta(days=89)
+        elif period == "six_months":
+            start_date_value = today - timedelta(days=182)
+        elif period == "yearly":
+            start_date_value = today.replace(month=1, day=1)
+        else:
+            raise ValueError(f"period must be one of: {', '.join(sorted(_CELL_REPORT_PERIODS))}")
+        start = datetime.combine(start_date_value, datetime.min.time(), tzinfo=timezone.utc)
+        end = datetime.combine(today, datetime.max.time(), tzinfo=timezone.utc)
+
+    if start > end:
+        raise ValueError("start_date must be before or equal to end_date")
+    return start, end
+
+
+def _cell_report_bucket_start(value: date, period: str) -> date:
+    if period == "weekly":
+        return value - timedelta(days=value.weekday())
+    if period == "monthly":
+        return value.replace(day=1)
+    if period == "yearly":
+        return value.replace(month=1, day=1)
+    if period in {"three_months", "six_months"}:
+        months = 3 if period == "three_months" else 6
+        month = ((value.month - 1) // months) * months + 1
+        return value.replace(month=month, day=1)
+    return value
+
+
+def _report_date(value: object) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+
+def _person_key(row: dict, *fields: str) -> Optional[str]:
+    for field in fields:
+        value = str(row.get(field) or "").strip().lower()
+        if value:
+            return value
+    return None
+
+
+def get_cell_report(
+    period: str = "monthly",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    scope: str = "all",
+    leader_id: Optional[str] = None,
+    cell_id: Optional[str] = None,
+    org_filter: Optional[dict] = None,
+    visible_user_ids: Optional[Sequence[str]] = None,
+) -> dict:
+    """Aggregate hierarchical cell metrics from the Supabase check-in tables."""
+    start, end = _cell_report_window(period, start_date, end_date)
+    if scope not in {"all", "leader1", "leader12", "leader144", "leader1728"}:
+        raise ValueError("scope must be all, leader1, leader12, leader144, or leader1728")
+    if scope != "all" and not leader_id:
+        raise ValueError("leader_id is required when scope is not all")
+    if visible_user_ids is not None and leader_id and leader_id not in visible_user_ids:
+        raise PermissionError("leader is outside the permitted hierarchy")
+
+    users = supabase_admin.table("Users").select(
+        "_id, name, surname, email, leader12, leader144, leader1728"
+    ).execute().data or []
+    selected_user_ids = set()
+    selected_users = []
+    if scope == "all":
+        selected_user_ids = {str(row.get("_id")) for row in users if row.get("_id")}
+        if visible_user_ids is not None:
+            selected_user_ids &= {str(user_id) for user_id in visible_user_ids}
+        selected_users = users
+        if visible_user_ids is not None:
+            selected_users = [row for row in users if str(row.get("_id") or "") in selected_user_ids]
+    else:
+        selected_user_ids.add(str(leader_id))
+        changed = True
+        while changed:
+            changed = False
+            for row in users:
+                row_id = str(row.get("_id") or "")
+                leaders = {str(row.get(field)) for field in ("leader12", "leader144", "leader1728") if row.get(field)}
+                if row_id and leaders & selected_user_ids and row_id not in selected_user_ids:
+                    selected_user_ids.add(row_id)
+                    changed = True
+        selected_users = [row for row in users if str(row.get("_id") or "") in selected_user_ids]
+
+    leader_keys = set()
+    for row in selected_users:
+        for field in ("email",):
+            value = str(row.get(field) or "").strip().lower()
+            if value:
+                leader_keys.add(value)
+        name = " ".join(filter(None, [row.get("name"), row.get("surname")])).strip().lower()
+        if name:
+            leader_keys.add(name)
+
+    event_query = supabase_admin.table("events").select(
+        "event_id, event_name, event_leader, event_leader_email, event_date, event_type_name, organization"
+    ).in_("event_type_name", _CELL_TYPE_VALUES)
+    event_query = _apply_org_events(event_query, org_filter)
+    events = event_query.execute().data or []
+    scoped_events = []
+    for event in events:
+        event_id = str(event.get("event_id") or "")
+        if not event_id:
+            continue
+        if scope != "all" or visible_user_ids is not None:
+            event_leader = str(event.get("event_leader_email") or event.get("event_leader") or "").strip().lower()
+            if event_leader not in leader_keys:
+                continue
+        if cell_id and event_id != str(cell_id):
+            continue
+        scoped_events.append(event)
+
+    event_ids = [str(event["event_id"]) for event in scoped_events]
+    empty = {"new_cells": 0, "new_people": 0, "lives_given": 0, "unique_attendees": 0, "attendance_visits": 0}
+    if not event_ids:
+        return {"period": period, "date_range": {"start": start.date().isoformat(), "end": end.date().isoformat()}, "scope": {"type": scope, "leader_id": leader_id, "cell_id": cell_id}, "summary": empty, "buckets": []}
+
+    new_cells = {str(event["event_id"]) for event in scoped_events if start.date() <= (_report_date(event.get("event_date")) or date.min) <= end.date()}
+    session_rows = supabase_admin.table("event_sessions").select(
+        "session_id, event_id, session_date, status, is_did_not_meet, checked_in_count"
+    ).in_("event_id", event_ids).gte("session_date", start.date().isoformat()).lte("session_date", end.date().isoformat()).execute().data or []
+    session_rows = [row for row in session_rows if str(row.get("status") or "").lower() == "complete" and not row.get("is_did_not_meet")]
+    session_ids = [str(row["session_id"]) for row in session_rows if row.get("session_id")]
+    attendees = []
+    if session_ids:
+        attendees = supabase_admin.table("event_session_attendees").select(
+            "session_id, event_id, mongo_person_id, email, full_name, is_checked_in"
+        ).in_("session_id", session_ids).execute().data or []
+    attendees = [row for row in attendees if row.get("is_checked_in", True)]
+    new_people = supabase_admin.table("event_new_people").select(
+        "event_id, mongo_id, email, phone, added_at"
+    ).in_("event_id", event_ids).execute().data or []
+    new_people = [row for row in new_people if start.date() <= (_report_date(row.get("added_at")) or date.min) <= end.date()]
+    consolidations = supabase_admin.table("event_consolidations").select(
+        "event_id, mongo_person_id, person_email, person_phone, created_at, decision_type"
+    ).in_("event_id", event_ids).eq("decision_type", "first_time").execute().data or []
+    consolidations = [row for row in consolidations if start.date() <= (_report_date(row.get("created_at")) or date.min) <= end.date()]
+
+    summary = {
+        "new_cells": len(new_cells),
+        "new_people": len({_person_key(row, "mongo_id", "email", "phone") for row in new_people} - {None}),
+        "lives_given": len({_person_key(row, "mongo_person_id", "person_email", "person_phone") for row in consolidations} - {None}),
+        "unique_attendees": len({_person_key(row, "mongo_person_id", "email", "full_name") for row in attendees} - {None}),
+        "attendance_visits": len(attendees),
+    }
+    bucket_dates = {}
+
+    def bucket_for(value: Optional[date]) -> dict:
+        bucket = _cell_report_bucket_start(value or start.date(), period)
+        return bucket_dates.setdefault(
+            bucket,
+            {
+                "new_cells": set(),
+                "new_people": set(),
+                "lives_given": set(),
+                "unique_attendees": set(),
+                "attendance_visits": 0,
+            },
+        )
+
+    for event in scoped_events:
+        event_date = _report_date(event.get("event_date"))
+        if event_date and start.date() <= event_date <= end.date():
+            bucket_for(event_date)["new_cells"].add(str(event["event_id"]))
+    for row in new_people:
+        bucket_for(_report_date(row.get("added_at")))["new_people"].add(
+            _person_key(row, "mongo_id", "email", "phone")
+        )
+    for row in consolidations:
+        bucket_for(_report_date(row.get("created_at")))["lives_given"].add(
+            _person_key(row, "mongo_person_id", "person_email", "person_phone")
+        )
+    for row in attendees:
+        session = next((item for item in session_rows if str(item.get("session_id")) == str(row.get("session_id"))), None)
+        bucket = bucket_for(_report_date(session.get("session_date")) if session else None)
+        bucket["attendance_visits"] += 1
+        attendee_key = _person_key(row, "mongo_person_id", "email", "full_name")
+        if attendee_key:
+            bucket["unique_attendees"].add(attendee_key)
+    buckets = []
+    for key, value in sorted(bucket_dates.items()):
+        buckets.append({
+            "period": key.isoformat(),
+            "new_cells": len(value["new_cells"]),
+            "new_people": len(value["new_people"] - {None}),
+            "lives_given": len(value["lives_given"] - {None}),
+            "unique_attendees": len(value["unique_attendees"]),
+            "attendance_visits": value["attendance_visits"],
+        })
+    return {"period": period, "date_range": {"start": start.date().isoformat(), "end": end.date().isoformat()}, "scope": {"type": scope, "leader_id": leader_id, "cell_id": cell_id}, "summary": summary, "buckets": buckets}
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +977,7 @@ def sb_get_dashboard_comprehensive(
         supabase.table("events")
         .select(
             "event_id, event_name, event_leader, event_leader_email, "
-            "location, event_date, status, event_type_name, Organization"
+            "location, event_date, status, event_type_name, organization"
         )
         .in_("event_type_name", _CELL_TYPE_VALUES)
         .lte("event_date", end_iso)

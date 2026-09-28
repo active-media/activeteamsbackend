@@ -40,11 +40,14 @@ from supabase_helpers.supabase_stats import (
     sb_get_outstanding_items,
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
+    get_cells_growth_timeseries,
+    get_growth_visible_user_ids,
 )
+from supabase_helpers.cell_reports import get_cell_report
 from supabase_helpers.service_checkin_routes import router as service_checkin_router
 from fastapi.responses import StreamingResponse
 from events import router as events_router
-from admin import router as admin_router
+from admin import router as admin_router, DEFAULT_ORG_ID
 from admin import event_type_router as admin_event_type_router
 from admin import task_type_router as admin_task_type_router
 from admin import auto_reactivate_expired_events as admin_auto_reactivate_expired_events
@@ -76,7 +79,7 @@ def _build_stats_org_filter(current_user: dict) -> Optional[dict]:
     org = current_user.get("Organization") or current_user.get("organization")
     if not org:
         return None
-    return {"organization": org}
+    return {"organization": org, "Organization": org}
 
 def get_org_from_user(current_user: dict):
     if current_user.get("role") == "super_admin":
@@ -148,19 +151,6 @@ def serialize_doc(doc: dict) -> dict:
 
 DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 consolidations_collection = db.get_collection("consolidations")
-
-
-def get_database_client():
-    """Return a Mongo client instance compatible with existing `db` usage."""
-    try:
-        client = getattr(db, "client", None)
-        if client:
-            return client
-    except Exception:
-        pass
-    from motor.motor_asyncio import AsyncIOMotorClient
-    mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-    return AsyncIOMotorClient(mongo_uri)
 
 
 def convert_datetime_to_iso(doc: dict) -> dict:
@@ -1095,13 +1085,25 @@ async def signup(user: UserCreate):
 
     supabase_uuid = auth_result.user.id
 
-    # ... keep all your existing organization/leader-hierarchy logic ...
-    # ... then insert into Users collection/table, adding: 
+    organization = (user.organization or "").strip()
+    user_dict = {
+        "name": user.name.strip(),
+        "surname": user.surname.strip(),
+        "date_of_birth": user.date_of_birth,
+        "home_address": user.home_address.strip(),
+        "phone_number": user.phone_number.strip(),
+        "email": email,
+        "gender": user.gender,
+        "invited_by": user.invited_by,
+        "invited_by_id": user.invited_by_id,
+        "role": user.role or "user",
+        "Organization": organization,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
     user_dict["supabase_uuid"] = supabase_uuid
-    # (no more manual password hashing/refresh_token_id/refresh_token_hash needed —
-    #  Supabase Auth owns credentials and refresh tokens now)
 
-    # ... insert person_doc as before ...
+    await users_collection.insert_one(user_dict)
 
     return {"message": "User created successfully", "Organization": organization}
 
@@ -1807,29 +1809,30 @@ async def get_event_types(current_user: dict = Depends(get_current_user)):
 
         if org_id == "active-teams":
             event_types.append({
-                "_id": "CELLS_BUILT_IN",
                 "id": "CELLS_BUILT_IN",
                 "name": "CELLS",
-                "eventTypeName": "CELLS",
-                "isBuiltIn": True,
-                "isEventType": True,
-                "isGlobal": False,
-                "org_id": org_id
+                "is_built_in": True,
+                "is_event_type": True,
+                "is_global": False,
+                "org_id": org_id,
             })
 
-        cursor = events_collection.find({
-            "isEventType": True,
-            "$or": [
-                {"org_id": org_id},
-                {"Organization": {"$regex": current_user.get("Organization", ""), "$options": "i"}}
-            ]
-        }).sort("createdAt", 1)
-
-        async for et in cursor:
-            et["_id"] = str(et["_id"])
-            if et.get("eventTypeName", "").upper() == "CELLS" or et.get("name", "").upper() == "CELLS":
+        event_types_org_id = DEFAULT_ORG_ID if org_id == "active-teams" else org_id
+        result = (
+            supabase_admin.table("event_types")
+            .select(
+                "event_type_id, name, description, is_ticketed, is_global, "
+                "has_person_steps, org_id, created_at, uuid_ref"
+            )
+            .eq("org_id", event_types_org_id)
+            .order("created_at")
+            .execute()
+        )
+        for event_type in result.data or []:
+            if (event_type.get("name") or "").upper() == "CELLS":
                 continue
-            event_types.append(et)
+            event_type["id"] = event_type.pop("event_type_id", event_type.get("id"))
+            event_types.append(event_type)
 
         print(f"Found {len(event_types)} event types for org: {org_id}")
         return event_types
@@ -9082,6 +9085,80 @@ async def get_stats_overview(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/stats/cells-growth")
+async def get_cells_growth(
+    user_id: str = Query(..., min_length=1),
+    entity_type: str = Query(...),
+    period_type: str = Query(...),
+    start_period: Optional[str] = Query(None),
+    end_period: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return closed Cells Graph history with the live current period."""
+    is_admin = current_user.get("is_supreme_admin") or current_user.get("role") in {"admin", "super_admin"}
+    visible_user_ids = None if is_admin else get_growth_visible_user_ids(current_user)
+    if not is_admin and user_id not in visible_user_ids:
+        raise HTTPException(status_code=403, detail="Not authorized to access this leader's growth metrics")
+
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(
+            get_cells_growth_timeseries,
+            user_id,
+            entity_type,
+            period_type,
+            start_period,
+            end_period,
+            visible_user_ids,
+            org_filter,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        print(f"Error in cells growth stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Cells Graph data: {str(e)}")
+
+
+@app.get("/reports/cell-report")
+async def get_cell_report_report(
+    period: str = Query("monthly"),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    scope: str = Query("all"),
+    leader_id: Optional[str] = Query(None),
+    cell_id: Optional[str] = Query(None),
+    include_comparison: bool = Query(True),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return hierarchical cell attendance and growth metrics."""
+    is_admin = current_user.get("is_supreme_admin") or current_user.get("role") in {"admin", "super_admin"}
+    visible_user_ids = None if is_admin else get_growth_visible_user_ids(current_user)
+    if leader_id and not is_admin and leader_id not in visible_user_ids:
+        raise HTTPException(status_code=403, detail="Not authorized to access this leader's report")
+
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(
+            get_cell_report,
+            period,
+            start_date,
+            end_date,
+            scope,
+            leader_id,
+            cell_id,
+            org_filter,
+            visible_user_ids,
+            include_comparison,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        print(f"Error in cell report: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cell report data: {str(e)}")
+
+
 @app.get("/stats/outstanding-items")
 async def get_outstanding_items(
     current_user: dict = Depends(get_current_user),
@@ -10765,7 +10842,7 @@ async def update_consolidation(
 
 @app.get("/consolidations/stats")
 async def get_consolidation_stats(
-    period: str = Query("monthly", regex="^(daily|weekly|monthly|yearly)$"),
+    period: str = Query("monthly", pattern="^(daily|weekly|monthly|yearly)$"),
     current_user: dict = Depends(get_current_user)
 ):
     """Get consolidation statistics"""

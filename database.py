@@ -4,9 +4,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from motor.motor_asyncio import AsyncIOMotorClient
-
-from supabase_helpers.supabase_connection import supabase
+from supabase_helpers.supabase_connection import supabase, supabase_admin
 
 load_dotenv()
 
@@ -172,7 +170,11 @@ class SupabaseCursor:
         self._rows: Optional[List[Dict[str, Any]]] = None
         self._iter = None
 
-    def sort(self, sort_spec):
+    def sort(self, sort_spec, direction=None):
+        if direction is not None:
+            sort_spec = [(sort_spec, direction)]
+        elif isinstance(sort_spec, str):
+            sort_spec = [(sort_spec, 1)]
         self._sort_spec = sort_spec
         return self
 
@@ -219,12 +221,40 @@ class SupabaseCursor:
 class SupabasePeopleCollection:
     """Mongo-collection-shaped wrapper around `supabase.table(PEOPLE_TABLE)`."""
 
-    def __init__(self, client, table_name: str):
+    def __init__(self, client, table_name: str, id_column: str = "_id"):
         self._client = client
         self._table_name = table_name
+        self._id_column = id_column
 
     def _table(self):
         return self._client.table(self._table_name)
+
+    def _database_field(self, field: str) -> str:
+        return self._id_column if field == "_id" else field
+
+    def _normalize_query(self, query):
+        if not isinstance(query, dict):
+            return query
+        normalized = {}
+        for key, value in query.items():
+            if key in ("$or", "$and") and isinstance(value, list):
+                normalized[key] = [self._normalize_query(item) for item in value]
+                continue
+            field = self._database_field(key)
+            if field in (self._id_column, "id", "event_id", "user_id"):
+                if isinstance(value, dict):
+                    value = {
+                        operator: [str(item) for item in operand]
+                        if isinstance(operand, list)
+                        else str(operand)
+                        for operator, operand in value.items()
+                    }
+                elif isinstance(value, list):
+                    value = [str(item) for item in value]
+                elif value is not None:
+                    value = str(value)
+            normalized[field] = value
+        return normalized
 
     @staticmethod
     def _is_simple(query) -> bool:
@@ -254,6 +284,7 @@ class SupabasePeopleCollection:
         for key, value in query.items():
             if key in ("$or", "$and", "$expr"):
                 continue
+            key = self._database_field(key)
             if isinstance(value, dict):
                 if "$ne" in value:
                     qb = qb.neq(key, value["$ne"])
@@ -286,6 +317,7 @@ class SupabasePeopleCollection:
         return qb
 
     async def _fetch(self, query, projection) -> List[Dict[str, Any]]:
+        query = self._normalize_query(query)
         select_clause = self._select_clause(projection)
         if self._is_simple(query):
             qb = self._table().select(select_clause)
@@ -308,9 +340,31 @@ class SupabasePeopleCollection:
         rows = await self.find(query, projection).limit(1).to_list(1)
         return rows[0] if rows else None
 
+    async def find_one_and_update(self, query, update, *args, **kwargs):
+        existing = await self.find_one(query)
+        if not existing:
+            return None
+        await self.update_one(query, update)
+        return await self.find_one(query)
+
+    async def find_one_and_delete(self, query, *args, **kwargs):
+        existing = await self.find_one(query)
+        if existing:
+            await self.delete_one(query)
+        return existing
+
+    async def distinct(self, key, query=None):
+        rows = await self.find(query).to_list(None)
+        values = []
+        for row in rows:
+            value = _get_field_value(row, key)
+            if value not in values:
+                values.append(value)
+        return values
+
     async def count_documents(self, query=None) -> int:
         if self._is_simple(query):
-            qb = self._table().select("_id", count="exact")
+            qb = self._table().select(self._id_column, count="exact")
             qb = self._apply_filters(qb, query)
             resp = qb.execute()
             return resp.count or 0
@@ -442,30 +496,52 @@ class SupabasePeopleCollection:
         return results
 
 
-# The one export the rest of main.py already imports as `people_collection`.
-# It looks and behaves like a Motor collection but every call goes to Supabase.
-people_collection = SupabasePeopleCollection(supabase, PEOPLE_TABLE)
+# Supabase-backed compatibility collections retain the existing route imports
+# while removing the MongoDB startup dependency.
+people_collection = SupabasePeopleCollection(supabase_admin, "People")
+events_collection = SupabasePeopleCollection(supabase_admin, "events", id_column="event_id")
+users_collection = SupabasePeopleCollection(supabase_admin, "Users")
+tasks_collection = SupabasePeopleCollection(supabase_admin, "Tasks")
+tasktypes_collection = SupabasePeopleCollection(supabase_admin, "Task Types")
+org_config_collection = SupabasePeopleCollection(supabase_admin, "OrgConfig", id_column="id")
+consolidations_collection = SupabasePeopleCollection(supabase_admin, "consolidations")
+organizations_collection = SupabasePeopleCollection(supabase_admin, "Organizations")
 
 
-# ============================================================================
-# MONGODB — everything else (Events, Users, Tasks, TaskTypes, Organizations,
-# OrgConfig, Consolidations) — unchanged for now.
-# ============================================================================
-MONGO_URI = os.getenv("MONGO_URI", "None")
-DB_NAME = os.getenv("DB_NAME", "active-teams-db")
+class SupabaseDatabase:
+    """Small database facade for legacy direct collection access."""
 
-print(f"--- CONNECTING TO DB: {DB_NAME} ---")
+    _TABLES = {
+        "events": ("events", "event_id"),
+        "Events": ("events", "event_id"),
+        "users": ("Users", "_id"),
+        "Users": ("Users", "_id"),
+        "tasks": ("Tasks", "_id"),
+        "Tasks": ("Tasks", "_id"),
+        "activity_logs": ("activity_logs", "_id"),
+        "consolidations": ("consolidations", "_id"),
+    }
 
-client = AsyncIOMotorClient(MONGO_URI)
-db = client[DB_NAME]
+    def __init__(self, client):
+        self._client = client
+        self._collections = {}
 
-events_collection = db["Events"]
-users_collection = db["Users"]
-tasks_collection = db["tasks"]
-tasktypes_collection = db["TaskTypes"]
-org_config_collection = db["OrgConfig"]
-consolidations_collection = db["consolidations"]
-organizations_collection = db["organizations"]
+    def get_collection(self, name: str):
+        return self[name]
+
+    def __getitem__(self, name: str):
+        if name not in self._collections:
+            table_name, id_column = self._TABLES.get(name, (name, "_id"))
+            self._collections[name] = SupabasePeopleCollection(self._client, table_name, id_column)
+        return self._collections[name]
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self[name]
+
+
+db = SupabaseDatabase(supabase_admin)
 
 
 def get_database():

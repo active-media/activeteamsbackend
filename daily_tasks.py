@@ -579,7 +579,7 @@ def _get_period_range(period: str):
 
 @router.get("/stats/dashboard-quick")
 async def get_dashboard_quick_stats(
-    period:       str  = Query("today", regex="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
+    period:       str  = Query("today", pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"),
     current_user: dict = Depends(get_current_user),
 ):
     try:
