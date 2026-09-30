@@ -413,11 +413,9 @@ PEOPLE_PROJECTION = {
     "_id": 1,
     "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
     "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
-    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
-    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
-    "church_id": 1,
-    "LeaderId": 1, "LeaderPath": 1,
-    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
+    "org_id": 1,
+    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+    "UpdatedAt": 1,
 }
 
 def get_leader_level(index_from_top: int) -> int:
@@ -533,7 +531,7 @@ def transform_person_full(p, id_to_full: dict = None):
         ]
         seen_levels = set()
         for field, level in LEGACY_LEVELS:
-            name = p.get(field, "").strip()
+            name = (p.get(field) or "").strip()
             if name and level not in seen_levels:
                 leaders.append({
                     "level": level,
@@ -659,26 +657,9 @@ async def background_refresh_people_cache(stale_data: list = None):
         start = _time.time()
         print("BACKGROUND REFRESH: starting...")
 
-        FULL_PROJECTION = {
-    "_id": 1,
-    "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
-    "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
-    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
-    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
-    "church_id": 1,
-    "LeaderId": 1, "LeaderPath": 1,
-    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
-    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
-    "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
-    "Leader at 1": 1, "Leader at 12": 1, "Leader at 144": 1, "Leader at 144": 1,
-    "leaders": 1,  
-}
-
         # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
         # Motor streams the cursor efficiently — no need to paginate
-        all_raw = await people_collection.find(
-            {}, FULL_PROJECTION
-        ).to_list(length=None)  # None = no limit, loads everything at once
+        all_raw = await people_collection.find({}).to_list(length=None)
 
         total_count = len(all_raw)
         people_cache["total_in_database"] = total_count
