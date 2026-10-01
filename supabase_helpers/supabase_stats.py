@@ -190,7 +190,7 @@ def sb_get_stats_overview(
     outstanding_Tasks = task_q.execute().count or 0
 
     # ── Total people ────────────────────────────────────────────────────────
-    ppl_q = supabase.table("people").select("_id", count="exact")
+    ppl_q = supabase.table("People").select("_id", count="exact")
     if org_filter:
         org_value = org_filter.get("Organization") 
         if org_value:
@@ -822,7 +822,7 @@ def sb_get_people_capture_stats(org_filter: Optional[dict] = None) -> dict:
     inconsistently populated.  This version groups by `InvitedBy` in the
     people table — the canonical field set at signup / import.
     """
-    ppl_q = supabase.table("people").select("InvitedBy, Name, Surname, Email")
+    ppl_q = supabase.table("People").select("InvitedBy, Name, Surname, Email")
     if org_filter:
         org_value = org_filter.get("Organization") 
         if org_value:

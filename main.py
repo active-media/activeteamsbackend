@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends,
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserCreater, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate, TaskTypeIn, TaskTypeOut, LeaderStatusResponse, UserProfile, OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, consolidations_collection, organizations_collection, org_config_collection
@@ -16,6 +16,8 @@ import pandas as pd
 import io
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, organizations_collection, org_config_collection
 from bson import ObjectId
+from supabase_helpers import report_schedules as report_schedules_helpers
+from supabase_helpers.report_schedule_runner import start_report_schedule_runner
 from supabase_helpers.supabase_client import supabase
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
@@ -43,6 +45,7 @@ from supabase_helpers.supabase_stats import (
     sb_get_dashboard_comprehensive,
 )
 from Reports.twelve_tasks import sb_get_twelve_tasks_report
+from Reports.reports_routes import router as reports_router
 from supabase_helpers.service_targets import (
     sb_upsert_service_target,
     sb_delete_service_target,
@@ -3131,6 +3134,7 @@ app.include_router(supreme_admin_router)
 app.include_router(admin_router)
 app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
+app.include_router(reports_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -3170,6 +3174,7 @@ app.include_router(supreme_admin_router)
 app.include_router(admin_router)
 app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
+app.include_router(reports_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -7243,6 +7248,66 @@ async def add_uuids_to_all_events(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=500, detail=str(e))
 #  END OF EVENTS-----------------------------------------------
 
+# ======================== Reporting Endpoints ==============================
+
+@app.get("/report-schedules")
+async def get_report_schedules(current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    schedules = await asyncio.to_thread(
+        report_schedules_helpers.list_report_schedules, organization
+    )
+    return schedules
+
+
+@app.post("/report-schedules")
+async def create_report_schedule(payload: dict, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    created_by = current_user.get("_id") or current_user.get("id")
+    try:
+        schedule = await asyncio.to_thread(
+            report_schedules_helpers.create_report_schedule, payload, organization, created_by
+        )
+    except report_schedules_helpers.ReportScheduleValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return schedule
+
+
+@app.put("/report-schedules/{schedule_id}")
+async def update_report_schedule(schedule_id: str, payload: dict, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        schedule = await asyncio.to_thread(
+            report_schedules_helpers.update_report_schedule, schedule_id, payload, organization
+        )
+    except report_schedules_helpers.ReportScheduleValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return schedule
+
+
+@app.delete("/report-schedules/{schedule_id}")
+async def delete_report_schedule(schedule_id: str, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    deleted = await asyncio.to_thread(
+        report_schedules_helpers.delete_report_schedule, schedule_id, organization
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"success": True}
+
+# ====================== End of Reporting Endpoint =====================
+
+
+
 
 # Check-in (no auth required)
 # -------------------------
@@ -9877,6 +9942,7 @@ async def migrate_user_fields():
 # Startup event
 @app.on_event("startup")
 async def startup_event():
+    start_report_schedule_runner()
     """Run on application startup"""
     print("=" * 50)
     print("Starting up application...")

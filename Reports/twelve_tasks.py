@@ -21,16 +21,29 @@ from supabase_helpers.supabase_connection import supabase
 # ---------------------------------------------------------------------------
 PERSON_KEY_FIELDS = ("assignedfor", "assigned_to_email")
 
+# ---------------------------------------------------------------------------
 # Indicator colors — must match the legend in the exported report.
-FILL_ON_TARGET = PatternFill("solid", fgColor="FFC000")     # orange
-FILL_LESS_THAN_TARGET = PatternFill("solid", fgColor="FF0000")  # red
-FILL_MORE_THAN_TARGET = PatternFill("solid", fgColor="00B050")  # green
+# These fills are applied to the "Last week" and "Actual this week"
+# columns when comparing each row's completed count against that row's target.
+# ---------------------------------------------------------------------------
+FILL_ON_TARGET = PatternFill("solid", fgColor="FFC000")     # orange — count meets target exactly
+FILL_LESS_THAN_TARGET = PatternFill("solid", fgColor="FF0000")  # red — count below target
+FILL_MORE_THAN_TARGET = PatternFill("solid", fgColor="00B050")  # green — count above target
 
 HEADER_FONT = Font(bold=True)
 
 
 def _period_range(period: str) -> tuple[datetime, datetime]:
-    """Return (start, end) UTC-aware datetimes for the requested period."""
+    """Return (start, end) UTC-aware datetimes for the requested period.
+
+    Supported periods:
+      - today/daily:       midnight today → 23:59:59.999999 today
+      - thisWeek/weekly:   Monday 00:00 → Sunday 23:59:59.999999 (current week)
+      - thisMonth/monthly: 1st of current month → last day of current month
+      - previousWeek:      Monday 00:0 → Sunday 23:59:59.999999 (prior week)
+      - previousMonth:     1st of prior month → last day of prior month
+    Raises ValueError for unknown period strings.
+    """
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -69,7 +82,11 @@ def _period_range(period: str) -> tuple[datetime, datetime]:
 
 
 def _iso(dt: datetime) -> str:
-    """Return an ISO-8601 string with timezone offset (Supabase-compatible)."""
+    """Return an ISO-8601 string with timezone offset (Supabase-compatible).
+
+    Supabase expects ISO-8601 formatted timestamps with UTC offset
+    for filtering queries (gte/lte on completedAt).
+    """
     return dt.isoformat()
 
 
@@ -108,8 +125,12 @@ def sb_get_tracked_people(leader12_id: Optional[str] = None, org_filter: Optiona
 
 
 def sb_add_tracked_person(person_id: str, leader12_id: str, display_name: str, org: str) -> dict:
-    """Admin action: add a person to the tracked roster. Starts at 0/0 —
-    caller does not need to seed history rows."""
+    """Admin action: add a person to the tracked roster.
+
+    Starts at 0/0 — caller does not need to seed history rows.
+    If the person was previously removed (active=False), this re-activates
+    them (sets active=True) rather than inserting a duplicate row.
+    """
     existing = (
         supabase.table("twelve_tasks_tracked_people")
         .select("person_id")
@@ -147,8 +168,12 @@ def sb_add_tracked_person(person_id: str, leader12_id: str, display_name: str, o
 
 
 def sb_remove_tracked_person(person_id: str, leader12_id: str) -> dict:
-    """Admin action: soft-remove a person. Stops future tracking only —
-    their B/D history stays intact in past report snapshots/exports."""
+    """Admin action: soft-remove a person from the tracked roster.
+
+    Only stops future tracking — their completed/task history remains
+    intact in past report snapshots/exports. The row stays in the
+    table with active=False, so historical data is never deleted.
+    """
     return (
         supabase.table("twelve_tasks_tracked_people")
         .update({"active": False})
@@ -165,6 +190,12 @@ def sb_remove_tracked_person(person_id: str, leader12_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def sb_get_targets(person_ids: list[str]) -> dict[str, int]:
+    """Return per-person target values from the persisted targets table.
+
+    Looks up targets for the given person_ids. Returns an empty dict
+    if person_ids is empty, or a dict mapping person_id -> target
+    for those who have a target set. Rows without a target are omitted.
+    """
     if not person_ids:
         return {}
     rows = (
@@ -211,6 +242,17 @@ def sb_set_target(person_id: str, target: int, updated_by: Optional[str] = None)
 # ---------------------------------------------------------------------------
 
 def _count_completed_by_person(tasks: list[dict], start: datetime, end: datetime) -> dict[str, int]:
+    """Count completed tasks per person within the given period.
+
+    Only tasks with status=="completed" are counted. Completion is
+    determined by the completedAt field only (not followup_date or
+    created_at, which previously inflated counts with non-completed work).
+
+    Tasks are matched by person key using PERSON_KEY_FIELDS ("assignedfor"
+    preferred, fallback "assigned_to_email"). The result is a dict mapping
+    person_id -> count of completed tasks whose completedAt falls within
+    [start, end] inclusive.
+    """
     start_iso, end_iso = _iso(start), _iso(end)
     counts: dict[str, int] = defaultdict(int)
 
@@ -235,6 +277,15 @@ def _count_completed_by_person(tasks: list[dict], start: datetime, end: datetime
 
 
 def _fetch_completed_tasks(start: datetime, end: datetime, org_filter: Optional[dict] = None) -> list[dict]:
+    """Fetch all completed Tasks within the given date span.
+
+    Filters on status='completed' and completedAt between start/end (ISO
+    strings via _iso). If org_filter is provided, only tasks matching
+    that Organization value are included.
+
+    Returns a list of task dicts from Supabase. This single fetch covers
+    both the "last week" and "this week" periods, avoiding two round-trips.
+    """
     task_q = (
         supabase.table("Tasks")
         .select("_id, name, taskType, status, completedAt, assignedfor, assigned_to_email")
@@ -258,12 +309,23 @@ def _fetch_completed_tasks(start: datetime, end: datetime, org_filter: Optional[
 # ---------------------------------------------------------------------------
 
 def sb_get_twelve_tasks_report(leader12_id: Optional[str] = None, org_filter: Optional[dict] = None) -> dict:
-    """
-    Build the Twelve Tasks report:
-      - Column A (name)        -> persisted roster (sb_get_tracked_people)
-      - Column B (last week)   -> completed-task count, previous Mon-Sun
-      - Column C (targets)     -> persisted per-person target
-      - Column D (this week)   -> completed-task count, current Mon-Sun (so far)
+    """Build the Twelve Tasks report dictionary.
+
+    Report structure (columns in the exported XLSX):
+      - Column A (Name)       -> persisted roster from sb_get_tracked_people
+      - Column B (Last week)  -> completed-task count for previous week Mon-Sun
+      - Column C (Targets)    -> persisted per-person target from sb_get_targets
+      - Column D (This week)  -> completed-task count for current Mon-Sun (so far)
+
+    The report is roster-driven (left join): everyone on the tracked list
+    appears even with 0 completed tasks, and row order follows the roster
+    rather than being re-sorted by count.
+
+    Parameters:
+      leader12_id:  if set, only return people assigned to this leader
+      org_filter:   if set, only include tasks/people from this organization
+
+    Returns dict with keys: period, previous_period, rows
     """
     this_week_start, this_week_end = _period_range("thisWeek")
     last_week_start, last_week_end = _period_range("previousWeek")
@@ -308,6 +370,13 @@ def sb_get_twelve_tasks_report(leader12_id: Optional[str] = None, org_filter: Op
 # ---------------------------------------------------------------------------
 
 def _indicator_fill(value: int, target: int) -> Optional[PatternFill]:
+    """Return the appropriate fill color based on completed count vs target.
+
+    - If target is 0 (not yet set): return None — leave cell uncolored.
+    - If value == target: on-target fill (orange).
+    - If value < target: below-target fill (red).
+    - If value > target: above-target fill (green).
+    """
     if target == 0:
         return None  # no target set yet — leave uncolored rather than guessing
     if value == target:
@@ -318,6 +387,27 @@ def _indicator_fill(value: int, target: int) -> Optional[PatternFill]:
 
 
 def export_twelve_tasks_xlsx(report: dict, path: str) -> str:
+    """Export the Twelve Tasks report to an XLSX file matching the mockup layout.
+
+    Layout:
+      - Row 1: headers — Name / Last week / Targets / Actual this week
+        (bold font). Columns F-G contain a Key/legend block.
+      - Data rows (starting row 2): each person from the report roster.
+        - Column B (Last week)  : count + conditional fill (orange/red/green
+          vs. that row's target).
+        - Column C (Targets)    : persisted target value.
+        - Column D (Actual this week) : count + conditional fill vs. target.
+      - Columns F-G: Key legend rows with colored squares and labels.
+
+    The function applies indicator fills via _indicator_fill so that
+    each cell's color reflects its relationship to that row's target.
+
+    Parameters:
+      report:   dict from sb_get_twelve_tasks_report (period, previous_period, rows)
+      path:     file path to write the .xlsx to
+
+    Returns the saved file path.
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Sheet1"
