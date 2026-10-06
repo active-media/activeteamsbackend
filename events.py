@@ -564,11 +564,19 @@ async def get_cell_events(
                 if target_weekday is None:
                     continue
 
-                max_weeks = 1 if status == "incomplete" else 4
-
                 days_since_monday = today.weekday()
                 week_start = today - timedelta(days=days_since_monday)
                 current_week_instance = week_start + timedelta(days=target_weekday)
+
+                if status == "incomplete":
+                    max_weeks = 1
+                elif start_date:
+                    max_weeks = max(
+                        1,
+                        ((current_week_instance - start_date_obj).days // 7) + 1,
+                    )
+                else:
+                    max_weeks = 4
 
                 for week_back in range(0, max_weeks):
                     instance_date = current_week_instance - timedelta(weeks=week_back)

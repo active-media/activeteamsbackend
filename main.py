@@ -41,6 +41,8 @@ from supabase_helpers.supabase_stats import (
     sb_get_outstanding_items,
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
+    sb_get_stats_cells,
+    sb_get_stats_calendar_events,
 )
 from Reports.twelve_tasks import sb_get_twelve_tasks_report
 from supabase_helpers.service_targets import (
@@ -81,13 +83,27 @@ def _build_stats_org_filter(current_user: dict) -> Optional[dict]:
     Returns None for super-admins (no restriction) or a dict that
     supabase_stats helpers will apply as a WHERE clause.
     """
-    is_super = current_user.get("is_supreme_admin") or current_user.get("role") == "super_admin"
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
     if is_super:
         return None
     org = current_user.get("Organization") or current_user.get("organization")
     if not org:
         return None
-    return {"organization": org}
+    return {"Organization": org, "org_id": current_user.get("org_id")}
+
+
+def _build_stats_user_scope(current_user: dict) -> dict:
+    name = str(current_user.get("name") or "").strip()
+    surname = str(current_user.get("surname") or "").strip()
+    return {
+        "role": current_user.get("role"),
+        "email": current_user.get("email"),
+        "name": f"{name} {surname}".strip(),
+        "is_super": bool(
+            current_user.get("is_supreme_admin")
+            or str(current_user.get("role", "")).lower() == "super_admin"
+        ),
+    }
 
 def get_org_from_user(current_user: dict):
     if current_user.get("role") == "super_admin":
@@ -1658,6 +1674,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         event_type_name = event_data.get("eventTypeName")
         if not event_type_name:
             raise HTTPException(status_code=400, detail="eventTypeName is required")
+        is_cell_event = event_type_name.upper() in ["CELLS", "ALL CELLS"]
 
         org_id = current_user.get("org_id", "active-teams")
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
@@ -1672,7 +1689,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         event_data["Organization"] = organization  # Uppercase O only
 
         # Check if it's a CELLS type
-        if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
+        if is_cell_event:
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
             event_data["hasPersonSteps"] = True
@@ -1777,6 +1794,41 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         event_data.setdefault("attendees", [])
         event_data["total_attendance"] = len(event_data["attendees"])
 
+        def insert_supabase_cell(event_date):
+            event_type_result = (
+                supabase_admin.table("event_types")
+                .select("event_type_id")
+                .eq("name", "Cells")
+                .eq("org_id", org_id)
+                .limit(1)
+                .execute()
+            )
+            cell_row = {
+                "event_name": event_data.get("eventName") or event_data.get("Event Name") or "No Event Name",
+                "event_type_name": "Cells",
+                "location": event_data.get("location") or event_data.get("Location") or "",
+                "description": event_data.get("description") or "",
+                "event_leader": event_data.get("eventLeaderName") or event_data.get("eventLeader") or "",
+                "event_leader_email": event_data.get("eventLeaderEmail") or "",
+                "is_ticketed": bool(event_data.get("isTicketed", False)),
+                "is_global": False,
+                "is_active": event_data.get("is_active", True),
+                "has_person_steps": True,
+                "status": "incomplete",
+                "recurring_day": "".join(recurring_days),
+                "is_recurring": bool(recurring_days),
+                "Organization": organization,
+                "org_id": org_id,
+                "event_date": event_date.isoformat(),
+                "mongo_id": str(event_data["_id"]),
+            }
+            if event_type_result.data:
+                cell_row["event_type_id"] = event_type_result.data[0].get("event_type_id")
+            result = supabase_admin.table("events").insert(cell_row).execute()
+            if not result.data:
+                raise HTTPException(status_code=500, detail="Cell was not returned after Supabase insert")
+            return result.data[0]
+
         reference_date = event_data.get("date")
         if isinstance(reference_date, str):
             try:
@@ -1813,6 +1865,10 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
             print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}, Organization: {event_data['Organization']}")
 
+            if is_cell_event:
+                supabase_event = insert_supabase_cell(first_event_date)
+                event_data["supabase_event_id"] = supabase_event.get("event_id")
+
             result = await events_collection.insert_one(event_data)
             print(f"[RECURRING CREATE] Inserted _id: {result.inserted_id}")
 
@@ -1823,6 +1879,10 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "id": str(result.inserted_id),
                 "count": 1
             }
+
+        if is_cell_event:
+            supabase_event = insert_supabase_cell(reference_date)
+            event_data["supabase_event_id"] = supabase_event.get("event_id")
 
         result = await events_collection.insert_one(event_data)
         created_event = await events_collection.find_one({"_id": result.inserted_id})
@@ -11245,6 +11305,52 @@ def get_period_range(period: str):
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
 
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
+@app.get("/stats/cells")
+async def get_stats_cells(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if org_filter is None and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(
+            sb_get_stats_cells,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            org_filter,
+            _build_stats_user_scope(current_user),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching Stats cells: {str(e)}")
+
+
+@app.get("/stats/calendar-events")
+async def get_stats_calendar_events(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if org_filter is None and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(
+            sb_get_stats_calendar_events,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            org_filter,
+            _build_stats_user_scope(current_user),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching Stats calendar events: {str(e)}")
+
+
 @app.get("/stats/dashboard-comprehensive")
 async def get_dashboard_comprehensive(
     period: str = Query(
