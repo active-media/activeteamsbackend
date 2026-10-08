@@ -1680,15 +1680,12 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
         
-        # Make sure organization is properly set (only uppercase)
         if not organization:
-            organization = "Active Church"  # Default organization
+            organization = "Active Church"
         
-        # Set ONLY the uppercase Organization field
         event_data["org_id"] = org_id
-        event_data["Organization"] = organization  # Uppercase O only
+        event_data["Organization"] = organization
 
-        # Check if it's a CELLS type
         if is_cell_event:
             event_data["eventTypeId"] = "CELLS_BUILT_IN"
             event_data["eventTypeName"] = "CELLS"
@@ -1696,7 +1693,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             event_data["isGlobal"] = False
             event_data["status"] = "incomplete"
         else:
-            # Try to find the event type - first by name only (without org filter)
             event_type = await events_collection.find_one({
                 "$or": [
                     {"name": {"$regex": f"^{event_type_name}$", "$options": "i"}},
@@ -1706,14 +1702,11 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "isEventType": True
             })
             
-            # If found, check if it's global or belongs to the user's org
             if event_type:
                 is_global = event_type.get("isGlobal", False)
                 event_org_id = event_type.get("org_id", "")
                 
-                # If it's global OR belongs to user's org, use it
                 if is_global or event_org_id == org_id:
-                    print(f"Found event type: {event_type_name} (global={is_global})")
                     event_data["eventTypeId"] = event_type.get("UUID")
                     event_data["eventTypeName"] = event_type.get("name")
                     event_data["isGlobal"] = event_type.get("isGlobal", False)
@@ -1721,8 +1714,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                     event_data["isTicketed"] = event_type.get("isTicketed", False)
                     event_data["status"] = "open"
                 else:
-                    # Event type exists but belongs to different org - create as custom
-                    print(f"Event type '{event_type_name}' belongs to org {event_org_id}, user org is {org_id} - using as custom")
                     event_data["eventTypeId"] = None
                     event_data["eventTypeName"] = event_type_name
                     event_data["isGlobal"] = False
@@ -1730,8 +1721,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                     event_data["isTicketed"] = False
                     event_data["status"] = "open"
             else:
-                # Event type not found, use default
-                print(f"Event type '{event_type_name}' not found, using default")
                 event_data["eventTypeId"] = None
                 event_data["eventTypeName"] = event_type_name
                 event_data["isGlobal"] = False
@@ -1741,15 +1730,11 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
         event_data["is_school_cell"] = event_data.get("isSchoolCell", False)
 
-        print(f"Using day value from frontend: {event_data.get('day')}")
-
         if event_data.get("time") or event_data.get("Time"):
             raw_time = event_data.get("time") or event_data.get("Time")
-            print(f"Raw time received from frontend: {raw_time}")
             clean_time = normalize_time(raw_time)
             event_data["time"] = clean_time
             event_data["Time"] = clean_time
-            print(f"Time stored as: {clean_time}")
 
         event_data.pop("eventType", None)
 
@@ -1863,14 +1848,11 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             except Exception:
                 event_data["Date Of Event"] = first_event_date.isoformat()
 
-            print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}, Organization: {event_data['Organization']}")
-
             if is_cell_event:
                 supabase_event = insert_supabase_cell(first_event_date)
                 event_data["supabase_event_id"] = supabase_event.get("event_id")
 
             result = await events_collection.insert_one(event_data)
-            print(f"[RECURRING CREATE] Inserted _id: {result.inserted_id}")
 
             return {
                 "success": True,
@@ -2019,30 +2001,6 @@ def convert_event_for_display(event):
     elif event.get('time') and not event.get('Time'):
         event['Time'] = event['time']
     return event
-
-@app.get("/events/cells")
-async def get_cell_events(
-    current_user: dict = Depends(get_current_user),
-    page: int = Query(1, ge=1),
-    limit: int = Query(25, ge=1, le=100),
-    status: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    event_type: Optional[str] = Query(None),
-    personal: Optional[bool] = Query(False),
-    start_date: Optional[str] = Query(None),
-    leader_at_12_view: Optional[bool] = Query(None),
-    show_personal_cells: Optional[bool] = Query(None),
-    show_all_authorized: Optional[bool] = Query(None),
-    include_subordinate_cells: Optional[bool] = Query(None),
-    leader_at_1_identifier: Optional[str] = Query(None),
-    isLeaderAt12: Optional[bool] = Query(None),
-    firstName: Optional[str] = Query(None),
-    userSurname: Optional[str] = Query(None),
-    must_paginate: Optional[bool] = Query(True)
-):
-    pass
-    pass
-
 
 @app.get("/events/eventsdata")
 async def get_other_events(
@@ -8228,13 +8186,78 @@ async def search_people(
 @app.get("/people/search-fast")
 async def search_people_fast(
     query: str = Query(..., min_length=2),
-    limit: int = Query(25, le=50)
+    limit: int = Query(25, ge=1, le=50),
+    current_user: dict = Depends(get_current_user),
 ):
     try:
-        return {"results": []}
+        search_term = query.strip()
+        if len(search_term) < 2:
+            return {"results": []}
+
+        organization = current_user.get("Organization") or current_user.get("organization")
+        org_id = current_user.get("org_id")
+        is_super_admin = bool(
+            current_user.get("is_supreme_admin")
+            or str(current_user.get("role", "")).lower() == "super_admin"
+        )
+        people_query = (
+            supabase_admin.table("People")
+            .select('_id, Name, Surname, Email, Number, "Leader @1", "Leader @12", "Leader @144", "Leader @1728"')
+        )
+        if organization:
+            people_query = people_query.eq("Organization", organization)
+        elif org_id and not is_super_admin:
+            people_query = people_query.eq("org_id", org_id)
+        elif not is_super_admin:
+            raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+        search_parts = [part for part in search_term.replace(",", " ").split() if part]
+        search_conditions = []
+        for part in search_parts:
+            escaped_part = part.replace("%", "\\%").replace("_", "\\_")
+            search_conditions.extend(
+                [
+                    f"Name.ilike.%{escaped_part}%",
+                    f"Surname.ilike.%{escaped_part}%",
+                    f"Email.ilike.%{escaped_part}%",
+                ]
+            )
+        people_query = people_query.or_(",".join(search_conditions)).limit(min(limit * 4, 200))
+        response = people_query.execute()
+
+        normalized_query = " ".join(search_parts).lower()
+        results = []
+        for person in response.data or []:
+            name = f"{person.get('Name') or ''} {person.get('Surname') or ''}".strip()
+            email = person.get("Email") or ""
+            if (
+                normalized_query not in name.lower()
+                and normalized_query not in email.lower()
+                and not all(part.lower() in name.lower() for part in search_parts)
+                and not any(part.lower() in email.lower() for part in search_parts)
+            ):
+                continue
+            results.append(
+                {
+                    "_id": str(person.get("_id") or ""),
+                    "Name": person.get("Name") or "",
+                    "Surname": person.get("Surname") or "",
+                    "FullName": name,
+                    "Email": email,
+                    "Number": person.get("Number") or "",
+                    "Leader @1": person.get("Leader @1") or "",
+                    "Leader @12": person.get("Leader @12") or "",
+                    "Leader @144": person.get("Leader @144") or "",
+                    "Leader @1728": person.get("Leader @1728") or "",
+                }
+            )
+            if len(results) >= limit:
+                break
+
+        return {"results": results}
     except Exception as e:
         print(f"Error in search_people_fast: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error searching people: {str(e)}")
 SUPREME_ADMIN_EMAIL = "plaatjiessamuel98@gmail.com"
 
 ROLE_HIERARCHY = {

@@ -890,16 +890,23 @@ def sb_get_dashboard_comprehensive(
             task_type_stats[tt]["incomplete_due"] += 1
 
     # ── Fetch users for name lookup ───────────────────────────────────────────
-    users_q = (
-        supabase.table("Users")
-        .select("_id, email, name, surname")
-        .limit(limit)
-    )
-    if org_filter:
-        org_value = org_filter.get("Organization")
-        if org_value:
-            users_q = users_q.eq("Organization", org_value)
-    users_raw = users_q.execute().data or []
+    users_raw = []
+    page_size = 1000
+    offset = 0
+    while True:
+        users_q = (
+            supabase.table("Users")
+            .select("_id, email, name, surname, leader12, leader144, leader1728")
+        )
+        if org_filter:
+            org_value = org_filter.get("Organization")
+            if org_value:
+                users_q = users_q.eq("Organization", org_value)
+        page = users_q.range(offset, offset + page_size - 1).execute().data or []
+        users_raw.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
 
     user_map: dict[str, dict] = {}
     for u in users_raw:
@@ -907,7 +914,14 @@ def sb_get_dashboard_comprehensive(
         name  = (u.get("name") or "").strip()
         surn  = (u.get("surname") or "").strip()
         full  = f"{name} {surn}".strip() or (email.split("@")[0] if "@" in email else email)
-        info  = {"_id": str(u.get("_id", "")), "email": email, "fullName": full}
+        info  = {
+            "_id": str(u.get("_id", "")),
+            "email": email,
+            "fullName": full,
+            "leader12": u.get("leader12"),
+            "leader144": u.get("leader144"),
+            "leader1728": u.get("leader1728"),
+        }
         if email:
             user_map[email] = info
 
@@ -998,6 +1012,9 @@ def sb_get_dashboard_comprehensive(
             "name":     u["fullName"].split()[0] if u["fullName"].split() else "",
             "surname":  " ".join(u["fullName"].split()[1:]) if len(u["fullName"].split()) > 1 else "",
             "fullName": u["fullName"],
+            "leader12": u.get("leader12"),
+            "leader144": u.get("leader144"),
+            "leader1728": u.get("leader1728"),
         }
         for u in user_map.values()
         if not u["_id"].startswith("unknown_")
