@@ -11,7 +11,12 @@ from auth.models import EventCreate,DecisionType, UserProfile, ConsolidationCrea
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
 import math
 import secrets
-from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection, resolve_mongo_uri
+from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection, resolve_mongo_uri, MAX_EVENT_DOCUMENTS, MAX_RECURRING_WEEKS_BACK
+
+# Upper bound on distinct queries memoised by get_event_counts_documents(). Each
+# entry is a few thousand counts-only documents, so a small cap is enough to
+# cover the handful of filters one user is working through at a time.
+EVENT_COUNTS_CACHE_MAX_ENTRIES = 16
 from auth.email_utils import send_reset_email
 from typing import  List,  Optional,  Dict
 from collections import Counter
@@ -69,6 +74,11 @@ ORG_ID_MAP = {
     "active church": "active-teams",
 }
 
+# Upper bound on how many weekly instances /events/cells will generate when a
+# caller supplies an explicit start_date/end_date range. Roughly three years,
+# which comfortably covers a custom range while keeping the loop bounded.
+MAX_RANGE_WEEKS = 156
+
 def get_org_from_user(current_user: dict):
     if current_user.get("role") == "super_admin":
         return None, None, set(), True
@@ -99,6 +109,52 @@ def build_org_query(current_user: dict) -> dict:
         "Organization", "Organisation", "organization", "organisation", "church_id",
     ]
     return {"$or": [{f: {"$in": alias_list}} for f in fields]}
+
+
+def resolve_cells_date_window(start_date, end_date, today):
+    """Parse the /events/cells date window and decide whether it is explicit.
+
+    /events/cells only ever received start_date before, and generated a fixed
+    one-or-four week lookback regardless. Returning explicit_range=False when
+    end_date is absent keeps that legacy behaviour byte for byte; an explicit
+    range instead asks for the window to be spanned in full.
+
+    Unparseable values fall back to the defaults rather than raising, matching
+    how the endpoint already handled a bad start_date.
+    """
+    try:
+        start_obj = datetime.strptime(start_date if start_date else "2025-11-30", "%Y-%m-%d").date()
+    except Exception:
+        start_obj = datetime.strptime("2025-11-30", "%Y-%m-%d").date()
+
+    # No rows are ever dated in the future (the instance loop skips
+    # instance_date > today), so defaulting the upper bound to today is inert.
+    try:
+        end_obj = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else today
+    except Exception:
+        end_obj = today
+
+    # A reversed range cannot be spanned; treat it as non-explicit so we do not
+    # widen the loop for a request that could never match.
+    explicit = bool(end_date) and end_obj >= start_obj
+
+    return start_obj, end_obj, explicit
+
+
+def cells_max_weeks(status, explicit_range, start_obj, end_obj):
+    """How many weekly instances to generate per cell for a given request.
+
+    Legacy is 1 week for incomplete and 4 otherwise. An explicit range widens
+    this just enough to cover the window (rounded up for partial weeks) so a
+    range wider than the legacy cap is not silently truncated, clamped by
+    MAX_RANGE_WEEKS to keep the loop bounded.
+    """
+    max_weeks = 1 if status == "incomplete" else 4
+    if not explicit_range:
+        return max_weeks
+    span_days = (end_obj - start_obj).days
+    return min(max(max_weeks, (span_days // 7) + 2), MAX_RANGE_WEEKS)
+
 
 @app.get("/")
 def root():
@@ -1050,7 +1106,10 @@ async def get_people_simple(
  
  
 @app.post("/cache/people/refresh")
-async def refresh_people_cache(background_tasks: BackgroundTasks):
+async def refresh_people_cache(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
     """
     Manually refresh the people cache.
     """
@@ -1673,7 +1732,10 @@ async def get_organization(org_id: str):
 
 
 @app.post("/organizations")
-async def create_organization(data: dict = Body(...)):
+async def create_organization(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Create a new organization.
     Body: { "name": "City Church", "tag": "City Church", "description": "..." }
@@ -1709,7 +1771,11 @@ async def create_organization(data: dict = Body(...)):
 
 
 @app.put("/organizations/{org_id}")
-async def update_organization(org_id: str, data: dict = Body(...)):
+async def update_organization(
+    org_id: str,
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Update an existing organization's name.
     This will ALSO update all users with the old organization name to the new name.
@@ -1812,7 +1878,10 @@ async def update_organization(org_id: str, data: dict = Body(...)):
     }
 
 @app.delete("/organizations/{org_id}")
-async def delete_organization(org_id: str):
+async def delete_organization(
+    org_id: str,
+    current_user: dict = Depends(get_current_user)
+):
     """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
@@ -2391,6 +2460,7 @@ async def get_cell_events(
     event_type: Optional[str] = Query(None),
     personal: Optional[bool] = Query(False),
     start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     leader_at_12_view: Optional[bool] = Query(None),
     show_personal_cells: Optional[bool] = Query(None),
     show_all_authorized: Optional[bool] = Query(None),
@@ -2616,6 +2686,10 @@ async def get_cell_events(
         except:
             start_date_obj = datetime.strptime("2025-11-30", "%Y-%m-%d").date()
 
+        start_date_obj, end_date_obj, explicit_range = resolve_cells_date_window(
+            start_date, end_date, today
+        )
+
         day_mapping = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
             'friday': 4, 'saturday': 5, 'sunday': 6
@@ -2633,7 +2707,11 @@ async def get_cell_events(
                 if target_weekday is None:
                     continue
 
-                max_weeks = 1 if status == "incomplete" else 4
+                # Legacy lookback is 1 week for incomplete and 4 otherwise; an
+                # explicit range widens it only as far as the window needs.
+                max_weeks = cells_max_weeks(
+                    status, explicit_range, start_date_obj, end_date_obj
+                )
 
                 days_since_monday = today.weekday()
                 week_start = today - timedelta(days=days_since_monday)
@@ -2645,6 +2723,8 @@ async def get_cell_events(
                     if instance_date > today:
                         continue
                     if instance_date < start_date_obj:
+                        continue
+                    if instance_date > end_date_obj:
                         continue
 
                     exact_date = instance_date.isoformat()
@@ -2772,6 +2852,378 @@ async def get_cell_events(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def build_event_org_conditions(org_id: str, organization: str = "") -> list:
+    """Return the $or branches that decide which event documents a user may see.
+
+    Events created before multi-tenant support carry neither an org_id nor an
+    Organization field, so a plain {"org_id": org_id} match silently excluded
+    every one of them - which is why previously captured events disappeared from
+    Events, Service Check-in and Stats while newly created ones showed up.
+
+    For the original org we therefore also match untagged documents, mirroring
+    the equivalent fallback already used by the People query. Extracted as a
+    module-level function so it can be unit tested directly.
+    """
+    conditions = [
+        {"org_id": org_id},
+        {"Organization": {"$regex": re.escape(organization or ""), "$options": "i"}},
+    ]
+
+    if org_id == "active-teams":
+        conditions.append({"Organisation": {"$regex": "active church", "$options": "i"}})
+        conditions.append({"Organization": {"$regex": "active church", "$options": "i"}})
+        conditions.append({"org_id": {"$exists": False}})
+
+    return conditions
+
+
+# Nested arrays inside an attendance entry. These are the bulk of the payload:
+# measured against production, `attendance` alone was 77.6% of the 4.35 MB that
+# /events/eventsdata pulled, and each entry holds a full person record per
+# attendee, with name, address, phone, email, leader fields and payment maths.
+ATTENDANCE_DETAIL_ARRAYS = ("attendees", "persistent_attendees", "new_people", "consolidations")
+
+
+def enrich_attendees_with_financials(attendees_list) -> list:
+    """Return attendees with normalised payment maths (owing/change) filled in.
+
+    Hoisted to module level: this was previously defined twice inside
+    get_other_events - once per branch - and is now also needed by the phase-2
+    detail pass, which runs after the per-event loop has finished.
+    """
+    enriched = []
+    for att in attendees_list or []:
+        if not isinstance(att, dict):
+            continue
+        price = att.get("price", 0)
+        paid = att.get("paid", att.get("paidAmount", 0))
+
+        try:
+            price = float(price) if price else 0
+            paid = float(paid) if paid else 0
+        except (TypeError, ValueError):
+            price = 0
+            paid = 0
+
+        if paid >= price:
+            owing = 0
+            change = paid - price
+        elif paid > 0 and paid < price:
+            owing = price - paid
+            change = 0
+        else:
+            owing = price
+            change = 0
+
+        enriched.append({
+            "id": att.get("id", ""),
+            "name": att.get("name", ""),
+            "fullName": att.get("fullName", att.get("name", "")),
+            "surname": att.get("surname", ""),
+            "gender": att.get("gender", ""),
+            "birthday": att.get("birthday", ""),
+            "address": att.get("address", ""),
+            "stage": att.get("stage", ""),
+            "email": att.get("email", ""),
+            "phone": att.get("phone", ""),
+            "invitedBy": att.get("invitedBy", ""),
+            "leader1": att.get("leader1", ""),
+            "leader12": att.get("leader12", ""),
+            "leader144": att.get("leader144", ""),
+            "leader1728": att.get("leader1728", ""),
+            "checked_in": att.get("checked_in", False),
+            "decision": att.get("decision", ""),
+            "priceName": att.get("priceName", ""),
+            "price": price,
+            "ageGroup": att.get("ageGroup", ""),
+            "paymentMethod": att.get("paymentMethod", ""),
+            "paid": paid,
+            "owing": owing,
+            "change": change,
+        })
+    return enriched
+
+
+def _attendance_array_size_expr(field: str) -> dict:
+    """Aggregation expression yielding the length of a nested array, else 0.
+
+    Written with $isArray rather than a bare $size so a legacy entry that stores
+    a non-array in one of these fields cannot fail the whole request.
+    """
+    return {
+        "$cond": [
+            {"$isArray": field},
+            {"$size": field},
+            0,
+        ]
+    }
+
+
+def build_event_counts_pipeline(query: dict) -> list:
+    """Aggregation that fetches events with attendee *counts* instead of people.
+
+    /events/eventsdata paginates in Python, after the database read, so a request
+    for 25 rows used to pull every document in full - 4.35 MB, ~48s measured -
+    to build 1,802 instances and then keep 25 of them. explain("executionStats")
+    showed the server running the same filter in 2 ms, so the cost was entirely
+    moving those bytes: ~0.09 MB/s on this link.
+
+    This pipeline keeps everything the handler needs to decide status, counts,
+    ordering and pagination (status, is_did_not_meet, closed_by/at and the three
+    array lengths) and drops the person records. The dropped detail is fetched
+    afterwards, only for the rows actually returned, by
+    fetch_event_page_details().
+
+    Restricted to operators the query planner, MongoDB and the test double all
+    support: $match/$addFields/$project with $objectToArray, $arrayToObject,
+    $map, $size, $isArray, $cond and $ifNull.
+    """
+    entry = {
+        # Scalars the handler reads off a date's attendance record.
+        "status": {"$ifNull": ["$$kv.v.status", ""]},
+        "is_did_not_meet": {"$ifNull": ["$$kv.v.is_did_not_meet", False]},
+        "closed_by": {"$ifNull": ["$$kv.v.closed_by", ""]},
+        "closed_at": {"$ifNull": ["$$kv.v.closed_at", ""]},
+        "event_date_iso": {"$ifNull": ["$$kv.v.event_date_iso", ""]},
+        "event_date_exact": {"$ifNull": ["$$kv.v.event_date_exact", ""]},
+        # Arrays emptied, lengths kept under *_count.
+        "attendees": [],
+        "new_people": [],
+        "consolidations": [],
+        "attendees_count": _attendance_array_size_expr("$$kv.v.attendees"),
+        "new_people_count": _attendance_array_size_expr("$$kv.v.new_people"),
+        "consolidation_count": _attendance_array_size_expr("$$kv.v.consolidations"),
+    }
+
+    return [
+        {"$match": query},
+        {
+            "$addFields": {
+                "attendance": {
+                    "$arrayToObject": {
+                        "$map": {
+                            "input": {"$objectToArray": {"$ifNull": ["$attendance", {}]}},
+                            "as": "kv",
+                            "in": {"k": "$$kv.k", "v": entry},
+                        }
+                    }
+                },
+                # Event-level arrays, which the one-time branch reads directly.
+                "attendees_count": _attendance_array_size_expr("$attendees"),
+                "new_people_count": _attendance_array_size_expr("$new_people"),
+                "consolidation_count": _attendance_array_size_expr("$consolidations"),
+                "persistent_attendees_count": _attendance_array_size_expr("$persistent_attendees"),
+            }
+        },
+        {
+            "$project": {
+                "attendees": 0,
+                "persistent_attendees": 0,
+                "new_people": 0,
+                "consolidations": 0,
+            }
+        },
+    ]
+
+
+def build_page_detail_projection(wanted_keys: set, include_persistent_attendees: bool = False) -> dict:
+    """Projection fetching attendee detail for only the rows on this page.
+
+    `wanted_keys` is a set of "attendance.<ISO date>" subkeys. Projecting those
+    specific subpaths - rather than the whole attendance map - is what keeps the
+    second read small: a single recurring event document measured 1.33 MB
+    because it carried 27 dated attendance records, of which a page of 25 rows
+    needs at most one per row.
+
+    `persistent_attendees` is projected only when asked for. It is by far the
+    largest array on the document and no caller of this endpoint reads it off a
+    list row (the attendance export and the edit modals both re-fetch the full
+    event from GET /events/{id}, which still returns it), so projecting it by
+    default costs transfer for nothing.
+    """
+    projection = {}
+    for key in wanted_keys:
+        projection[key] = 1
+    for field in ("attendees", "new_people", "consolidations"):
+        projection[field] = 1
+    if include_persistent_attendees:
+        projection["persistent_attendees"] = 1
+    return projection
+
+
+def attendance_entry_count(entry: dict, count_field: str, array_field: str) -> int:
+    """Read an attendance count that build_event_counts_pipeline() produced.
+
+    Falls back to len() of the array so the helper is correct for documents that
+    were not passed through the pipeline (and for the legacy path where a
+    date_attendance dict is synthesised from the event-level attendees list).
+    """
+    if not isinstance(entry, dict):
+        return 0
+    count = entry.get(count_field)
+    if isinstance(count, int) and not isinstance(count, bool):
+        return count
+    value = entry.get(array_field)
+    if isinstance(value, list):
+        return len(value)
+    return 0
+
+
+def _event_counts_cache_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("EVENTS_COUNTS_CACHE_TTL", "30")))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+_EVENTS_COUNTS_CACHE: dict = {}
+
+
+def clear_event_counts_cache() -> None:
+    """Drop cached phase-1 reads. Call after anything that writes attendance."""
+    _EVENTS_COUNTS_CACHE.clear()
+
+
+async def get_event_counts_documents(collection, query: dict) -> list:
+    """Run build_event_counts_pipeline(), memoised on the query for a short TTL.
+
+    Pagination and status filtering for /events/eventsdata both happen in Python
+    after the read, so requests for page 2..N of one filter issue a byte-identical
+    query. Caching it turns every page after the first into a pure in-memory
+    slice. The TTL is deliberately short (30s by default) and configurable with
+    EVENTS_COUNTS_CACHE_TTL=0 to disable caching entirely.
+
+    Only the counts-only documents are cached - never the phase-2 attendee
+    detail, which is per page.
+    """
+    ttl = _event_counts_cache_ttl()
+    key = json.dumps(query, sort_keys=True, default=str)
+
+    if ttl > 0:
+        cached = _EVENTS_COUNTS_CACHE.get(key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        if cached:
+            _EVENTS_COUNTS_CACHE.pop(key, None)
+
+    docs = await collection.aggregate(
+        build_event_counts_pipeline(query), allowDiskUse=False
+    ).to_list(length=MAX_EVENT_DOCUMENTS)
+
+    if ttl > 0:
+        if len(_EVENTS_COUNTS_CACHE) >= EVENT_COUNTS_CACHE_MAX_ENTRIES:
+            _EVENTS_COUNTS_CACHE.clear()
+        _EVENTS_COUNTS_CACHE[key] = (time.monotonic() + ttl, docs)
+
+    return docs
+
+
+async def fetch_event_page_details(collection, instances: list, include_persistent_attendees: bool = False) -> dict:
+    """Fetch attendee detail for just the rows on this page.
+
+    Returns {(event_id, date): detail}. Each detail carries BOTH the dated record
+    for that one date and the event-level arrays, because the recurring and
+    one-time branches resolve the overlap differently and the caller has to
+    reproduce that choice:
+
+      * recurring instance - the dated record wins; the event-level list is used
+        only as the fallback the handler applies when a row has people but no
+        dated record;
+      * one-time instance - the event-level list wins whenever it is non-empty,
+        with the dated record as the fallback.
+
+    Two passes, both narrow:
+      1. project the exact attendance.<date> subkeys the page needs;
+      2. for any event whose requested date came back empty - which happens when
+         the record is stored under a legacy key such as "2025-W09" and
+         get_attendance_by_date() only resolves it by scanning - re-read just
+         that event's whole attendance map.
+
+    Returns {} when there is nothing to fetch, so callers can treat an empty
+    result as "keep the counts-only values".
+    """
+    if not instances:
+        return {}
+
+    by_event = {}
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        event_id = instance.get("original_event_id")
+        date = instance.get("date")
+        if not event_id or not date:
+            continue
+        by_event.setdefault(event_id, set()).add(date)
+
+    if not by_event:
+        return {}
+
+    wanted = {f"attendance.{date}" for dates in by_event.values() for date in dates}
+    docs = await collection.find(
+        {"_id": {"$in": [ObjectId(eid) if ObjectId.is_valid(eid) else eid
+                         for eid in by_event]}},
+        build_page_detail_projection(wanted, include_persistent_attendees),
+    ).to_list(length=len(by_event) * MAX_RECURRING_WEEKS_BACK)
+
+    by_id = {}
+    for doc in docs:
+        key = str(doc.get("_id"))
+        by_id[key] = doc
+
+    detail = {}
+    missing = {}
+    for event_id, dates in by_event.items():
+        doc = by_id.get(str(event_id))
+
+        def event_level(name, _doc=doc):
+            value = _doc.get(name, []) if _doc else []
+            return value if isinstance(value, list) else []
+
+        for date in dates:
+            entry = get_attendance_by_date(doc.get("attendance", {}) or {}, date) if doc else {}
+            # An entry is recorded for EVERY requested row, not only for dates
+            # that have an attendance record: the event-level arrays were
+            # attached to every row of the event by the old code, so omitting
+            # them here would silently empty them for rows with no capture.
+            #
+            # Both levels are returned because the two branches of the handler
+            # resolve them differently - recurring instances prefer the dated
+            # record, one-time instances prefer the event-level list.
+            detail[(str(event_id), date)] = {
+                "has_date_record": bool(entry),
+                "attendees": entry.get("attendees", []) if entry else None,
+                "new_people": entry.get("new_people", []) if entry else None,
+                "consolidations": entry.get("consolidations", []) if entry else None,
+                "event_attendees": event_level("attendees"),
+                "event_new_people": event_level("new_people"),
+                "event_consolidations": event_level("consolidations"),
+            }
+            if include_persistent_attendees:
+                detail[(str(event_id), date)]["persistent_attendees"] = \
+                    event_level("persistent_attendees")
+            if not entry:
+                missing.setdefault(event_id, set()).add(date)
+
+    # Legacy-keyed records: re-read only the events that still came back empty.
+    for event_id, dates in missing.items():
+        doc = await collection.find_one(
+            {"_id": ObjectId(event_id) if ObjectId.is_valid(event_id) else event_id}
+        )
+        if not doc:
+            continue
+        for date in dates:
+            entry = get_attendance_by_date(doc.get("attendance", {}) or {}, date)
+            if entry:
+                detail[(str(event_id), date)].update({
+                    "has_date_record": True,
+                    "attendees": entry.get("attendees", []),
+                    "new_people": entry.get("new_people", []),
+                    "consolidations": entry.get("consolidations", []),
+                })
+
+    return detail
+
+
 @app.get("/events/eventsdata")
 async def get_other_events(
     current_user: dict = Depends(get_current_user),
@@ -2779,14 +3231,16 @@ async def get_other_events(
     limit: int = Query(25, ge=1, le=500),
     status: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
+    is_global: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query("2025-10-10"),
     end_date: Optional[str] = Query(None),
-    show_all_dates: Optional[bool] = Query(False)
+    show_all_dates: Optional[bool] = Query(False),
+    include_persistent_attendees: Optional[bool] = Query(False)
 ):
     try:
-        print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}")
+        print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}, isGlobal: {is_global}")
         print(f"Query params - status: {status}, personal: {personal}, search: {search}")
 
         user_role = current_user.get("role", "user").lower()
@@ -2813,15 +3267,25 @@ async def get_other_events(
             start_date_obj = datetime.strptime("2000-01-01", "%Y-%m-%d").date()
             end_date_obj = today + timedelta(days=365)
 
-        print(f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}")
+        # show_all_dates was previously accepted and then never applied, so callers
+        # asking for full history silently got the date window instead. Honour it.
+        ignore_date_filter = bool(show_all_dates) or str(start_date or "").strip().lower() in ("all", "none", "")
+
+        print(
+            f"OTHER EVENTS - Date range: {start_date_obj} to {end_date_obj}"
+            + (" (ignored: show_all_dates)" if ignore_date_filter else "")
+        )
+
+        # Build organization conditions. Events created before multi-tenant support
+        # carry no org_id and no Organization field, so those documents matched
+        # neither branch above and every pre-refactor event became invisible here.
+        # See build_event_org_conditions() for the full rationale.
+        org_conditions = build_event_org_conditions(org_id, organization)
 
         query = {
             "$and": [
                 {
-                    "$or": [
-                        {"org_id": org_id},
-                        {"Organization": {"$regex": re.escape(organization), "$options": "i"}}
-                    ]
+                    "$or": org_conditions
                 },
                 {
                     "$nor": [
@@ -2875,6 +3339,18 @@ async def get_other_events(
                     ]
                 })
 
+        if is_global is not None:
+            # Lets a client that only renders global events ask for just those
+            # instead of downloading the whole grid and discarding the rest.
+            # Service Check-in is the caller: 1,261 of the 3,628 rows match, and
+            # every one of them is a Church Service or a Conference, so it can
+            # page over three requests instead of eight.
+            print(f"Filtering by isGlobal={is_global}")
+            if is_global:
+                query["$and"].append({"isGlobal": True})
+            else:
+                query["$and"].append({"isGlobal": {"$ne": True}})
+
         if search and search.strip():
             search_term = search.strip()
             print(f"Applying search filter: '{search_term}'")
@@ -2894,9 +3370,25 @@ async def get_other_events(
 
         print(f"Final query: {query}")
 
-        cursor = events_collection.find(query)
-        events = await cursor.to_list(length=3000)
-        print(f"Found {len(events)} other events")
+        # Sort before capping. to_list(length=...) with no sort returns an
+        # ARBITRARY 3000 documents, so on a larger collection the events that
+        # fall outside the cap are silently lost - and there is no way to tell
+        # which ones. Sorting newest-first makes the truncation deterministic.
+        # The cap only bounds documents, not the instances synthesised from them.
+        # Deliberately NOT sorted in the database: sorting on ("created_at", -1)
+        # is unserved by any index (97% of these documents have no created_at at
+        # all) and measured at 88s versus 51s for the same query unsorted against
+        # production. Ordering is handled in Python further down, where the
+        # synthesised instances are sorted by date anyway.
+        # Two-phase read. Phase 1 fetches attendee COUNTS, not people: the
+        # person records are 77.6% of the payload (measured 4.35 MB / ~48s for
+        # a page of 25) and are only needed for the rows this page returns,
+        # which are fetched in phase 2 by fetch_event_page_details() below.
+        # Phase 1's results are cached briefly because page, limit and status
+        # filtering all happen in Python after the read, so every page of a given
+        # filter would otherwise re-run the identical query.
+        events = await get_event_counts_documents(events_collection, query)
+        print(f"Found {len(events)} other events (doc cap {MAX_EVENT_DOCUMENTS})")
 
         day_mapping = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
@@ -2908,71 +3400,43 @@ async def get_other_events(
         for event in events:
             try:
                 event_name = event.get("Event Name") or event.get("eventName", "")
-                event_type_value = event.get("Event Type") or event.get("eventType", "Event")
+                # eventTypeName is the third spelling this collection uses and it
+                # is populated on documents that carry neither "Event Type" nor
+                # "eventType". Without it those rows were all labelled the literal
+                # "Event", which is what made Church Service and Conference rows
+                # indistinguishable from each other in the response - the query
+                # side already matched on all three spellings, so filtering by
+                # type returned them while the row itself said "Event".
+                # Falsy values are skipped rather than relying on dict.get's
+                # default, which only fires when the key is absent.
+                event_type_value = (
+                    event.get("Event Type")
+                    or event.get("eventType")
+                    or event.get("eventTypeName")
+                    or "Event"
+                )
                 recurring_days = event.get("recurring_day", [])
                 if not isinstance(recurring_days, list):
                     recurring_days = []
                 is_recurring = len(recurring_days) > 0
 
-                # Helper function to enrich attendees with financial data
-                def enrich_attendees_with_financials(attendees_list):
-                    enriched = []
-                    for att in attendees_list:
-                        if not isinstance(att, dict):
-                            continue
-                        # Calculate financials if missing
-                        price = att.get("price", 0)
-                        paid = att.get("paid", att.get("paidAmount", 0))
-
-                        try:
-                            price = float(price) if price else 0
-                            paid = float(paid) if paid else 0
-                        except (TypeError, ValueError):
-                            price = 0
-                            paid = 0
-
-                        if paid >= price:
-                            owing = 0
-                            change = paid - price
-                        elif paid > 0 and paid < price:
-                            owing = price - paid
-                            change = 0
-                        else:
-                            owing = price
-                            change = 0
-                        
-                        enriched_att = {
-                            "id": att.get("id", ""),
-                            "name": att.get("name", ""),
-                            "fullName": att.get("fullName", att.get("name", "")),
-                            "surname": att.get("surname", ""),
-                            "gender": att.get("gender", ""),
-                            "birthday": att.get("birthday", ""),
-                            "address": att.get("address", ""),
-                            "stage": att.get("stage", ""),
-                            "email": att.get("email", ""),
-                            "phone": att.get("phone", ""),
-                            "invitedBy": att.get("invitedBy", ""),
-                            "leader1": att.get("leader1", ""),
-                            "leader12": att.get("leader12", ""),
-                            "leader144": att.get("leader144", ""),
-                            "leader1728": att.get("leader1728", ""),
-                            "checked_in": att.get("checked_in", False),
-                            "decision": att.get("decision", ""),
-                            "priceName": att.get("priceName", ""),
-                            "price": price,
-                            "ageGroup": att.get("ageGroup", ""),
-                            "paymentMethod": att.get("paymentMethod", ""),
-                            "paid": paid,
-                            "owing": owing,
-                            "change": change,
-                        }
-                        enriched.append(enriched_att)
-                    return enriched
-
                 if is_recurring:
                     days_since_monday = today.weekday()
                     week_start = today - timedelta(days=days_since_monday)
+
+                    # Walk back far enough to cover the whole requested window.
+                    # This previously looped range(0, 1), so a recurring event
+                    # produced at most ONE instance - the current week's - and
+                    # produced none at all when that week's occurrence was still
+                    # in the future. That is why historical events vanished from
+                    # the Events page and Service Check-in history while newer
+                    # ones showed up.
+                    if ignore_date_filter:
+                        window_start = today - timedelta(weeks=MAX_RECURRING_WEEKS_BACK)
+                    else:
+                        window_start = start_date_obj
+                    weeks_back = (today - window_start).days // 7 + 1
+                    weeks_back = max(1, min(weeks_back, MAX_RECURRING_WEEKS_BACK))
 
                     for day_name_raw in recurring_days:
                         day_key = str(day_name_raw).strip().lower()
@@ -2980,11 +3444,13 @@ async def get_other_events(
                         if target_weekday is None:
                             continue
 
-                        for week_back in range(0, 1):
+                        for week_back in range(0, weeks_back):
                             instance_date = (week_start + timedelta(days=target_weekday)) - timedelta(weeks=week_back)
                             if instance_date > today:
                                 continue
-                            if instance_date < start_date_obj or instance_date > end_date_obj:
+                            if not ignore_date_filter and (
+                                instance_date < start_date_obj or instance_date > end_date_obj
+                            ):
                                 continue
 
                             exact_date_str = instance_date.isoformat()
@@ -2994,15 +3460,16 @@ async def get_other_events(
                             attendance_data = event.get("attendance", {}) or {}
                             date_attendance = get_attendance_by_date(attendance_data, exact_date_str)
 
-                            if date_attendance and exact_date_str not in attendance_data:
-                                try:
-                                    await events_collection.update_one(
-                                        {"_id": event["_id"]},
-                                        {"$set": {f"attendance.{exact_date_str}": date_attendance}}
-                                    )
-                                except Exception as migrate_error:
-                                    print(f"Legacy attendance migration skipped: {migrate_error}")
-
+                            # A legacy-keyed attendance entry used to be written
+                            # back under its exact ISO date here. That was a data
+                            # migration smuggled into a GET handler, and it did
+                            # nothing for this response: get_attendance_by_date()
+                            # has already returned the legacy entry above, so the
+                            # instance is built identically either way. It is now
+                            # only reachable once per synthesised instance rather
+                            # than once per request - which, now that the recurring
+                            # branch walks the whole requested window, was up to
+                            # one UPDATE per instance on every page load.
                             original_date_str = None
                             event_date_field = event.get("date") or event.get("Date Of Event") or event.get("eventDate")
                             if isinstance(event_date_field, datetime):
@@ -3020,21 +3487,40 @@ async def get_other_events(
                             if not isinstance(root_attendees, list):
                                 root_attendees = []
 
-                            if not date_attendance and exact_date_str == original_date_str and root_attendees:
+                            # Phase 1 empties the event-level attendees array and
+                            # leaves only attendees_count behind, so the "does this
+                            # event have any attendees at all" test has to be made
+                            # against the count. Using the (now always empty) array
+                            # would stop this fallback firing and silently demote
+                            # such events to incomplete.
+                            event_level_attendee_count = attendance_entry_count(
+                                event, "attendees_count", "attendees"
+                            )
+
+                            if not date_attendance and exact_date_str == original_date_str and event_level_attendee_count > 0:
                                 date_attendance = {
                                     "attendees": root_attendees,
+                                    "attendees_count": event_level_attendee_count,
                                     "status": str(event.get("status", "")).lower(),
                                     "new_people": event.get("new_people", []),
                                     "consolidations": event.get("consolidations", []),
                                 }
 
+                            # Phase 1 gave us counts, not people. Status and the
+                            # row's numbers come from the counts so they are
+                            # identical to the pre-split behaviour; the attendee
+                            # arrays themselves are filled in by phase 2 below
+                            # for just the rows this page returns.
+                            weekly_attendees_count = attendance_entry_count(
+                                date_attendance, "attendees_count", "attendees"
+                            )
                             weekly_attendees = date_attendance.get("attendees", [])
                             if not isinstance(weekly_attendees, list):
                                 weekly_attendees = []
                             
                             # Enrich attendees with financial data
                             weekly_attendees = enrich_attendees_with_financials(weekly_attendees)
-                            has_weekly_attendees = len(weekly_attendees) > 0
+                            has_weekly_attendees = weekly_attendees_count > 0
 
                             new_people = date_attendance.get("new_people", [])
                             if not isinstance(new_people, list):
@@ -3042,6 +3528,13 @@ async def get_other_events(
                             consolidations = date_attendance.get("consolidations", [])
                             if not isinstance(consolidations, list):
                                 consolidations = []
+
+                            new_people_count = attendance_entry_count(
+                                date_attendance, "new_people_count", "new_people"
+                            )
+                            consolidation_count = attendance_entry_count(
+                                date_attendance, "consolidation_count", "consolidations"
+                            )
 
                             att_status = str(date_attendance.get("status", "")).lower()
                             is_did_not_meet = date_attendance.get("is_did_not_meet", False)
@@ -3055,10 +3548,10 @@ async def get_other_events(
                             else:
                                 event_status = "incomplete"
 
-                            if status and status != event_status:
+                            if status and status != "all" and status != event_status:
                                 continue
 
-                            total_attendance = len(weekly_attendees)
+                            total_attendance = weekly_attendees_count
 
                             instance = {
                                 "_id": f"{str(event.get('_id'))}_{exact_date_str}",
@@ -3087,12 +3580,15 @@ async def get_other_events(
                                 "created_at": str(event.get("created_at", "")),
                                 "updated_at": str(event.get("updated_at", "") or event.get("updatedAt", "")),
                                 "attendees": weekly_attendees,
-                                "persistent_attendees": enrich_attendees_with_financials(event.get("persistent_attendees", [])),
+                                "persistent_attendees": (
+                                    enrich_attendees_with_financials(event.get("persistent_attendees", []))
+                                    if include_persistent_attendees else []
+                                ),
                                 "new_people": new_people,
                                 "consolidations": consolidations,
                                 "total_attendance": total_attendance,
-                                "new_people_count": len(new_people),
-                                "consolidation_count": len(consolidations),
+                                "new_people_count": new_people_count,
+                                "consolidation_count": consolidation_count,
                             }
                             other_events.append(instance)
 
@@ -3125,16 +3621,24 @@ async def get_other_events(
 
                     actual_day_value = day_name.capitalize() if day_name else "One-time"
 
-                    if event_date < start_date_obj or event_date > end_date_obj:
+                    if not ignore_date_filter and (
+                        event_date < start_date_obj or event_date > end_date_obj
+                    ):
                         continue
                     if event_date > today:
                         continue
 
+                    # Counts, not people - see build_event_counts_pipeline().
+                    # The event-level array is emptied by phase 1, so "does this
+                    # event have attendees" is decided on the count, not on it.
+                    event_level_attendee_count = attendance_entry_count(
+                        event, "attendees_count", "attendees"
+                    )
                     weekly_attendees = event.get("attendees", [])
                     if not isinstance(weekly_attendees, list):
                         weekly_attendees = []
 
-                    if not weekly_attendees:
+                    if event_level_attendee_count == 0:
                         attendance_data = event.get("attendance", {})
                         if isinstance(attendance_data, dict):
                             event_date_iso = event_date.isoformat()
@@ -3142,64 +3646,16 @@ async def get_other_events(
                             weekly_attendees = event_attendance.get("attendees", [])
                             if not isinstance(weekly_attendees, list):
                                 weekly_attendees = []
-
-                    # Helper function to enrich attendees with financial data
-                    def enrich_attendees_with_financials(attendees_list):
-                        enriched = []
-                        for att in attendees_list:
-                            if not isinstance(att, dict):
-                                continue
-                            price = att.get("price", 0)
-                            paid = att.get("paid", att.get("paidAmount", 0))
-
-                            try:
-                                price = float(price) if price else 0
-                                paid = float(paid) if paid else 0
-                            except (TypeError, ValueError):
-                                price = 0
-                                paid = 0
-
-                            if paid >= price:
-                                owing = 0
-                                change = paid - price
-                            elif paid > 0 and paid < price:
-                                owing = price - paid
-                                change = 0
-                            else:
-                                owing = price
-                                change = 0
-                            
-                            enriched_att = {
-                                "id": att.get("id", ""),
-                                "name": att.get("name", ""),
-                                "fullName": att.get("fullName", att.get("name", "")),
-                                "surname": att.get("surname", ""),
-                                "gender": att.get("gender", ""),
-                                "birthday": att.get("birthday", ""),
-                                "address": att.get("address", ""),
-                                "stage": att.get("stage", ""),
-                                "email": att.get("email", ""),
-                                "phone": att.get("phone", ""),
-                                "invitedBy": att.get("invitedBy", ""),
-                                "leader1": att.get("leader1", ""),
-                                "leader12": att.get("leader12", ""),
-                                "leader144": att.get("leader144", ""),
-                                "leader1728": att.get("leader1728", ""),
-                                "checked_in": att.get("checked_in", False),
-                                "decision": att.get("decision", ""),
-                                "priceName": att.get("priceName", ""),
-                                "price": price,
-                                "ageGroup": att.get("ageGroup", ""),
-                                "paymentMethod": att.get("paymentMethod", ""),
-                                "paid": paid,
-                                "owing": owing,
-                                "change": change,
-                            }
-                            enriched.append(enriched_att)
-                        return enriched
+                            weekly_attendees_count = attendance_entry_count(
+                                event_attendance, "attendees_count", "attendees"
+                            )
+                        else:
+                            weekly_attendees_count = 0
+                    else:
+                        weekly_attendees_count = event_level_attendee_count
 
                     weekly_attendees = enrich_attendees_with_financials(weekly_attendees)
-                    has_weekly_attendees = len(weekly_attendees) > 0
+                    has_weekly_attendees = weekly_attendees_count > 0
 
                     new_people = event.get("new_people", [])
                     if not isinstance(new_people, list):
@@ -3207,6 +3663,13 @@ async def get_other_events(
                     consolidations = event.get("consolidations", [])
                     if not isinstance(consolidations, list):
                         consolidations = []
+
+                    new_people_count = attendance_entry_count(
+                        event, "new_people_count", "new_people"
+                    )
+                    consolidation_count = attendance_entry_count(
+                        event, "consolidation_count", "consolidations"
+                    )
 
                     # Date-scoped data (consolidations/new_people written during
                     # live service check-in) takes precedence over root fallback.
@@ -3216,8 +3679,14 @@ async def get_other_events(
                     if isinstance(date_data_nr, dict):
                         if date_data_nr.get("consolidations"):
                             consolidations = date_data_nr.get("consolidations", [])
+                            consolidation_count = attendance_entry_count(
+                                date_data_nr, "consolidation_count", "consolidations"
+                            )
                         if date_data_nr.get("new_people"):
                             new_people = date_data_nr.get("new_people", [])
+                            new_people_count = attendance_entry_count(
+                                date_data_nr, "new_people_count", "new_people"
+                            )
 
                     main_event_status = event.get("status", "").lower()
                     main_event_did_not_meet = event.get("did_not_meet", False)
@@ -3234,12 +3703,12 @@ async def get_other_events(
 
                     print(f"Event '{event_name}' - attendees: {len(weekly_attendees)}, status: {event_status}")
 
-                    if status and status != event_status:
+                    if status and status != "all" and status != event_status:
                         continue
 
                     total_attendance = event.get("total_attendance")
                     if not isinstance(total_attendance, int) or total_attendance == 0:
-                        total_attendance = len(weekly_attendees)
+                        total_attendance = weekly_attendees_count
 
                     instance = {
                         "_id": str(event.get("_id")),
@@ -3268,12 +3737,15 @@ async def get_other_events(
                         "created_at": str(event.get("created_at", "")),
                         "updated_at": str(event.get("updated_at", "") or event.get("updatedAt", "")),
                         "attendees": weekly_attendees,
-                        "persistent_attendees": enrich_attendees_with_financials(event.get("persistent_attendees", [])),
+                        "persistent_attendees": (
+                            enrich_attendees_with_financials(event.get("persistent_attendees", []))
+                            if include_persistent_attendees else []
+                        ),
                         "new_people": new_people,
                         "consolidations": consolidations,
                         "total_attendance": total_attendance,
-                        "new_people_count": len(new_people),
-                        "consolidation_count": len(consolidations),
+                        "new_people_count": new_people_count,
+                        "consolidation_count": consolidation_count,
                     }
                     other_events.append(instance)
 
@@ -3290,6 +3762,73 @@ async def get_other_events(
         skip = (page - 1) * limit
         paginated_events = other_events[skip:skip + limit]
 
+        # Phase 2: fill in the attendee detail for this page only. Sorting,
+        # filtering and pagination have all happened by now, so the number of
+        # documents re-read is bounded by the page size rather than by the
+        # 1,802 instances synthesised above.
+        detail_by_key = await fetch_event_page_details(
+            events_collection, paginated_events, include_persistent_attendees
+        )
+        if detail_by_key:
+            for instance in paginated_events:
+                payload = detail_by_key.get(
+                    (str(instance.get("original_event_id")), instance.get("date"))
+                )
+                if not payload:
+                    continue
+
+                if include_persistent_attendees and isinstance(
+                    payload.get("persistent_attendees"), list
+                ):
+                    instance["persistent_attendees"] = enrich_attendees_with_financials(
+                        payload["persistent_attendees"]
+                    )
+
+                has_dated = payload.get("has_date_record")
+                # total_attendance > 0 with no dated record means the handler
+                # fell back to the event-level list, so that is where this row's
+                # people live. The two branches resolved this differently before
+                # the split and still must.
+                used_event_level = not has_dated and instance.get("total_attendance")
+
+                if instance.get("is_recurring"):
+                    if has_dated and isinstance(payload.get("attendees"), list):
+                        instance["attendees"] = enrich_attendees_with_financials(
+                            payload["attendees"]
+                        )
+                    elif used_event_level:
+                        instance["attendees"] = enrich_attendees_with_financials(
+                            payload.get("event_attendees", [])
+                        )
+                    if has_dated:
+                        if payload.get("new_people"):
+                            instance["new_people"] = payload["new_people"]
+                        if payload.get("consolidations"):
+                            instance["consolidations"] = payload["consolidations"]
+                else:
+                    if used_event_level:
+                        instance["attendees"] = enrich_attendees_with_financials(
+                            payload.get("event_attendees", [])
+                        )
+                        instance["new_people"] = payload.get("event_new_people", [])
+                        instance["consolidations"] = payload.get(
+                            "event_consolidations", []
+                        )
+                    elif has_dated:
+                        if isinstance(payload.get("attendees"), list):
+                            instance["attendees"] = enrich_attendees_with_financials(
+                                payload["attendees"]
+                            )
+                        # Dated values win when present, as they did before.
+                        if payload.get("new_people"):
+                            instance["new_people"] = payload["new_people"]
+                        elif payload.get("event_new_people"):
+                            instance["new_people"] = payload["event_new_people"]
+                        if payload.get("consolidations"):
+                            instance["consolidations"] = payload["consolidations"]
+                        elif payload.get("event_consolidations"):
+                            instance["consolidations"] = payload["event_consolidations"]
+
         print(f"Returning {len(paginated_events)} other events (page {page}/{total_pages})")
 
         return {
@@ -3297,7 +3836,10 @@ async def get_other_events(
             "total_events": total_count,
             "total_pages": total_pages,
             "current_page": page,
-            "page_size": limit
+            "page_size": limit,
+            # Same field name the DailyTasks pagination uses, so the Events page
+            # can share one "load more" implementation.
+            "has_more": skip + len(paginated_events) < total_count
         }
 
     except Exception as e:
@@ -3363,7 +3905,12 @@ async def get_weekly_attendance(
 
 
 @app.put("/events/cells/{identifier}")
-async def update_cell_event_working(identifier: str, event_data: dict):
+async def update_cell_event_working(
+    identifier: str,
+    event_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    # Was unauthenticated.
     """
     SINGLE EVENT UPDATE: Update ONLY the existing event, NEVER create new ones
     """
@@ -3507,7 +4054,15 @@ async def update_cell_event_working(identifier: str, event_data: dict):
 
 
 @app.put("/events/person/{person_name}/event/{event_name}/day/{day_name}")
-async def update_events_by_person_event_and_day(person_name: str, event_name: str, day_name: str, update_data: dict):
+async def update_events_by_person_event_and_day(
+    person_name: str,
+    event_name: str,
+    day_name: str,
+    update_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    # Issues events_collection.update_many with no org scoping, so this was the
+    # broadest unauthenticated write in the app. Was unauthenticated.
     """
     Update ONLY events for a specific person with a SPECIFIC event name AND SPECIFIC day
     """
@@ -3711,7 +4266,9 @@ async def deactivate_event(
     person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
     day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
     is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
+    current_user: dict = Depends(get_current_user)
 ):
+    # Sets is_active:False, which the events list filters out. Was unauthenticated.
     try:
         current_time = datetime.utcnow()
         deactivation_end = current_time + timedelta(weeks=weeks)
@@ -3808,8 +4365,10 @@ async def deactivate_event(
 async def reactivate_cell(
     cell_identifier: str = Query(..., description="Cell name or Person name"),
     person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to reactivate")
+    day_of_week: Optional[str] = Query(None, description="Specific day to reactivate"),
+    current_user: dict = Depends(get_current_user)
 ):
+    # Was unauthenticated.
     try:
         current_time = datetime.utcnow()
         
@@ -3917,7 +4476,9 @@ sleep(10)
   
 #------------------ MIGRATION ENDPOINTS ---------- 
 @app.post("/migrate-event-types-uuids")
-async def migrate_event_types_uuids():
+async def migrate_event_types_uuids(
+    current_user: dict = Depends(get_current_user)
+):
     """ ONE-TIME: Add UUIDs to event types that don't have them"""
     try:
         import uuid
@@ -4050,7 +4611,8 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
 @app.put("/event-types/{event_type_name}")
 async def update_event_type(
     event_type_name: str,
-    updated_data: EventTypeCreate = Body(...)
+    updated_data: EventTypeCreate = Body(...),
+    current_user: dict = Depends(get_current_user)
 ):
     try:
         decoded_event_type_name = unquote(event_type_name)
@@ -4174,8 +4736,13 @@ from urllib.parse import unquote
 @app.delete("/event-types/{event_type_name}")
 async def delete_event_type(
     event_type_name: str,
-    force: bool = Query(False, description="Force delete even if events exist")
+    force: bool = Query(False, description="Force delete even if events exist"),
+    current_user: dict = Depends(get_current_user)
 ):
+    # This cascades into events_collection.delete_many with no org scoping, so a
+    # single call can irreversibly destroy every event of a type across all orgs.
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
     try:
         decoded_event_type_name = unquote(event_type_name)
        
@@ -7262,6 +7829,11 @@ async def submit_attendance(
         
         if result.matched_count != 1:
             raise HTTPException(status_code=500, detail="Failed to update event")
+
+        # The counts this write just changed are memoised for up to 30s by
+        # get_event_counts_documents(); drop them so the next Events load
+        # reflects this submission immediately.
+        clear_event_counts_cache()
         
         return {
             "message": "Attendance submitted successfully",
@@ -7905,7 +8477,14 @@ async def get_event_statistics(
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.delete("/events/{event_id}")
-async def delete_event(event_id: str = Path(...)):
+async def delete_event(
+    event_id: str = Path(...),
+    current_user: dict = Depends(get_current_user)
+):
+    # Irreversible single-document delete; was previously reachable unauthenticated.
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
     try:
         print(f" DELETE REQUEST - Event ID: {event_id}")
         print(f" ID length: {len(event_id)}")
@@ -7954,7 +8533,11 @@ async def delete_event(event_id: str = Path(...)):
 
 
 @app.delete("/events/cell/{event_id}/members/{member_id}")
-async def remove_member_from_cell(event_id: str, member_id: str):
+async def remove_member_from_cell(
+    event_id: str,
+    member_id: str,
+    current_user: dict = Depends(get_current_user)
+):
     event = await events_collection.find_one({"_id": ObjectId(event_id), "type": "cell"})
     if not event:
         raise HTTPException(status_code=404, detail="Cell event not found")
@@ -8186,7 +8769,10 @@ async def add_uuids_to_all_events(current_user: dict = Depends(get_current_user)
 # -------------------------
 # http://localhost:8000/checkin
 @app.post("/checkin")
-async def check_in_person(checkin: CheckIn):
+async def check_in_person(
+    checkin: CheckIn,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         event = await events_collection.find_one({"_id": ObjectId(checkin.event_id)})
         if not event:
@@ -8237,7 +8823,10 @@ async def get_checkins(event_id: str):
 
 # http://localhost:8000/uncapture
 @app.post("/uncapture")
-async def uncapture_person(data: UncaptureRequest):
+async def uncapture_person(
+    data: UncaptureRequest,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         update_result = await events_collection.update_one(
             {"_id": ObjectId(data.event_id)},
@@ -16023,6 +16612,7 @@ async def import_people_from_spreadsheet(
 @app.post("/people/import/preview-columns")
 async def preview_spreadsheet_columns(
     file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
 ):
     filename  = file.filename or ""
     ext       = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""

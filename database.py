@@ -13,6 +13,17 @@ _PLACEHOLDERS = {"", "none", "null", "undefined", "changeme", "your-mongodb-uri"
 
 DEFAULT_MONGO_URI = "mongodb://localhost:27017"
 
+# Upper bound on event DOCUMENTS read per list request. This is not a result
+# limit - pagination is applied to the synthesised instances afterwards, so this
+# only bounds how much raw data one request may pull. It exists so a single
+# request cannot exhaust memory on a large collection.
+MAX_EVENT_DOCUMENTS = 3000
+
+# Upper bound on how many weeks back a recurring event is expanded into
+# instances. Without a bound, a wide start_date would synthesise one instance per
+# recurring day per week across the whole window; this caps the work per request.
+MAX_RECURRING_WEEKS_BACK = 520  # ~10 years
+
 
 def _is_placeholder(value: str) -> bool:
     """True if the value is missing, or is a URI pointing at a placeholder host."""

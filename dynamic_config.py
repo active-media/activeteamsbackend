@@ -6,10 +6,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from database import resolve_mongo_uri
+from database import resolve_mongo_uri, events_collection
 
 MONGO_URI = resolve_mongo_uri()
-DB_NAME = "test-data-active-teams"
+# Must match the app: database.py resolves DB_NAME from the environment and the
+# app reads/writes the "Events" collection. This script previously hardcoded a
+# different database and wrote org_id into "AllEvents", a collection nothing in
+# the app ever reads - so the backfill silently did nothing to live data.
+DB_NAME = os.getenv("DB_NAME", "active-teams-db")
 
 client = AsyncIOMotorClient(MONGO_URI)
 db = client[DB_NAME]
@@ -46,16 +50,24 @@ async def seed():
     print("Successfully seeded 'active-teams' config!")
 
 async def tag_events():
-    print("Tagging existing events with org_id...")
-    result = await db["AllEvents"].update_many(
+    """Backfill org_id onto pre-multi-tenant events.
+
+    Only ever touches documents that have no org_id yet, and only ever sets a
+    field - it cannot drop attendance or any other data. Take a mongodump first.
+    """
+    print(f"Tagging untagged events with org_id in {DB_NAME}.Events...")
+    result = await events_collection.update_many(
         {"org_id": {"$exists": False}},
         {"$set": {"org_id": "active-teams"}}
     )
     print(f"Tagged {result.modified_count} events with org_id: active-teams")
 
+    remaining = await events_collection.count_documents({"org_id": {"$exists": False}})
+    print(f"Still untagged: {remaining}")
+
 async def tag_event_types():
     print("Tagging existing event types with org_id...")
-    result = await db["AllEvents"].update_many(
+    result = await events_collection.update_many(
         {"isEventType": True, "org_id": {"$exists": False}},
         {"$set": {"org_id": "active-teams"}}
     )
