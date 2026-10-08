@@ -119,15 +119,16 @@ async def update_session_attendees():
     # print(updated)
     return count
 
+
 def add_person_id():
     """
     adds person id to the event_session_attendees table
     """
-    attendees = supabase.table("event_session_attendees").select("*").is_("person_id", "null").execute().data
+    attendees = supabase.table("event_attendees").select("*").is_("person_id", "null").execute().data
     changed = 0
     total = 0
     people=[]
-    for att in attendees[10:]:
+    for att in attendees:
         print(att.get("full_name"))
         total+=1
         params = {
@@ -136,10 +137,10 @@ def add_person_id():
         } 
         person = supabase.rpc("match_people",params).execute().data
         if person:
-            supabase.table("event_session_attendees").update({"person_id": person[0]["person_id"]}).eq("id", att.get("id")).execute()
+            supabase.table("event_attendees").update({"person_id": person[0]["person_id"]}).eq("attendee_id", att.get("attendee_id")).execute()
             changed += 1
         else:
             people.append(att.get("full_name"))
     print(f"Done!: {changed}/{total}")
     print("People not found:", people)
-# add_person_id()
+add_person_id()
