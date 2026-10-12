@@ -22,6 +22,8 @@ CREATE INDEX IF NOT EXISTS idx_service_targets_leader_name ON service_targets(le
 CREATE INDEX IF NOT EXISTS idx_service_targets_week ON service_targets(week_identifier);
 CREATE INDEX IF NOT EXISTS idx_service_targets_org ON service_targets(organization);
 
--- Grant permissions if using Supabase auth
-GRANT ALL ON service_targets TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON service_targets TO service_role;
+-- Keep service-target data accessible only through the scoped backend API.
+ALTER TABLE public.service_targets ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.service_targets FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.service_targets TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE public.service_targets_id_seq TO service_role;

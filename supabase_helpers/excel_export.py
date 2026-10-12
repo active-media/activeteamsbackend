@@ -99,6 +99,8 @@ def _get_weekly_cells_data(
     org_filter: Optional[dict],
     start_date: str,
     end_date: str,
+    visible_leader_ids: Optional[set[str]] = None,
+    campus: Optional[str] = None,
 ) -> list[dict]:
     """
     Fetch every event_sessions row in the date window (joined to events),
@@ -112,7 +114,7 @@ def _get_weekly_cells_data(
         .select(
             "session_date, week_identifier, checked_in_count, event_id, "
             "is_did_not_meet, "
-            "events!inner(event_name, event_type_name, Organization, event_leader, is_school_cell)"
+            "events!inner(event_name, event_type_name, Organization, event_leader, is_school_cell, location)"
         )
         .gte("session_date", start_date)
         .lte("session_date", end_date)
@@ -129,7 +131,7 @@ def _get_weekly_cells_data(
     else:
         logger.warning("[excel_export] No rows returned from event_sessions for this date range")
 
-    org_value = (org_filter or {}).get("organization")
+    org_value = (org_filter or {}).get("Organization") or (org_filter or {}).get("organization")
     org_value = org_value.strip().lower() if org_value else None
 
     rows: list[dict] = []
@@ -146,6 +148,8 @@ def _get_weekly_cells_data(
             event_org = (ev.get("Organization") or "").strip().lower()
             if event_org != org_value:
                 continue
+        if campus and (ev.get("location") or "") != campus:
+            continue
 
         rows.append({
             "session_date":     row.get("session_date"),
@@ -154,7 +158,28 @@ def _get_weekly_cells_data(
             "event_id":         row.get("event_id"),
             "event_name":       ev.get("event_name") or "Unnamed Cell",
             "event_leader":     ev.get("event_leader") or "Unassigned",
+            "location":         ev.get("location"),
         })
+
+    if visible_leader_ids is not None:
+        people = sb.table("People").select("_id, Name, Surname, Email").execute().data or []
+        identities = set()
+        for person in people:
+            if str(person.get("_id") or "") not in visible_leader_ids:
+                continue
+            full_name = " ".join(
+                str(person.get(key) or "").strip()
+                for key in ("Name", "Surname")
+                if str(person.get(key) or "").strip()
+            )
+            if full_name:
+                identities.add(full_name.casefold())
+            if person.get("Email"):
+                identities.add(str(person["Email"]).casefold())
+        rows = [
+            row for row in rows
+            if any(identity in row["event_leader"].casefold() for identity in identities)
+        ]
 
     logger.info("[excel_export] Rows after filtering to Cells: %d", len(rows))
     if raw_rows and not rows:
@@ -494,6 +519,8 @@ def build_cells_excel(
     org_filter: Optional[dict],
     start_date: str,
     end_date: str,
+    visible_leader_ids: Optional[set[str]] = None,
+    campus: Optional[str] = None,
 ) -> bytes:
     """
     Build and return raw .xlsx bytes:
@@ -506,7 +533,7 @@ def build_cells_excel(
         LineChart, Reference, SeriesLabel, get_column_letter,
     ) = _get_openpyxl()
 
-    rows = _get_weekly_cells_data(org_filter, start_date, end_date)
+    rows = _get_weekly_cells_data(org_filter, start_date, end_date, visible_leader_ids, campus)
     week_cols = _build_week_columns(rows)
     overall_weekly = _build_overall_weekly(rows)
     leaders = _build_leader_matrix(rows)

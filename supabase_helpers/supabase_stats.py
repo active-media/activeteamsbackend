@@ -36,10 +36,13 @@ Key field-name notes
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+import logging
 from typing import Optional
 
 from supabase_helpers.supabase_connection import supabase
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -61,6 +64,18 @@ _CELL_TYPE_VALUES = ["Cells", "cells", "CELLS"]
 
 def _period_range(period: str) -> tuple[datetime, datetime]:
     """Return (start, end) UTC-aware datetimes for the requested period."""
+    if len(period) == 7 and period[4] == "-":
+        try:
+            year, month = (int(part) for part in period.split("-"))
+            start = datetime(year, month, 1, tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            raise ValueError(f"Unknown period: {period!r}") from None
+        if month == 12:
+            next_month = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            next_month = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        return start, next_month - timedelta(microseconds=1)
+
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -77,6 +92,15 @@ def _period_range(period: str) -> tuple[datetime, datetime]:
             end = datetime(today.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
         else:
             end = datetime(today.year, today.month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        return start, end
+
+    if period == "thisQuarter":
+        quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+        start = today.replace(month=quarter_start_month, day=1)
+        if quarter_start_month == 10:
+            end = datetime(today.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        else:
+            end = datetime(today.year, quarter_start_month + 3, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
         return start, end
 
     if period == "previous7":
@@ -143,6 +167,392 @@ def _apply_org_events(query, org_filter: Optional[dict]):
     if org_value:
         query = query.eq("Organization", org_value)
     return query
+
+
+def _execute_all_pages(query_factory, page_size: int = 1000) -> list[dict]:
+    """Read all rows from a Supabase query using bounded range requests."""
+    rows: list[dict] = []
+    start = 0
+    while True:
+        page = query_factory().range(start, start + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size
+
+
+def _person_key(row: dict) -> str | None:
+    for key in ("mongo_person_id", "person_id", "email", "full_name", "attendee_id"):
+        value = str(row.get(key) or "").strip().casefold()
+        if value:
+            return value
+    return None
+
+
+def _ministry_rows(
+    events: list[dict], sessions: list[dict], start: datetime, end: datetime
+) -> list[dict]:
+    ministry_names = ("Life Class", "School of Leaders", "Plan 40", "School Cell")
+    result = {
+        name: {
+            "ministry": name,
+            "registered": None,
+            "attended": None,
+            "completed": None,
+            "attendance_percent": None,
+            "completion_percent": None,
+        }
+        for name in ministry_names
+    }
+    event_by_id = {
+        str(event.get("event_id")): event
+        for event in events
+        if event.get("event_id") is not None
+    }
+    selected_event_ids = set()
+    for session in sessions:
+        event_id = str(session.get("event_id") or "")
+        if event_id in event_by_id:
+            selected_event_ids.add(event_id)
+    for event_id, event in event_by_id.items():
+        try:
+            event_date = date.fromisoformat(str(event.get("event_date") or "")[:10])
+        except ValueError:
+            continue
+        if start.date() <= event_date <= end.date():
+            selected_event_ids.add(event_id)
+
+    life_class_ids = {
+        event_id for event_id in selected_event_ids
+        if str(event_by_id[event_id].get("event_type_name") or "").strip().casefold() == "life class"
+    }
+    if life_class_ids:
+        try:
+            attendee_rows = _execute_all_pages(
+                lambda: supabase.table("event_attendees").select(
+                    "event_id, mongo_person_id, full_name, email, is_persistent"
+                ).in_("event_id", sorted(life_class_ids))
+            )
+            registered = {
+                key for row in attendee_rows
+                if str(row.get("event_id") or "") in life_class_ids
+                if (key := _person_key(row)) is not None
+            }
+            attended = {
+                key for row in attendee_rows
+                if str(row.get("event_id") or "") in life_class_ids and row.get("is_persistent") is True
+                if (key := _person_key(row)) is not None
+            }
+            result["Life Class"].update(
+                registered=len(registered),
+                attended=len(attended),
+                attendance_percent=round(len(attended) / len(registered) * 100, 1) if registered else None,
+            )
+        except Exception:
+            logger.exception("Unable to calculate Life Class dashboard metrics")
+
+    for ministry in ("School of Leaders", "Plan 40", "School Cell"):
+        matching_ids = {
+            event_id for event_id in selected_event_ids
+            if (
+                str(event_by_id[event_id].get("event_type_name") or "").strip().casefold() == ministry.casefold()
+                or (ministry == "School Cell" and event_by_id[event_id].get("is_school_cell") is True)
+            )
+        }
+        matching_sessions = [
+            session for session in sessions
+            if str(session.get("event_id") or "") in matching_ids
+        ]
+        if matching_sessions:
+            result[ministry]["attended"] = sum(
+                int(session.get("checked_in_count") or 0) for session in matching_sessions
+            )
+
+    return [result[name] for name in ministry_names]
+
+
+def _new_visitor_count(events: list[dict], sessions: list[dict], start: datetime, end: datetime) -> int | None:
+    event_by_id = {
+        str(event.get("event_id")): event
+        for event in events
+        if event.get("event_id") is not None
+    }
+    period_event_ids = {
+        str(session.get("event_id"))
+        for session in sessions
+        if str(session.get("event_id") or "") in event_by_id
+    }
+    for event_id, event in event_by_id.items():
+        try:
+            event_date = date.fromisoformat(str(event.get("event_date") or "")[:10])
+        except ValueError:
+            continue
+        if start.date() <= event_date <= end.date():
+            period_event_ids.add(event_id)
+    if not period_event_ids:
+        return 0
+
+    try:
+        rows = _execute_all_pages(
+            lambda: supabase.table("event_new_people").select(
+                "id, event_id, session_date, added_at, is_checked_in"
+            ).in_("event_id", sorted(period_event_ids))
+        )
+    except Exception:
+        logger.exception("Unable to calculate dashboard new-visitor hint")
+        return None
+
+    visitor_ids = set()
+    for row in rows:
+        if row.get("is_checked_in") is False:
+            continue
+        date_value = row.get("session_date") or row.get("added_at")
+        try:
+            visitor_date = date.fromisoformat(str(date_value or "")[:10])
+        except ValueError:
+            continue
+        if start.date() <= visitor_date <= end.date() and row.get("id") is not None:
+            visitor_ids.add(str(row["id"]))
+    return len(visitor_ids)
+
+
+def _aggregate_reporting_dashboard(
+    period: str,
+    start: datetime,
+    end: datetime,
+    events: list[dict],
+    sessions: list[dict],
+    previous_sessions: list[dict],
+    total_people: int,
+    campus_options: list[dict] | None = None,
+) -> dict:
+    """Build dashboard aggregates from organization-scoped events and sessions."""
+    event_by_id = {str(event.get("event_id")): event for event in events if event.get("event_id") is not None}
+    sessions_by_event: dict[str, list[dict]] = defaultdict(list)
+    sessions_by_week: dict[str, int] = defaultdict(int)
+    cells_by_week: dict[str, set[str]] = defaultdict(set)
+    campus_attendance: dict[str, int] = defaultdict(int)
+    campus_trends: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    total_attendance = 0
+
+    first_day = start.date()
+    last_day = end.date()
+    for session in sessions:
+        event_id = str(session.get("event_id", ""))
+        if event_id not in event_by_id:
+            continue
+        try:
+            session_day = date.fromisoformat(str(session.get("session_date", ""))[:10])
+        except ValueError:
+            continue
+        if session_day < first_day or session_day > last_day:
+            continue
+        if str(session.get("status") or "complete").lower() != "complete":
+            continue
+        count = int(session.get("checked_in_count") or 0)
+        campus_id = event_by_id[event_id].get("campus_id")
+        sessions_by_event[event_id].append({
+            "date": session_day.isoformat(),
+            "attendance": count,
+            "status": "Complete",
+        })
+        total_attendance += count
+        week_start = session_day - timedelta(days=session_day.weekday())
+        week_label = max(week_start, first_day).isoformat()
+        sessions_by_week[week_label] += count
+        if campus_id is not None:
+            campus_attendance[str(campus_id)] += count
+            campus_trends[str(campus_id)][week_label] += count
+
+    previous_by_event: dict[str, int] = defaultdict(int)
+    for session in previous_sessions:
+        event_id = str(session.get("event_id", ""))
+        if event_id in event_by_id:
+            previous_by_event[event_id] += int(session.get("checked_in_count") or 0)
+    previous_attendance = sum(previous_by_event.values())
+    growth_rate = (
+        round((total_attendance - previous_attendance) / previous_attendance * 100, 1)
+        if previous_attendance
+        else (100.0 if total_attendance else 0.0)
+    )
+
+    active_cells = []
+    for event in events:
+        event_id = str(event.get("event_id", ""))
+        if str(event.get("event_type_name") or "").lower() != "cells":
+            continue
+        if event.get("is_active") is False:
+            continue
+        event_sessions = sorted(sessions_by_event.get(event_id, []), key=lambda row: row["date"])
+        if not event_sessions:
+            continue
+        attendance = sum(row["attendance"] for row in event_sessions)
+        previous_cell_attendance = previous_by_event.get(event_id, 0)
+        active_cells.append({
+            "id": event_id,
+            "leader": event.get("event_leader") or "Unassigned",
+            "name": event.get("event_name") or "Cell",
+            "location": event.get("location") or "Unknown",
+            "campus_id": event.get("campus_id"),
+            "date": event.get("event_date") or "",
+            "attendance": attendance,
+            "previous_attendance": previous_cell_attendance,
+            "growth_rate": round((attendance - previous_cell_attendance) / previous_cell_attendance * 100, 1) if previous_cell_attendance else (100.0 if attendance else 0.0),
+            "average": round(attendance / len(event_sessions), 1) if event_sessions else 0,
+            "session_count": len(event_sessions),
+            "sessions": event_sessions,
+        })
+
+    leaders_by_name: dict[str, dict] = {}
+    for cell in active_cells:
+        leader = leaders_by_name.setdefault(cell["leader"], {
+            "id": cell["leader"].strip().lower().replace(" ", "-"),
+            "name": cell["leader"], "cells": 0, "attendance": 0,
+            "previous_attendance": 0,
+            "sessions": 0, "last": "", "attendance_by_week": defaultdict(int),
+        })
+        leader["cells"] += 1
+        leader["attendance"] += cell["attendance"]
+        leader["sessions"] += cell["session_count"]
+        for session in cell["sessions"]:
+            session_day = date.fromisoformat(session["date"])
+            week_label = max(session_day - timedelta(days=session_day.weekday()), first_day).isoformat()
+            leader["attendance_by_week"][week_label] += session["attendance"]
+            cells_by_week[week_label].add(cell["id"])
+            leader["last"] = max(leader["last"], session["date"])
+        leader["previous_attendance"] += cell["previous_attendance"]
+
+    week_labels = []
+    week_cursor = first_day - timedelta(days=first_day.weekday())
+    while week_cursor <= last_day:
+        week_labels.append(max(week_cursor, first_day).isoformat())
+        week_cursor += timedelta(days=7)
+
+    for leader in leaders_by_name.values():
+        leader["average"] = round(leader["attendance"] / leader["sessions"], 1) if leader["sessions"] else 0
+        leader["growth_rate"] = round((leader["attendance"] - leader["previous_attendance"]) / leader["previous_attendance"] * 100, 1) if leader["previous_attendance"] else (100.0 if leader["attendance"] else 0.0)
+        leader["attendance_by_week"] = [leader["attendance_by_week"].get(label, 0) for label in week_labels]
+
+    return {
+        "period": period,
+        "date_range": {"start": first_day.isoformat(), "end": last_day.isoformat()},
+        "total_attendance": total_attendance,
+        "growth_rate": growth_rate,
+        "total_people": total_people,
+        "active_cells": len(active_cells),
+        "active_cell_sessions": sum(cell["session_count"] for cell in active_cells),
+        "active_leaders": len(leaders_by_name),
+        "active_cells_by_week": [len(cells_by_week.get(label, set())) for label in week_labels],
+        "attendance_trend": {
+            "labels": week_labels,
+            "values": [sessions_by_week.get(label, 0) for label in week_labels],
+        },
+        "attendance_by_campus": dict(campus_attendance),
+        "attendance_trend_by_campus": {
+            campus: [weeks.get(label, 0) for label in week_labels]
+            for campus, weeks in campus_trends.items()
+        },
+        "leaders": sorted(leaders_by_name.values(), key=lambda row: row["name"].lower()),
+        "cells": active_cells,
+        "campuses": campus_options or [],
+        "ministry_performance": _ministry_rows(events, sessions, start, end),
+        "campus_comparison": [
+            {"campus_id": campus_id, "value": count}
+            for campus_id, count in sorted(campus_attendance.items())
+        ],
+    }
+
+
+def sb_get_reporting_dashboard(
+    period: str = "thisMonth",
+    org_filter: Optional[dict] = None,
+    campus: Optional[str] = None,
+    visible_leader_ids: Optional[set[str]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> dict:
+    """Fetch organization-scoped event/session data for the reporting dashboard."""
+    if start_date and end_date:
+        start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
+    else:
+        start, end = _period_range(period)
+    event_query = lambda: _apply_org_events(
+        supabase.table("events").select(
+            "event_id, event_name, event_type_name, event_leader, location, campus_id, event_date, status, is_active, Organization"
+        ),
+        org_filter,
+    )
+    events = _execute_all_pages(event_query)
+    if visible_leader_ids is not None:
+        people = _execute_all_pages(
+            lambda: supabase.table("People").select("_id, Name, Surname, Email")
+        )
+        visible_leader_names = set()
+        for person in people:
+            if str(person.get("_id") or "") not in visible_leader_ids:
+                continue
+            full_name = " ".join(
+                str(person.get(key) or "").strip()
+                for key in ("Name", "Surname")
+                if str(person.get(key) or "").strip()
+            )
+            if full_name:
+                visible_leader_names.add(full_name.casefold())
+            if person.get("Email"):
+                visible_leader_names.add(str(person["Email"]).casefold())
+        events = [
+            event for event in events
+            if any(
+                identity and identity in str(event.get("event_leader") or "").casefold()
+                for identity in visible_leader_names
+            )
+        ]
+    campus_ids = sorted({str(event["campus_id"]) for event in events if event.get("campus_id") is not None})
+    campus_options = []
+    if campus_ids:
+        campus_rows = _execute_all_pages(
+            lambda: supabase.table("campuses").select("*").in_("campus_id", campus_ids)
+        )
+        campus_options = [
+            {
+                "campus_id": str(row["campus_id"]),
+                "label": next(
+                    (str(row[key]).strip() for key in ("name", "campus_name", "label", "title") if row.get(key)),
+                    str(row["campus_id"]),
+                ),
+            }
+            for row in campus_rows
+            if row.get("campus_id") is not None
+        ]
+        campus_options.sort(key=lambda row: row["label"].casefold())
+    if campus:
+        events = [event for event in events if str(event.get("campus_id")) == str(campus)]
+    def sessions_query(from_date: date, to_date: date):
+        return lambda: supabase.table("event_sessions").select(
+            "event_id, session_date, status, checked_in_count"
+        ).eq("status", "complete").gte(
+            "session_date", from_date.isoformat()
+        ).lte("session_date", to_date.isoformat())
+
+    sessions = _execute_all_pages(sessions_query(start.date(), end.date()))
+    duration = end.date() - start.date()
+    previous_end = start.date() - timedelta(days=1)
+    previous_start = previous_end - duration
+    previous_sessions = _execute_all_pages(sessions_query(previous_start, previous_end))
+
+    people_query = supabase.table("People").select("_id", count="exact")
+    if org_filter and org_filter.get("Organization"):
+        people_query = people_query.eq("Organization", org_filter["Organization"])
+    if visible_leader_ids is not None:
+        people_query = people_query.in_("_id", list(visible_leader_ids))
+    total_people = people_query.execute().count or 0
+
+    result = _aggregate_reporting_dashboard(
+        period, start, end, events, sessions, previous_sessions, total_people, campus_options
+    )
+    result["new_visitors"] = _new_visitor_count(events, sessions, start, end)
+    return result
 
 
 def _is_completed_flag(status: str, task_type: str) -> bool:

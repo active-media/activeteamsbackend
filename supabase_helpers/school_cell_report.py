@@ -15,6 +15,7 @@ def sb_get_school_cell_report(
     org_filter: Optional[dict],
     start_date: str,
     end_date: str,
+    visible_leader_ids: Optional[set[str]] = None,
 ) -> dict:
     """
     Fetch School Cell report data for the given date range.
@@ -23,7 +24,7 @@ def sb_get_school_cell_report(
     """
     from supabase_helpers.excel_export import _get_weekly_cells_data
 
-    rows = _get_weekly_cells_data(org_filter, start_date, end_date)
+    rows = _get_weekly_cells_data(org_filter, start_date, end_date, visible_leader_ids)
 
     # Build weekly data summary
     weekly_data: dict[str, dict] = {}
@@ -70,6 +71,7 @@ def build_school_cell_excel(
     org_filter: Optional[dict],
     start_date: str,
     end_date: str,
+    visible_leader_ids: Optional[set[str]] = None,
 ) -> bytes:
     """
     Build and return raw .xlsx bytes for the School Cell report.
@@ -79,7 +81,7 @@ def build_school_cell_excel(
     """
     from supabase_helpers.excel_export import _get_weekly_cells_data
 
-    rows = _get_weekly_cells_data(org_filter, start_date, end_date)
+    rows = _get_weekly_cells_data(org_filter, start_date, end_date, visible_leader_ids)
     week_cols = _build_week_columns(rows)
 
     # Build data structures for the Excel workbook
@@ -97,7 +99,7 @@ def build_school_cell_excel(
     # column is additive and doesn't change the existing format
     from supabase_helpers.excel_export import build_cells_excel
 
-    return build_cells_excel(org_filter, start_date, end_date)
+    return build_cells_excel(org_filter, start_date, end_date, visible_leader_ids)
 
 
 def _build_week_columns(rows: list[dict]) -> list[dict]:

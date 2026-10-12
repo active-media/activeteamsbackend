@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
-from supabase_helpers.supabase_connection import supabase
+from supabase_helpers.supabase_connection import supabase_admin as supabase
 
 
 def sb_upsert_service_target(
@@ -70,7 +71,11 @@ def sb_delete_service_target(target_id: str) -> bool:
         return False
 
 
-def sb_list_service_targets(week: Optional[str] = None, org_filter: Optional[dict] = None) -> list[dict]:
+def sb_list_service_targets(
+    week: Optional[str] = None,
+    org_filter: Optional[dict] = None,
+    visible_leader_ids: Optional[set[str]] = None,
+) -> list[dict]:
     """List service targets, optionally filtered by week identifier."""
     query = supabase.table("service_targets").select("*")
 
@@ -83,12 +88,34 @@ def sb_list_service_targets(week: Optional[str] = None, org_filter: Optional[dic
         query = query.eq("week_identifier", week)
 
     result = query.execute()
-    return result.data or []
+    rows = result.data or []
+    if visible_leader_ids is not None:
+        people = supabase.table("People").select("_id, Name, Surname, Email").execute().data or []
+        visible_names = set()
+        visible_emails = set()
+        for person in people:
+            if str(person.get("_id") or "") not in visible_leader_ids:
+                continue
+            name = " ".join(str(person.get(key) or "").strip() for key in ("Name", "Surname") if person.get(key))
+            if name:
+                visible_names.add(name.casefold())
+            if person.get("Email"):
+                visible_emails.add(str(person["Email"]).casefold())
+        rows = [
+            row for row in rows
+            if str(row.get("email") or "").casefold() in visible_emails
+            or str(row.get("leader_name") or "").casefold() in visible_names
+        ]
+    return rows
 
 
-def sb_get_service_target_report(week: Optional[str] = None, org_filter: Optional[dict] = None) -> dict:
+def sb_get_service_target_report(
+    week: Optional[str] = None,
+    org_filter: Optional[dict] = None,
+    visible_leader_ids: Optional[set[str]] = None,
+) -> dict:
     """Get service target report showing target vs actual attendance."""
-    targets = sb_list_service_targets(week, org_filter)
+    targets = sb_list_service_targets(week, org_filter, visible_leader_ids)
 
     # Build the report with target and actual data
     # For now, return the targets structure; actual attendance would

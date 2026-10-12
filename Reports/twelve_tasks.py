@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from supabase_helpers.supabase_connection import supabase
+from supabase_helpers.supabase_connection import supabase_admin as supabase
 
 # ---------------------------------------------------------------------------
 # NOTE / ASSUMPTION: this module assumes Tasks.assignedfor stores the
@@ -97,7 +97,11 @@ def _iso(dt: datetime) -> str:
 # but never deletes their historical rows (soft delete via `active`).
 # ---------------------------------------------------------------------------
 
-def sb_get_tracked_people(leader12_id: Optional[str] = None, org_filter: Optional[dict] = None) -> list[dict]:
+def sb_get_tracked_people(
+    leader12_id: Optional[str] = None,
+    org_filter: Optional[dict] = None,
+    visible_leader_ids: Optional[set[str]] = None,
+) -> list[dict]:
     """Return the persisted, admin-curated roster for the Twelve Tasks report.
 
     Only rows with active=True are returned — this is what should populate
@@ -120,6 +124,8 @@ def sb_get_tracked_people(leader12_id: Optional[str] = None, org_filter: Optiona
         org_value = org_filter.get("Organization") or org_filter.get("organization")
         if org_value:
             rows = [r for r in rows if r.get("org") == org_value]
+    if visible_leader_ids is not None:
+        rows = [row for row in rows if str(row.get("person_id") or "") in visible_leader_ids]
 
     return rows
 
@@ -308,7 +314,15 @@ def _fetch_completed_tasks(start: datetime, end: datetime, org_filter: Optional[
 # roster rather than being re-sorted by count.
 # ---------------------------------------------------------------------------
 
-def sb_get_twelve_tasks_report(leader12_id: Optional[str] = None, org_filter: Optional[dict] = None) -> dict:
+def sb_get_twelve_tasks_report(
+    period: str = "thisWeek",
+    org_filter: Optional[dict] = None,
+    leader12_id: Optional[str] = None,
+    start_date=None,
+    end_date=None,
+    visible_leader_ids: Optional[set[str]] = None,
+    nullable_targets: bool = False,
+) -> dict:
     """Build the Twelve Tasks report dictionary.
 
     Report structure (columns in the exported XLSX):
@@ -327,10 +341,21 @@ def sb_get_twelve_tasks_report(leader12_id: Optional[str] = None, org_filter: Op
 
     Returns dict with keys: period, previous_period, rows
     """
-    this_week_start, this_week_end = _period_range("thisWeek")
-    last_week_start, last_week_end = _period_range("previousWeek")
+    if start_date and end_date:
+        this_week_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        this_week_end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
+        duration = this_week_end.date() - this_week_start.date() + timedelta(days=1)
+        last_week_end = this_week_start - timedelta(microseconds=1)
+        last_week_start = last_week_end - duration + timedelta(microseconds=1)
+    else:
+        this_week_start, this_week_end = _period_range("thisWeek")
+        last_week_start, last_week_end = _period_range("previousWeek")
 
-    roster = sb_get_tracked_people(leader12_id=leader12_id, org_filter=org_filter)
+    roster = sb_get_tracked_people(
+        leader12_id=leader12_id,
+        org_filter=org_filter,
+        visible_leader_ids=visible_leader_ids,
+    )
     person_ids = [r["person_id"] for r in roster]
     targets = sb_get_targets(person_ids)
 
@@ -347,7 +372,7 @@ def sb_get_twelve_tasks_report(leader12_id: Optional[str] = None, org_filter: Op
                 "person_id": pid,
                 "name": person.get("display_name") or pid,
                 "last_week": last_week_counts.get(pid, 0),
-                "target": targets.get(pid, 0),
+                "target": targets.get(pid) if nullable_targets else targets.get(pid, 0),
                 "this_week": this_week_counts.get(pid, 0),
             }
         )

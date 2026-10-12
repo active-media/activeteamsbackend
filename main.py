@@ -40,12 +40,16 @@ from time import sleep
 from supreme_admin import router as supreme_admin_router
 from supabase_helpers.supabase_stats import (
     sb_get_stats_overview,
+    sb_get_reporting_dashboard,
     sb_get_outstanding_items,
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
 )
 from Reports.twelve_tasks import sb_get_twelve_tasks_report
 from Reports.reports_routes import router as reports_router
+from reporting_core.router import router as reporting_router
+from reporting_core.router import CATALOG_BY_TYPE, LEGACY_SCHEDULE_TYPES
+from reporting_core.schemas import ReportScheduleCreate, ReportScheduleRecord, ReportScheduleUpdate
 from supabase_helpers.service_targets import (
     sb_upsert_service_target,
     sb_delete_service_target,
@@ -72,7 +76,17 @@ from task_types import router as task_types_router
 
 oauth2_scheme = HTTPBearer()
 
-app = FastAPI()
+def _unique_operation_id(route):
+    endpoint = route.endpoint
+    code = getattr(endpoint, "__code__", None)
+    source_line = code.co_firstlineno if code else 0
+    method = "_".join(sorted(route.methods or []))
+    path = re.sub(r"[^a-zA-Z0-9_]+", "_", route.path).strip("_")
+    module = endpoint.__module__.replace(".", "_")
+    return f"{module}_{route.name}_{source_line}_{method}_{path}"
+
+
+app = FastAPI(generate_unique_id_function=_unique_operation_id)
 
 ORG_ID_MAP = {
     "active-church": "active-teams",
@@ -90,7 +104,7 @@ def _build_stats_org_filter(current_user: dict) -> Optional[dict]:
     org = current_user.get("Organization") or current_user.get("organization")
     if not org:
         return None
-    return {"organization": org}
+    return {"Organization": org}
 
 def get_org_from_user(current_user: dict):
     if current_user.get("role") == "super_admin":
@@ -3124,6 +3138,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(events_router)
@@ -3135,6 +3150,7 @@ app.include_router(admin_router)
 app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
 app.include_router(reports_router)
+app.include_router(reporting_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -3146,47 +3162,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             "Access-Control-Allow-Credentials": "true",
         }
     )
-
-
-
-app.router.lifespan_context = lifespan
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://teams.theactivechurch.org",
-        "http://localhost:8000",
-        "http://localhost:5173",
-        "https://new-active-teams.netlify.app",
-        "https://activeteams.netlify.app",
-        "https://activeteamsbackend2.0.onrender.com"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(events_router)
-app.include_router(tasks_router)
-app.include_router(task_types_router)
-app.include_router(service_checkin_router)
-app.include_router(supreme_admin_router)
-app.include_router(admin_router)
-app.include_router(admin_event_type_router)
-app.include_router(admin_task_type_router)
-app.include_router(reports_router)
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc)},
-        headers={
-            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-            "Access-Control-Allow-Credentials": "true",
-        }
-    )
-
 
 #------------------ MIGRATION ENDPOINTS ---------- 
 @app.post("/migrate-event-types-uuids")
@@ -7250,7 +7225,18 @@ async def add_uuids_to_all_events(current_user: dict = Depends(get_current_user)
 
 # ======================== Reporting Endpoints ==============================
 
-@app.get("/report-schedules")
+def _legacy_schedule_type(report_type: str) -> str:
+    if report_type in LEGACY_SCHEDULE_TYPES:
+        return report_type
+    if report_type not in CATALOG_BY_TYPE:
+        raise HTTPException(status_code=400, detail=f"Invalid report_type: {report_type}")
+    return next(
+        (legacy for legacy, canonical in LEGACY_SCHEDULE_TYPES.items() if canonical == report_type),
+        report_type,
+    )
+
+
+@app.get("/report-schedules", response_model=List[ReportScheduleRecord], response_model_exclude_unset=True)
 async def get_report_schedules(current_user: dict = Depends(require_role("admin"))):
     organization = current_user.get("Organization") or current_user.get("organization")
     if not organization:
@@ -7261,29 +7247,34 @@ async def get_report_schedules(current_user: dict = Depends(require_role("admin"
     return schedules
 
 
-@app.post("/report-schedules")
-async def create_report_schedule(payload: dict, current_user: dict = Depends(require_role("admin"))):
+@app.post("/report-schedules", response_model=ReportScheduleRecord, response_model_exclude_unset=True)
+async def create_report_schedule(payload: ReportScheduleCreate, current_user: dict = Depends(require_role("admin"))):
     organization = current_user.get("Organization") or current_user.get("organization")
     if not organization:
         raise HTTPException(status_code=403, detail="Organization not associated with user")
     created_by = current_user.get("_id") or current_user.get("id")
+    schedule_payload = payload.model_dump(exclude_unset=True)
+    schedule_payload["report_type"] = _legacy_schedule_type(schedule_payload["report_type"])
     try:
         schedule = await asyncio.to_thread(
-            report_schedules_helpers.create_report_schedule, payload, organization, created_by
+            report_schedules_helpers.create_report_schedule, schedule_payload, organization, created_by
         )
     except report_schedules_helpers.ReportScheduleValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return schedule
 
 
-@app.put("/report-schedules/{schedule_id}")
-async def update_report_schedule(schedule_id: str, payload: dict, current_user: dict = Depends(require_role("admin"))):
+@app.put("/report-schedules/{schedule_id}", response_model=ReportScheduleRecord, response_model_exclude_unset=True)
+async def update_report_schedule(schedule_id: str, payload: ReportScheduleUpdate, current_user: dict = Depends(require_role("admin"))):
     organization = current_user.get("Organization") or current_user.get("organization")
     if not organization:
         raise HTTPException(status_code=403, detail="Organization not associated with user")
+    schedule_payload = payload.model_dump(exclude_unset=True)
+    if schedule_payload.get("report_type"):
+        schedule_payload["report_type"] = _legacy_schedule_type(schedule_payload["report_type"])
     try:
         schedule = await asyncio.to_thread(
-            report_schedules_helpers.update_report_schedule, schedule_id, payload, organization
+            report_schedules_helpers.update_report_schedule, schedule_id, schedule_payload, organization
         )
     except report_schedules_helpers.ReportScheduleValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -7292,7 +7283,7 @@ async def update_report_schedule(schedule_id: str, payload: dict, current_user: 
     return schedule
 
 
-@app.delete("/report-schedules/{schedule_id}")
+@app.delete("/report-schedules/{schedule_id}", response_model=Dict[str, bool])
 async def delete_report_schedule(schedule_id: str, current_user: dict = Depends(require_role("admin"))):
     organization = current_user.get("Organization") or current_user.get("organization")
     if not organization:
@@ -9259,6 +9250,26 @@ async def get_stats_overview(
         return await asyncio.to_thread(sb_get_stats_overview, period, org_filter)
     except Exception as e:
         print(f"Error in stats overview: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/stats/reporting-dashboard")
+async def get_reporting_dashboard_stats(
+    period: str = Query(
+        "thisMonth",
+        pattern="^(thisWeek|thisMonth|previousWeek|previousMonth|thisQuarter|yearly|\\d{4}-\\d{2})$",
+    ),
+    campus: Optional[str] = Query(None, min_length=1, max_length=120),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or current_user.get("role") == "super_admin"
+    if not org_filter and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(sb_get_reporting_dashboard, period, org_filter, campus)
+    except Exception as e:
+        logger.exception("Error fetching reporting dashboard stats")
         raise HTTPException(status_code=500, detail=str(e))
 
 
