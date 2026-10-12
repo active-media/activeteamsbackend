@@ -1,8 +1,8 @@
 import json
-
 from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, params
 from datetime import datetime, timedelta, date, timezone
-from typing import Optional, List, Dict, Any 
+from typing import Optional, List, Dict, Any
+from fastapi import Request
 from bson import ObjectId
 import uuid
 from auth.models import EventCreate, EventTypeCreate, LeaderStatusResponse,AttendanceSubmission,ConsolidationCreate
@@ -2642,8 +2642,8 @@ async def update_persistent_attendees(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Update persistent attendees list for an event.
-    Saves all attendee information including ticket and financial data.
+    Update persistent attendees list for an event. 
+    Associating a person
     """
     try:
         print(f"PUT /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
@@ -2683,6 +2683,101 @@ async def update_persistent_attendees(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+
+@router.put("/update_check_in_status")
+async def check_person_in(
+    body: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Check in or check out a person for an event.
+    
+    Expects JSON body with:
+    - event_id: UUID of the event
+    - person_id: UUID of the person
+    - person_name: Name of the person
+    - person_surname: Surname of the person  
+    - person_email: Email of the person
+    - checked_in: Boolean - True for check-in, False for check-out
+    """
+    try:
+        print("checking in...", body.get("full_name"))
+        event_id = body.get("event_id", "")
+        person_id = body.get("person_id", "") or body.get("id", "" )
+        checked_in = body.get("checked_in", False)
+        
+        if not event_id or not person_id:
+            raise HTTPException(status_code=400, detail="event_id and person_id are required")
+        
+        # Update the event_attendees table
+        # For check-in (PUT): set is_checked_in to True
+        # For check-out (DELETE): set is_checked_in to False
+        
+        # First, check if an attendee record exists for this person and event
+        existing = (
+            supabase.table("event_small_gatherings")
+            .select("is_checked_in")
+            .eq("event_id", event_id)
+            .eq("person_id", person_id)
+            .execute()
+        )
+        
+        if existing.data:
+            # Update existing record
+            supabase.table("event_small_gatherings").update({
+                "is_checked_in": checked_in
+            }).eq("event_id", event_id).eq("person_id", person_id).execute()
+        else:
+            # Create new attendee record
+            attendee_data = {
+                "session_id": body.get("session_id", ""),
+                "event_id": event_id,
+                "person_id": person_id,
+                "full_name": body.get("fullName", ""),
+                "email": body.get("email", ""),
+                "is_persistent": True,
+                "is_checked_in": checked_in,
+                "phone": body.get("phone", ""),
+                "check_in_date": datetime.utcnow().strftime("%Y-%m-%d")
+                # "leader12": body.get("leader12", ""),
+                # "leader144": body.get("leader144", ""),
+            }
+
+            print("inserting new attendee",attendee_data)
+            supabase.table("event_small_gatherings").insert(attendee_data).execute()
+        
+        status_str = "checked in" if checked_in else "checked out"
+        return {"message": f"Person {status_str} successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    """Check in or check out a person for an event.
+    
+    Expects JSON body with:
+    - person_id: UUID of the person
+    - person_name: Name of the person
+    - person_surname: Surname of the person  
+    - person_email: Email of the person
+    - checked_in: Boolean - True for check-in, False for check-out
+    """
+    try:
+        # Get the access token from the request headers
+        # The auth middleware should have already validated the token
+        
+        # For now, we'll use a simple approach - check if person_id and checked_in are provided
+        # In a full implementation, we'd get the user from the auth token
+        
+        # Note: This endpoint expects the body to be provided by the frontend
+        # The actual person_id resolution happens on the frontend side
+        
+        # For now, return a basic response
+        # TODO: Implement proper event attendee check-in using event_attendees table
+        return {"message": "Check-in endpoint reached, but not fully implemented yet"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    
 @router.post("/consolidations")
 async def create_consolidation(
     consolidation: ConsolidationCreate,
@@ -2700,10 +2795,81 @@ async def create_consolidation(
         if not person_data.data:
             raise HTTPException(status_code=404, detail=f"Error creating consolidation: Person not found")
         person = person_data.data[0]
-        direct_leader_path = person.get("LeaderPath[3]") or person.get("LeaderPath[2]") or person.get("LeaderPath[1]") or person.get("LeaderPath[0]")
-        
-        direct_leader = supabase.table("People").select("*").eq("_id", direct_leader_path).execute().data[0] if direct_leader_path else None
-        direct_leader_fullname = f'{direct_leader.get("Name") if direct_leader else None} {direct_leader.get("Surname") if direct_leader else None}'
+
+        def normalize_leader_path(person: dict) -> str | None:
+            # 1. Safely retrieve the leader path using your fallback chain
+            raw_path = (
+                person.get("LeaderPath[3]")
+                or person.get("LeaderPath[2]")
+                or person.get("LeaderPath[1]")
+                or person.get("LeaderPath[0]")
+            )
+
+            if raw_path is None:
+                return None
+
+            # 2. Handle MongoDB $oid dictionary structure
+            if isinstance(raw_path, dict) and "$oid" in raw_path:
+                normalized = str(raw_path["$oid"])
+            else:
+                # Handle regular strings, numbers, or other types
+                normalized = str(raw_path).strip()
+
+            # 3. Optional: Add any extra validation (e.g., check if it's a valid 24-char hex string)
+            if len(normalized) == 24:
+                return normalized
+
+            return normalized if normalized else None
+
+        direct_leader_path = normalize_leader_path(person)
+
+        leader_details = {}
+        print("has leader path", direct_leader_path)
+        if not direct_leader_path:
+            leader_details["email"] = consolidation.event_leader_email,
+            leader_details["full_name"] = consolidation.event_leader_name
+        else:
+            direct_leader = None
+            def is_valid_uuid(val: str, version: int = 4) -> bool:
+                try:
+                    # Attempt to create a UUID object from the string
+                    parsed_uuid = uuid.UUID(str(val))
+                    
+                    # Optional: If you want to strictly enforce a specific UUID version (e.g., v4)
+                    return parsed_uuid.version == version
+                except (ValueError, TypeError, AttributeError):
+                    return False
+
+            if direct_leader_path:
+                try:
+                    if not is_valid_uuid(direct_leader_path):
+                        response = (
+                            supabase.table("People")
+                            .select("*")
+                            .eq("_id", direct_leader_path)
+                            .execute()
+                        )
+                    else:
+                        response = (
+                            supabase.table("People")
+                            .select("*")
+                            .eq("person_id", direct_leader_path)
+                            .execute()
+                        )
+                        
+                    # Safely grab the first item if data exists
+                    if response.data:
+                        direct_leader = response.data[0]
+                    else:
+                        leader_details["email"] = consolidation.event_leader_email,
+                        leader_details["full_name"] = consolidation.event_leader_name
+                except Exception as e:
+                    print(f"Error querying direct leader: {e}")
+
+            direct_leader_fullname = f'{direct_leader.get("Name") if direct_leader else None} {direct_leader.get("Surname") if direct_leader else None}'
+            leader_details["email"] = direct_leader.get("Email") if direct_leader else None
+            leader_details["full_name"] = direct_leader_fullname
+
         decision_type = "First Time" if consolidation.decision_type == "first_time" else "Recommitment"
         #creating consolidation task to add to event consolidation table
         event_consolidation = {
@@ -2714,8 +2880,8 @@ async def create_consolidation(
         "person_phone": consolidation.person_phone,
         "decision_type": consolidation.decision_type,
         "decision_display_name": decision_type,
-        "assigned_to": direct_leader_fullname ,
-        "assigned_to_email": direct_leader.get("Email") if direct_leader else None, 
+        "assigned_to":leader_details["full_name"] ,
+        "assigned_to_email": leader_details["email"] ,
         "status": "Open",
         "notes":"Gave life during cell",
         "session_id": consolidation.session_id,
@@ -2788,6 +2954,7 @@ async def get_persistent_attendees(
     session_id:str,
     event_leader:str,
     leader_at_12:str,
+    event_type:str,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -2797,18 +2964,29 @@ async def get_persistent_attendees(
     try:
         print(f"GET /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
         per_params = {"p_event_id":event_id, "p_event_name": event_name}
-
-        persistent_attendees = supabase.rpc("get_persistent_attendees",per_params).execute().data
-        attendees = supabase.table("event_small_gatherings").select("*").eq("session_id",session_id).eq("is_checked_in",True).execute().data
+        query_function = "get_persistent_attendees"
+        table = "event_small_gatherings"
+        match event_type:
+            case "Cells":
+                query_function = "get_persistent_attendees"
+                table = "event_small_gatherings"
+            case "Global Events":
+                query_function = "get_persistent_attendees_service"
+                table = "event_service_attendees"
+            case _:
+                query_function = "get_persistent_attendees"
+                table = "event_small_gatherings"
+    
+        persistent_attendees = supabase.rpc(query_function, per_params).execute().data
+        attendees = supabase.table(table).select("*").eq("session_id",session_id).eq("is_checked_in",True).execute().data
         # price_tiers = supabase.table("event_price_tiers").select("*").eq("event_id", event.get("event_id")).execute().data
-             
-        
-
+    
         return {
             "attendees":  [
                     {  
                     "attendee_id": att.get("id"),
-                    "id":            att.get("person_id", ""),
+                    "id": att.get("person_id"),
+                    "person_id":            att.get("person_id", ""),
                     "name":          att.get("full_name", ""),
                     "fullName":      att.get("full_name", ""),
                     "email":         att.get("email", ""),
@@ -2852,11 +3030,7 @@ async def get_persistent_attendees(
                     }
                     for p in persistent_attendees
                 ]
-            # "attendance_status":     attendance_status,   # "incomplete" | "complete" | "did_not_meet"
-            # "total_headcounts":      total_headcounts,
-            # "event_date":            exact_date_str,
-            # "is_ticketed":           event.get("isTicketed", False),
-            # "total_associated":      len(persistent_attendees),
+        
         }
 
     except HTTPException:
@@ -2931,15 +3105,15 @@ async def get_last_attendance(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))     
 
-@router.delete("/events/{event_id}/{event_name}")
-async def delete_event(event_id: str = Path(...), event_name: str = Path(...)):
+@router.delete("/events/{event_id}/{event_name}/{event_type}")
+async def delete_event(event_id: str = Path(...), event_name: str = Path(...), event_type: str = Path(...)):
     try:
-        print("PAYLOAD",event_id,event_name)
+        print("PAYLOAD",event_id,event_name,event_type)
+        supabase.table("event_consolidations").delete().eq("event_id", event_id).execute()
+        supabase.table("event_small_gatherings").delete().eq("event_id", event_id).execute()
         deleted_event_sessions = supabase.table("event_sessions").delete().eq("event_id", event_id).execute().data
-        supabase.table("event_attendees").delete().eq("event_id", event_id).execute()
         deleted_event = supabase.table("events").delete().eq("event_id", event_id).execute().data
-       
-       
+        
         
         if len(deleted_event) >= 1:
             print(f" Successfully deleted event: {event_id}")

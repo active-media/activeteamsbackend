@@ -428,6 +428,8 @@ class ConsolidationCreate(BaseModel):
     source: ConsolidationSource = ConsolidationSource.MANUAL
     person_id:str
     session_id:str
+    event_leader_name:Optional[str] = None
+    event_leader_email: Optional[str] = None
 
 class ConsolidationTask(TaskModel):
     consolidation_id: str
