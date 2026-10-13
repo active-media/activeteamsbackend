@@ -36,7 +36,7 @@ Key field-name notes
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from supabase_helpers.supabase_connection import supabase
@@ -54,6 +54,20 @@ _STATUS_COMPLETED_LIST = list(_STATUS_COMPLETED)
 # The three cell-type values we match against events.event_type_name
 _CELL_TYPE_VALUES = ["Cells", "cells", "CELLS"]
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+REPORTING_EVENT_TYPE = "Church Service"
+REPORTING_COMPLETED_STATUSES = {"complete", "completed", "done", "closed", "finished"}
+
+# Keywords are matched (case-insensitive) against the event description AND
+# event name. First group with a match wins. Add another tuple to extend.
+REPORTING_OTHER_GROUP = "Other"
+REPORTING_CAMPUS_GROUPS: list[tuple[str, list[str]]] = [
+    ("Active Youth Springfield", ["active youth springfield", "active kids springfield"]),
+    ("Sunday Springfield", ["sunday springfield", "christmas service 9am", "sunday kids springfield"]),
+]
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -869,4 +883,216 @@ def sb_get_people_capture_stats(org_filter: Optional[dict] = None) -> dict:
             f"Found {len(stats)} team members who captured "
             f"{total_captured} people total"
         ),
+    }
+
+def _reporting_period_range(period: str) -> tuple[date, date]:
+    normalized = {
+        "thismonth": "thisMonth",
+        "lastmonth": "lastMonth",
+        "thisquarter": "thisQuarter",
+        "thisyear": "thisYear",
+    }.get((period or "").strip().lower(), (period or "").strip())
+    today = datetime.now(timezone.utc).date()
+
+    if normalized == "thisMonth":
+        start = today.replace(day=1)
+        next_month = date(start.year + 1, 1, 1) if start.month == 12 else date(start.year, start.month + 1, 1)
+        return start, date.fromordinal(next_month.toordinal() - 1)
+
+    if normalized == "lastMonth":
+        if today.month == 1:
+            year, month = today.year - 1, 12
+        else:
+            year, month = today.year, today.month - 1
+        start = date(year, month, 1)
+        next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        return start, date.fromordinal(next_month.toordinal() - 1)
+
+    if normalized == "thisQuarter":
+        start_month = ((today.month - 1) // 3) * 3 + 1
+        start = date(today.year, start_month, 1)
+        end_month = start_month + 2
+        next_month = date(today.year + 1, 1, 1) if end_month == 12 else date(today.year, end_month + 1, 1)
+        return start, date.fromordinal(next_month.toordinal() - 1)
+
+    if normalized == "thisYear":
+        return date(today.year, 1, 1), date(today.year, 12, 31)
+
+    raise ValueError(f"Unknown reporting period: {period!r}")
+
+
+def _reporting_text(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _reporting_event_belongs_to_org(event: dict, org_filter: Optional[dict]) -> bool:
+    if not org_filter:
+        return True
+    requested_org = _reporting_text(
+        org_filter.get("organization") or org_filter.get("Organization")
+    ).casefold()
+    requested_org_id = _reporting_text(org_filter.get("org_id")).casefold()
+    event_org = _reporting_text(event.get("Organization") or event.get("organization")).casefold()
+    event_org_id = _reporting_text(event.get("org_id")).casefold()
+    return bool(
+        (requested_org_id and event_org_id and requested_org_id == event_org_id)
+        or (requested_org and event_org and requested_org == event_org)
+    )
+
+
+def _reporting_fetch_all(query_factory) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    page_size = 1000
+    while True:
+        page = query_factory().range(offset, offset + page_size - 1).execute()
+        batch = page.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        offset += page_size
+
+
+def _reporting_month_sequence(start: date, end: date) -> list[date]:
+    months: list[date] = []
+    current = start.replace(day=1)
+    while current <= end:
+        months.append(current)
+        current = date(current.year + 1, 1, 1) if current.month == 12 else date(current.year, current.month + 1, 1)
+    return months
+
+
+def _reporting_buckets(period: str, start: date, end: date) -> tuple[bool, list[tuple[date, str]]]:
+    """Weekly buckets for month periods, monthly buckets otherwise."""
+    weekly = (period or "").strip().lower() in {"thismonth", "lastmonth"}
+    buckets: list[tuple[date, str]] = []
+    if weekly:
+        cursor = date.fromordinal(start.toordinal() - start.weekday())
+        while cursor <= end:
+            buckets.append((cursor, cursor.strftime("%b %d")))
+            cursor = date.fromordinal(cursor.toordinal() + 7)
+    else:
+        for month in _reporting_month_sequence(start, end):
+            buckets.append((month, month.strftime("%b %Y")))
+    return weekly, buckets
+
+
+def _reporting_bucket_key(value: date, weekly: bool) -> str:
+    if weekly:
+        return date.fromordinal(value.toordinal() - value.weekday()).isoformat()
+    return value.isoformat()[:7]
+
+
+def _reporting_campus_group(event: dict) -> str:
+    text = " ".join(
+        _reporting_text(event.get(field)).casefold()
+        for field in ("description", "event_name")
+    )
+    for group_name, keywords in REPORTING_CAMPUS_GROUPS:
+        if any(keyword in text for keyword in keywords):
+            return group_name
+    return REPORTING_OTHER_GROUP
+
+
+def sb_get_monthly_service_attendance(
+    period: str = "thisYear",
+    campus: Optional[str] = None,
+    org_filter: Optional[dict] = None,
+) -> dict:
+    start, end = _reporting_period_range(period)
+    weekly, buckets = _reporting_buckets(period, start, end)
+    monthly = {
+        _reporting_bucket_key(bucket_start, weekly): {
+            "month": _reporting_bucket_key(bucket_start, weekly),
+            "label": label,
+            "attendance": 0,
+            "session_count": 0,
+        }
+        for bucket_start, label in buckets
+    }
+
+    requested_campus = _reporting_text(campus)
+    if requested_campus.casefold() in {"", "all", "all campuses"}:
+        requested_campus = ""
+    requested_campus_key = requested_campus.casefold()
+
+    def session_query():
+        return (
+            supabase.table("event_sessions")
+            .select(
+                "session_id, session_date, checked_in_count, is_did_not_meet, status, "
+                "events!inner(event_id, event_name, event_type_name, description, "
+                "location, Organization, org_id)"
+            )
+            .ilike("events.event_type_name", REPORTING_EVENT_TYPE)
+            .gte("session_date", start.isoformat())
+            .lte("session_date", end.isoformat())
+            .order("session_id")
+        )
+
+    session_rows = _reporting_fetch_all(session_query)
+
+    campus_totals: dict[str, int] = defaultdict(int)
+    seen_groups: set[str] = set()
+
+    for row in session_rows:
+        if row.get("is_did_not_meet"):
+            continue
+        if _reporting_text(row.get("status")).casefold() not in REPORTING_COMPLETED_STATUSES:
+            continue
+
+        event = row.get("events") or {}
+        if not _reporting_event_belongs_to_org(event, org_filter):
+            continue
+
+        group = _reporting_campus_group(event)
+        seen_groups.add(group)
+        if requested_campus_key and group.casefold() != requested_campus_key:
+            continue
+
+        try:
+            session_date = datetime.strptime(str(row.get("session_date") or "")[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        key = _reporting_bucket_key(session_date, weekly)
+        if key not in monthly:
+            continue
+
+        try:
+            attendance = max(0, int(float(row.get("checked_in_count") or 0)))
+        except (TypeError, ValueError):
+            attendance = 0
+
+        monthly[key]["attendance"] += attendance
+        monthly[key]["session_count"] += 1
+        campus_totals[group] += attendance
+
+    # Dropdown: configured groups always, "Other" only if it has data.
+    campuses = [name for name, _ in REPORTING_CAMPUS_GROUPS]
+    if REPORTING_OTHER_GROUP in seen_groups:
+        campuses.append(REPORTING_OTHER_GROUP)
+
+    today = datetime.now(timezone.utc).date()
+    months = []
+    for bucket_start, _label in buckets:
+        item = monthly[_reporting_bucket_key(bucket_start, weekly)]
+        if bucket_start > today:
+            item["attendance"] = None  # future bucket: don't plot as 0
+        months.append(item)
+
+    return {
+        "period": period,
+        "granularity": "week" if weekly else "month",
+        "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+        "months": months,
+        "labels": [item["label"] for item in months],
+        "data": [item["attendance"] for item in months],
+        "total_attendance": sum(item["attendance"] or 0 for item in months),
+        "total_sessions": sum(item["session_count"] for item in months),
+        "campus": requested_campus or None,
+        "campuses": campuses,
+        "campus_totals": [
+            {"campus": name, "value": value}
+            for name, value in sorted(campus_totals.items(), key=lambda kv: kv[1], reverse=True)
+        ],
     }

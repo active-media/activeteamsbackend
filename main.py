@@ -41,6 +41,7 @@ from supabase_helpers.supabase_stats import (
     sb_get_outstanding_items,
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
+    sb_get_monthly_service_attendance,
 )
 from Reports.twelve_tasks import sb_get_twelve_tasks_report
 from supabase_helpers.service_targets import (
@@ -11289,6 +11290,47 @@ async def get_dashboard_comprehensive(
             detail=f"Error fetching comprehensive stats: {str(e)}",
         )
 
+@app.get("/stats/reporting-dashboard/service-attendance")
+async def get_reporting_dashboard_service_attendance(
+    period: str = Query(
+        "thisYear",
+        pattern="^(thisMonth|lastMonth|thisQuarter|thisYear)$",
+    ),
+    campus: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    is_super_admin = (
+        current_user.get("is_supreme_admin") is True
+        or current_user.get("is_supreme_admin") == "true"
+        or current_user.get("role") == "super_admin"
+    )
+    organization = current_user.get("Organization") or current_user.get("organization")
+    org_id = current_user.get("org_id")
+    if not is_super_admin and not organization and not org_id:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+    org_filter = None
+    if not is_super_admin:
+        org_filter = {
+            "organization": organization,
+            "org_id": org_id,
+        }
+
+    try:
+        return await asyncio.to_thread(
+            sb_get_monthly_service_attendance,
+            period,
+            campus,
+            org_filter,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail="Error fetching service attendance",
+        )
 
 # ── Twelve Tasks ─────────────────────────────────────────────────────────
 @app.get("/stats/twelve-tasks")
