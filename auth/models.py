@@ -77,6 +77,7 @@ class AttendanceSubmission(BaseModel):
     session_id: str
     event_id: str
     event_name: str
+    event_type: Optional[str] = "Cells"  # "Cells" or "Global Events"
     
 
     @field_validator("attendees", mode="before")
