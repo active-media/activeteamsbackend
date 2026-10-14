@@ -317,6 +317,16 @@ def require_role(*allowed_roles: str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     return _checker
+
+
+def require_super_admin(
+    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> Dict[str, Any]:
+    from fastapi import HTTPException, status
+    current_user = await get_current_user(token)
+    if not current_user.get('is_supreme_admin'):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Super admin access required')
+    return current_user
 def sanitize_document(doc: dict) -> dict:
     """
     Recursively convert ObjectId and other non-serializable fields.
@@ -327,66 +337,3 @@ def sanitize_document(doc: dict) -> dict:
 # ==============================
 # MISC HELPERS
 # ==============================
-def sanitize_document(doc: dict) -> dict:
-    """Recursively convert non-serializable fields."""
-    def sanitize(value):
-        if isinstance(value, dict):
-            return sanitize_document(value)
-        elif isinstance(value, list):
-            return [sanitize(v) for v in value]
-        return value
-    return {k: sanitize(v) for k, v in doc.items()}
-
-
-WEEKDAY_MAP = {
-    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-    "friday": 4, "saturday": 5, "sunday": 6,
-}
-
-def get_next_occurrence_single(start_dt: datetime, recurring_day: str) -> datetime:
-    if recurring_day is None:
-        return start_dt
-    target_weekday = WEEKDAY_MAP[recurring_day.lower()]
-    today = datetime.utcnow().date()
-    today_weekday = today.weekday()
-    days_ahead = (target_weekday - today_weekday) % 7
-    candidate_date = today + timedelta(days=days_ahead)
-    if candidate_date < start_dt.date():
-        candidate_date += timedelta(days=7)
-    return datetime.combine(candidate_date, start_dt.time())
-
-
-async def get_leader_cell_name_async(leader_id: str) -> str:
-    try:
-        result = (
-            _supabase_admin.table("Users")
-            .select("name, surname")
-            .eq("_id", leader_id)
-            .single()
-            .execute()
-        )
-        doc = result.data
-    except Exception:
-        doc = None
-    if doc:
-        name_parts = [p for p in [doc.get("name", ""), doc.get("surname", "")] if p]
-        if name_parts:
-            return " ".join(name_parts) + "'s cell"
-    return f"Cell of {leader_id}"
-
-
-def parse_time_string(t: Optional[str]) -> Optional[time_type]:
-    if not t:
-        return None
-    try:
-        hh, mm = t.split(":")
-        return time_type(int(hh), int(mm))
-    except Exception:
-        return None
-
-
-def task_type_serializer(task_type) -> dict:
-    return {
-        "id": str(task_type.get("_id") or task_type.get("id", "")),
-        "name": task_type["name"],
-    }

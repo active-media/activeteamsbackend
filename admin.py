@@ -846,7 +846,7 @@ async def add_uuids_to_all_events(current_user: dict = Depends(get_current_user)
 @router.post("/users", response_model=MessageResponse)
 async def create_user(user_data: UserCreater, current_user: dict = Depends(get_current_user)):
     """Create a new user - Admin only."""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    is_supreme = current_user.get("is_supreme_admin")
 
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -916,10 +916,7 @@ async def get_all_users(
 ):
     """Get all users - Admin only."""
     try:
-        is_supreme = (
-            current_user.get("email") == SUPREME_ADMIN_EMAIL
-            or current_user.get("is_supreme_admin", False)
-        )
+        is_supreme = current_user.get("is_supreme_admin")
 
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
@@ -984,7 +981,7 @@ async def get_admin_stats(
 ):
     """Get user stats by role - Admin only."""
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        is_supreme = current_user.get("is_supreme_admin")
 
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
@@ -1044,7 +1041,7 @@ async def get_distinct_roles(
 ):
     """Get distinct roles with counts - Admin only."""
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        is_supreme = current_user.get("is_supreme_admin")
 
         org_filter = None
         if is_supreme and organization:
@@ -1106,10 +1103,7 @@ async def update_user_role(
 ):
     """Update a user's role - Admin only."""
     try:
-        is_supreme = (
-            current_user.get("email") == SUPREME_ADMIN_EMAIL
-            or current_user.get("is_supreme_admin", False)
-        )
+        is_supreme = current_user.get("is_supreme_admin")
 
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
@@ -1168,7 +1162,7 @@ async def update_user_role(
 @router.delete("/users/{user_id}", response_model=MessageResponse)
 async def delete_user(user_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a user - Admin only."""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    is_supreme = current_user.get("is_supreme_admin")
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
@@ -1302,7 +1296,7 @@ async def get_activity_logs(
 @router.get("/organizations", response_model=OrganizationList)
 async def get_all_organizations(current_user: dict = Depends(get_current_user)):
     """Get all organizations - Supreme Admin only."""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not current_user.get("is_supreme_admin"):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
 
     try:
@@ -1349,7 +1343,7 @@ async def create_organization(
     org_data: OrganizationCreate, current_user: dict = Depends(get_current_user)
 ):
     """Create a new organization - Supreme Admin only."""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not current_user.get("is_supreme_admin"):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
 
     try:
@@ -1399,7 +1393,7 @@ async def update_organization(
     current_user: dict = Depends(get_current_user),
 ):
     """Update organization - Supreme Admin only."""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not current_user.get("is_supreme_admin"):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
 
     try:
@@ -1443,7 +1437,7 @@ async def update_organization(
 @router.delete("/organizations/{org_id}", response_model=MessageResponse)
 async def delete_organization(org_id: str, current_user: dict = Depends(get_current_user)):
     """Delete organization - Supreme Admin only."""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not current_user.get("is_supreme_admin"):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
 
     try:
@@ -1507,7 +1501,7 @@ async def get_all_people(
     current_user: dict = Depends(get_current_user),
 ):
     """Get all people - filtered by organization. Admin only."""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    is_supreme = current_user.get("is_supreme_admin")
 
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
