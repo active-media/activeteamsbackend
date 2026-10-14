@@ -40,7 +40,11 @@ from datetime import date, datetime, timedelta, timezone
 import logging
 from typing import Optional
 
-from supabase_helpers.supabase_connection import supabase
+# Stats queries are server-side and enforce their own scoping (organisation +
+# leader hierarchy, see build_stats_scope below).  The anon key is blocked by
+# RLS on events / Tasks / Users — it returns 0 rows — so use the service-role
+# client here, consistent with the other backend helpers that scope in code.
+from supabase_helpers.supabase_connection import supabase_admin as supabase
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +152,9 @@ def _apply_org(query, org_filter: Optional[dict]):
     """
     if not org_filter:
         return query
-    # Normalise key: both "Organization" and "Organization" are accepted
-    org_value = org_filter.get("Organization")
+    # Normalise key: both "Organization" and "organization" are accepted —
+    # _build_stats_org_filter() hands back the lower-case spelling.
+    org_value = org_filter.get("Organization") or org_filter.get("organization")
     if org_value:
         # Tasks / Task Types / Users / people all use "Organization" (capital O)
         # events uses "Organization" (lower-case) — we try both via ilike-fallback
@@ -163,7 +168,7 @@ def _apply_org_events(query, org_filter: Optional[dict]):
     """Same as _apply_org but for the `events` table which uses lower-case `Organization`."""
     if not org_filter:
         return query
-    org_value = org_filter.get("Organization")
+    org_value = org_filter.get("Organization") or org_filter.get("organization")
     if org_value:
         query = query.eq("Organization", org_value)
     return query
@@ -561,6 +566,305 @@ def _is_completed_flag(status: str, task_type: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Hierarchy scoping — who is allowed to see whose numbers
+# ---------------------------------------------------------------------------
+
+# Each scoped request carries its identities in the query string.  httpx
+# refuses a query past ~64k and the server 400s well before that, while real
+# teams here run to 1,185 people (~63k of `in.(…)`), so identities get split
+# across several requests rather than dropped.
+_MAX_SCOPE_FILTER_CHARS = 8000
+_MAX_SCOPE_REQUESTS = 25
+
+# How far down the People hierarchy we walk when expanding a leader's team.
+_DOWNLINE_MAX_DEPTH = 3
+_DOWNLINE_BATCH_IDS = 200    # ids per `in.(…)` filter — keeps the URL sane
+_DOWNLINE_PAGE_ROWS = 1000   # rows per page, per batch
+_DOWNLINE_MAX_PEOPLE = 5000  # hard cap so one request can't drag a whole org
+
+
+def _filter_value(value: str) -> str:
+    """Sanitise a value for embedding in a PostgREST or=(…) expression."""
+    return (
+        (value or "")
+        .strip()
+        .replace(",", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .replace('"', "")
+    )
+
+
+def _resolve_downline(email: str) -> tuple[list[str], list[str]]:
+    """
+    Walk the People hierarchy downwards from `email` and return
+    (full names, emails) for everyone sitting under that leader.
+
+    `People.LeaderId` holds the `_id` of a person's direct leader (16,843 of
+    17,192 rows resolve to another People row), so a breadth-first walk over
+    that single column collects the whole subtree.  The walk is bounded by
+    _DOWNLINE_MAX_DEPTH, _DOWNLINE_MAX_PEOPLE and batched `_id` pagination, so
+    a huge team can neither cycle forever nor blow the PostgREST URL limit.
+    Failures are swallowed: the caller keeps its own identities and degrades
+    to a personal view instead of a 500.
+    """
+    names: list[str] = []
+    emails: list[str] = []
+    if not email:
+        return names, emails
+
+    try:
+        me = (
+            supabase.table("People")
+            .select("_id")
+            .ilike("Email", email)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not me:
+            return names, emails
+
+        seen: set = {me[0].get("_id")}
+        frontier = [me[0].get("_id")]
+
+        for _ in range(_DOWNLINE_MAX_DEPTH):
+            if not frontier or len(seen) >= _DOWNLINE_MAX_PEOPLE:
+                break
+
+            next_frontier = []
+            for start in range(0, len(frontier), _DOWNLINE_BATCH_IDS):
+                chunk = frontier[start : start + _DOWNLINE_BATCH_IDS]
+                cursor = None
+                while True:
+                    page_q = (
+                        supabase.table("People")
+                        .select("_id, Name, Surname, Email")
+                        .in_("LeaderId", chunk)
+                        .order("_id")
+                        .limit(_DOWNLINE_PAGE_ROWS)
+                    )
+                    if cursor:
+                        page_q = page_q.gt("_id", cursor)
+                    rows = page_q.execute().data or []
+                    for row in rows:
+                        row_id = row.get("_id")
+                        cursor = row_id
+                        if not row_id or row_id in seen:
+                            continue
+                        seen.add(row_id)
+                        next_frontier.append(row_id)
+                        full = f"{row.get('Name', '')} {row.get('Surname', '')}".strip()
+                        if full:
+                            names.append(full)
+                        row_email = (row.get("Email") or "").strip()
+                        if row_email:
+                            emails.append(row_email)
+                    if len(rows) < _DOWNLINE_PAGE_ROWS or len(seen) >= _DOWNLINE_MAX_PEOPLE:
+                        break
+                if len(seen) >= _DOWNLINE_MAX_PEOPLE:
+                    break
+            frontier = next_frontier
+
+        if len(seen) >= _DOWNLINE_MAX_PEOPLE:
+            print(
+                f"[stats] downline for {email!r} truncated at "
+                f"{_DOWNLINE_MAX_PEOPLE} people"
+            )
+    except Exception as exc:
+        print(f"[stats] downline lookup failed for {email!r}: {exc}")
+        return [], []
+
+    return names, emails
+
+
+def build_stats_scope(current_user: dict, params: Optional[dict] = None) -> Optional[dict]:
+    """
+    Decide which slice of the stats `current_user` is allowed to see.
+
+    Mirrors the Mongo scoping in events.py::get_cell_events so the Stats page
+    and the Cells list agree:
+      * admin / super-admin → whole organisation (own data only when they
+                              explicitly ask for `show_personal_cells`)
+      * leader with `leader_at_12_view` → own data, or own + disciples when
+                              `show_all_authorized` /
+                              `include_subordinate_cells` is also set
+      * everybody else      → their own data
+
+    Returns None when nothing needs restricting (no hierarchy params sent at
+    all — keeps the endpoint backwards compatible for older callers), else
+    {"mode": …, "emails": [...], "names": [...]}.
+    """
+    params = params or {}
+    if not any(params.values()):
+        return None
+
+    role = (current_user.get("role") or "").lower().strip()
+    email = (current_user.get("email") or "").strip()
+    name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+
+    is_supreme = bool(current_user.get("is_supreme_admin")) or role == "super_admin"
+    is_admin = is_supreme or role == "admin"
+    is_leader_at_12 = (
+        "leaderat12" in role
+        or "leader at 12" in role
+        or "leader@12" in role
+        or bool(params.get("leader_at_12_view"))
+    )
+    wants_personal = bool(params.get("personal") or params.get("show_personal_cells"))
+    wants_disciples = bool(
+        params.get("show_all_authorized") or params.get("include_subordinate_cells")
+    )
+
+    if is_admin:
+        if wants_personal and not wants_disciples:
+            mode = "personal"
+        else:
+            return None  # admins see the whole organisation
+    elif is_leader_at_12 and params.get("leader_at_12_view"):
+        # Same shape as events.py: disciples-only view when both flags say so
+        # and the caller did not ask for personal-only.
+        mode = "disciples" if (wants_disciples and not wants_personal) else "personal"
+    elif wants_disciples and not wants_personal:
+        mode = "disciples"
+    else:
+        mode = "personal"
+
+    emails = [email] if email else []
+    names = [name] if name else []
+
+    if mode == "disciples":
+        team_names, team_emails = _resolve_downline(email)
+        for value in team_emails:
+            if value and value not in emails:
+                emails.append(value)
+        for value in team_names:
+            if value and value not in names:
+                names.append(value)
+
+    return {"mode": mode, "emails": emails, "names": names}
+
+
+def _scope_event_filters(
+    scope: Optional[dict],
+) -> Optional[list[tuple[str, list[str]]]]:
+    """(column, values) pairs covering the events this scope may see."""
+    if scope is None:
+        return None
+    return [
+        ("event_leader_email", list(scope.get("emails", []))),
+        ("event_leader", list(scope.get("names", []))),
+    ]
+
+
+def _scope_task_filters(
+    scope: Optional[dict],
+) -> Optional[list[tuple[str, list[str]]]]:
+    """
+    …the Tasks this scope may see.
+
+    `assignedfor` is e-mail shaped on every migrated row (1000/1000 sampled)
+    and is the column this dashboard groups by, so it alone carries the scope.
+    """
+    if scope is None:
+        return None
+    return [("assignedfor", list(scope.get("emails", [])))]
+
+
+def _scope_user_filters(
+    scope: Optional[dict],
+) -> Optional[list[tuple[str, list[str]]]]:
+    """…the Users this scope may see (e-mail is the join key)."""
+    if scope is None:
+        return None
+    return [("email", list(scope.get("emails", [])))]
+
+
+def _execute_scoped(build_query, filters, key: str, cap: int) -> list[dict]:
+    """
+    Run `build_query()` against Supabase and return its rows, honouring the scope.
+
+    `filters is None` → unrestricted caller, so one plain execute.
+
+    Otherwise the identities ride in the query string, which has two walls:
+    httpx refuses a query past ~64k and the server 400s well before that,
+    while real teams here run to 1,185 people (~63k of `in.(…)`).  So the
+    values are split across as many requests as it takes — each one still
+    filtering in the database, so nothing is lost to PostgREST's row cap —
+    and the results are merged.  `build_query` is a *factory*, called once per
+    request: postgrest's `or_()` mutates the builder it is called on and
+    returns it, so reusing one builder would stack every chunk's filter on top
+    of the previous chunk's and blow the URL limit.  A restricted scope with
+    no identity at all returns [] rather than leaking everything.
+    """
+    if filters is None:
+        return build_query().execute().data or []
+
+    columns: list[tuple[str, list[str]]] = []
+    for column, values in filters:
+        cleaned = [f for v in values if (f := _filter_value(v))]
+        if cleaned:
+            columns.append((column, cleaned))
+
+    if not columns:
+        return []
+
+    # 1. split each column's values into `col.in.(…)` expressions
+    expressions: list[str] = []
+    for column, values in columns:
+        budget = _MAX_SCOPE_FILTER_CHARS - len(column) - 6
+        chunk: list[str] = []
+        size = 0
+        for value in values:
+            if chunk and size + len(value) + 1 > budget:
+                expressions.append(f"{column}.in.({','.join(chunk)})")
+                chunk, size = [], 0
+            chunk.append(value)
+            size += len(value) + 1
+        if chunk:
+            expressions.append(f"{column}.in.({','.join(chunk)})")
+
+    # 2. pack those expressions into requests that each stay under the limit
+    requests: list[str] = []
+    current: list[str] = []
+    size = 0
+    for expression in expressions:
+        if current and size + len(expression) + 1 > _MAX_SCOPE_FILTER_CHARS:
+            requests.append(",".join(current))
+            current, size = [], 0
+        current.append(expression)
+        size += len(expression) + 1
+    if current:
+        requests.append(",".join(current))
+
+    if len(requests) > _MAX_SCOPE_REQUESTS:
+        print(
+            f"[stats] scope needs {len(requests)} requests, "
+            f"capped at {_MAX_SCOPE_REQUESTS}"
+        )
+        requests = requests[:_MAX_SCOPE_REQUESTS]
+
+    rows: list[dict] = []
+    seen: set = set()
+    for expression in requests:
+        for row in build_query().or_(expression).execute().data or []:
+            row_key = row.get(key)
+            if row_key:
+                if row_key in seen:
+                    continue
+                seen.add(row_key)
+            rows.append(row)
+        if len(rows) >= cap:
+            break
+
+    if len(rows) > cap:
+        print(f"[stats] scope result capped from {len(rows)} to {cap} rows")
+        rows = rows[:cap]
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # 1.  /stats/overview
 # ---------------------------------------------------------------------------
 
@@ -602,7 +906,7 @@ def sb_get_stats_overview(
     # ── Total people ────────────────────────────────────────────────────────
     ppl_q = supabase.table("People").select("_id", count="exact")
     if org_filter:
-        org_value = org_filter.get("Organization") 
+        org_value = org_filter.get("Organization") or org_filter.get("organization")
         if org_value:
             ppl_q = ppl_q.eq("Organization", org_value)
     total_people = ppl_q.execute().count or 0
@@ -931,6 +1235,7 @@ def sb_get_dashboard_comprehensive(
     period: str = "today",
     limit: int = 100,
     org_filter: Optional[dict] = None,
+    scope: Optional[dict] = None,
 ) -> dict:
     """
     Supabase replacement for GET /stats/dashboard-comprehensive.
@@ -943,19 +1248,24 @@ def sb_get_dashboard_comprehensive(
     start_iso, end_iso = _iso(start), _iso(end)
 
     # ── Overdue cells ─────────────────────────────────────────────────────────
-    cell_q = (
-        supabase.table("events")
-        .select(
-            "event_id, event_name, event_leader, event_leader_email, "
-            "location, event_date, status, event_type_name, Organization"
+    def cell_query():
+        """Fresh builder per request — see _execute_scoped()."""
+        q = (
+            supabase.table("events")
+            .select(
+                "event_id, event_name, event_leader, event_leader_email, "
+                "location, event_date, status, event_type_name, Organization"
+            )
+            .in_("event_type_name", _CELL_TYPE_VALUES)
+            .lte("event_date", end_iso)
+            .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
+            .limit(200)
         )
-        .in_("event_type_name", _CELL_TYPE_VALUES)
-        .lte("event_date", end_iso)
-        .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
-        .limit(200)
+        return _apply_org_events(q, org_filter)
+
+    overdue_cells_raw = _execute_scoped(
+        cell_query, _scope_event_filters(scope), key="event_id", cap=200
     )
-    cell_q = _apply_org_events(cell_q, org_filter)
-    overdue_cells_raw = cell_q.execute().data or []
 
     overdue_cells = [
         {
@@ -990,7 +1300,9 @@ def sb_get_dashboard_comprehensive(
         .limit(5000)
     )
     task_q = _apply_org(task_q, org_filter)
-    all_Tasks_raw = task_q.execute().data or []
+    all_Tasks_raw = _execute_scoped(
+        task_q, _scope_task_filters(scope), key="_id", cap=5000
+    )
 
     # ── Group Tasks by assignedfor (mirrors MongoDB $group stage) ─────────────
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -1094,10 +1406,12 @@ def sb_get_dashboard_comprehensive(
         .limit(limit)
     )
     if org_filter:
-        org_value = org_filter.get("Organization")
+        org_value = org_filter.get("Organization") or org_filter.get("organization")
         if org_value:
             users_q = users_q.eq("Organization", org_value)
-    users_raw = users_q.execute().data or []
+    users_raw = _execute_scoped(
+        users_q, _scope_user_filters(scope), key="_id", cap=limit
+    )
 
     user_map: dict[str, dict] = {}
     for u in users_raw:
@@ -1144,7 +1458,7 @@ def sb_get_dashboard_comprehensive(
     # ── Available task types from Task Types table ────────────────────────────
     tt_q = supabase.table("Task Types").select("name")
     if org_filter:
-        org_value = org_filter.get("Organization")
+        org_value = org_filter.get("Organization") or org_filter.get("organization")
         if org_value:
             tt_q = tt_q.eq("Organization", org_value)
     all_task_types = [
@@ -1234,7 +1548,7 @@ def sb_get_people_capture_stats(org_filter: Optional[dict] = None) -> dict:
     """
     ppl_q = supabase.table("People").select("InvitedBy, Name, Surname, Email")
     if org_filter:
-        org_value = org_filter.get("Organization") 
+        org_value = org_filter.get("Organization") or org_filter.get("organization")
         if org_value:
             ppl_q = ppl_q.eq("Organization", org_value)
 

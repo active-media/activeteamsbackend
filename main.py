@@ -44,6 +44,7 @@ from supabase_helpers.supabase_stats import (
     sb_get_outstanding_items,
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
+    build_stats_scope,
 )
 from Reports.twelve_tasks import sb_get_twelve_tasks_report
 from Reports.reports_routes import router as reports_router
@@ -11348,6 +11349,12 @@ async def get_dashboard_comprehensive(
         pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$",
     ),
     limit: int = Query(100, ge=1, le=1000),
+    personal: Optional[bool] = Query(None),
+    leader_at_12_view: Optional[bool] = Query(None),
+    show_personal_cells: Optional[bool] = Query(None),
+    show_all_authorized: Optional[bool] = Query(None),
+    include_subordinate_cells: Optional[bool] = Query(None),
+    leader_at_1_identifier: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
     org_name = current_user.get("Organization")
@@ -11355,9 +11362,20 @@ async def get_dashboard_comprehensive(
         raise HTTPException(status_code=403, detail="Organization not associated with user")
  
     org_filter = _build_stats_org_filter(current_user)
+    scope = build_stats_scope(
+        current_user,
+        {
+            "personal": personal,
+            "leader_at_12_view": leader_at_12_view,
+            "show_personal_cells": show_personal_cells,
+            "show_all_authorized": show_all_authorized,
+            "include_subordinate_cells": include_subordinate_cells,
+            "leader_at_1_identifier": leader_at_1_identifier,
+        },
+    )
     try:
         return await asyncio.to_thread(
-            sb_get_dashboard_comprehensive, period, limit, org_filter
+            sb_get_dashboard_comprehensive, period, limit, org_filter, scope
         )
     except Exception as e:
         traceback.print_exc()
