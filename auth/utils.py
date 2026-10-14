@@ -28,6 +28,20 @@ ORG_ID_MAP = {
     "active church": "active-teams",
 }
 
+
+def is_true(value):
+    """Check if a value is "truthy", handling TEXT columns from Supabase.
+    
+    Accepts: True, "true", "t", "1", "yes" (case-insensitive)
+    Everything else returns False (including bool False, "false", "0", "no", None, "")
+    """
+    if value is True or value is False:
+        return value is True
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "t", "1", "yes")
+    return bool(value)
+
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
 
@@ -118,7 +132,7 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     email = user.get("email", "")
-    is_supreme = email == SUPREME_ADMIN_EMAIL or bool(user.get("is_supreme_admin"))
+    is_supreme = email == SUPREME_ADMIN_EMAIL or is_true(user.get("is_supreme_admin"))
     organization = user.get("Organization") or user.get("organization", "")
     org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
     org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
@@ -262,7 +276,7 @@ async def get_current_user(
     # 3. Build the current_user dict consumed by all endpoints
     # ------------------------------------------------------------------
     email = db_user.get("email", "")
-    is_supreme = email == SUPREME_ADMIN_EMAIL or bool(db_user.get("is_supreme_admin"))
+    is_supreme = email == SUPREME_ADMIN_EMAIL or is_true(db_user.get("is_supreme_admin"))
     organization = db_user.get("Organization") or db_user.get("organization") or ""
 
     org_id = db_user.get("org_id") or ""
