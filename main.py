@@ -76,6 +76,8 @@ from supabase_helpers.supabase_stats import (
     sb_get_outstanding_items,
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
+    sb_get_stats_cells,
+    sb_get_stats_calendar_events,
 )
 from Reports.twelve_tasks import sb_get_twelve_tasks_report
 from Reports.reports_routes import router as reports_router
@@ -117,13 +119,27 @@ def _build_stats_org_filter(current_user: dict) -> Optional[dict]:
     Returns None for super-admins (no restriction) or a dict that
     supabase_stats helpers will apply as a WHERE clause.
     """
-    is_super = current_user.get("is_supreme_admin") or current_user.get("role") == "super_admin"
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
     if is_super:
         return None
     org = current_user.get("Organization") or current_user.get("organization")
     if not org:
         return None
-    return {"organization": org}
+    return {"Organization": org, "org_id": current_user.get("org_id")}
+
+
+def _build_stats_user_scope(current_user: dict) -> dict:
+    name = str(current_user.get("name") or "").strip()
+    surname = str(current_user.get("surname") or "").strip()
+    return {
+        "role": current_user.get("role"),
+        "email": current_user.get("email"),
+        "name": f"{name} {surname}".strip(),
+        "is_super": bool(
+            current_user.get("is_supreme_admin")
+            or str(current_user.get("role", "")).lower() == "super_admin"
+        ),
+    }
 
 def get_org_from_user(current_user: dict):
     if current_user.get("role") == "super_admin":
@@ -446,11 +462,9 @@ PEOPLE_PROJECTION = {
     "_id": 1,
     "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
     "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
-    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
-    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
-    "church_id": 1,
-    "LeaderId": 1, "LeaderPath": 1,
-    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
+    "org_id": 1,
+    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+    "UpdatedAt": 1,
 }
 
 def get_leader_level(index_from_top: int) -> int:
@@ -567,7 +581,7 @@ def transform_person_full(p, id_to_full: dict = None):
         ]
         seen_levels = set()
         for field, level in LEGACY_LEVELS:
-            name = p.get(field, "").strip()
+            name = (p.get(field) or "").strip()
             if name and level not in seen_levels:
                 leaders.append({
                     "level": level,
@@ -694,26 +708,9 @@ async def background_refresh_people_cache(stale_data: list = None):
         start = _time.time()
         print("BACKGROUND REFRESH: starting...")
 
-        FULL_PROJECTION = {
-    "_id": 1,
-    "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
-    "Gender": 1, "Birthday": 1, "Address": 1, "InvitedBy": 1, "Stage": 1,
-    "org_id": 1, "Org_id": 1, "orgId": 1, "OrgId": 1,
-    "Organisation": 1, "Organization": 1, "organisation": 1, "organization": 1,
-    "church_id": 1,
-    "LeaderId": 1, "LeaderPath": 1,
-    "DateCreated": 1, "Date Created": 1, "UpdatedAt": 1,
-    "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
-    "leader1": 1, "leader12": 1, "leader144": 1, "leader1728": 1,
-    "Leader at 1": 1, "Leader at 12": 1, "Leader at 144": 1, "Leader at 144": 1,
-    "leaders": 1,  
-}
-
         # ── Fetch ALL docs in one go (no sleep, no batching) ──────────────
         # Motor streams the cursor efficiently — no need to paginate
-        all_raw = await people_collection.find(
-            {}, FULL_PROJECTION
-        ).to_list(length=None)  # None = no limit, loads everything at once
+        all_raw = await people_collection.find({}).to_list(length=None)
 
         total_count = len(all_raw)
         people_cache["total_in_database"] = total_count
@@ -2116,25 +2113,25 @@ async def backfill_event_leaders(current_user: dict = Depends(get_current_user))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def convert_event_for_display(event):
-    """
-    Convert event from database format to display format
-    Times are already in SAST in DB, so no conversion needed
-    """
-    if not event:
-        return event
+# def convert_event_for_display(event):
+#     """
+#     Convert event from database format to display format
+#     Times are already in SAST in DB, so no conversion needed
+#     """
+#     if not event:
+#         return event
     
-    # Ensure display_date is present
-    if event.get('date') and not event.get('display_date'):
-        sast_dt = parse_date_to_sast(event['date'])
-        if sast_dt:
-            event['display_date'] = format_display_date(sast_dt)
+#     # Ensure display_date is present
+#     if event.get('date') and not event.get('display_date'):
+#         sast_dt = parse_date_to_sast(event['date'])
+#         if sast_dt:
+#             event['display_date'] = format_display_date(sast_dt)
 
-    if event.get('Time') and not event.get('time'):
-        event['time'] = event['Time']
-    elif event.get('time') and not event/events/cells.get('Time'):
-        event['Time'] = event['time']
-    return event
+#     if event.get('Time') and not event.get('time'):
+#         event['time'] = event['Time']
+#     elif event.get('time') and not event/events/cells.get('Time'):
+#         event['Time'] = event['time']
+#     return event
 
 # @app.get("/events/cells")
 # async def get_cell_events(
@@ -12446,6 +12443,52 @@ def get_period_range(period: str):
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
 
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
+@app.get("/stats/cells")
+async def get_stats_cells(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if org_filter is None and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(
+            sb_get_stats_cells,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            org_filter,
+            _build_stats_user_scope(current_user),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching Stats cells: {str(e)}")
+
+
+@app.get("/stats/calendar-events")
+async def get_stats_calendar_events(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if org_filter is None and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(
+            sb_get_stats_calendar_events,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            org_filter,
+            _build_stats_user_scope(current_user),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching Stats calendar events: {str(e)}")
+
+
 @app.get("/stats/dashboard-comprehensive")
 async def get_dashboard_comprehensive(
     period: str = Query(
