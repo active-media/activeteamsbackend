@@ -112,7 +112,7 @@ def _get_weekly_cells_data(
         .select(
             "session_date, week_identifier, checked_in_count, event_id, "
             "is_did_not_meet, "
-            "events!inner(event_name, event_type_name, Organization, event_leader)"
+            "events!inner(event_name, event_type_name, Organization, event_leader, is_school_cell)"
         )
         .gte("session_date", start_date)
         .lte("session_date", end_date)

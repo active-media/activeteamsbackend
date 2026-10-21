@@ -1,5 +1,7 @@
 import os
 import secrets
+import base64
+import json
 from datetime import datetime, time as time_type, timedelta
 from typing import Optional, Dict, Any
 from passlib.context import CryptContext
@@ -179,6 +181,35 @@ async def get_current_user(
 
     raw_token = token.credentials
 
+    try:
+        parts = raw_token.split(".")
+        if len(parts) == 3:
+            payload = parts[1]
+            payload += "=" * (-len(payload) % 4)
+            decoded_payload = json.loads(
+                base64.urlsafe_b64decode(payload).decode("utf-8")
+            )
+
+            print("========== JWT CLAIMS DEBUG ==========")
+            print("iss:", decoded_payload.get("iss"))
+            print("aud:", decoded_payload.get("aud"))
+            print("sub:", decoded_payload.get("sub"))
+            print("email:", decoded_payload.get("email"))
+            print("role:", decoded_payload.get("role"))
+            print("exp:", decoded_payload.get("exp"))
+            print("iat:", decoded_payload.get("iat"))
+            print("======================================")
+        else:
+            print("JWT DEBUG: Unexpected token structure")
+    except Exception as e:
+        print("JWT DEBUG: Could not decode token payload:", repr(e))
+
+    print("========== AUTH TOKEN DEBUG ==========")
+    print("Token received:", bool(raw_token))
+    print("Token length:", len(raw_token))
+    print("Token starts with:", raw_token[:20])
+    print("======================================")
+
     # ------------------------------------------------------------------
     # 1. Validate token via Supabase Admin client (service role key)
     # ------------------------------------------------------------------
@@ -218,10 +249,14 @@ async def get_current_user(
         rows = result.data
         db_user = rows[0] if rows else None
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"User lookup failed: {e}")
+        print(f"AUTH DEBUG - Token validation failed: {repr(e)}")
+        raise HTTPException(status_code=401, detail=f"Token validation failed: {e}")
 
     if not db_user:
         raise HTTPException(status_code=401, detail=f"User not found in database: {sb_email}")
+    print(f"AUTH DEBUG - Supabase email: {sb_email}")
+    print(f"AUTH DEBUG - Supabase UUID: {supabase_uuid}")
+    print(f"AUTH DEBUG - Database user: {db_user}")
 
     # ------------------------------------------------------------------
     # 3. Build the current_user dict consumed by all endpoints

@@ -8,6 +8,10 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
 
+print("SUPABASE URL:", SUPABASE_URL)
+print("SUPABASE ANON KEY loaded:", bool(SUPABASE_KEY))
+print("SUPABASE SERVICE KEY loaded:", bool(SUPABASE_SERVICE_KEY))
+
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError('SUPABASE_URL and SUPABASE_KEY must be set in environment')
 

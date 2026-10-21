@@ -489,19 +489,20 @@ async def get_cell_events(
 
         #parameters used when fetching the cells
         all_cells_params = {
-            "p_event_type": "Cells",
-            "p_event_leader_email": user_email
+            "p_event_type": event_type,
+            "p_event_leader_email": user_email,
+            "p_org_id": current_user.get("org_id")
         }
 
         personal_cells_params = {
-            "p_event_type": "Cells",
+            "p_event_type": event_type,
             # "p_status": status,
             # "p_day": today_day,
             "p_leader_email": user_email
         }
 
         disciples_cells_params = {
-            "p_event_type": "Cells",
+            "p_event_type": event_type,
             "p_leader12_email": "kennybebel@gmail.com"
         }
 
@@ -512,7 +513,7 @@ async def get_cell_events(
 
         ref = datetime.strptime(today_date.strftime("%Y-%m-%d"), "%Y-%m-%d").date()
         
-        three_weeks_ago = ref - timedelta(weeks=1)
+        three_weeks_ago = ref - timedelta(weeks=5)
 
         start_str = three_weeks_ago.strftime("%Y-%m-%d")
         end_str = ref.strftime("%Y-%m-%d")
@@ -528,14 +529,21 @@ async def get_cell_events(
         
         # 3- getting cells according to roles
         if fetch_all_cells and not personal_cells and not disciples_cells:
-            #getting all cells that occured in the past 3wks based on status
-            print("getting all cells")
-            event_sessions = supabase.table("event_sessions").select("*").gte("session_date", start_str).lte("session_date", end_str).eq("status",status).execute().data
-            event_ids = [session.get("event_id") for session in event_sessions]
-            all_cells_params["p_event_ids"] = list(event_ids)
-            print("EVENTS_IDS", len(all_cells_params["p_event_ids"]),all_cells_params["p_event_leader_email"], all_cells_params["p_event_type"])
-            #getting all active cells
-            events = supabase.rpc("get_all_unique_cells", all_cells_params).execute().data
+            #getting all running small gathering events
+            events = supabase.rpc("get_all_unique_small_gatherings", all_cells_params).execute().data
+            fetched_event_ids = [
+                event.get("event_id") for event in events
+            ]
+            print("getting all event small gatherings sessions")
+
+            event_sessions = ( 
+                supabase.table("event_sessions")
+                .select("*").gte("session_date", start_str).lte("session_date", end_str)
+                .eq("status",status)
+                .in_("event_id", fetched_event_ids)
+                .execute().data
+                )
+            print(len(event_sessions))
         elif personal_cells and not disciples_cells:
             print("getting personal cells")
             #getting events of leader:
@@ -632,7 +640,7 @@ async def create_instances(event_types: list):
             
 
                 #formulating current week's date
-                today_date = datetime.now()
+                today_date = datetime.now() 
 
                 week_indetifier = today_date.strftime("%Y-%m-%d") 
 
@@ -829,7 +837,8 @@ async def get_other_events(
     start_date: Optional[str] = Query("2025-10-10"),
     end_date: Optional[str] = Query(None),
     show_all_dates: Optional[bool] = Query(False),  # still unused
-):
+    is_global: Optional[bool] = Query(None)
+):  
     try:
         print(f"GET /eventsdata - User: {current_user.get('email')}, Event Type: {event_type}")
         print(f"Query params - status: {status}, personal: {personal}, search: {search}")
@@ -849,8 +858,15 @@ async def get_other_events(
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
-        fetched_other_events = supabase.rpc("get_general_events",{"p_event_type": event_type}).execute().data
-        print("fetched events",fetched_other_events)
+        if event_type == "global_events" or is_global == True:
+            event_type = "global_events"
+
+        if not is_global:
+            fetched_other_events = supabase.rpc("get_general_events",{"p_event_type": event_type}).execute().data
+        else:
+            fetched_other_events = supabase.rpc("get_global_events").execute().data
+
+        # print("fetched events",fetched_other_events)
         fetched_event_ids = [ 
             event.get("event_id") for event in fetched_other_events
         ]
@@ -869,14 +885,22 @@ async def get_other_events(
         start_str = three_weeks_ago.strftime("%Y-%m-%d")
         end_str = ref.strftime("%Y-%m-%d")
 
-        sessions = (supabase.table("event_sessions")
-        .select("*")
-        # .gte("session_date", start_str).lte("session_date", end_str)
-        .in_("event_id", [str(i) for i in fetched_event_ids])
-        .eq("status",status).execute().data
+        sessions =[]
+        if status: 
+            sessions=(supabase.table("event_sessions")
+            .select("*")
+            # .gte("session_date", start_str).lte("session_date", end_str)
+            .in_("event_id", [str(i) for i in fetched_event_ids])
+            .eq("status",status).execute().data
 
-        )
-
+            )
+        else:
+            sessions = (supabase.table("event_sessions")
+            .select("*")
+            # .gte("session_date", start_str).lte("session_date", end_str)
+            .in_("event_id", [str(i) for i in fetched_event_ids])
+            .execute().data
+            )
         if not isTicketed:
             general_events = []
             for session in sessions:
@@ -904,6 +928,8 @@ async def get_other_events(
                     "display_date": "-".join(reversed(i.get("session_date", "").split("-"))) if i.get("session_date") else "", # Converts YYYY-MM-DD to DD-MM-YYYY
                     "location": i.get("location"),
                     # "hasPersonSteps": i.get("has_person_steps"),
+                    "isGlobal": i.get("is_global", False),
+                    "isTicketed": i.get("is_ticketed", False),
                     "status": i.get("status"),
                     "Status": i.get("status", "").capitalize() if i.get("status") else "",
                     "did_not_meet": i.get("is_did_not_meet", False),
@@ -912,7 +938,10 @@ async def get_other_events(
                     "original_event_id": i.get("mongo_id"),
                     # "attendance": {},
                     "is_active": i.get("is_active"),
-                    "time": i.get("time", "07:20") 
+                    "time": i.get("time", "07:20") ,
+                    "attendance":  i.get("checked_in_count", 0),
+                    "new_people":i.get("new_people_total",0),
+                    "total_consolidation":i.get("total_consolidation",0)    
                 }
                 for i in general_events
             ]
@@ -953,7 +982,8 @@ async def get_other_events(
                     "date": i.get("session_date"),
                     "display_date": "-".join(reversed(i.get("session_date", "").split("-"))) if i.get("session_date") else "", # Converts YYYY-MM-DD to DD-MM-YYYY
                     "location": i.get("location"),
-                    # "hasPersonSteps": i.get("has_person_steps"),
+                    "isGlobal": i.get("is_global", False),
+                    "isTicketed": i.get("is_ticketed", False),
                     "status": i.get("status"),
                     "Status": i.get("status", "").capitalize() if i.get("status") else "",
                     "did_not_meet": i.get("is_did_not_meet", False),
@@ -964,6 +994,7 @@ async def get_other_events(
                     "is_active": i.get("is_active"),
                     "time": i.get("time", "07:20") ,
                     "price_tiers": i.get("price_tiers", "")
+
                 }
                 for i in general_events
             ]
@@ -4080,7 +4111,7 @@ async def submit_attendance(
 
         #update to increment counts           
         saveSession={
-            "status": "complete",
+            "status": "complete" if not submission.did_not_meet else "did_not_meet",
             "checked_in_count": len(submission.attendees),
             "total_headcounts": len(submission.attendees),
             "submitted_by": current_user.get("email", ""),

@@ -55,6 +55,7 @@ def normalize_person_data(data: dict) -> dict:
     partial patch.
     """
     return {
+        "person_id": data.get("person_id") or data.get("personId") or data.get("Person_id") or "",
         "Name": data.get("Name") or data.get("name", ""),
         "Surname": data.get("Surname") or data.get("surname", ""),
         "Number": data.get("Number") or data.get("number", ""),
@@ -75,6 +76,7 @@ def map_person(person: dict) -> dict:
     """Map a raw Supabase row to the consistent response shape."""
     return {
         "_id": person.get("_id", ""),
+        "person_id": person.get("person_id") or person.get("Person_id") or person.get("personId"),
         "Name": person.get("Name") or "",
         "Surname": person.get("Surname") or "",
         "Number": person.get("Number") or "",
@@ -107,7 +109,7 @@ async def get_people(
 ):
     """Get people with optional filtering and pagination"""
     try:
-        query = supabase.table(PEOPLE_TABLE).select("*", count="exact")
+        query = supabase.table(PEOPLE_TABLE).select("*, person_id", count="exact")
         query = _apply_people_org_filter(query, current_user)
 
         if name:
@@ -192,7 +194,7 @@ async def search_people_fast(
         response = (
             _apply_people_org_filter(
                 supabase.table(PEOPLE_TABLE).select(
-                    "_id, Name, Surname, Email, Number, \"Leader @1\", \"Leader @12\", \"Leader @144\", \"Leader @1728\""
+                    "_id, person_id, Name, Surname, Email, Number, \"Leader @1\", \"Leader @12\", \"Leader @144\", \"Leader @1728\""
                 ),
                 current_user,
             )
@@ -205,6 +207,7 @@ async def search_people_fast(
         for person in response.data or []:
             results.append({
                 "_id": person.get("_id", ""),
+                "person_id": person.get("person_id") or person.get("Person_id") or person.get("personId"),
                 "Name": person.get("Name") or "",
                 "Surname": person.get("Surname") or "",
                 "Email": person.get("Email") or "",
@@ -230,7 +233,7 @@ async def get_all_people_minimal(current_user: dict = Depends(get_current_user))
     try:
         response = (
             _apply_people_org_filter(
-                supabase.table(PEOPLE_TABLE).select("_id, Name, Surname, Email, Number"),
+                supabase.table(PEOPLE_TABLE).select("_id, person_id, Name, Surname, Email, Number"),
                 current_user,
             )
             .limit(1000)
@@ -241,6 +244,7 @@ async def get_all_people_minimal(current_user: dict = Depends(get_current_user))
         for person in response.data or []:
             people.append({
                 "_id": person.get("_id", ""),
+                "person_id": person.get("person_id") or person.get("Person_id") or person.get("personId"),
                 "Name": person.get("Name") or "",
                 "Surname": person.get("Surname") or "",
                 "Email": person.get("Email") or "",
@@ -263,7 +267,7 @@ async def get_leaders_only(current_user: dict = Depends(get_current_user)):
         response = (
             _apply_people_org_filter(
                 supabase.table(PEOPLE_TABLE).select(
-                    "_id, Name, Surname, Email, Number, \"Leader @1\", \"Leader @12\", \"Leader @144\", \"Leader @1728\""
+                    "_id, person_id, Name, Surname, Email, Number, \"Leader @1\", \"Leader @12\", \"Leader @144\", \"Leader @1728\""
                 ),
                 current_user,
             )
@@ -281,6 +285,7 @@ async def get_leaders_only(current_user: dict = Depends(get_current_user)):
         for person in response.data or []:
             leaders.append({
                 "_id": person.get("_id", ""),
+                "person_id": person.get("person_id") or person.get("Person_id") or person.get("personId"),
                 "Name": person.get("Name") or "",
                 "Surname": person.get("Surname") or "",
                 "Email": person.get("Email") or "",
@@ -313,7 +318,7 @@ async def get_people_paginated(
     """
     try:
         query = supabase.table(PEOPLE_TABLE).select(
-            '_id, Name, Surname, Email, Number, InvitedBy, Stage, person_id,'
+            '_id, person_id, Name, Surname, Email, Number, InvitedBy, Stage, person_id,'
             '"Leader @1", "Leader @12", "Leader @144", "Leader @1728"',
             count="exact",
         )
@@ -335,7 +340,7 @@ async def get_people_paginated(
         for person in response.data or []:
             results.append({
                 "_id": person.get("_id", ""),
-                "person_id": person.get("person_id", ""),
+                "person_id": person.get("person_id") or person.get("Person_id") or person.get("personId"),
                 "Name": person.get("Name") or "",
                 "Surname": person.get("Surname") or "",
                 "Email": person.get("Email") or "",

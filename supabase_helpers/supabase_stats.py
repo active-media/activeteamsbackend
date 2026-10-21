@@ -190,7 +190,7 @@ def sb_get_stats_overview(
     outstanding_Tasks = task_q.execute().count or 0
 
     # ── Total people ────────────────────────────────────────────────────────
-    ppl_q = supabase.table("people").select("_id", count="exact")
+    ppl_q = supabase.table("People").select("_id", count="exact")
     if org_filter:
         org_value = org_filter.get("Organization") 
         if org_value:
@@ -531,21 +531,24 @@ def sb_get_dashboard_comprehensive(
     """
     start, end = _period_range(period)
     start_iso, end_iso = _iso(start), _iso(end)
+    end_date = datetime.now().strftime("%Y-%m-%d")
 
     # ── Overdue cells ─────────────────────────────────────────────────────────
+   
     cell_q = (
-        supabase.table("events")
-        .select(
-            "event_id, event_name, event_leader, event_leader_email, "
-            "location, event_date, status, event_type_name, Organization"
-        )
-        .in_("event_type_name", _CELL_TYPE_VALUES)
-        .lte("event_date", end_iso)
-        .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
-        .limit(200)
+    supabase.rpc(
+        "get_overdue_sessions",
+        {
+            "p_end_iso": end_date,
+            "p_cell_types": _CELL_TYPE_VALUES
+        }
     )
+    .execute()
+)
+
+    # print("OVERDUE CELLS",cell_q.data)
     cell_q = _apply_org_events(cell_q, org_filter)
-    overdue_cells_raw = cell_q.execute().data or []
+    overdue_cells_raw = cell_q.data
 
     overdue_cells = [
         {
@@ -822,7 +825,7 @@ def sb_get_people_capture_stats(org_filter: Optional[dict] = None) -> dict:
     inconsistently populated.  This version groups by `InvitedBy` in the
     people table — the canonical field set at signup / import.
     """
-    ppl_q = supabase.table("people").select("InvitedBy, Name, Surname, Email")
+    ppl_q = supabase.table("People").select("InvitedBy, Name, Surname, Email")
     if org_filter:
         org_value = org_filter.get("Organization") 
         if org_value:

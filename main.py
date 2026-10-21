@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends,
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserCreater, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate, TaskTypeIn, TaskTypeOut, LeaderStatusResponse, UserProfile, OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, consolidations_collection, organizations_collection, org_config_collection
@@ -16,7 +16,10 @@ import pandas as pd
 import io
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, organizations_collection, org_config_collection
 from bson import ObjectId
+from supabase_helpers import report_schedules as report_schedules_helpers
+from supabase_helpers.report_schedule_runner import start_report_schedule_runner
 from supabase_helpers.supabase_client import supabase
+from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
 from auth.email_utils import send_reset_email
 from typing import List, Optional, Dict
@@ -37,11 +40,14 @@ from time import sleep
 from supreme_admin import router as supreme_admin_router
 from events import router as events_router
 from reports import router as reports_router
+from people import router as people_router
 
 #add routers here:
 def include_router(app):
     app.include_router(events_router)
     app.include_router(reports_router)
+    app.include_router(supreme_admin_router)
+    app.include_router(people_router)
 def start_application():
     app = FastAPI()
     include_router(app)
@@ -71,6 +77,18 @@ from supabase_helpers.supabase_stats import (
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
 )
+from Reports.twelve_tasks import sb_get_twelve_tasks_report
+from Reports.reports_routes import router as reports_router
+from supabase_helpers.service_targets import (
+    sb_upsert_service_target,
+    sb_delete_service_target,
+    sb_list_service_targets,
+    sb_get_service_target_report,
+)
+from supabase_helpers.school_cell_report import (
+    sb_get_school_cell_report,
+    build_school_cell_excel,
+)
 from supabase_helpers.service_checkin_routes import router as service_checkin_router
 from fastapi.responses import StreamingResponse
 from events import router as events_router
@@ -88,7 +106,6 @@ from task_types import router as task_types_router
 oauth2_scheme = HTTPBearer()
 
 app = FastAPI()
-app.include_router(people_router)
 
 ORG_ID_MAP = {
     "active-church": "active-teams",
@@ -280,6 +297,12 @@ async def user_has_cell(user_email: str) -> bool:
         return bool(sample)
     except Exception:
         return False
+
+@app.post("/check-user-cell")
+async def check_user_cell(email: str = Body(...)):
+    """Check if a user has a cell event (alternative to direct Supabase query)."""
+    result = user_has_cell(email)
+    return {"hasCell": result}
 
 
 def build_event_object(event: dict, timezone, today_date: date) -> dict:
@@ -505,6 +528,7 @@ def transform_person_full(p, id_to_full: dict = None):
     if LeaderPath is empty. This ensures the cache always has leaders[] populated.
     """
     from bson import ObjectId
+    print('HAIBOOO')
 
     def oid(v):
         return str(v) if v else None
@@ -598,6 +622,7 @@ def transform_person_full(p, id_to_full: dict = None):
 
     result = {
         "_id":          oid(p.get("_id")),
+        "person_id":    p.get("person_id") or p.get("Person_id") or p.get("personId") or oid(p.get("_id")),
         "Name":         p.get("Name") or "",
         "Surname":      p.get("Surname") or "",
         "Email":        p.get("Email") or "",
@@ -963,6 +988,7 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
         if not people_cache["is_loading"]:
             print("Manual cache refresh triggered")
             current_data = people_cache["data"].copy() if people_cache["data"] else None
+            current_data = people_cache["data"].copy() if people_cache["data"] else None
             background_tasks.add_task(background_refresh_people_cache, current_data)
  
             return {
@@ -1081,6 +1107,50 @@ async def reset_password(data: ResetPasswordRequest):
         "token_type": "bearer"
     }
 
+@app.post("/change-password")
+async def change_password(payload: dict = Body(...)):
+    """Change password for the current user using access token."""
+    token = payload.get("token")
+    new_password = payload.get("new_password")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Missing token or new password")
+    
+    try:
+        # Decode the token to get user info
+        payload_data = decode_access_token(token)
+        user_id = payload_data.get("user_id")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Invalid token payload")
+        
+        hashed_pw = hash_password(new_password)
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found or password unchanged")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        access_token = create_access_token(
+            {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+            expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+        )
+        
+        logger.info(f"Password changed successfully for {user['email']}")
+        return {
+            "message": "Password has been changed successfully.",
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change password error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
 # ---------------- Refresh Token ----------------
 @app.post("/refresh-token")
 async def refresh_token(payload: RefreshTokenRequest = Body(...)):
@@ -1098,7 +1168,10 @@ async def refresh_token(payload: RefreshTokenRequest = Body(...)):
         }
     except HTTPException:
         raise
+        raise
     except Exception as e:
+        logger.warning(f"Refresh token invalid/expired: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
         logger.warning(f"Refresh token invalid/expired: {e}")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
@@ -1321,11 +1394,7 @@ async def login(user: UserLogin):
     except Exception as e:
         logger.error(f"Login error for {user.email}: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    
 
-
-# ---------------- Logout ----------------
-@app.post("/logout")
 async def logout(user_id: str = Body(..., embed=True)):
     await users_collection.update_one(
         {"_id": ObjectId(user_id)},
@@ -1638,6 +1707,7 @@ def generate_current_week_instances(event: dict) -> list:
                 "did_not_meet": did_not_meet,
                 "_is_overdue": current_date < today and event_status == "incomplete",
                 "is_recurring": True,
+                "week_identifier": current_date.strftime("%G-W%V"),
                 "week_identifier": current_date.strftime("%G-W%V"),
                 "original_event_id": str(event.get("_id"))
             }
@@ -3218,6 +3288,48 @@ app.include_router(supreme_admin_router)
 app.include_router(admin_router)
 app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
+app.include_router(reports_router)
+app.include_router(people_router)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+
+
+app.router.lifespan_context = lifespan
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://teams.theactivechurch.org",
+        "http://localhost:8000",
+        "http://localhost:5173",
+        "https://new-active-teams.netlify.app",
+        "https://activeteams.netlify.app",
+        "https://activeteamsbackend2.0.onrender.com"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(events_router)
+app.include_router(tasks_router)
+app.include_router(task_types_router)
+app.include_router(service_checkin_router)
+app.include_router(supreme_admin_router)
+app.include_router(admin_router)
+app.include_router(admin_event_type_router)
+app.include_router(admin_task_type_router)
+app.include_router(reports_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -8015,6 +8127,66 @@ async def add_uuids_to_all_events(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=500, detail=str(e))
 #  END OF EVENTS-----------------------------------------------
 
+# ======================== Reporting Endpoints ==============================
+
+@app.get("/report-schedules")
+async def get_report_schedules(current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    schedules = await asyncio.to_thread(
+        report_schedules_helpers.list_report_schedules, organization
+    )
+    return schedules
+
+
+@app.post("/report-schedules")
+async def create_report_schedule(payload: dict, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    created_by = current_user.get("_id") or current_user.get("id")
+    try:
+        schedule = await asyncio.to_thread(
+            report_schedules_helpers.create_report_schedule, payload, organization, created_by
+        )
+    except report_schedules_helpers.ReportScheduleValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return schedule
+
+
+@app.put("/report-schedules/{schedule_id}")
+async def update_report_schedule(schedule_id: str, payload: dict, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        schedule = await asyncio.to_thread(
+            report_schedules_helpers.update_report_schedule, schedule_id, payload, organization
+        )
+    except report_schedules_helpers.ReportScheduleValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return schedule
+
+
+@app.delete("/report-schedules/{schedule_id}")
+async def delete_report_schedule(schedule_id: str, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    deleted = await asyncio.to_thread(
+        report_schedules_helpers.delete_report_schedule, schedule_id, organization
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"success": True}
+
+# ====================== End of Reporting Endpoint =====================
+
+
+
 
 # Check-in (no auth required)
 # -------------------------
@@ -10968,6 +11140,7 @@ async def migrate_user_fields():
 # Startup event
 @app.on_event("startup")
 async def startup_event():
+    start_report_schedule_runner()
     """Run on application startup"""
     print("=" * 50)
     print("Starting up application...")
@@ -11532,6 +11705,22 @@ async def create_consolidation(
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
 
+
+        return {
+            "success": True,
+            "message": "Consolidation created successfully",
+            "consolidation_id": consolidation_id,
+            "person_id": person_id,
+            "task_id": task_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating consolidation: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating consolidation: {str(e)}")
+
 # ====================== COMPREHENSIVE DASHBOARD (MULTI-TENANT) ======================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11542,6 +11731,19 @@ async def create_consolidation(
 #   task_types.py   →  /tasktypes  (GET / POST / PUT / DELETE)
 # Both routers are registered in include_router() above.
 # ─────────────────────────────────────────────────────────────────────────────
+# @app.get("/stats/dashboard-comprehensive")
+# async def get_dashboard_comprehensive(
+#     period: str = Query(
+#         "today",
+#         pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$"
+#     ),
+#     limit: int = Query(100, ge=1, le=1000),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         org_name = current_user.get("Organization")
+#         if not org_name:
+#             raise HTTPException(status_code=403, detail="Organization not associated with user")
 # @app.get("/stats/dashboard-comprehensive")
 # async def get_dashboard_comprehensive(
 #     period: str = Query(
@@ -12268,6 +12470,123 @@ async def get_dashboard_comprehensive(
             status_code=500,
             detail=f"Error fetching comprehensive stats: {str(e)}",
         )
+
+
+# ── Twelve Tasks ─────────────────────────────────────────────────────────
+@app.get("/stats/twelve-tasks")
+async def get_twelve_tasks_report(
+    period: str = Query("thisWeek", pattern="^(today|thisWeek|thisMonth|previousWeek|previousMonth)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_twelve_tasks_report, period, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching Twelve Tasks report: {str(e)}")
+
+
+# ── School Cell ──────────────────────────────────────────────────────────
+@app.get("/stats/school-cell")
+async def get_school_cell_report(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_school_cell_report, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching School Cell report: {str(e)}")
+
+
+@app.get("/stats/school-cell/export-excel")
+async def export_school_cell_excel(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        excel_bytes = await asyncio.to_thread(build_school_cell_excel, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"School Cell Excel generation failed: {str(e)}")
+
+    filename = f"school_cells_{start_date}_to_{end_date}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+# ── Service Target ───────────────────────────────────────────────────────
+@app.post("/service-targets")
+async def create_or_update_service_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        result = await asyncio.to_thread(
+            sb_upsert_service_target,
+            payload.get("leader_name"),
+            payload.get("target_count"),
+            current_user.get("email", ""),
+            org_filter,
+            payload.get("week_identifier"),
+        )
+        return {"success": True, "target": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving service target: {str(e)}")
+
+
+@app.get("/service-targets")
+async def list_service_targets(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return {"targets": await asyncio.to_thread(sb_list_service_targets, week, org_filter)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service targets: {str(e)}")
+
+
+@app.delete("/service-targets/{target_id}")
+async def delete_service_target(
+    target_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        deleted = await asyncio.to_thread(sb_delete_service_target, target_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Target not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting service target: {str(e)}")
+
+
+@app.get("/stats/service-target-report")
+async def get_service_target_report(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_service_target_report, week, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service target report: {str(e)}")
+
+
 
 # ====================== QUICK DASHBOARD (MULTI-TENANT) ======================
 @app.get("/stats/dashboard-quick")
