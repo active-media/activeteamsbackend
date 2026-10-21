@@ -424,11 +424,13 @@ async def get_cell_events(
     current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query('incomplete'),
     search: Optional[str] = Query(None),
     event_type: Optional[str] = Query(None),
     personal: Optional[bool] = Query(False),
+    all_events: Optional[bool] = Query(False),
     start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     leader_at_12_view: Optional[bool] = Query(None),
     show_personal_cells: Optional[bool] = Query(None),
     show_all_authorized: Optional[bool] = Query(None),
@@ -513,10 +515,10 @@ async def get_cell_events(
 
         ref = datetime.strptime(today_date.strftime("%Y-%m-%d"), "%Y-%m-%d").date()
         
-        three_weeks_ago = ref - timedelta(weeks=5)
+        three_weeks_ago = ref - timedelta(weeks=2)
 
-        start_str = three_weeks_ago.strftime("%Y-%m-%d")
-        end_str = ref.strftime("%Y-%m-%d")
+        start_str = start_date or three_weeks_ago.strftime("%Y-%m-%d")
+        end_str = end_date or ref.strftime("%Y-%m-%d")
 
         events=[]
         event_sessions=[]
@@ -528,7 +530,7 @@ async def get_cell_events(
 
         
         # 3- getting cells according to roles
-        if fetch_all_cells and not personal_cells and not disciples_cells:
+        if all_events:
             #getting all running small gathering events
             events = supabase.rpc("get_all_unique_small_gatherings", all_cells_params).execute().data
             fetched_event_ids = [
@@ -539,7 +541,23 @@ async def get_cell_events(
             event_sessions = ( 
                 supabase.table("event_sessions")
                 .select("*").gte("session_date", start_str).lte("session_date", end_str)
-                .eq("status",status)
+                # .eq("status",'incomplete')
+                .in_("event_id", fetched_event_ids)
+                .execute().data
+                )
+            print(len(event_sessions))
+        elif fetch_all_cells and not personal_cells and not disciples_cells:
+            #getting all running small gathering events
+            events = supabase.rpc("get_all_unique_small_gatherings", all_cells_params).execute().data
+            fetched_event_ids = [
+                event.get("event_id") for event in events
+            ]
+            print("getting all event small gatherings sessions")
+
+            event_sessions = ( 
+                supabase.table("event_sessions")
+                .select("*").gte("session_date", start_str).lte("session_date", end_str)
+                .eq("status",'incomplete')
                 .in_("event_id", fetched_event_ids)
                 .execute().data
                 )
@@ -683,7 +701,7 @@ async def create_instances(event_types: list):
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(create_instances,'cron',hour=14,minute=38,args=[['Global Events']]) 
+scheduler.add_job(create_instances,'cron',hour=10,minute=57,args=[['global_events','cells' ]]) 
 # scheduler.add_job(create_instances, 'cron', day_of_week='sun', hour=1, minute=0,args=['Global Events'])
 scheduler.start()
 sleep(10)
@@ -956,8 +974,8 @@ async def get_other_events(
                                 pr ={
                                     'name': pr.get('tier_name', ''),
                                     'price': pr.get('price', 0),
-                                    'ageGroup': pr.get('age_group', ''),
-                                    'paymentMethod': pr.get('payment_method', 'cash')
+                                    'ageGroup': pr.get('ageGroup', ''),
+                                    'paymentMethod': pr.get('paymentMethod', 'cash')
 
                                 }
                                 event_tiers.append(pr)

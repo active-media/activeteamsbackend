@@ -759,7 +759,7 @@ def sb_get_dashboard_comprehensive(
 )
 
     # print("OVERDUE CELLS",cell_q.data)
-    cell_q = _apply_org_events(cell_q, org_filter)
+    # cell_q = _apply_org_events(cell_q, org_filter)
     overdue_cells_raw = cell_q.data
 
     overdue_cells = [
