@@ -542,7 +542,6 @@ def transform_person_full(p, id_to_full: dict = None):
     if LeaderPath is empty. This ensures the cache always has leaders[] populated.
     """
     from bson import ObjectId
-    print('HAIBOOO')
 
     def oid(v):
         return str(v) if v else None
@@ -8258,283 +8257,284 @@ async def uncapture_person(data: UncaptureRequest):
 
 
 # --- PROFILE PICTURE ENDPOINTS ---
-@app.get("/profile/{user_id}", response_model=UserProfile)
-async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        token_user_id = current_user.get("user_id") or current_user.get("_id")
-        if not token_user_id:
-            raise HTTPException(status_code=401, detail="Invalid user ID in token")
-        if str(token_user_id) != str(user_id):
-            raise HTTPException(status_code=403, detail="Not authorized to access this profile")
-        if not ObjectId.is_valid(user_id):
-            raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
+# @app.get("/profile/{user_id}", response_model=UserProfile)
+# async def get_profile(user_id: str, current_user: dict = Depends(get_current_user)):
+#     try:
+#         token_user_id = current_user.get("user_id") or current_user.get("_id")
+#         if not token_user_id:
+#             raise HTTPException(status_code=401, detail="Invalid user ID in token")
+#         if str(token_user_id) != str(user_id):
+#             raise HTTPException(status_code=403, detail="Not authorized to access this profile")
+#         if not ObjectId.is_valid(user_id):
+#             raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
 
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
+#         user = await users_collection.find_one({"_id": ObjectId(user_id)})
+#         if not user:
+#             raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
 
-        user_email = user.get("email", "")
+#         user_email = user.get("email", "")
 
-        # ── Always look up the people doc — it has the authoritative LeaderPath ──
-        person = None
-        if user_email:
-            person = await people_collection.find_one(
-                {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}}
-            )
+#         # ── Always look up the people doc — it has the authoritative LeaderPath ──
+#         person = None
+#         if user_email:
+#             person = await people_collection.find_one(
+#                 {"Email": {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}}
+#             )
 
-        # ── Resolve leader path: prefer people doc, fall back to users doc ──────
-        raw_path = []
-        if person and person.get("LeaderPath"):
-            raw_path = person["LeaderPath"]
-        elif user.get("LeaderPath"):
-            raw_path = user["LeaderPath"]
+#         # ── Resolve leader path: prefer people doc, fall back to users doc ──────
+#         raw_path = []
+#         if person and person.get("LeaderPath"):
+#             raw_path = person["LeaderPath"]
+#         elif user.get("LeaderPath"):
+#             raw_path = user["LeaderPath"]
 
-        # Normalise to ObjectId list
-        leader_path_oids = []
-        for entry in raw_path:
-            try:
-                leader_path_oids.append(
-                    entry if isinstance(entry, ObjectId) else ObjectId(str(entry))
-                )
-            except Exception:
-                pass
+#         # Normalise to ObjectId list
+#         leader_path_oids = []
+#         for entry in raw_path:
+#             try:
+#                 leader_path_oids.append(
+#                     entry if isinstance(entry, ObjectId) else ObjectId(str(entry))
+#                 )
+#             except Exception:
+#                 pass
 
-        # ── Resolve the three leader levels from LeaderPath ─────────────────────
-        # LeaderPath is root-first: [root(level1), level12, level144, ...]
-        async def _resolve_leader(oid: ObjectId) -> Optional[dict]:
-            if not oid:
-                return None
-            doc = await people_collection.find_one(
-                {"_id": oid},
-                {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
-            )
-            if not doc:
-                return None
-            return {
-                "id": str(doc["_id"]),
-                "name": doc.get("Name", ""),
-                "surname": doc.get("Surname", ""),
-                "email": doc.get("Email", ""),
-                "phone_number": doc.get("Number", "")
-            }
+#         # ── Resolve the three leader levels from LeaderPath ─────────────────────
+#         # LeaderPath is root-first: [root(level1), level12, level144, ...]
+#         async def _resolve_leader(oid: ObjectId) -> Optional[dict]:
+#             if not oid:
+#                 return None
+#             doc = await people_collection.find_one(
+#                 {"_id": oid},
+#                 {"_id": 1, "Name": 1, "Surname": 1, "Email": 1, "Number": 1}
+#             )
+#             if not doc:
+#                 return None
+#             return {
+#                 "id": str(doc["_id"]),
+#                 "name": doc.get("Name", ""),
+#                 "surname": doc.get("Surname", ""),
+#                 "email": doc.get("Email", ""),
+#                 "phone_number": doc.get("Number", "")
+#             }
 
-        leader_at_1   = await _resolve_leader(leader_path_oids[0]) if len(leader_path_oids) > 0 else None
-        leader_at_12  = await _resolve_leader(leader_path_oids[1]) if len(leader_path_oids) > 1 else None
-        leader_at_144 = await _resolve_leader(leader_path_oids[2]) if len(leader_path_oids) > 2 else None
+#         leader_at_1   = await _resolve_leader(leader_path_oids[0]) if len(leader_path_oids) > 0 else None
+#         leader_at_12  = await _resolve_leader(leader_path_oids[1]) if len(leader_path_oids) > 1 else None
+#         leader_at_144 = await _resolve_leader(leader_path_oids[2]) if len(leader_path_oids) > 2 else None
 
-        # ── Resolve InvitedBy display name ──────────────────────────────────────
-        # Use people doc's InvitedBy string, or derive from the direct leader
-        invited_by = ""
-        if person:
-            invited_by = person.get("InvitedBy", "") or user.get("invited_by", "")
-        else:
-            invited_by = user.get("invited_by", "")
+#         # ── Resolve InvitedBy display name ──────────────────────────────────────
+#         # Use people doc's InvitedBy string, or derive from the direct leader
+#         invited_by = ""
+#         if person:
+#             invited_by = person.get("InvitedBy", "") or user.get("invited_by", "")
+#         else:
+#             invited_by = user.get("invited_by", "")
 
-        # If invited_by is still empty but we have a direct leader, use their name
-        if not invited_by and leader_at_1:
-            invited_by = f"{leader_at_1['name']} {leader_at_1['surname']}".strip()
+#         # If invited_by is still empty but we have a direct leader, use their name
+#         if not invited_by and leader_at_1:
+#             invited_by = f"{leader_at_1['name']} {leader_at_1['surname']}".strip()
 
-        organization = user.get("Organization") or user.get("organization", "")
-        leader_path_strs = [str(o) for o in leader_path_oids]
+#         organization = user.get("Organization") or user.get("organization", "")
+#         leader_path_strs = [str(o) for o in leader_path_oids]
 
-        return {
-            "id": str(user["_id"]),
-            "name": user.get("name", ""),
-            "surname": user.get("surname", ""),
-            "date_of_birth": user.get("date_of_birth", ""),
-            "home_address": user.get("home_address", ""),
-            "invited_by": invited_by,
-            "phone_number": user.get("phone_number", ""),
-            "email": user.get("email", ""),
-            "gender": user.get("gender", ""),
-            "role": user.get("role", "user"),
-            "profile_picture": user.get("profile_picture", ""),
-            "organization": organization,
-            "leader_path": leader_path_strs,
-            "leaders": {
-                "leaderAt1":   leader_at_1,
-                "leaderAt12":  leader_at_12,
-                "leaderAt144": leader_at_144,
-            }
-        }
+#         return {
+#             "id": str(user["_id"]),
+#             "name": user.get("name", ""),
+#             "surname": user.get("surname", ""),
+#             "date_of_birth": user.get("date_of_birth", ""),
+#             "home_address": user.get("home_address", ""),
+#             "invited_by": invited_by,
+#             "phone_number": user.get("phone_number", ""),
+#             "email": user.get("email", ""),
+#             "gender": user.get("gender", ""),
+#             "role": user.get("role", "user"),
+#             "profile_picture": user.get("profile_picture", ""),
+#             "organization": organization,
+#             "leader_path": leader_path_strs,
+#             "leaders": {
+#                 "leaderAt1":   leader_at_1,
+#                 "leaderAt12":  leader_at_12,
+#                 "leaderAt144": leader_at_144,
+#             }
+#         }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Profile fetch error: {str(e)}")
-        import traceback; traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
-    try:
-        token_user_id = current_user.get("user_id") or current_user.get("_id")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Profile fetch error: {str(e)}")
+#         import traceback; traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
+#     try:
+#         token_user_id = current_user.get("user_id") or current_user.get("_id")
         
-        if not token_user_id:
-            raise HTTPException(status_code=401, detail="Invalid user ID in token")
+#         if not token_user_id:
+#             raise HTTPException(status_code=401, detail="Invalid user ID in token")
         
-        if str(token_user_id) != str(user_id):
-            raise HTTPException(status_code=403, detail="Not authorized to access this profile")
+#         if str(token_user_id) != str(user_id):
+#             raise HTTPException(status_code=403, detail="Not authorized to access this profile")
         
-        if not ObjectId.is_valid(user_id):
-            raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
+#         if not ObjectId.is_valid(user_id):
+#             raise HTTPException(status_code=400, detail=f"Invalid user ID format: {user_id}")
         
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
+#         user = await users_collection.find_one({"_id": ObjectId(user_id)})
+#         if not user:
+#             raise HTTPException(status_code=404, detail=f"User not found with ID: {user_id}")
         
-        person = await people_collection.find_one({"email": user.get("email")})
+#         person = await people_collection.find_one({"email": user.get("email")})
         
-        leader_path = person.get("LeaderPath", []) if person else []
+#         leader_path = person.get("LeaderPath", []) if person else []
         
-        leader_at_1 = None
-        leader_at_12 = None
-        leader_at_144 = None
+#         leader_at_1 = None
+#         leader_at_12 = None
+#         leader_at_144 = None
         
-        if len(leader_path) > 0 and ObjectId.is_valid(leader_path[0]):
-            leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[0])})
-            if leader_doc:
-                leader_at_1 = {
-                    "id": str(leader_doc["_id"]),
-                    "name": leader_doc.get("name", ""),
-                    "surname": leader_doc.get("surname", ""),
-                    "email": leader_doc.get("email", ""),
-                    "phone_number": leader_doc.get("phone_number", "")
-                }
+#         if len(leader_path) > 0 and ObjectId.is_valid(leader_path[0]):
+#             leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[0])})
+#             if leader_doc:
+#                 leader_at_1 = {
+#                     "id": str(leader_doc["_id"]),
+#                     "name": leader_doc.get("name", ""),
+#                     "surname": leader_doc.get("surname", ""),
+#                     "email": leader_doc.get("email", ""),
+#                     "phone_number": leader_doc.get("phone_number", "")
+#                 }
         
-        if len(leader_path) > 1 and ObjectId.is_valid(leader_path[1]):
-            leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[1])})
-            if leader_doc:
-                leader_at_12 = {
-                    "id": str(leader_doc["_id"]),
-                    "name": leader_doc.get("name", ""),
-                    "surname": leader_doc.get("surname", ""),
-                    "email": leader_doc.get("email", ""),
-                    "phone_number": leader_doc.get("phone_number", "")
-                }
+#         if len(leader_path) > 1 and ObjectId.is_valid(leader_path[1]):
+#             leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[1])})
+#             if leader_doc:
+#                 leader_at_12 = {
+#                     "id": str(leader_doc["_id"]),
+#                     "name": leader_doc.get("name", ""),
+#                     "surname": leader_doc.get("surname", ""),
+#                     "email": leader_doc.get("email", ""),
+#                     "phone_number": leader_doc.get("phone_number", "")
+#                 }
         
-        if len(leader_path) > 2 and ObjectId.is_valid(leader_path[2]):
-            leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[2])})
-            if leader_doc:
-                leader_at_144 = {
-                    "id": str(leader_doc["_id"]),
-                    "name": leader_doc.get("name", ""),
-                    "surname": leader_doc.get("surname", ""),
-                    "email": leader_doc.get("email", ""),
-                    "phone_number": leader_doc.get("phone_number", "")
-                }
+#         if len(leader_path) > 2 and ObjectId.is_valid(leader_path[2]):
+#             leader_doc = await people_collection.find_one({"_id": ObjectId(leader_path[2])})
+#             if leader_doc:
+#                 leader_at_144 = {
+#                     "id": str(leader_doc["_id"]),
+#                     "name": leader_doc.get("name", ""),
+#                     "surname": leader_doc.get("surname", ""),
+#                     "email": leader_doc.get("email", ""),
+#                     "phone_number": leader_doc.get("phone_number", "")
+#                 }
         
-        response_data = {
-            "id": str(user["_id"]),
-            "name": user.get("name", ""),
-            "surname": user.get("surname", ""),
-            "date_of_birth": user.get("date_of_birth", ""),
-            "home_address": user.get("home_address", ""),
-            "invited_by": user.get("invited_by", ""),
-            "phone_number": user.get("phone_number", ""),
-            "email": user.get("email", ""),
-            "gender": user.get("gender", ""),
-            "role": user.get("role", "user"),
-            "profile_picture": user.get("profile_picture", ""),
-            "organization": user.get("Organization", user.get("organization", "")),
-            "leader_path": leader_path,
-            "leaders": {
-                "leaderAt1": leader_at_1,
-                "leaderAt12": leader_at_12,
-                "leaderAt144": leader_at_144
-            }
-        }
+#         response_data = {
+#             "id": str(user["_id"]),
+#             "name": user.get("name", ""),
+#             "surname": user.get("surname", ""),
+#             "date_of_birth": user.get("date_of_birth", ""),
+#             "home_address": user.get("home_address", ""),
+#             "invited_by": user.get("invited_by", ""),
+#             "phone_number": user.get("phone_number", ""),
+#             "email": user.get("email", ""),
+#             "gender": user.get("gender", ""),
+#             "role": user.get("role", "user"),
+#             "profile_picture": user.get("profile_picture", ""),
+#             "organization": user.get("Organization", user.get("organization", "")),
+#             "leader_path": leader_path,
+#             "leaders": {
+#                 "leaderAt1": leader_at_1,
+#                 "leaderAt12": leader_at_12,
+#                 "leaderAt144": leader_at_144
+#             }
+#         }
         
-        return response_data
+#         return response_data
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Profile fetch error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
-@app.put("/profile/{user_id}")
-async def update_profile(
-    user_id: str,
-    profile_update: UserProfileUpdate,
-    current_user: dict = Depends(get_current_user)
-):
-    try:
-        token_user_id = current_user.get("user_id") or current_user.get("_id")
-        if not token_user_id or str(token_user_id) != str(user_id):
-            raise HTTPException(status_code=403, detail="Not authorized to update this profile")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Profile fetch error: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
+# @app.put("/profile/{user_id}")
+# async def update_profile(
+#     user_id: str,
+#     profile_update: UserProfileUpdate,
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         token_user_id = current_user.get("user_id") or current_user.get("_id")
+#         if not token_user_id or str(token_user_id) != str(user_id):
+#             raise HTTPException(status_code=403, detail="Not authorized to update this profile")
 
-        if not ObjectId.is_valid(user_id):
-            raise HTTPException(status_code=400, detail="Invalid user ID")
+#         if not ObjectId.is_valid(user_id):
+#             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not existing_user:
-            raise HTTPException(status_code=404, detail="User not found")
+#         existing_user = await users_collection.find_one({"_id": ObjectId(user_id)})
+#         if not existing_user:
+#             raise HTTPException(status_code=404, detail="User not found")
 
-        update_payload = {}
+#         update_payload = {}
         
-        if profile_update.name is not None:
-            update_payload["name"] = profile_update.name
-        if profile_update.surname is not None:
-            update_payload["surname"] = profile_update.surname
-        if profile_update.email is not None:
-            update_payload["email"] = profile_update.email
-        if profile_update.date_of_birth is not None:
-            update_payload["date_of_birth"] = profile_update.date_of_birth
-        if profile_update.home_address is not None:
-            update_payload["home_address"] = profile_update.home_address
-        if profile_update.phone_number is not None:
-            update_payload["phone_number"] = profile_update.phone_number
-        if profile_update.invited_by is not None:
-            update_payload["invited_by"] = profile_update.invited_by
-        if profile_update.gender is not None:
-            update_payload["gender"] = profile_update.gender.capitalize()
-        if profile_update.organization is not None:
-            update_payload["organization"] = profile_update.organization
-            update_payload["Organization"] = profile_update.organization
-            update_payload["org_id"] = profile_update.organization.lower().replace(" ", "-")
+#         if profile_update.name is not None:
+#             update_payload["name"] = profile_update.name
+#         if profile_update.surname is not None:
+#             update_payload["surname"] = profile_update.surname
+#         if profile_update.email is not None:
+#             update_payload["email"] = profile_update.email
+#         if profile_update.date_of_birth is not None:
+#             update_payload["date_of_birth"] = profile_update.date_of_birth
+#         if profile_update.home_address is not None:
+#             update_payload["home_address"] = profile_update.home_address
+#         if profile_update.phone_number is not None:
+#             update_payload["phone_number"] = profile_update.phone_number
+#         if profile_update.invited_by is not None:
+#             update_payload["invited_by"] = profile_update.invited_by
+#         if profile_update.gender is not None:
+#             update_payload["gender"] = profile_update.gender.capitalize()
+#         if profile_update.organization is not None:
+#             update_payload["organization"] = profile_update.organization
+#             update_payload["Organization"] = profile_update.organization
+#             update_payload["org_id"] = profile_update.organization.lower().replace(" ", "-")
         
-        update_payload["updated_at"] = datetime.utcnow().isoformat()
+#         update_payload["updated_at"] = datetime.utcnow().isoformat()
 
-        if not update_payload:
-            return {
-                "message": "No changes to update",
-                "user": {
-                    "id": str(existing_user["_id"]),
-                    "name": existing_user.get("name", ""),
-                    "surname": existing_user.get("surname", ""),
-                    "email": existing_user.get("email", ""),
-                    "organization": existing_user.get("organization", existing_user.get("Organization", "")),
-                }
-            }
+#         if not update_payload:
+#             return {
+#                 "message": "No changes to update",
+#                 "user": {
+#                     "id": str(existing_user["_id"]),
+#                     "name": existing_user.get("name", ""),
+#                     "surname": existing_user.get("surname", ""),
+#                     "email": existing_user.get("email", ""),
+#                     "organization": existing_user.get("organization", existing_user.get("Organization", "")),
+#                 }
+#             }
 
-        result = await users_collection.update_one(
-            {"_id": ObjectId(user_id)},
-            {"$set": update_payload}
-        )
+#         result = await users_collection.update_one(
+#             {"_id": ObjectId(user_id)},
+#             {"$set": update_payload}
+#         )
         
-        updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
+#         updated_user = await users_collection.find_one({"_id": ObjectId(user_id)})
         
-        return {
-            "id": str(updated_user["_id"]),
-            "name": updated_user.get("name", ""),
-            "surname": updated_user.get("surname", ""),
-            "date_of_birth": updated_user.get("date_of_birth", ""),
-            "home_address": updated_user.get("home_address", ""),
-            "invited_by": updated_user.get("invited_by", ""),
-            "phone_number": updated_user.get("phone_number", ""),
-            "email": updated_user.get("email", ""),
-            "gender": updated_user.get("gender", ""),
-            "role": updated_user.get("role", "user"),
-            "profile_picture": updated_user.get("profile_picture", ""),
-            "organization": updated_user.get("organization", updated_user.get("Organization", "")),
-        }
+#         return {
+#             "id": str(updated_user["_id"]),
+#             "name": updated_user.get("name", ""),
+#             "surname": updated_user.get("surname", ""),
+#             "date_of_birth": updated_user.get("date_of_birth", ""),
+#             "home_address": updated_user.get("home_address", ""),
+#             "invited_by": updated_user.get("invited_by", ""),
+#             "phone_number": updated_user.get("phone_number", ""),
+#             "email": updated_user.get("email", ""),
+#             "gender": updated_user.get("gender", ""),
+#             "role": updated_user.get("role", "user"),
+#             "profile_picture": updated_user.get("profile_picture", ""),
+#             "organization": updated_user.get("organization", updated_user.get("Organization", "")),
+#         }
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Profile update error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}") 
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Profile update error: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}") 
+
 def normalize_gender_value(gender):
     """Normalize gender values to consistent format"""
     if not gender:

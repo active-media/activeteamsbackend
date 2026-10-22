@@ -89,6 +89,9 @@ def map_person(person: dict) -> dict:
         "Leader @12": person.get("Leader @12") or "",
         "Leader @144": person.get("Leader @144") or "",
         "Leader @1728": person.get("Leader @1728") or "",
+        "LeaderPath[0]":person.get("LeaderPath[0]", ""),
+        "LeaderPath[1]":person.get("LeaderPath[1]", ""),
+        "LeaderPath[2]":person.get("LeaderPath[2]", ""),
         "Stage": person.get("Stage") or "Win",
         "Date Created": person.get("Date Created") or utcnow_iso(),
         "UpdatedAt": person.get("UpdatedAt") or utcnow_iso(),
@@ -390,7 +393,10 @@ async def get_person_by_id(person_id: str = Path(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/people")
-async def create_person(person_data: PersonCreate):
+async def create_person(
+    person_data: PersonCreate,
+    current_user: dict = Depends(get_current_user),
+    ):
     """Create a new person"""
     try:
         # Normalize email
@@ -422,6 +428,8 @@ async def create_person(person_data: PersonCreate):
         # Prepare the row
         person_doc = {
             "_id": new_id,
+            "org_id": current_user.get("org_id"),
+            "Organization":current_user.get('Organization'),
             "Name": person_data.name.strip(),
             "Surname": person_data.surname.strip(),
             "Email": email,
@@ -434,6 +442,9 @@ async def create_person(person_data: PersonCreate):
             "Leader @12": leader12,
             "Leader @144": leader144,
             "Leader @1728": leader1728,
+            "LeaderPath[0]": person_data.leader1Id,
+            "LeaderPath[1]": person_data.leader12Id,
+            "LeaderPath[2]": person_data.leader144Id,
             "Stage": person_data.stage or "Win",
             "Date Created": now,
             "UpdatedAt": now,
@@ -450,9 +461,10 @@ async def create_person(person_data: PersonCreate):
             "message": "Person created successfully",
             "id": new_id,
             "_id": new_id,
+            "person_id": insert_response.data[0].get('person_id'),
             "person": created_person,
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:

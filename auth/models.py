@@ -95,6 +95,9 @@ class PersonCreate(BaseModel):
     dob: str
     address: str
     leaders: list[str]
+    leader1Id: Optional[str] = None
+    leader12Id: Optional[str] = None
+    leader144Id: Optional[str] = None
     stage: Literal["Win"]
 
 # ===== EventTypes - FIXED =====
@@ -423,8 +426,8 @@ class ConsolidationCreate(BaseModel):
     assigned_to_email: Optional[str] = None
     leaders: list = Field(default_factory=list)
     event_id: Optional[str] = None
-    is_check_in: bool = False
-    attendance_status: str = "checked_in"
+    is_check_in: Optional[bool] = False
+    attendance_status: Optional[str] = "checked_in"
     notes: Optional[str] = ""
     source: ConsolidationSource = ConsolidationSource.MANUAL
     person_id:str

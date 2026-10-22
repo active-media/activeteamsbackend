@@ -541,8 +541,8 @@ async def get_cell_events(
             event_sessions = ( 
                 supabase.table("event_sessions")
                 .select("*").gte("session_date", start_str).lte("session_date", end_str)
-                # .eq("status",'incomplete')
                 .in_("event_id", fetched_event_ids)
+                .limit(limit)
                 .execute().data
                 )
             print(len(event_sessions))
@@ -557,8 +557,9 @@ async def get_cell_events(
             event_sessions = ( 
                 supabase.table("event_sessions")
                 .select("*").gte("session_date", start_str).lte("session_date", end_str)
-                .eq("status",'incomplete')
+                .eq("status", status)
                 .in_("event_id", fetched_event_ids)
+                .limit(limit)
                 .execute().data
                 )
             print(len(event_sessions))
