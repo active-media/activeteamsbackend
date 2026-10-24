@@ -244,6 +244,7 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
         )
 
         rows = result.data or []
+        print('ROWS:', rows)
 
         def is_mine(row: dict) -> bool:
             return (

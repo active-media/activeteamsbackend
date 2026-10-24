@@ -3012,6 +3012,35 @@ async def create_consolidation(
     try:
         print(f"POST /consolidations - User: {current_user.get('email')}")
         print(consolidation)
+        #check if sessions exists
+        session_id = consolidation.session_id
+        session_resp = (
+            supabase.table("event_sessions")
+            .select("*")
+            .eq("session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+        if not session_resp.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = session_resp.data[0]
+        person_id = consolidation.person_id
+        # ── Prevent duplicate consolidation for this session ─────────────────
+        if person_id:
+            dup = (
+                supabase.table("event_consolidations")
+                .select("id")
+                .eq("session_id", session_id)
+                .eq("person_id", person_id)
+                .limit(1)
+                .execute()
+            )
+            if dup.data:
+                raise HTTPException(
+                    status_code=400,
+                )
+
+
         #logic to get assigned person's details:
         params = {
             "p_email": consolidation.person_email,
@@ -3096,10 +3125,29 @@ async def create_consolidation(
             leader_details["email"] = direct_leader.get("Email") if direct_leader else None
             leader_details["full_name"] = direct_leader_fullname
 
+
         decision_type = "First Time" if consolidation.decision_type == "first_time" else "Recommitment"
         #creating consolidation task to add to event consolidation table
+
+
+        notes= ""
+        source_display = ""
+
+        match consolidation.source:
+            case "cell_consolidation":
+                notes = "Gave life during cell"
+                source_display = "Cell"
+                description = "Consolidation task gave life during cell"
+            case"service_consolidation":
+                notes = "Gave life during service"
+                source_display = "Service"
+                description = "Consolidation task gave life during service"
+        if consolidation.task_type in ("service follow up", "new_person", "New person"):
+            description = "New person consolidation task"
+            notes = "New person added during consolidation"
+
         event_consolidation = {
-        "event_id": consolidation.event_id,
+        "event_id": consolidation.event_id or  session.get("event_id"),
         "person_name": consolidation.person_name,
         "person_surname": consolidation.person_surname,
         "person_email": consolidation.person_email ,
@@ -3109,7 +3157,7 @@ async def create_consolidation(
         "assigned_to":leader_details["full_name"] ,
         "assigned_to_email": leader_details["email"] ,
         "status": "Open",
-        "notes":"Gave life during cell",
+        "notes": notes,
         "session_id": consolidation.session_id,
         "person_id": consolidation.person_id 
         };
@@ -3119,19 +3167,20 @@ async def create_consolidation(
       
         my_uuid = uuid.uuid4()
         #creating new task:
+        
         task_consolidation = {
             "_id": str(my_uuid), 
             "memberID": person.get("_id"),
             "name":f'Consolidation: {person.get("Name")} {person.get("Surname")} ({decision_type})' ,
-            "taskType": "consolidation",
-            "description": "Consolidation task gave life during cell",
+            "taskType": consolidation.task_type,
+            "description": description,
             "status": "open",
             "assignedfor": direct_leader_fullname,
             "assigned_to_email": direct_leader.get("Email") if direct_leader else None,
             "assigned_to_user_id": direct_leader.get("_id") if direct_leader else None,
             "leader_assigned": direct_leader_fullname,
             "leader_name": direct_leader_fullname,
-            "type":"consolidation",
+            "type":consolidation.task_type,
             "priority":"high",
             "consolidation_id": consolidation_id,
             "person_id": consolidation.person_id,
@@ -3139,8 +3188,8 @@ async def create_consolidation(
             "person_surname": consolidation.person_surname,
             "decision_type": consolidation.decision_type,
             "decision_display_name": decision_type,
-            "consolidation_source":"cell_consolidation",
-            "source_display":"Cell",
+            "consolidation_source":consolidation.source,
+            "source_display":source_display,
             "contacted_person_name":f'{consolidation.person_name} {consolidation.person_surname}',
             "contacted_person_email":consolidation.person_email,
             "contacted_person_phone":consolidation.person_phone,
@@ -3153,6 +3202,20 @@ async def create_consolidation(
         print("task_consolidation", task_consolidation)
         new_task = supabase.table("Tasks").insert(task_consolidation).execute()
         print("new_task", new_task)
+
+        #update session
+        dt_lower = decision_type.lower()
+        first_delta = 1 if "first" in dt_lower else 0
+        recommit_delta = 1 if "recommit" in dt_lower else 0
+
+        supabase.table("event_sessions").update(
+                    {
+                        "decisions_first_time": (session.get("decisions_first_time") or 0) + first_delta,
+                        "decisions_recommitment": (session.get("decisions_recommitment") or 0) + recommit_delta,
+                        "decisions_total": (session.get("decisions_total") or 0) + 1,
+                     
+                    }
+                ).eq("session_id", session_id).execute()
 
         return {
             "message": f"{consolidation.person_name} {consolidation.person_surname} recorded successfully and assigned to {direct_leader_fullname}",
@@ -3186,6 +3249,7 @@ async def get_persistent_attendees(
     """
     Get persistent attendees for an event with their ticket and financial information.
     Returns attendance_status ONLY for the specific date being requested.
+    BEST ENDPOINT FOR: AttendanceModal, event people selection, searching all attendees
     """
     try:
         print(f"GET /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
@@ -3277,12 +3341,12 @@ async def get_last_attendance(
 ):
     try:
         if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
-
+            raise HTTPException(status_code=400, detail="Invalid event ID format")
+           
         event = await events_collection.find_one({"_id": ObjectId(event_id)})
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-
+       
         persistent = event.get("persistent_attendees", [])
         if persistent:
             return {
@@ -3524,6 +3588,7 @@ async def get_leader_cells(email: str):
 def convert_datetime_to_iso(doc: dict) -> dict:
     """Recursively convert datetime values in a document to ISO strings."""
     if not isinstance(doc, dict):
+
         return doc
     out = {}
     for k, v in doc.items():
@@ -3578,7 +3643,7 @@ async def get_event_by_id(event_id: str = Path(...)):
         if event.get('time'):
             event['time'] = event['time']
         if event.get('Time'):
-            event['Time'] = event['Time']
+            event['Time'] = event.get('Time')
        
         #  ENSURE NEW FIELDS ARE RETURNED
         event.setdefault("isTicketed", False)

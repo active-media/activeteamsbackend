@@ -430,6 +430,7 @@ class ConsolidationCreate(BaseModel):
     attendance_status: Optional[str] = "checked_in"
     notes: Optional[str] = ""
     source: ConsolidationSource = ConsolidationSource.MANUAL
+    task_type: Optional[str] = "consolidation"
     person_id:str
     session_id:str
     event_leader_name:Optional[str] = None

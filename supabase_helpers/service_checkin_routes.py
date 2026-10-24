@@ -941,6 +941,7 @@ async def create_service_checkin_consolidation(
             "assigned_to_email": assigned_to_email,
             "status": "active",
             "notes": notes,
+            "created_at": now_iso
         }
       
         insert_resp = (
@@ -1386,9 +1387,10 @@ async def debug_consolidations(
 # PATCH /events/{event_id}/toggle-status
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.patch("/events/{event_id}/toggle-status")
+@router.patch("/events/{session_id}/{event_id}/toggle-status")
 async def toggle_event_status(
-    event_id: str,
+    session_id: str,
+    event_id:str,
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -1401,71 +1403,48 @@ async def toggle_event_status(
     """
     try:
         base_mongo_id, instance_date = _parse_event_id(event_id)
-        event = await _get_event_or_404(base_mongo_id)
+        event = await _get_event_or_404(event_id)
         is_recurring = bool(event.get("recurring_day"))
 
         sb_event_id = _supabase_event_id(base_mongo_id)
         now_iso = datetime.utcnow().isoformat()
 
-        # ── Read current status ───────────────────────────────────────────────
-        if is_recurring and instance_date:
-            session_resp = (
-                supabase.table("event_sessions")
-                .select("session_id, status")
-                .eq("event_id", sb_event_id)
-                .eq("session_date", instance_date)
-                .limit(1)
-                .execute()
-            )
-            if session_resp.data:
-                current_status = session_resp.data[0].get("status", "").lower()
-                session_id = session_resp.data[0]["session_id"]
-            else:
-                current_status = "incomplete"
-                session_id = None
+       
+        session_resp = (
+            supabase.table("event_sessions")
+            .select("session_id, status")
+            .eq("session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+        if session_resp.data:
+            current_status = session_resp.data[0].get("status", "").lower()
+            session_id = session_resp.data[0]["session_id"]
         else:
-            events_resp = (
-                supabase.table("events")
-                .select("status")
-                .eq("event_id", sb_event_id)
-                .limit(1)
-                .execute()
-            )
-            current_status = (
-                events_resp.data[0].get("status", "").lower()
-                if events_resp.data
-                else "incomplete"
-            )
+            current_status = "incomplete"
+            session_id = None
 
         # ── Determine new status ─────────────────────────────────────────────
         if current_status in ("complete", "closed"):
             new_status = "incomplete"
             action_msg = "reopened"
             log_action = "EVENT_REOPENED"
-            extra_fields = {"reopened_by": current_user.get("email", ""), "reopened_at": now_iso}
+            extra_fields = {"submitted_by": current_user.get("email", ""), "submitted_by_name": f"{current_user.get('name', '')} ({current_user.get('surname', '')})", "submitted_at": now_iso}
         else:
             new_status = "complete"
             action_msg = "closed"
             log_action = "EVENT_CLOSED"
-            extra_fields = {"closed_by": current_user.get("email", ""), "closed_at": now_iso}
+            extra_fields = {"submitted_by": current_user.get("email", ""), "submitted_by_name": f"{current_user.get('name', '')} ({current_user.get('surname', '')})", "submitted_at": now_iso}
 
         # ── Write to Supabase ─────────────────────────────────────────────────
-        if is_recurring and instance_date and session_id:
-            supabase.table("event_sessions").update(
-                {"status": new_status, **extra_fields}
-            ).eq("session_id", session_id).execute()
-        elif sb_event_id:
-            supabase.table("events").update(
-                {"status": new_status, **extra_fields}
-            ).eq("event_id", sb_event_id).execute()
-
-        # ── Mirror to MongoDB (backwards-compat) ──────────────────────────────
-        mongo_update: dict = {"updated_at": now_iso, "status": new_status, **extra_fields}
-        if instance_date:
-            mongo_update[f"attendance.{instance_date}.status"] = new_status
-        await events_collection.update_one(
-            {"_id": ObjectId(base_mongo_id)}, {"$set": mongo_update}
-        )
+  
+        supabase.table("event_sessions").update(
+            {"status": new_status, **extra_fields}
+        ).eq("session_id", session_id).execute()
+        # elif sb_event_id:
+        #     supabase.table("events").update(
+        #         {"status": new_status, **extra_fields}
+        #     ).eq("event_id", sb_event_id).execute()
 
         await _log_activity(
             user_id=current_user.get("email", ""),
@@ -1768,8 +1747,7 @@ async def get_service_checkin_events(
         cons_resp = (
             supabase.table("event_consolidations")
             .select("*")
-            .eq("event_id", event_id)
-            .gte("created_at", datetime.strptime(session_date, "%Y-%m-%d"))
+            .eq("session_id", session_id)
         )
         # if session_date:
         #     cons_resp = cons_resp.eq("session_date", session_date)
