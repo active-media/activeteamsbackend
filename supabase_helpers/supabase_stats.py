@@ -38,6 +38,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import logging
+import re
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 from supabase_helpers.supabase_connection import supabase
@@ -151,20 +153,20 @@ def _apply_org(query, org_filter: Optional[dict]):
     # Normalise key: both "Organization" and "Organization" are accepted
     org_value = org_filter.get("Organization")
     if org_value:
-        # Tasks / Task Types / Users / people all use "Organization" (capital O)
-        # events uses "Organization" (lower-case) — we try both via ilike-fallback
-        # but .eq() on the actual column name is what matters; callers must pass
-        # the right key for the right table.  We expose two helpers below.
+        # Tasks / Task Types / Users / people use "Organization" (capital O).
         query = query.eq("Organization", org_value)
     return query
 
 
 def _apply_org_events(query, org_filter: Optional[dict]):
-    """Same as _apply_org but for the `events` table which uses lower-case `Organization`."""
+    """Scope event queries by stable org ID, falling back to organization name."""
     if not org_filter:
         return query
+    org_id = org_filter.get("org_id")
     org_value = org_filter.get("Organization")
-    if org_value:
+    if org_id:
+        query = query.eq("org_id", org_id)
+    elif org_value:
         query = query.eq("Organization", org_value)
     return query
 
@@ -553,6 +555,214 @@ def sb_get_reporting_dashboard(
     )
     result["new_visitors"] = _new_visitor_count(events, sessions, start, end)
     return result
+_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _fetch_all_pages(query_factory, page_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = query_factory().range(offset, offset + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
+
+
+def _recurring_weekdays(value) -> list[int]:
+    if isinstance(value, list):
+        text = " ".join(str(item) for item in value)
+    else:
+        text = str(value or "")
+    names = re.findall(
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return list(dict.fromkeys(_WEEKDAYS[name.lower()] for name in names))
+
+
+def _event_query(org_filter: Optional[dict], *, cells_only: bool):
+    fields = (
+        "event_id, event_name, event_type_name, event_leader, event_leader_email, "
+        "location, description, status, event_date, recurring_day, is_recurring, "
+        "is_active, org_id, Organization, is_global"
+    )
+    query = supabase.table("events").select(fields)
+    if cells_only:
+        query = query.in_("event_type_name", _CELL_TYPE_VALUES)
+    return _apply_org_events(query, org_filter)
+
+
+def _visible_events(events: list[dict], user_scope: Optional[dict], *, cells_only: bool) -> list[dict]:
+    if not user_scope:
+        return events
+    role = str(user_scope.get("role") or "").lower().replace("_", "").replace(" ", "")
+    if user_scope.get("is_super") or role in {"admin", "leaderat12", "registrant"}:
+        return events
+
+    email = str(user_scope.get("email") or "").strip().lower()
+    name = str(user_scope.get("name") or "").strip().lower()
+
+    def is_visible(event: dict) -> bool:
+        event_email = str(event.get("event_leader_email") or "").strip().lower()
+        event_name = str(event.get("event_leader") or "").strip().lower()
+        is_global = event.get("is_global") is True
+        if not cells_only and is_global:
+            return True
+        return bool((email and event_email == email) or (name and event_name == name))
+
+    return [event for event in events if is_visible(event)]
+
+
+def _event_occurrence_dates(event: dict, start: date, end: date) -> list[date]:
+    event_date_value = event.get("event_date")
+    try:
+        event_start = date.fromisoformat(str(event_date_value)[:10])
+    except (TypeError, ValueError):
+        event_start = start
+
+    weekdays = _recurring_weekdays(event.get("recurring_day"))
+    if not weekdays:
+        return [event_start] if start <= event_start <= end else []
+
+    first_date = max(start, event_start)
+    occurrences = []
+    for weekday in weekdays:
+        occurrence = first_date + timedelta(days=(weekday - first_date.weekday()) % 7)
+        while occurrence <= end:
+            occurrences.append(occurrence)
+            occurrence += timedelta(days=7)
+    return sorted(set(occurrences))
+
+
+def sb_get_stats_cells(
+    start_date: str,
+    end_date: str,
+    org_filter: Optional[dict] = None,
+    user_scope: Optional[dict] = None,
+) -> dict:
+    """Build period-scoped cell instances from Supabase events and sessions."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("end_date must be on or after start_date")
+
+    events = _fetch_all_pages(
+        lambda: _event_query(org_filter, cells_only=True)
+    )
+    events = _visible_events(events, user_scope, cells_only=True)
+    events = [event for event in events if event.get("is_active") is not False]
+    event_ids = {str(event.get("event_id")) for event in events if event.get("event_id")}
+
+    sessions = _fetch_all_pages(
+        lambda: supabase.table("event_sessions")
+        .select(
+            "session_id, event_id, session_date, status, is_did_not_meet, "
+            "checked_in_count, total_headcounts"
+        )
+        .gte("session_date", start.isoformat())
+        .lte("session_date", end.isoformat())
+    )
+    session_map = {
+        (str(session.get("event_id")), str(session.get("session_date"))): session
+        for session in sessions
+        if str(session.get("event_id")) in event_ids
+    }
+
+    today = datetime.now(ZoneInfo("Africa/Johannesburg")).date()
+    instances = []
+    for event in events:
+        event_id = str(event.get("event_id") or "")
+        event_type = str(event.get("event_type_name") or "").lower()
+        if "cell" not in event_type:
+            continue
+        for occurrence in _event_occurrence_dates(event, start, end):
+            occurrence_iso = occurrence.isoformat()
+            session = session_map.get((event_id, occurrence_iso), {})
+            raw_status = str(session.get("status") or event.get("status") or "incomplete").lower()
+            if session.get("is_did_not_meet") or raw_status == "did_not_meet":
+                status = "did_not_meet"
+            elif raw_status in ("complete", "completed", "closed"):
+                status = "complete"
+            elif int(session.get("checked_in_count") or 0) > 0:
+                status = "complete"
+            else:
+                status = "incomplete"
+
+            instances.append(
+                {
+                    "_id": f"{event_id}_{occurrence_iso}",
+                    "event_id": event_id,
+                    "eventName": event.get("event_name") or "Unnamed Cell",
+                    "eventType": "Cells",
+                    "eventLeaderName": event.get("event_leader") or "",
+                    "eventLeaderEmail": event.get("event_leader_email") or "",
+                    "location": event.get("location") or "",
+                    "description": event.get("description") or "",
+                    "date": occurrence_iso,
+                    "day": occurrence.strftime("%A"),
+                    "status": status,
+                    "Status": status.replace("_", " ").title(),
+                    "did_not_meet": status == "did_not_meet",
+                    "is_overdue": occurrence < today and status == "incomplete",
+                    "isRecurring": bool(_recurring_weekdays(event.get("recurring_day"))),
+                    "attendee_count": int(session.get("checked_in_count") or 0),
+                    "attendees": [],
+                }
+            )
+
+    instances.sort(key=lambda item: (item["date"], item["eventName"]), reverse=True)
+    return {"cells": instances, "total": len(instances), "start_date": start_date, "end_date": end_date}
+
+
+def sb_get_stats_calendar_events(
+    start_date: str,
+    end_date: str,
+    org_filter: Optional[dict] = None,
+    user_scope: Optional[dict] = None,
+) -> dict:
+    """Return non-cell calendar occurrences from Supabase event definitions."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("end_date must be on or after start_date")
+
+    events = _fetch_all_pages(lambda: _event_query(org_filter, cells_only=False))
+    events = _visible_events(events, user_scope, cells_only=False)
+    results = []
+    for event in events:
+        if event.get("is_active") is False:
+            continue
+        event_type = str(event.get("event_type_name") or "")
+        if "cell" in event_type.lower():
+            continue
+        event_id = str(event.get("event_id") or "")
+        for occurrence in _event_occurrence_dates(event, start, end):
+            results.append(
+                {
+                    "_id": f"{event_id}_{occurrence.isoformat()}",
+                    "event_id": event_id,
+                    "eventName": event.get("event_name") or "Unnamed Event",
+                    "eventTypeName": event_type,
+                    "date": occurrence.isoformat(),
+                    "location": event.get("location") or "",
+                    "description": event.get("description") or "",
+                    "eventLeaderName": event.get("event_leader") or "",
+                    "eventLeaderEmail": event.get("event_leader_email") or "",
+                    "isRecurring": bool(_recurring_weekdays(event.get("recurring_day"))),
+                }
+            )
+    results.sort(key=lambda item: (item["date"], item["eventName"]))
+    return {"events": results, "total": len(results), "start_date": start_date, "end_date": end_date}
 
 
 def _is_completed_flag(status: str, task_type: str) -> bool:
@@ -941,21 +1151,24 @@ def sb_get_dashboard_comprehensive(
     """
     start, end = _period_range(period)
     start_iso, end_iso = _iso(start), _iso(end)
+    end_date = datetime.now().strftime("%Y-%m-%d")
 
     # ── Overdue cells ─────────────────────────────────────────────────────────
+   
     cell_q = (
-        supabase.table("events")
-        .select(
-            "event_id, event_name, event_leader, event_leader_email, "
-            "location, event_date, status, event_type_name, Organization"
-        )
-        .in_("event_type_name", _CELL_TYPE_VALUES)
-        .lte("event_date", end_iso)
-        .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
-        .limit(200)
+    supabase.rpc(
+        "get_overdue_sessions",
+        {
+            "p_end_iso": end_date,
+            "p_cell_types": _CELL_TYPE_VALUES
+        }
     )
-    cell_q = _apply_org_events(cell_q, org_filter)
-    overdue_cells_raw = cell_q.execute().data or []
+    .execute()
+)
+
+    # print("OVERDUE CELLS",cell_q.data)
+    # cell_q = _apply_org_events(cell_q, org_filter)
+    overdue_cells_raw = cell_q.data
 
     overdue_cells = [
         {
@@ -1088,16 +1301,23 @@ def sb_get_dashboard_comprehensive(
             task_type_stats[tt]["incomplete_due"] += 1
 
     # ── Fetch users for name lookup ───────────────────────────────────────────
-    users_q = (
-        supabase.table("Users")
-        .select("_id, email, name, surname")
-        .limit(limit)
-    )
-    if org_filter:
-        org_value = org_filter.get("Organization")
-        if org_value:
-            users_q = users_q.eq("Organization", org_value)
-    users_raw = users_q.execute().data or []
+    users_raw = []
+    page_size = 1000
+    offset = 0
+    while True:
+        users_q = (
+            supabase.table("Users")
+            .select("_id, email, name, surname, leader12, leader144, leader1728")
+        )
+        if org_filter:
+            org_value = org_filter.get("Organization")
+            if org_value:
+                users_q = users_q.eq("Organization", org_value)
+        page = users_q.range(offset, offset + page_size - 1).execute().data or []
+        users_raw.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
 
     user_map: dict[str, dict] = {}
     for u in users_raw:
@@ -1105,7 +1325,14 @@ def sb_get_dashboard_comprehensive(
         name  = (u.get("name") or "").strip()
         surn  = (u.get("surname") or "").strip()
         full  = f"{name} {surn}".strip() or (email.split("@")[0] if "@" in email else email)
-        info  = {"_id": str(u.get("_id", "")), "email": email, "fullName": full}
+        info  = {
+            "_id": str(u.get("_id", "")),
+            "email": email,
+            "fullName": full,
+            "leader12": u.get("leader12"),
+            "leader144": u.get("leader144"),
+            "leader1728": u.get("leader1728"),
+        }
         if email:
             user_map[email] = info
 
@@ -1196,6 +1423,9 @@ def sb_get_dashboard_comprehensive(
             "name":     u["fullName"].split()[0] if u["fullName"].split() else "",
             "surname":  " ".join(u["fullName"].split()[1:]) if len(u["fullName"].split()) > 1 else "",
             "fullName": u["fullName"],
+            "leader12": u.get("leader12"),
+            "leader144": u.get("leader144"),
+            "leader1728": u.get("leader1728"),
         }
         for u in user_map.values()
         if not u["_id"].startswith("unknown_")

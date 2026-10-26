@@ -61,6 +61,7 @@ client so nothing upstream in main.py has to change.
 from __future__ import annotations
 
 import logging
+from operator import eq
 import secrets
 from datetime import datetime
 from typing import Optional
@@ -100,15 +101,25 @@ def _parse_event_id(event_id: str) -> tuple[str, Optional[str]]:
     parts = event_id.split("_", 1)
     return parts[0], parts[1] if len(parts) > 1 else None
 
-
+import uuid
 async def _get_event_or_404(base_event_id: str):
     """Fetch a MongoDB event document or raise 404."""
-    if not ObjectId.is_valid(base_event_id):
+    def is_valid_uuid(val):
+        try:
+            # Try to parse the string as a UUID
+            uuid_obj = uuid.UUID(val)
+            # Ensure the string representation matches to avoid lenient parsing quirks
+            return str(uuid_obj) == val.lower()
+        except (ValueError, AttributeError):
+            return False
+        
+    if not is_valid_uuid(base_event_id):
         raise HTTPException(status_code=400, detail="Invalid event ID")
-    event = await events_collection.find_one({"_id": ObjectId(base_event_id)})
-    if not event:
+    
+    event = supabase.table('events').select('*').eq('event_id', base_event_id).limit(1).execute()
+    if not event.data:
         raise HTTPException(status_code=404, detail="Event not found")
-    return event
+    return event.data[0]
 
 
 def _get_or_create_session(event_id_uuid: str, session_date: str) -> dict:
@@ -149,7 +160,7 @@ def _get_or_create_session(event_id_uuid: str, session_date: str) -> dict:
     return insert_resp.data[0]
 
 
-def _supabase_event_id(mongo_id: str) -> Optional[str]:
+def _supabase_event_id(event_id: str) -> Optional[str]:
     """
     Resolve a MongoDB ObjectId string to the Supabase events.event_id (UUID).
     Returns None if no matching row is found.
@@ -157,7 +168,7 @@ def _supabase_event_id(mongo_id: str) -> Optional[str]:
     resp = (
         supabase.table("events")
         .select("event_id")
-        .eq("mongo_id", mongo_id)
+        .eq("event_id", event_id)
         .limit(1)
         .execute()
     )
@@ -188,7 +199,7 @@ async def _log_activity(user_id: str, action: str, details: str):
 @router.get("/service-checkin/real-time-data")
 async def get_service_checkin_real_time_data(
     event_id: str = Query(...),
-    current_user: dict = Depends(get_current_user),
+    # current_user: dict = Depends(get_current_user),
 ):
     """
     Return the live attendees, new people, and consolidations for an event /
@@ -198,36 +209,37 @@ async def get_service_checkin_real_time_data(
     For non-recurring events, just the plain mongo_id is sufficient.
     """
     try:
-        base_mongo_id, instance_date = _parse_event_id(event_id)
-        event = await _get_event_or_404(base_mongo_id)
+        print(f"Fetching real-time data for event: {event_id}")
+        # base_mongo_id, instance_date = _parse_event_id(event_id)
+        event = await _get_event_or_404(event_id)
 
         is_recurring = bool(event.get("recurring_day"))
-        if is_recurring and not instance_date:
+        if is_recurring:
             instance_date = _today_sast()
 
-        sb_event_id = _supabase_event_id(base_mongo_id)
-        if not sb_event_id:
-            # Event not yet in Supabase — return empty but valid response
-            return {
-                "success": True,
-                "event_id": event_id,
-                "event_name": event.get("event_name") or event.get("eventName", "Unknown Event"),
-                "present_attendees": [],
-                "new_people": [],
-                "consolidations": [],
-                "present_count": 0,
-                "new_people_count": 0,
-                "consolidation_count": 0,
-                "total_attendance": 0,
-                "refreshed_at": datetime.utcnow().isoformat(),
-            }
+        # sb_event_id = _supabase_event_id(base_mongo_id)
+        # if not sb_event_id:
+        #     # Event not yet in Supabase — return empty but valid response
+        #     return {
+        #         "success": True,
+        #         "event_id": event_id,
+        #         "event_name": event.get("event_name") or event.get("eventName", "Unknown Event"),
+        #         "present_attendees": [],
+        #         "new_people": [],
+        #         "consolidations": [],
+        #         "present_count": 0,
+        #         "new_people_count": 0,
+        #         "consolidation_count": 0,
+        #         "total_attendance": 0,
+        #         "refreshed_at": datetime.utcnow().isoformat(),
+        #     }
 
         # ── Fetch attendees ───────────────────────────────────────────────────
         if is_recurring and instance_date:
             session_resp = (
                 supabase.table("event_sessions")
                 .select("session_id")
-                .eq("event_id", sb_event_id)
+                .eq("event_id", event_id)
                 .eq("session_date", instance_date)
                 .limit(1)
                 .execute()
@@ -247,13 +259,13 @@ async def get_service_checkin_real_time_data(
             att_resp = (
                 supabase.table("event_attendees")
                 .select("*")
-                .eq("event_id", sb_event_id)
+                .eq("event_id", event_id)
                 .execute()
             )
             attendees = att_resp.data or []
 
         # ── Fetch new people ─────────────────────────────────────────────────
-        np_query = supabase.table("event_new_people").select("*").eq("event_id", sb_event_id)
+        np_query = supabase.table("event_new_people").select("*").eq("event_id", event_id)
         if is_recurring and instance_date:
             np_query = np_query.eq("session_date", instance_date)
         np_resp = np_query.execute()
@@ -263,7 +275,7 @@ async def get_service_checkin_real_time_data(
         cons_query = (
             supabase.table("event_consolidations")
             .select("*")
-            .eq("event_id", sb_event_id)
+            .eq("event_id", event_id)
         )
         if is_recurring and instance_date:
             cons_query = cons_query.eq("session_date", instance_date)
@@ -348,7 +360,7 @@ async def validate_removal(
 @router.post("/service-checkin/checkin")
 async def service_checkin_person(
     checkin_data: dict = Body(...),
-    current_user: dict = Depends(get_current_user),
+    # current_user: dict = Depends(get_current_user),
 ):
     """
     Check in an existing person (type='attendee') or add a new visitor
@@ -362,9 +374,8 @@ async def service_checkin_person(
         raw_event_id: str = checkin_data.get("event_id", "")
         person_data: dict = checkin_data.get("person_data", {})
         checkin_type: str = checkin_data.get("type", "attendee")
+        session_id:str = checkin_data.get('session_id')
 
-        if not raw_event_id or not ObjectId.is_valid(raw_event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
 
         event = await _get_event_or_404(raw_event_id)
         is_recurring = bool(event.get("recurring_day"))
@@ -378,108 +389,61 @@ async def service_checkin_person(
             )
 
         instance_date = _today_sast() if is_recurring else None
+        att_table = "event_service_attendees" if not event.get('is_ticketed') else 'event_ticketed_attendees'
 
-        # ── Attendee check-in ────────────────────────────────────────────────
+        session = supabase.table("event_sessions").select("*").eq("session_id", session_id).execute().data[0]
         if checkin_type == "attendee":
-            mongo_person_id = person_data.get("id") or person_data.get("_id")
-            if not mongo_person_id or not ObjectId.is_valid(mongo_person_id):
-                raise HTTPException(status_code=400, detail="Valid person ID is required")
+            full_name = f"{person_data.get('Name', '')} {person_data.get('Surname', '')}".strip()
 
-            existing = await people_collection.find_one({"_id": ObjectId(mongo_person_id)})
-            if not existing:
-                raise HTTPException(status_code=404, detail="Person does not exist")
+            
 
-            full_name = f"{existing.get('Name', '')} {existing.get('Surname', '')}".strip()
-
-            if is_recurring and instance_date:
-                session = _get_or_create_session(sb_event_id, instance_date)
-                session_id = session["session_id"]
-
-                # Prevent duplicate check-in
-                dup = (
-                    supabase.table("event_session_attendees")
-                    .select("id")
-                    .eq("session_id", session_id)
-                    .eq("mongo_person_id", mongo_person_id)
-                    .limit(1)
-                    .execute()
+            # Prevent duplicate check-in
+            dup = (
+                supabase.table(att_table)
+                .select("id")
+                .eq("session_id", session_id)
+                .eq("person_id",person_data.get("person_id"))
+                .limit(1)
+                .execute()
+            )
+            if dup.data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{full_name} is already checked in",
                 )
-                if dup.data:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"{full_name} is already checked in",
-                    )
 
-                insert_resp = (
-                    supabase.table("event_session_attendees")
-                    .insert(
-                        {
-                            "session_id": session_id,
-                            "event_id": sb_event_id,
-                            "mongo_person_id": mongo_person_id,
-                            "full_name": full_name,
-                            "email": existing.get("Email", ""),
-                            "phone": existing.get("Number", ""),
-                            "is_checked_in": True,
-                            "check_in_date": now_iso,
-                        }
-                    )
-                    .execute()
+            insert_resp = (
+                supabase.table(att_table)
+                .insert(
+                    {
+                        "session_id": session_id,
+                        "event_id": sb_event_id,
+                        "full_name": full_name,
+                        "email": person_data.get("email", ""),
+                        "phone": person_data.get("number", ""),
+                        "is_checked_in": True,
+                        "check_in_date": now_iso,
+                        "person_id": person_data.get("person_id")
+                    }
                 )
-                attendee_record = insert_resp.data[0] if insert_resp.data else {}
+                .execute()
+            )
+            attendee_record = insert_resp.data[0] if insert_resp.data else {}
+            print(f'Attendee record created: {attendee_record}')
 
-                # Update session counter
-                supabase.table("event_sessions").update(
-                    {"checked_in_count": session.get("checked_in_count", 0) + 1}
-                ).eq("session_id", session_id).execute()
-
-                present_count_resp = (
-                    supabase.table("event_session_attendees")
-                    .select("id", count="exact")
-                    .eq("session_id", session_id)
-                    .execute()
-                )
-                present_count = present_count_resp.count or 0
-
-            else:
-                # Non-recurring: use event_attendees
-                dup = (
-                    supabase.table("event_attendees")
-                    .select("attendee_id")
-                    .eq("event_id", sb_event_id)
-                    .eq("mongo_person_id", mongo_person_id)
-                    .limit(1)
-                    .execute()
-                )
-                if dup.data:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"{full_name} is already checked in",
-                    )
-
-                insert_resp = (
-                    supabase.table("event_attendees")
-                    .insert(
-                        {
-                            "event_id": sb_event_id,
-                            "mongo_person_id": mongo_person_id,
-                            "full_name": full_name,
-                            "email": existing.get("Email", ""),
-                            "phone": existing.get("Number", ""),
-                            "is_persistent": False,
-                        }
-                    )
-                    .execute()
-                )
-                attendee_record = insert_resp.data[0] if insert_resp.data else {}
-
-                count_resp = (
-                    supabase.table("event_attendees")
-                    .select("attendee_id", count="exact")
-                    .eq("event_id", sb_event_id)
-                    .execute()
-                )
-                present_count = count_resp.count or 0
+            # Update session counter
+            supabase.table("event_sessions").update(
+                {"checked_in_count": session.get("checked_in_count", 0) + 1}
+            ).eq("session_id", session_id).execute()
+            
+            present_count_resp = (
+                supabase.table(att_table)
+                .select("id", count="exact")
+                .eq("session_id", session_id)
+                .execute()
+            )
+            present_count = present_count_resp.count or 0
+                
 
             return {
                 "message": f"{full_name} checked in",
@@ -491,10 +455,12 @@ async def service_checkin_person(
 
         # ── New visitor ──────────────────────────────────────────────────────
         elif checkin_type == "new_person":
+            full_name = person_data.get('fullName')
             new_person_id = f"new_{secrets.token_urlsafe(8)}"
             new_person_payload = {
                 "event_id": sb_event_id,
                 "mongo_id": new_person_id,
+                "person_id": person_data.get("person_id"),
                 "name": person_data.get("name", ""),
                 "surname": person_data.get("surname", ""),
                 "email": person_data.get("email", ""),
@@ -506,8 +472,8 @@ async def service_checkin_person(
                 "needs_db_entry": True,
                 "added_at": now_iso,
             }
-            if is_recurring and instance_date:
-                new_person_payload["session_date"] = instance_date
+            # if is_recurring and instance_date:
+            #     new_person_payload["session_date"] = instance_date
 
             insert_resp = (
                 supabase.table("event_new_people")
@@ -516,15 +482,31 @@ async def service_checkin_person(
             )
             new_person_record = insert_resp.data[0] if insert_resp.data else new_person_payload
 
-            count_q = (
-                supabase.table("event_new_people")
-                .select("id", count="exact")
-                .eq("event_id", sb_event_id)
+            insert_resp2 = (
+                supabase.table(att_table)
+                .insert(
+                    {
+                        "session_id": session_id,
+                        "event_id": sb_event_id,
+                        "full_name": full_name,
+                        "email": person_data.get("email", ""),
+                        "phone": person_data.get("number", ""),
+                        "is_checked_in": True,
+                        "check_in_date": now_iso,
+                        "person_id": person_data.get("person_id")
+                    }
+                )
+                .execute()
             )
-            if is_recurring and instance_date:
-                count_q = count_q.eq("session_date", instance_date)
-            count = (count_q.execute().count) or 0
+            attendee_record = insert_resp2.data[0] if insert_resp2.data else {}
+            update_res =supabase.table("event_sessions").update(
+                {"new_people_total": session.get("new_people_total", 0) + 1,
+                "checked_in_count": session.get("checked_in_count", 0) + 1}
+            ).eq("session_id", session_id).execute()
+            print(f'Attendee record created: {attendee_record}')
 
+            print(update_res.data[0])
+            count = update_res.data[0].get('new_people_total')
             return {
                 "message": "Visitor added to event",
                 "type": "new_person",
@@ -551,163 +533,171 @@ async def service_checkin_person(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.delete("/service-checkin/remove")
-async def remove_from_service_checkin(
-    removal_data: dict = Body(...),
+async def service_checkin_remove_person(
+    remove_data: dict = Body(...),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Remove a person from attendees, new_people, or consolidations for an event.
+    Undo a check-in: remove an existing person (type='attendee') or a
+    new visitor (type='new_person') from a service event.
+
+    For attendees the record is deleted from event_service_attendees
+    (or event_ticketed_attendees for ticketed events) and the session's
+    checked_in_count is decremented.
+    For new visitors the record is deleted from event_new_people.
+
+    Expected body:
+      attendee:   {"event_id", "session_id", "type": "attendee", "person_id"}
+      new_person: {"event_id", "type": "new_person", "mongo_id", "session_id"?}
     """
     try:
-        raw_event_id: str = removal_data.get("event_id", "")
-        person_id: str = removal_data.get("person_id", "")
-        data_type: str = removal_data.get("type", "")
-
-        if not raw_event_id or not ObjectId.is_valid(raw_event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
-        if not person_id or not data_type:
-            raise HTTPException(status_code=400, detail="Person ID and type are required")
-
-        valid_types = {"attendees", "new_people", "consolidations"}
-        if data_type not in valid_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Type must be one of: {sorted(valid_types)}",
-            )
+        raw_event_id: str = remove_data.get("event_id", "")
+        checkin_type: str = remove_data.get("type", "attendee")
+        session_id: str = remove_data.get("session_id")
 
         event = await _get_event_or_404(raw_event_id)
         is_recurring = bool(event.get("recurring_day"))
-        instance_date = _today_sast() if is_recurring else None
 
         sb_event_id = _supabase_event_id(raw_event_id)
         if not sb_event_id:
-            raise HTTPException(status_code=404, detail="Event not found in Supabase")
-
-        # ── Route deletion to the correct Supabase table ─────────────────────
-        if data_type == "attendees":
-            if is_recurring and instance_date:
-                session_resp = (
-                    supabase.table("event_sessions")
-                    .select("session_id")
-                    .eq("event_id", sb_event_id)
-                    .eq("session_date", instance_date)
-                    .limit(1)
-                    .execute()
-                )
-                if not session_resp.data:
-                    raise HTTPException(status_code=404, detail="Session not found")
-                session_id = session_resp.data[0]["session_id"]
-                del_resp = (
-                    supabase.table("event_session_attendees")
-                    .delete()
-                    .eq("session_id", session_id)
-                    .eq("mongo_person_id", person_id)
-                    .execute()
-                )
-            else:
-                del_resp = (
-                    supabase.table("event_attendees")
-                    .delete()
-                    .eq("event_id", sb_event_id)
-                    .eq("mongo_person_id", person_id)
-                    .execute()
-                )
-
-        elif data_type == "new_people":
-            del_q = (
-                supabase.table("event_new_people")
-                .delete()
-                .eq("event_id", sb_event_id)
-                .eq("mongo_id", person_id)
-            )
-            del_resp = del_q.execute()
-
-        elif data_type == "consolidations":
-            del_resp = (
-                supabase.table("event_consolidations")
-                .delete()
-                .eq("id", person_id)
-                .execute()
+            raise HTTPException(
+                status_code=404,
+                detail="Event not found in Supabase. Ensure the event has been synced.",
             )
 
-        # ── Rebuild counts ────────────────────────────────────────────────────
-        if is_recurring and instance_date:
+        att_table = (
+            "event_service_attendees"
+            if not event.get("is_ticketed")
+            else "event_ticketed_attendees"
+        )
+
+        # ── Remove attendee ──────────────────────────────────────────────────
+        if checkin_type == "attendee":
+            person_id = remove_data.get("person_id")
+            if not session_id or not person_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="session_id and person_id are required for attendee removal",
+                )
+
             session_resp = (
                 supabase.table("event_sessions")
-                .select("session_id")
-                .eq("event_id", sb_event_id)
-                .eq("session_date", instance_date)
+                .select("*")
+                .eq("session_id", session_id)
                 .limit(1)
                 .execute()
             )
-            session_id = session_resp.data[0]["session_id"] if session_resp.data else None
+            if not session_resp.data:
+                raise HTTPException(status_code=404, detail="Session not found")
+            session = session_resp.data[0]
 
-            if session_id:
-                present_count = (
-                    supabase.table("event_session_attendees")
-                    .select("id", count="exact")
-                    .eq("session_id", session_id)
-                    .execute()
-                    .count or 0
+            # Make sure the person is actually checked in
+            existing = (
+                supabase.table(att_table)
+                .select("id, full_name")
+                .eq("session_id", session_id)
+                .eq("person_id", person_id)
+                .limit(1)
+                .execute()
+            )
+            if not existing.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Person is not checked in to this session",
                 )
-            else:
-                present_count = 0
+            full_name = existing.data[0].get("full_name", "") or "Person"
 
-            np_count = (
-                supabase.table("event_new_people")
-                .select("id", count="exact")
-                .eq("event_id", sb_event_id)
-                .eq("session_date", instance_date)
+            # Delete the check-in record(s)
+            delete_resp = (
+                supabase.table(att_table)
+                .delete()
+                .eq("session_id", session_id)
+                .eq("person_id", person_id)
                 .execute()
-                .count or 0
             )
-            cons_count = (
-                supabase.table("event_consolidations")
-                .select("id", count="exact")
-                .eq("event_id", sb_event_id)
-                .eq("session_date", instance_date)
-                .execute()
-                .count or 0
-            )
-        else:
-            present_count = (
-                supabase.table("event_attendees")
-                .select("attendee_id", count="exact")
-                .eq("event_id", sb_event_id)
-                .execute()
-                .count or 0
-            )
-            np_count = (
-                supabase.table("event_new_people")
-                .select("id", count="exact")
-                .eq("event_id", sb_event_id)
-                .execute()
-                .count or 0
-            )
-            cons_count = (
-                supabase.table("event_consolidations")
-                .select("id", count="exact")
-                .eq("event_id", sb_event_id)
-                .execute()
-                .count or 0
-            )
+            removed_record = delete_resp.data[0] if delete_resp.data else {}
+            print(f"Attendee record removed: {removed_record}")
 
-        return {
-            "success": True,
-            "message": f"Person removed from {data_type} successfully",
-            "updated_counts": {
+            # Update session counter (never below zero)
+            supabase.table("event_sessions").update(
+                {"checked_in_count": max(0, (session.get("checked_in_count") or 0) - 1)}
+            ).eq("session_id", session_id).execute()
+
+            present_count_resp = (
+                supabase.table(att_table)
+                .select("id", count="exact")
+                .eq("session_id", session_id)
+                .execute()
+            )
+            present_count = present_count_resp.count or 0
+
+            return {
+                "message": f"{full_name} removed from check-in",
+                "type": "attendee",
+                "removed": removed_record,
                 "present_count": present_count,
-                "new_people_count": np_count,
-                "consolidation_count": cons_count,
-            },
-        }
+                "success": True,
+            }
+
+        # ── Remove new visitor ───────────────────────────────────────────────
+        elif checkin_type == "new_person":
+            mongo_id = remove_data.get("mongo_id")
+            if not mongo_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="mongo_id is required for new person removal",
+                )
+
+            existing = (
+                supabase.table("event_new_people")
+                .select("id, name, surname, session_date")
+                .eq("event_id", sb_event_id)
+                .eq("mongo_id", mongo_id)
+                .limit(1)
+                .execute()
+            )
+            if not existing.data:
+                raise HTTPException(status_code=404, detail="Visitor not found")
+            visitor = existing.data[0]
+            session_date = visitor.get("session_date")
+
+            delete_resp = (
+                supabase.table("event_new_people")
+                .delete()
+                .eq("event_id", sb_event_id)
+                .eq("mongo_id", mongo_id)
+                .execute()
+            )
+            removed_record = delete_resp.data[0] if delete_resp.data else visitor
+
+            count_q = (
+                supabase.table("event_new_people")
+                .select("id", count="exact")
+                .eq("event_id", sb_event_id)
+            )
+            if is_recurring and session_date:
+                count_q = count_q.eq("session_date", session_date)
+            count = (count_q.execute().count) or 0
+
+            return {
+                "message": "Visitor removed from event",
+                "type": "new_person",
+                "removed": removed_record,
+                "new_people_count": count,
+                "success": True,
+            }
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid type — must be 'attendee' or 'new_person'",
+            )
 
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Remove error: {exc}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error removing person: {exc}")
-
+        logger.error(f"Check-in removal error: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to remove check-in")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PUT /service-checkin/update
@@ -795,16 +785,28 @@ async def update_service_checkin_person(
 @router.post("/service-checkin/create-consolidation")
 async def create_service_checkin_consolidation(
     consolidation_data: dict = Body(...),
-    current_user: dict = Depends(get_current_user),
+    # current_user: dict = Depends(get_current_user),
 ):
     """
-    Record a decision (first-time commitment or recommitment) made at a service.
-    Writes to:
-      - Supabase  event_consolidations
-      - MongoDB   Tasks  (consolidation follow-up task)
+    Record a decision (first-time commitment or recommitment) made at a service
+    session. Mirrors the check-in endpoint, and treats Supabase as the source
+    of truth for the person, session and event data.
+
+    Flow:
+      1. Load the session and the person's check-in record from Supabase
+      2. Insert the consolidation row into Supabase (event_consolidations)
+      3. Create the follow-up task in MongoDB, carrying all the Supabase data
+      4. Link the task id back onto the Supabase row
+      5. Update the session decision counters
+
+    If any step after (2) fails, everything created so far is rolled back.
     """
+    cons_id = None
+    task_inserted_id = None
+
     try:
         raw_event_id: str = consolidation_data.get("event_id", "")
+        session_id: str = consolidation_data.get("session_id")
         person_data: dict = consolidation_data.get("person_data", {})
         decision_type: str = consolidation_data.get("decision_type", "Commitment")
         assigned_to: str = consolidation_data.get("assigned_to", "")
@@ -813,64 +815,122 @@ async def create_service_checkin_consolidation(
 
         if not raw_event_id:
             raise HTTPException(status_code=400, detail="Event ID is required")
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID is required")
 
-        base_mongo_id, instance_date = _parse_event_id(raw_event_id)
-        event = await _get_event_or_404(base_mongo_id)
+        event = await _get_event_or_404(raw_event_id)
         is_recurring = bool(event.get("recurring_day"))
-        if is_recurring and not instance_date:
-            instance_date = _today_sast()
+        now_iso = datetime.utcnow().isoformat()
 
-        sb_event_id = _supabase_event_id(base_mongo_id)
+        sb_event_id = _supabase_event_id(raw_event_id)
         if not sb_event_id:
             raise HTTPException(
                 status_code=404,
-                detail="Event not found in Supabase. Sync the event first.",
+                detail="Event not found in Supabase. Ensure the event has been synced.",
             )
 
-        person_name: str = person_data.get("name", "")
-        person_surname: str = person_data.get("surname", "")
-        person_email: str = person_data.get("email", "")
-        person_phone: str = person_data.get("phone", "") or person_data.get("number", "")
-        mongo_person_id: str = person_data.get("id", "")
+        att_table = (
+            "event_service_attendees"
+            if not event.get("is_ticketed")
+            else "event_ticketed_attendees"
+        )
 
-        now_iso = datetime.utcnow().isoformat()
-        org = current_user.get("Organization") or current_user.get("organization", "")
+        # ── 1a. Session (Supabase) ───────────────────────────────────────────
+        session_resp = (
+            supabase.table("event_sessions")
+            .select("*")
+            .eq("session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+        if not session_resp.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = session_resp.data[0]
 
-        # ── Create follow-up task in MongoDB ──────────────────────────────────
-        task_payload = {
-            "taskType": "consolidation",
-            "contacted_person": {
-                "name": f"{person_name} {person_surname}".strip(),
-                "phone": person_phone,
-                "email": person_email,
-            },
-            "followup_date": now_iso,
-            "status": "Open",
-            "type": "consolidation",
-            "assignedfor": assigned_to_email or current_user.get("email", ""),
-            "assigned_to_email": assigned_to_email,
-            "is_consolidation_task": True,
-            "leader_assigned": assigned_to,
-            "leader_name": assigned_to,
-            "decision_display_name": decision_type,
-            "source_display": "Service",
-            "consolidation_source": "service_consolidation",
-            "person_name": person_name,
-            "person_surname": person_surname,
-            "person_email": person_email,
-            "person_phone": person_phone,
-            "person_id": mongo_person_id,
-            "Organization": org,
-            "created_at": now_iso,
-            "updated_at": now_iso,
-        }
-        task_result = await tasks_collection.insert_one(task_payload)
-        task_id = str(task_result.inserted_id)
+        instance_date = (
+            (session.get("session_date") or _today_sast()) if is_recurring else None
+        )
 
-        # ── Write consolidation row to Supabase ──────────────────────────────
+        # ── 1b. Person (Supabase) ────────────────────────────────────────────
+        person_id: str = person_data.get("person_id") or person_data.get("id", "")
+
+        sb_person: dict = {}
+        sb_person_source = None
+        if person_id:
+            # Checked-in attendee for this session
+            att_resp = (
+                supabase.table(att_table)
+                .select("*")
+                .eq("session_id", session_id)
+                .eq("person_id", person_id)
+                .limit(1)
+                .execute()
+            )
+            if att_resp.data:
+                sb_person = att_resp.data[0]
+                sb_person_source = att_table
+            else:
+                # New visitor added at this event
+                new_resp = (
+                    supabase.table("event_new_people")
+                    .select("*")
+                    .eq("event_id", sb_event_id)
+                    .eq("mongo_id", person_id)
+                    .limit(1)
+                    .execute()
+                )
+                if new_resp.data:
+                    sb_person = new_resp.data[0]
+                    sb_person_source = "event_new_people"
+
+        # Supabase values win; request body is the fallback
+        if sb_person_source == "event_new_people":
+            person_name = sb_person.get("name") or person_data.get("name", "")
+            person_surname = sb_person.get("surname") or person_data.get("surname", "")
+        else:
+            sb_full_name = (sb_person.get("full_name") or "").strip()
+            sb_first, _, sb_rest = sb_full_name.partition(" ")
+            person_name = (
+                person_data.get("name")
+                or person_data.get("Name")
+                or sb_first
+            )
+            person_surname = (
+                person_data.get("surname")
+                or person_data.get("Surname")
+                or sb_rest.strip()
+            )
+        full_name = f"{person_name} {person_surname}".strip()
+        person_email = sb_person.get("email") or person_data.get("email", "")
+        person_phone = (
+            sb_person.get("phone")
+            or person_data.get("phone", "")
+            or person_data.get("number", "")
+        )
+
+        # org = current_user.get("Organization") or current_user.get("organization", "")
+
+        # ── Prevent duplicate consolidation for this session ─────────────────
+        if person_id:
+            dup = (
+                supabase.table("event_consolidations")
+                .select("id")
+                .eq("session_id", session_id)
+                .eq("mongo_person_id", person_id)
+                .limit(1)
+                .execute()
+            )
+            if dup.data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{full_name or 'Person'} already has a consolidation for this session",
+                )
+
+        # ── 2. Consolidation row (Supabase) ──────────────────────────────────
         cons_payload: dict = {
+            "session_id": session_id,
             "event_id": sb_event_id,
-            "mongo_person_id": mongo_person_id or None,
+            "person_id": person_id or None,
             "person_name": person_name,
             "person_surname": person_surname,
             "person_email": person_email,
@@ -881,72 +941,135 @@ async def create_service_checkin_consolidation(
             "assigned_to_email": assigned_to_email,
             "status": "active",
             "notes": notes,
-            "mongo_task_id": task_id,
+            "created_at": now_iso
         }
-        if is_recurring and instance_date:
-            cons_payload["session_date"] = instance_date
-
+      
         insert_resp = (
             supabase.table("event_consolidations").insert(cons_payload).execute()
         )
         if not insert_resp.data:
-            # Rollback task
-            await tasks_collection.delete_one({"_id": task_result.inserted_id})
-            raise HTTPException(
-                status_code=500, detail="Failed to save consolidation to Supabase"
-            )
+            raise RuntimeError("Failed to save consolidation to Supabase")
         cons_record = insert_resp.data[0]
+        cons_id = cons_record.get("id")
+        print(f"Consolidation record created: {cons_record}")
 
-        # ── Update session counters if recurring ─────────────────────────────
-        if is_recurring and instance_date:
-            session_resp = (
-                supabase.table("event_sessions")
-                .select("session_id, decisions_first_time, decisions_recommitment, decisions_total")
-                .eq("event_id", sb_event_id)
-                .eq("session_date", instance_date)
-                .limit(1)
-                .execute()
-            )
-            if session_resp.data:
-                sess = session_resp.data[0]
-                dt_lower = decision_type.lower()
-                first_delta = 1 if "first" in dt_lower else 0
-                recommit_delta = 1 if "recommit" in dt_lower else 0
-                supabase.table("event_sessions").update(
-                    {
-                        "decisions_first_time": sess.get("decisions_first_time", 0) + first_delta,
-                        "decisions_recommitment": sess.get("decisions_recommitment", 0) + recommit_delta,
-                        "decisions_total": sess.get("decisions_total", 0) + 1,
-                    }
-                ).eq("session_id", sess["session_id"]).execute()
 
-        # ── Count updated consolidations ─────────────────────────────────────
-        cons_count_q = (
+        # # ── 3. Follow-up task ───────────
+        # person = (
+        #     supabase
+        #     .table('People')
+        #     .select('*')
+        #     .or_(f'person_id.eq.{person_id}, _id.eq.{person_id}')
+        #     .execute()
+        #     )
+        
+        # if not person:
+        #     raise HTTPException(status_code=404, detail="Person not found")
+
+        
+        # decision_display_name = (
+        #     "First Time Decision" if "first" in decision_type.lower() else "Recommitment"
+        # )
+        # decision_value = (
+        #     "first_time" if "first" in decision_type.lower() else "recommitment"
+        # )
+
+        # task_payload = {
+        #     "_id": str(uuid.uuid4()),
+        #     "memberID": person_id or None,
+        #     "name": f"Consolidation: {full_name} ({decision_display_name})",
+        #     "taskType": "consolidation",
+        #     "description": (
+        #         f"Follow up with {full_name} who made a {decision_display_name.lower()} "
+        #         f"during this service session."
+        #     ),
+        #     "followup_date": now_iso,
+        #     "status": "open",
+        #     "assignedfor": assigned_to,
+        #     "assigned_to_email": assigned_to_email,
+        #     "assigned_to_user_id": None,
+        #     "leader_assigned": assigned_to,
+        #     "leader_name": assigned_to,
+        #     "type": "followup",
+        #     "priority": "high",
+        #     "consolidation_id": str(cons_id),
+        #     "person_id": person_id or None,
+        #     "person_name": person_name,
+        #     "person_surname": person_surname,
+        #     "decision_type": decision_value,
+        #     "decision_display_name": decision_display_name,
+        #     "consolidation_source": "service_consolidation",
+        #     "source_display": "Service",
+        #     "contacted_person": {
+        #         "name": full_name,
+        #         "email": person_email,
+        #         "phone": person_phone,
+        #     },
+        #     "contacted_person_name": full_name,
+        #     "contacted_person_email": person_email,
+        #     "contacted_person_phone": person_phone,
+        #     "created_at": now_iso,
+        #     "created_by": assigned_to_email or "system",
+        #     "is_consolidation_task": True,
+        #     "Organization": event.get("organization") or event.get("Organization") or "",
+        #     "org_id": event.get("org_id") or "",
+        #     "updated_at": now_iso,
+        #     "completedAt": None,
+        # }
+
+        # task_result = await tasks_collection.insert_one(task_payload)
+        # task_inserted_id = task_result.inserted_id
+        # task_id = str(task_inserted_id)
+
+        # # ── 4. Link the task back onto the Supabase row ──────────────────────
+        # link_resp = (
+        #     supabase.table("event_consolidations")
+        #     .update({"mongo_task_id": task_id})
+        #     .eq("id", cons_id)
+        #     .execute()
+        # )
+        # if link_resp.data:
+        #     cons_record = link_resp.data[0]
+
+        # ── 5. Session counters ──────────────────────────────────────────────
+        dt_lower = decision_type.lower()
+        first_delta = 1 if "first" in dt_lower else 0
+        recommit_delta = 1 if "recommit" in dt_lower else 0
+
+        supabase.table("event_sessions").update(
+            {
+                "decisions_first_time": (session.get("decisions_first_time") or 0) + first_delta,
+                "decisions_recommitment": (session.get("decisions_recommitment") or 0) + recommit_delta,
+                "decisions_total": (session.get("decisions_total") or 0) + 1,
+            }
+        ).eq("session_id", session_id).execute()
+
+        cons_count_resp = (
             supabase.table("event_consolidations")
             .select("id", count="exact")
-            .eq("event_id", sb_event_id)
+            .eq("session_id", session_id)
+            .execute()
         )
-        if is_recurring and instance_date:
-            cons_count_q = cons_count_q.eq("session_date", instance_date)
-        cons_count = cons_count_q.execute().count or 0
+        cons_count = cons_count_resp.count or 0
 
-        await _log_activity(
-            user_id=current_user.get("email", ""),
-            action="CONSOLIDATION_CREATED",
-            details=(
-                f"Created consolidation for '{person_name} {person_surname}' "
-                f"in event '{event.get('event_name') or event.get('eventName', 'Unknown')}'"
-            ),
-        )
+        # await _log_activity(
+        #     user_id=current_user.get("email", ""),
+        #     action="CONSOLIDATION_CREATED",
+        #     details=(
+        #         f"Created consolidation for '{full_name}' "
+        #         f"in event '{event.get('event_name') or event.get('eventName', 'Unknown')}'"
+        #     ),
+        # )
 
         return {
+            "message": f"{full_name or 'Person'} consolidation created",
             "success": True,
-            "message": "Consolidation created successfully",
             "consolidation": cons_record,
-            "task_id": task_id,
+            # "task_id": task_id,
             "event_id": raw_event_id,
+            "session_id": session_id,
             "event_name": event.get("event_name") or event.get("eventName", "Unknown Event"),
-            "updated_statistics": {"consolidations_count": cons_count},
+            "consolidations_count": cons_count,
             "timestamp": now_iso,
         }
 
@@ -954,9 +1077,21 @@ async def create_service_checkin_consolidation(
         raise
     except Exception as exc:
         logger.error(f"Create consolidation error: {exc}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {exc}")
 
+        # Roll back anything created before the failure
+        if task_inserted_id is not None:
+            try:
+                await tasks_collection.delete_one({"_id": task_inserted_id})
+            except Exception as rollback_exc:
+                logger.error(f"Task rollback failed: {rollback_exc}", exc_info=True)
+        if cons_id is not None:
+            try:
+                supabase.table("event_consolidations").delete().eq("id", cons_id).execute()
+            except Exception as rollback_exc:
+                logger.error(f"Consolidation rollback failed: {rollback_exc}", exc_info=True)
 
+        raise HTTPException(status_code=500, detail="Failed to create consolidation")
+    
 # ─────────────────────────────────────────────────────────────────────────────
 # DELETE /service-checkin/remove-consolidation
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1252,9 +1387,10 @@ async def debug_consolidations(
 # PATCH /events/{event_id}/toggle-status
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.patch("/events/{event_id}/toggle-status")
+@router.patch("/events/{session_id}/{event_id}/toggle-status")
 async def toggle_event_status(
-    event_id: str,
+    session_id: str,
+    event_id:str,
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -1267,71 +1403,48 @@ async def toggle_event_status(
     """
     try:
         base_mongo_id, instance_date = _parse_event_id(event_id)
-        event = await _get_event_or_404(base_mongo_id)
+        event = await _get_event_or_404(event_id)
         is_recurring = bool(event.get("recurring_day"))
 
         sb_event_id = _supabase_event_id(base_mongo_id)
         now_iso = datetime.utcnow().isoformat()
 
-        # ── Read current status ───────────────────────────────────────────────
-        if is_recurring and instance_date:
-            session_resp = (
-                supabase.table("event_sessions")
-                .select("session_id, status")
-                .eq("event_id", sb_event_id)
-                .eq("session_date", instance_date)
-                .limit(1)
-                .execute()
-            )
-            if session_resp.data:
-                current_status = session_resp.data[0].get("status", "").lower()
-                session_id = session_resp.data[0]["session_id"]
-            else:
-                current_status = "incomplete"
-                session_id = None
+       
+        session_resp = (
+            supabase.table("event_sessions")
+            .select("session_id, status")
+            .eq("session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+        if session_resp.data:
+            current_status = session_resp.data[0].get("status", "").lower()
+            session_id = session_resp.data[0]["session_id"]
         else:
-            events_resp = (
-                supabase.table("events")
-                .select("status")
-                .eq("event_id", sb_event_id)
-                .limit(1)
-                .execute()
-            )
-            current_status = (
-                events_resp.data[0].get("status", "").lower()
-                if events_resp.data
-                else "incomplete"
-            )
+            current_status = "incomplete"
+            session_id = None
 
         # ── Determine new status ─────────────────────────────────────────────
         if current_status in ("complete", "closed"):
             new_status = "incomplete"
             action_msg = "reopened"
             log_action = "EVENT_REOPENED"
-            extra_fields = {"reopened_by": current_user.get("email", ""), "reopened_at": now_iso}
+            extra_fields = {"submitted_by": current_user.get("email", ""), "submitted_by_name": f"{current_user.get('name', '')} ({current_user.get('surname', '')})", "submitted_at": now_iso}
         else:
             new_status = "complete"
             action_msg = "closed"
             log_action = "EVENT_CLOSED"
-            extra_fields = {"closed_by": current_user.get("email", ""), "closed_at": now_iso}
+            extra_fields = {"submitted_by": current_user.get("email", ""), "submitted_by_name": f"{current_user.get('name', '')} ({current_user.get('surname', '')})", "submitted_at": now_iso}
 
         # ── Write to Supabase ─────────────────────────────────────────────────
-        if is_recurring and instance_date and session_id:
-            supabase.table("event_sessions").update(
-                {"status": new_status, **extra_fields}
-            ).eq("session_id", session_id).execute()
-        elif sb_event_id:
-            supabase.table("events").update(
-                {"status": new_status, **extra_fields}
-            ).eq("event_id", sb_event_id).execute()
-
-        # ── Mirror to MongoDB (backwards-compat) ──────────────────────────────
-        mongo_update: dict = {"updated_at": now_iso, "status": new_status, **extra_fields}
-        if instance_date:
-            mongo_update[f"attendance.{instance_date}.status"] = new_status
-        await events_collection.update_one(
-            {"_id": ObjectId(base_mongo_id)}, {"$set": mongo_update}
-        )
+  
+        supabase.table("event_sessions").update(
+            {"status": new_status, **extra_fields}
+        ).eq("session_id", session_id).execute()
+        # elif sb_event_id:
+        #     supabase.table("events").update(
+        #         {"status": new_status, **extra_fields}
+        #     ).eq("event_id", sb_event_id).execute()
 
         await _log_activity(
             user_id=current_user.get("email", ""),
@@ -1362,3 +1475,307 @@ async def toggle_event_status(
     except Exception as exc:
         logger.error(f"Toggle status error: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error toggling event status: {exc}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /service-checkin/events and /service-checkin/eventsdata
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalise_event_row(row: dict) -> dict:
+    """Return service-checkin-friendly event data from a Supabase event/session row."""
+    if not row:
+        return {}
+
+    session_date = row.get("session_date") or row.get("date")
+    print('ROW',row)
+    return {
+        "_id": row.get("_id") or row.get("session_id") or row.get("event_id") or row.get("id"),
+        "session_id": row.get("session_id"),
+        "event_id": row.get("event_id"),
+        "UUID": row.get("event_id") or row.get("UUID") or row.get("id"),
+        "id": row.get("event_id") or row.get("session_id") or row.get("_id") or row.get("id"),
+        "eventName": row.get("event_name") or row.get("eventName") or "Unnamed Event",
+        "eventType": row.get("event_type_name") or row.get("eventType") or row.get("event_type") or "Global Events",
+        "eventLeaderName": row.get("event_leader") or row.get("eventLeaderName") or "",
+        "eventLeaderEmail": row.get("event_leader_email") or row.get("eventLeaderEmail") or "",
+        "leader1": row.get("leader_at_1") or row.get("leader1") or "",
+        "leader12": row.get("leader_at_12") or row.get("leader12") or "",
+        "leader12email": row.get("leader_at_12_email") or row.get("leader12email") or "",
+        "day": row.get("recurring_day") or row.get("day") or "",
+        "date": session_date,
+        "rawDate": session_date or "",
+        "display_date": "-".join(reversed(str(session_date).split("-"))) if session_date else "",
+        "location": row.get("location") or row.get("Location") or "",
+        "isGlobal": row.get("is_global", False) if "is_global" in row else row.get("isGlobal", False),
+        "isTicketed": row.get("is_ticketed", False) if "is_ticketed" in row else row.get("isTicketed", False),
+        "status": row.get("status") or "incomplete",
+        "Status": (row.get("status") or "").capitalize() if row.get("status") else "",
+        "did_not_meet": row.get("is_did_not_meet", False),
+        "_is_overdue": row.get("_is_overdue", True),
+        "is_recurring": row.get("is_recurring"),
+        "original_event_id": row.get("mongo_id") or row.get("original_event_id"),
+        "is_active": row.get("is_active"),
+        "time": row.get("time") or "07:20",
+        "description": row.get("description") or "",
+    }
+
+
+async def _fetch_service_checkin_event_rows(
+    # current_user: dict,
+    status: Optional[str],
+    event_type: Optional[str],
+    search: Optional[str],
+    personal: Optional[bool],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    is_global: Optional[bool],
+    page: int,
+    limit: int,
+):
+    """Fetch the same core event list as /events/eventsdata and enrich it with service-checkin data."""
+    event_type_filter = event_type
+    if event_type_filter == "global_events" or is_global is True:
+        event_type_filter = "global_events"
+
+    if not is_global:
+        fetched_other_events = supabase.rpc("get_general_events", {"p_event_type": event_type_filter}).execute().data or []
+    else:
+        fetched_other_events = supabase.rpc("get_global_events").execute().data or []
+
+   
+
+    if not fetched_other_events:
+        return {
+            "events": [],
+            "total_events": 0,
+            "total_pages": 1,
+            "current_page": page,
+            "page_size": limit,
+            "has_more": False,
+        }
+
+    fetched_event_ids = [event.get("event_id") for event in fetched_other_events if event.get("event_id")]
+    if not fetched_event_ids:
+        return {
+            "events": [],
+            "total_events": 0,
+            "total_pages": 1,
+            "current_page": page,
+            "page_size": limit,
+            "has_more": False,
+        }
+
+    sessions_query = (
+        supabase.table("event_sessions")
+        .select("*")
+        .in_("event_id", [str(i) for i in fetched_event_ids])
+    )
+    if status:
+        sessions_query = sessions_query.eq("status", status)
+    if start_date:
+        sessions_query = sessions_query.gte("session_date", start_date)
+    if end_date:
+        sessions_query = sessions_query.lte("session_date", end_date)
+
+    sessions = sessions_query.execute().data or []
+
+    session_map: dict[str, list[dict]] = {}
+    for session in sessions:
+        event_id = str(session.get("event_id") or "")
+        if event_id:
+            session_map.setdefault(event_id, []).append(session)
+
+    all_events = []
+    print(fetched_other_events)
+    for event in fetched_other_events:
+        event_id = event.get("event_id")
+        matching_sessions = session_map.get(str(event_id), [])
+        if not matching_sessions:
+            continue
+
+        for session in matching_sessions:
+            combined = {**event, **session}
+            combined['event_name'] = event.get('event_name') or event.get('eventName')
+            base_event = _normalise_event_row(combined)
+            session_date = session.get("session_date")
+            session_id = session.get("session_id")
+
+            if session_id:
+                attendee_resp = (
+                    supabase.table("event_session_attendees")
+                    .select("*")
+                    .eq("session_id", session_id)
+                    .execute()
+                )
+                attendees = attendee_resp.data or []
+            else:
+                attendee_resp = (
+                    supabase.table("event_attendees")
+                    .select("*")
+                    .eq("event_id", event_id)
+                    .execute()
+                )
+                attendees = attendee_resp.data or []
+
+            new_people_resp = (
+                supabase.table("event_new_people")
+                .select("*")
+                .eq("event_id", event_id)
+                .gte("added_at", datetime.today())
+            )
+            # if session_date:
+            #     new_people_resp = new_people_resp.eq("session_date", session_date)
+            new_people = new_people_resp.execute().data or []
+
+            cons_resp = (
+                supabase.table("event_consolidations")
+                .select("*")
+                .eq("event_id", event_id)
+                .gte("created_at", datetime.today())
+            )
+            # if session_date:
+            #     cons_resp = cons_resp.eq("session_date", session_date)
+            consolidations = cons_resp.execute().data or []
+
+            event_payload = {
+                **base_event,
+                "attendees": attendees,
+                "new_people": new_people,
+                "consolidations": consolidations,
+                "attendanceData": attendees,
+                "newPeopleData": new_people,
+                "consolidatedData": consolidations,
+                "attendance": len(attendees),
+                "newPeople": len(new_people),
+                "consolidated": len(consolidations),
+                "total_attendance": len(attendees),
+                "present_attendees": attendees,
+                "present_count": len(attendees),
+                "new_people_count": len(new_people),
+                "consolidation_count": len(consolidations),
+            }
+
+            if search:
+                search_text = search.lower()
+                haystack = " ".join([
+                    str(event_payload.get("eventName") or ""),
+                    str(event_payload.get("eventType") or ""),
+                    str(event_payload.get("location") or ""),
+                    str(event_payload.get("status") or ""),
+                    str(event_payload.get("leader1") or ""),
+                    str(event_payload.get("leader12") or ""),
+                ]).lower()
+                if search_text not in haystack:
+                    continue
+
+            if personal is not None and bool(event_payload.get("isGlobal")) != (not personal):
+                continue
+
+            all_events.append(event_payload)
+
+    all_events.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("eventName") or "")), reverse=True)
+
+    total_events = len(all_events)
+    total_pages = max(1, (total_events + limit - 1) // limit) if total_events else 1
+    start_index = (page - 1) * limit
+    end_index = start_index + limit
+    paginated_events = all_events[start_index:end_index]
+
+    return {
+        "events": paginated_events,
+        "total_events": total_events,
+        "total_pages": total_pages,
+        "current_page": page,
+        "page_size": limit,
+        "has_more": page < total_pages,
+        }
+
+
+@router.get("/service-checkin/events-history")
+# @router.get("/service-checkin/eventsdata")
+async def get_service_checkin_events(
+    session_id:str,
+    start_date: Optional[str] = Query("2024-10-10"),
+    end_date: Optional[str] = Query(None),
+):
+    """Fetch paginated service-checkin events with attendance and session metadata attached."""
+    try:
+        sessions_query = (
+                supabase.table("event_sessions")
+                .select("*")
+                .eq("session_id", session_id)
+            )
+
+        if start_date:
+            sessions_query = sessions_query.gte("session_date", start_date)
+        if end_date:
+            sessions_query = sessions_query.lte("session_date", end_date)
+    
+        session = sessions_query.execute().data[0] or []
+        if session:
+            event = supabase.table('events').select('*').eq('event_id', session.get("event_id")).single().execute().data or {}
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+        event_id = event.get('event_id')
+    
+     
+        combined = {**event, **session}
+        combined['event_name'] = event.get('event_name') or event.get('eventName')
+        base_event = _normalise_event_row(combined)
+        session_date = session.get("session_date")
+        session_id = session.get("session_id")
+        att_table = 'event_service_attendees' if not event.get('is_ticketed') else 'event_ticketed_attendees'
+
+        if session_id:
+            attendee_resp = (
+                supabase.table(att_table)
+                .select("*")
+                .eq("session_id", session_id)
+                .execute()
+            )
+            attendees = attendee_resp.data or []
+
+        new_people_resp = (
+            supabase.table("event_new_people")
+            .select("*")
+            .eq("event_id", event_id)
+            .gte("added_at", datetime.strptime(session_date, "%Y-%m-%d"))
+        )
+        # if session_date:
+        #     new_people_resp = new_people_resp.eq("session_date", session_date)
+        new_people = new_people_resp.execute().data or []
+
+        cons_resp = (
+            supabase.table("event_consolidations")
+            .select("*")
+            .eq("session_id", session_id)
+        )
+        # if session_date:
+        #     cons_resp = cons_resp.eq("session_date", session_date)
+        consolidations = cons_resp.execute().data or []
+
+        event_payload = {
+            **base_event,
+            "attendees": attendees,
+            "new_people": new_people,
+            "consolidations": consolidations,
+            "attendanceData": attendees,
+            "newPeopleData": new_people,
+            "consolidatedData": consolidations,
+            "attendance": len(attendees),
+            "newPeople": len(new_people),
+            "consolidated": len(consolidations),
+            "total_attendance": len(attendees),
+            "present_attendees": attendees,
+            "present_count": len(attendees),
+            "new_people_count": len(new_people),
+            "consolidation_count": len(consolidations),
+        }
+    
+    
+        return event_payload
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error in /service-checkin/events: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")

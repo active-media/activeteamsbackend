@@ -49,7 +49,7 @@ async def get_task_types(current_user: dict = Depends(get_current_user)):
 
         query = supabase.table("Task Types").select("*").order("name")
         if not is_super_admin:
-            query = query.eq('"Organization"', org_name)
+            query = query.eq('Organization', org_name)
 
         result = query.execute()
         return [_format_row(r) for r in (result.data or [])]

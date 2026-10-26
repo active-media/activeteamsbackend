@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 import pytz
@@ -226,7 +226,8 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
         result = (
             supabase.table("Tasks")
             .select("*")
-            .eq('"Organization"', org_name)
+            .eq('Organization', org_name)
+            .eq('assigned_to_email', user_email)
             .or_(
                 'is_consolidation_task.eq.true,'
                 '"taskType".ilike.consolidation,'
@@ -235,12 +236,15 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
                 'consolidation_source.eq.cell_consolidation,'
                 'consolidation_source.eq.service_consolidation'
             )
+            .neq('consolidation_source', 'manual')
+            .neq('source_display', 'Manual')
             .order("followup_date", desc=True)
             .limit(200)
             .execute()
         )
 
         rows = result.data or []
+        print('ROWS:', rows)
 
         def is_mine(row: dict) -> bool:
             return (
@@ -297,7 +301,16 @@ async def get_user_tasks(
 
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
-        query = supabase.table("Tasks").select("*").order("followup_date", desc=True).limit(500)
+        sixty_days_ago = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+
+        query = (
+            supabase.table("Tasks")
+            .select("*")
+            .eq("assigned_to_email", user_email)
+            .gte("followup_date", sixty_days_ago)  # Replace 'followup_date' with 'created_at' if filtering by creation date
+            .order("followup_date", desc=True)
+            .limit(500)
+        )
 
         if is_super_admin and view_all:
             pass
