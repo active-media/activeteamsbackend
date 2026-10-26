@@ -41,6 +41,7 @@ from supreme_admin import router as supreme_admin_router
 from events import router as events_router
 from reports import router as reports_router
 from people import router as people_router
+from profile_router import router as profile_router
 
 #add routers here:
 def include_router(app):
@@ -48,6 +49,7 @@ def include_router(app):
     app.include_router(reports_router)
     app.include_router(supreme_admin_router)
     app.include_router(people_router)
+    app.include_router(profile_router)
 def start_application():
     app = FastAPI()
     include_router(app)
@@ -3286,6 +3288,7 @@ app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
 app.include_router(reports_router)
 app.include_router(people_router)
+app.include_router(profile_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -7106,599 +7109,599 @@ async def get_cell_events_optimized(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/submit-attendance/{event_id}")
-async def submit_attendance(
-    event_id: str = Path(...),
-    submission: AttendanceSubmission = Body(...),
-    current_user: dict = Depends(get_current_user)
-):
-    try:
-        # Parse event ID and extract date
-        actual_event_id = event_id
-        extracted_date = None
+# @app.put("/submit-attendance/{event_id}")
+# async def submit_attendance(
+#     event_id: str = Path(...),
+#     submission: AttendanceSubmission = Body(...),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     try:
+#         # Parse event ID and extract date
+#         actual_event_id = event_id
+#         extracted_date = None
         
-        if "_" in event_id:
-            parts = event_id.split("_")
-            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
-                actual_event_id = parts[0]
-                if len(parts) >= 2:
-                    try:
-                        extracted_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
-                    except Exception:
-                        pass
+#         if "_" in event_id:
+#             parts = event_id.split("_")
+#             if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
+#                 actual_event_id = parts[0]
+#                 if len(parts) >= 2:
+#                     try:
+#                         extracted_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
+#                     except Exception:
+#                         pass
         
-        if not ObjectId.is_valid(actual_event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID")
+#         if not ObjectId.is_valid(actual_event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID")
         
-        event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+#         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
+#         if not event:
+#             raise HTTPException(status_code=404, detail="Event not found")
         
-        # Get user info
-        user_email = current_user.get("email", "")
-        user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
-        role = current_user.get("role", "user").lower()
+#         # Get user info
+#         user_email = current_user.get("email", "")
+#         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+#         role = current_user.get("role", "user").lower()
         
-        # Set timezone
-        timezone = pytz.timezone("Africa/Johannesburg")
+#         # Set timezone
+#         timezone = pytz.timezone("Africa/Johannesburg")
         
-        # Determine event date
-        if extracted_date:
-            event_date_local = timezone.localize(datetime.combine(extracted_date, datetime.min.time()))
-        else:
-            event_date = None
-            for date_field in ["date", "Date Of Event", "eventDate"]:
-                if date_field in event:
-                    date_val = event[date_field]
-                    if isinstance(date_val, datetime):
-                        event_date = date_val.date()
-                        break
-                    elif isinstance(date_val, str):
-                        try:
-                            if "T" in date_val:
-                                event_date = datetime.fromisoformat(date_val.replace("Z", "+00:00")).date()
-                            else:
-                                event_date = datetime.strptime(date_val, "%Y-%m-%d").date()
-                            break
-                        except:
-                            continue
+#         # Determine event date
+#         if extracted_date:
+#             event_date_local = timezone.localize(datetime.combine(extracted_date, datetime.min.time()))
+#         else:
+#             event_date = None
+#             for date_field in ["date", "Date Of Event", "eventDate"]:
+#                 if date_field in event:
+#                     date_val = event[date_field]
+#                     if isinstance(date_val, datetime):
+#                         event_date = date_val.date()
+#                         break
+#                     elif isinstance(date_val, str):
+#                         try:
+#                             if "T" in date_val:
+#                                 event_date = datetime.fromisoformat(date_val.replace("Z", "+00:00")).date()
+#                             else:
+#                                 event_date = datetime.strptime(date_val, "%Y-%m-%d").date()
+#                             break
+#                         except:
+#                             continue
             
-            if event_date:
-                event_date_local = timezone.localize(datetime.combine(event_date, datetime.min.time()))
-            else:
-                event_date_local = datetime.now(timezone).replace(hour=0, minute=0, second=0, microsecond=0)
+#             if event_date:
+#                 event_date_local = timezone.localize(datetime.combine(event_date, datetime.min.time()))
+#             else:
+#                 event_date_local = datetime.now(timezone).replace(hour=0, minute=0, second=0, microsecond=0)
         
-        exact_date_str = event_date_local.date().isoformat()
+#         exact_date_str = event_date_local.date().isoformat()
         
-        # Extract submission data
-        attendees_data = submission.attendees or []
-        persistent_attendees = getattr(submission, 'persistent_attendees', []) or []
-        did_not_meet = submission.did_not_meet
-        manual_headcount = getattr(submission, 'headcount', 0)
-        is_ticketed = submission.isTicketed
+#         # Extract submission data
+#         attendees_data = submission.attendees or []
+#         persistent_attendees = getattr(submission, 'persistent_attendees', []) or []
+#         did_not_meet = submission.did_not_meet
+#         manual_headcount = getattr(submission, 'headcount', 0)
+#         is_ticketed = submission.isTicketed
 
-        # ── FIX: Convert Pydantic models to plain dicts ──────────────────────
-        def to_dict(obj):
-            if isinstance(obj, dict):
-                return obj
-            if hasattr(obj, 'model_dump'):
-                return obj.model_dump()
-            if hasattr(obj, 'dict'):
-                return obj.dict()
-            return dict(obj)
+#         # ── FIX: Convert Pydantic models to plain dicts ──────────────────────
+#         def to_dict(obj):
+#             if isinstance(obj, dict):
+#                 return obj
+#             if hasattr(obj, 'model_dump'):
+#                 return obj.model_dump()
+#             if hasattr(obj, 'dict'):
+#                 return obj.dict()
+#             return dict(obj)
 
-        attendees_data = [to_dict(att) for att in attendees_data]
-        persistent_attendees = [to_dict(att) for att in persistent_attendees]
-        # ─────────────────────────────────────────────────────────────────────
+#         attendees_data = [to_dict(att) for att in attendees_data]
+#         persistent_attendees = [to_dict(att) for att in persistent_attendees]
+#         # ─────────────────────────────────────────────────────────────────────
 
-        try:
-            manual_headcount = int(manual_headcount) if manual_headcount else 0
-        except:
-            manual_headcount = 0
+#         try:
+#             manual_headcount = int(manual_headcount) if manual_headcount else 0
+#         except:
+#             manual_headcount = 0
         
-        # Debug: Print incoming data
-        print(f"Received {len(attendees_data)} attendees")
-        for att in attendees_data:
-            print(f"Attendee: {att.get('fullName')} - price: {att.get('price')}, paid: {att.get('paid')}, paidAmount: {att.get('paidAmount')}")
+#         # Debug: Print incoming data
+#         print(f"Received {len(attendees_data)} attendees")
+#         for att in attendees_data:
+#             print(f"Attendee: {att.get('fullName')} - price: {att.get('price')}, paid: {att.get('paid')}, paidAmount: {att.get('paidAmount')}")
         
-        # Helper function to enrich attendee with financials
-        def enrich_with_financials(attendee_dict):
-            """Add paid, owing, change fields based on price and paid amount"""
-            # Get price (default to 0 if not present)
-            price = attendee_dict.get("price", 0)
+#         # Helper function to enrich attendee with financials
+#         def enrich_with_financials(attendee_dict):
+#             """Add paid, owing, change fields based on price and paid amount"""
+#             # Get price (default to 0 if not present)
+#             price = attendee_dict.get("price", 0)
             
-            # Check multiple possible field names for paid amount
-            paid = attendee_dict.get("paid", None)
-            if paid is None:
-                paid = attendee_dict.get("paidAmount", None)
-            if paid is None:
-                paid = attendee_dict.get("paid_amount", None)
-            if paid is None:
-                paid = 0
+#             # Check multiple possible field names for paid amount
+#             paid = attendee_dict.get("paid", None)
+#             if paid is None:
+#                 paid = attendee_dict.get("paidAmount", None)
+#             if paid is None:
+#                 paid = attendee_dict.get("paid_amount", None)
+#             if paid is None:
+#                 paid = 0
             
-            # Ensure numeric values
-            try:
-                price = float(price) if price else 0
-                paid = float(paid) if paid else 0
-            except (ValueError, TypeError):
-                price = 0
-                paid = 0
+#             # Ensure numeric values
+#             try:
+#                 price = float(price) if price else 0
+#                 paid = float(paid) if paid else 0
+#             except (ValueError, TypeError):
+#                 price = 0
+#                 paid = 0
             
-            # Calculate financials
-            if paid >= price:
-                owing = 0
-                change = paid - price
-            elif paid > 0 and paid < price:
-                owing = price - paid
-                change = 0
-            else:
-                owing = price
-                change = 0
+#             # Calculate financials
+#             if paid >= price:
+#                 owing = 0
+#                 change = paid - price
+#             elif paid > 0 and paid < price:
+#                 owing = price - paid
+#                 change = 0
+#             else:
+#                 owing = price
+#                 change = 0
             
-            print(f"Financials - price: {price}, paid: {paid}, owing: {owing}, change: {change}")
+#             print(f"Financials - price: {price}, paid: {paid}, owing: {owing}, change: {change}")
             
-            # Create enriched attendee with all fields
-            enriched = {
-                "id": attendee_dict.get("id", ""),
-                "name": attendee_dict.get("name", attendee_dict.get("fullName", "")),
-                "fullName": attendee_dict.get("fullName", attendee_dict.get("name", "")),
-                "email": attendee_dict.get("email", ""),
-                "phone": attendee_dict.get("phone", ""),
-                "leader12": attendee_dict.get("leader12", ""),
-                "leader144": attendee_dict.get("leader144", ""),
-                "invitedBy": attendee_dict.get("invitedBy", ""),
-                "decision": attendee_dict.get("decision", ""),
-                "checked_in": attendee_dict.get("checked_in", True),
-                "isPersistent": attendee_dict.get("isPersistent", True),
-                "priceName": attendee_dict.get("priceName", ""),
-                "price": price,
-                "ageGroup": attendee_dict.get("ageGroup", ""),
-                "paymentMethod": attendee_dict.get("paymentMethod", ""),
-                "paid": paid,
-                "owing": owing,
-                "change": change,
-                "check_in_date": datetime.now(timezone).isoformat() if not attendee_dict.get("check_in_date") else attendee_dict.get("check_in_date")
-            }
-            return enriched
+#             # Create enriched attendee with all fields
+#             enriched = {
+#                 "id": attendee_dict.get("id", ""),
+#                 "name": attendee_dict.get("name", attendee_dict.get("fullName", "")),
+#                 "fullName": attendee_dict.get("fullName", attendee_dict.get("name", "")),
+#                 "email": attendee_dict.get("email", ""),
+#                 "phone": attendee_dict.get("phone", ""),
+#                 "leader12": attendee_dict.get("leader12", ""),
+#                 "leader144": attendee_dict.get("leader144", ""),
+#                 "invitedBy": attendee_dict.get("invitedBy", ""),
+#                 "decision": attendee_dict.get("decision", ""),
+#                 "checked_in": attendee_dict.get("checked_in", True),
+#                 "isPersistent": attendee_dict.get("isPersistent", True),
+#                 "priceName": attendee_dict.get("priceName", ""),
+#                 "price": price,
+#                 "ageGroup": attendee_dict.get("ageGroup", ""),
+#                 "paymentMethod": attendee_dict.get("paymentMethod", ""),
+#                 "paid": paid,
+#                 "owing": owing,
+#                 "change": change,
+#                 "check_in_date": datetime.now(timezone).isoformat() if not attendee_dict.get("check_in_date") else attendee_dict.get("check_in_date")
+#             }
+#             return enriched
         
-        # Process persistent attendees
-        persistent_attendees_dict = []
-        for attendee in persistent_attendees:
-            persistent_attendees_dict.append(enrich_with_financials(attendee))
+#         # Process persistent attendees
+#         persistent_attendees_dict = []
+#         for attendee in persistent_attendees:
+#             persistent_attendees_dict.append(enrich_with_financials(attendee))
         
-        # Process checked-in attendees
-        checked_in_attendees = []
-        first_time_count = 0
-        recommitment_count = 0
+#         # Process checked-in attendees
+#         checked_in_attendees = []
+#         first_time_count = 0
+#         recommitment_count = 0
         
-        for att in attendees_data:
-            attendee_data = enrich_with_financials(att)
+#         for att in attendees_data:
+#             attendee_data = enrich_with_financials(att)
             
-            # Handle decision tracking
-            decision = att.get("decision", "")
-            if decision:
-                attendee_data["decision"] = decision
-                decision_lower = decision.lower()
-                if "first" in decision_lower:
-                    first_time_count += 1
-                elif "re-commitment" in decision_lower or "recommitment" in decision_lower:
-                    recommitment_count += 1
+#             # Handle decision tracking
+#             decision = att.get("decision", "")
+#             if decision:
+#                 attendee_data["decision"] = decision
+#                 decision_lower = decision.lower()
+#                 if "first" in decision_lower:
+#                     first_time_count += 1
+#                 elif "re-commitment" in decision_lower or "recommitment" in decision_lower:
+#                     recommitment_count += 1
             
-            checked_in_attendees.append(attendee_data)
+#             checked_in_attendees.append(attendee_data)
         
-        # Calculate statistics
-        total_associated = len(persistent_attendees_dict) or event.get("total_associated_count", 0)
-        weekly_attendance = len(checked_in_attendees)
-        total_decisions = first_time_count + recommitment_count
+#         # Calculate statistics
+#         total_associated = len(persistent_attendees_dict) or event.get("total_associated_count", 0)
+#         weekly_attendance = len(checked_in_attendees)
+#         total_decisions = first_time_count + recommitment_count
         
-        # Determine status
-        should_mark_as_did_not_meet = (did_not_meet and weekly_attendance == 0 and manual_headcount == 0)
+#         # Determine status
+#         should_mark_as_did_not_meet = (did_not_meet and weekly_attendance == 0 and manual_headcount == 0)
         
-        if should_mark_as_did_not_meet:
-            date_status = "did_not_meet"
-            has_attendance = False
-        elif weekly_attendance == 0 and manual_headcount == 0:
-            date_status = "incomplete"
-            has_attendance = False
-        else:
-            date_status = "complete"
-            has_attendance = True
+#         if should_mark_as_did_not_meet:
+#             date_status = "did_not_meet"
+#             has_attendance = False
+#         elif weekly_attendance == 0 and manual_headcount == 0:
+#             date_status = "incomplete"
+#             has_attendance = False
+#         else:
+#             date_status = "complete"
+#             has_attendance = True
         
-        now = datetime.now(timezone)
+#         now = datetime.now(timezone)
         
-        # Create weekly attendance entry
-        weekly_attendance_entry = {
-            "status": date_status,
-            "attendees": checked_in_attendees if has_attendance else [],
-            "submitted_at": now,
-            "submitted_by": user_email,
-            "submitted_by_name": user_name,
-            "submitted_date": now.isoformat(),
-            "event_date": event_date_local.isoformat(),
-            "event_date_iso": exact_date_str,
-            "event_date_exact": exact_date_str,
-            "persistent_attendees": persistent_attendees_dict if has_attendance else [],
-            "is_did_not_meet": (date_status == "did_not_meet"),
-            "checked_in_count": weekly_attendance,
-            "total_headcounts": manual_headcount,
-            "is_ticketed": is_ticketed,
-            "statistics": {
-                "total_associated": total_associated,
-                "weekly_attendance": weekly_attendance,
-                "total_headcounts": manual_headcount,
-                "decisions": {
-                    "first_time": first_time_count,
-                    "recommitment": recommitment_count,
-                    "total": total_decisions
-                }
-            }
-        }
+#         # Create weekly attendance entry
+#         weekly_attendance_entry = {
+#             "status": date_status,
+#             "attendees": checked_in_attendees if has_attendance else [],
+#             "submitted_at": now,
+#             "submitted_by": user_email,
+#             "submitted_by_name": user_name,
+#             "submitted_date": now.isoformat(),
+#             "event_date": event_date_local.isoformat(),
+#             "event_date_iso": exact_date_str,
+#             "event_date_exact": exact_date_str,
+#             "persistent_attendees": persistent_attendees_dict if has_attendance else [],
+#             "is_did_not_meet": (date_status == "did_not_meet"),
+#             "checked_in_count": weekly_attendance,
+#             "total_headcounts": manual_headcount,
+#             "is_ticketed": is_ticketed,
+#             "statistics": {
+#                 "total_associated": total_associated,
+#                 "weekly_attendance": weekly_attendance,
+#                 "total_headcounts": manual_headcount,
+#                 "decisions": {
+#                     "first_time": first_time_count,
+#                     "recommitment": recommitment_count,
+#                     "total": total_decisions
+#                 }
+#             }
+#         }
         
-        # Prepare update fields
-        update_data = {
-            "updated_at": now,
-            "last_attendance_count": weekly_attendance,
-            "last_headcount": manual_headcount,
-            "last_attendance_date": exact_date_str,
-            "last_status": date_status,
-            "status": date_status,
-            f"attendance.{exact_date_str}": weekly_attendance_entry
-        }
+#         # Prepare update fields
+#         update_data = {
+#             "updated_at": now,
+#             "last_attendance_count": weekly_attendance,
+#             "last_headcount": manual_headcount,
+#             "last_attendance_date": exact_date_str,
+#             "last_status": date_status,
+#             "status": date_status,
+#             f"attendance.{exact_date_str}": weekly_attendance_entry
+#         }
         
-        # Update persistent attendees if provided
-        if persistent_attendees_dict:
-            update_data["persistent_attendees"] = persistent_attendees_dict
-            update_data["total_associated_count"] = len(persistent_attendees_dict)
+#         # Update persistent attendees if provided
+#         if persistent_attendees_dict:
+#             update_data["persistent_attendees"] = persistent_attendees_dict
+#             update_data["total_associated_count"] = len(persistent_attendees_dict)
         
-        # For non-recurring events, update root-level attendees
-        recurring_days = event.get("recurring_day", [])
-        is_recurring = isinstance(recurring_days, list) and len(recurring_days) > 0
+#         # For non-recurring events, update root-level attendees
+#         recurring_days = event.get("recurring_day", [])
+#         is_recurring = isinstance(recurring_days, list) and len(recurring_days) > 0
         
-        if not is_recurring and date_status == "complete":
-            update_data["attendees"] = checked_in_attendees
-            update_data["total_attendance"] = weekly_attendance
+#         if not is_recurring and date_status == "complete":
+#             update_data["attendees"] = checked_in_attendees
+#             update_data["total_attendance"] = weekly_attendance
         
-        # Execute update
-        result = await events_collection.update_one(
-            {"_id": ObjectId(actual_event_id)},
-            {"$set": update_data}
-        )
+#         # Execute update
+#         result = await events_collection.update_one(
+#             {"_id": ObjectId(actual_event_id)},
+#             {"$set": update_data}
+#         )
         
-        if result.matched_count != 1:
-            raise HTTPException(status_code=500, detail="Failed to update event")
+#         if result.matched_count != 1:
+#             raise HTTPException(status_code=500, detail="Failed to update event")
         
-        return {
-            "message": "Attendance submitted successfully",
-            "event_id": actual_event_id,
-            "status": date_status,
-            "exact_date": exact_date_str,
-            "checked_in_count": weekly_attendance,
-            "total_headcounts": manual_headcount,
-            "statistics": weekly_attendance_entry["statistics"],
-            "success": True,
-            "timestamp": now.isoformat()
-        }
+#         return {
+#             "message": "Attendance submitted successfully",
+#             "event_id": actual_event_id,
+#             "status": date_status,
+#             "exact_date": exact_date_str,
+#             "checked_in_count": weekly_attendance,
+#             "total_headcounts": manual_headcount,
+#             "statistics": weekly_attendance_entry["statistics"],
+#             "success": True,
+#             "timestamp": now.isoformat()
+#         }
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error submitting attendance: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Error submitting attendance: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.put("/events/{event_id}/persistent-attendees")
-async def update_persistent_attendees(
-    event_id: str,
-    update_data: dict = Body(...),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Update persistent attendees list for an event.
-    Saves all attendee information including ticket and financial data.
-    """
-    try:
-        print(f"PUT /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
+# @app.put("/events/{event_id}/persistent-attendees")
+# async def update_persistent_attendees(
+#     event_id: str,
+#     update_data: dict = Body(...),
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """
+#     Update persistent attendees list for an event.
+#     Saves all attendee information including ticket and financial data.
+#     """
+#     try:
+#         print(f"PUT /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
         
-        # Parse event ID
-        actual_event_id = event_id
-        if "_" in event_id:
-            parts = event_id.split("_")
-            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
-                actual_event_id = parts[0]
+#         # Parse event ID
+#         actual_event_id = event_id
+#         if "_" in event_id:
+#             parts = event_id.split("_")
+#             if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
+#                 actual_event_id = parts[0]
         
-        if not ObjectId.is_valid(actual_event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID format")
+#         if not ObjectId.is_valid(actual_event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID format")
         
-        # Fetch the event
-        event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+#         # Fetch the event
+#         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
+#         if not event:
+#             raise HTTPException(status_code=404, detail="Event not found")
         
-        # Get the updated persistent attendees from request
-        persistent_attendees = update_data.get("persistent_attendees", [])
+#         # Get the updated persistent attendees from request
+#         persistent_attendees = update_data.get("persistent_attendees", [])
         
-        # Enrich each attendee with proper fields and calculate financials
-        enriched_attendees = []
-        for attendee in persistent_attendees:
-            if not isinstance(attendee, dict):
-                continue
+#         # Enrich each attendee with proper fields and calculate financials
+#         enriched_attendees = []
+#         for attendee in persistent_attendees:
+#             if not isinstance(attendee, dict):
+#                 continue
             
-            # Get price and paid amount
-            event_price = attendee.get("price", 0)
-            paid_amount = attendee.get("paidAmount", attendee.get("paid", 0))
+#             # Get price and paid amount
+#             event_price = attendee.get("price", 0)
+#             paid_amount = attendee.get("paidAmount", attendee.get("paid", 0))
             
-            # Calculate financials
-            if paid_amount >= event_price:
-                owing = 0
-                change = paid_amount - event_price
-            elif paid_amount > 0 and paid_amount < event_price:
-                owing = event_price - paid_amount
-                change = 0
-            else:
-                owing = event_price
-                change = 0
+#             # Calculate financials
+#             if paid_amount >= event_price:
+#                 owing = 0
+#                 change = paid_amount - event_price
+#             elif paid_amount > 0 and paid_amount < event_price:
+#                 owing = event_price - paid_amount
+#                 change = 0
+#             else:
+#                 owing = event_price
+#                 change = 0
             
-            # Create enriched attendee object
-            enriched_attendee = {
-                "id": attendee.get("id", ""),
-                "name": attendee.get("name", attendee.get("fullName", "")),
-                "fullName": attendee.get("fullName", attendee.get("name", "")),
-                "email": attendee.get("email", ""),
-                "phone": attendee.get("phone", ""),
-                "leader12": attendee.get("leader12", ""),
-                "leader144": attendee.get("leader144", ""),
-                "invitedBy": attendee.get("invitedBy", ""),
-                "isPersistent": True,
-                # Ticket information
-                "priceName": attendee.get("priceName", ""),
-                "price": event_price,
-                "ageGroup": attendee.get("ageGroup", ""),
-                "paymentMethod": attendee.get("paymentMethod", ""),
-                # Financial information
-                "paid": paid_amount,
-                "paidAmount": paid_amount,
-                "owing": owing,
-                "change": change,
-            }
-            enriched_attendees.append(enriched_attendee)
+#             # Create enriched attendee object
+#             enriched_attendee = {
+#                 "id": attendee.get("id", ""),
+#                 "name": attendee.get("name", attendee.get("fullName", "")),
+#                 "fullName": attendee.get("fullName", attendee.get("name", "")),
+#                 "email": attendee.get("email", ""),
+#                 "phone": attendee.get("phone", ""),
+#                 "leader12": attendee.get("leader12", ""),
+#                 "leader144": attendee.get("leader144", ""),
+#                 "invitedBy": attendee.get("invitedBy", ""),
+#                 "isPersistent": True,
+#                 # Ticket information
+#                 "priceName": attendee.get("priceName", ""),
+#                 "price": event_price,
+#                 "ageGroup": attendee.get("ageGroup", ""),
+#                 "paymentMethod": attendee.get("paymentMethod", ""),
+#                 # Financial information
+#                 "paid": paid_amount,
+#                 "paidAmount": paid_amount,
+#                 "owing": owing,
+#                 "change": change,
+#             }
+#             enriched_attendees.append(enriched_attendee)
         
-        # Prepare update fields
-        update_fields = {
-            "persistent_attendees": enriched_attendees,
-            "total_associated_count": len(enriched_attendees),
-            "updated_at": datetime.utcnow(),
-            "last_updated_by": {
-                "email": current_user.get("email"),
-                "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
-                "role": current_user.get("role", "user"),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        }
+#         # Prepare update fields
+#         update_fields = {
+#             "persistent_attendees": enriched_attendees,
+#             "total_associated_count": len(enriched_attendees),
+#             "updated_at": datetime.utcnow(),
+#             "last_updated_by": {
+#                 "email": current_user.get("email"),
+#                 "name": f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip(),
+#                 "role": current_user.get("role", "user"),
+#                 "timestamp": datetime.utcnow().isoformat()
+#             }
+#         }
         
-        # If event has attendance data for specific dates, also update there
-        target_date = None
-        if "_" in event_id:
-            parts = event_id.split("_")
-            if len(parts) >= 2:
-                try:
-                    target_date = datetime.strptime(parts[1], "%Y-%m-%d").date().isoformat()
-                except Exception:
-                    pass
+#         # If event has attendance data for specific dates, also update there
+#         target_date = None
+#         if "_" in event_id:
+#             parts = event_id.split("_")
+#             if len(parts) >= 2:
+#                 try:
+#                     target_date = datetime.strptime(parts[1], "%Y-%m-%d").date().isoformat()
+#                 except Exception:
+#                     pass
         
-        if target_date and event.get("attendance", {}).get(target_date):
-            # Also update the persistent attendees in the date-specific attendance record
-            update_fields[f"attendance.{target_date}.persistent_attendees"] = enriched_attendees
-            update_fields[f"attendance.{target_date}.statistics.total_associated"] = len(enriched_attendees)
-            update_fields[f"attendance.{target_date}.updated_at"] = datetime.utcnow()
+#         if target_date and event.get("attendance", {}).get(target_date):
+#             # Also update the persistent attendees in the date-specific attendance record
+#             update_fields[f"attendance.{target_date}.persistent_attendees"] = enriched_attendees
+#             update_fields[f"attendance.{target_date}.statistics.total_associated"] = len(enriched_attendees)
+#             update_fields[f"attendance.{target_date}.updated_at"] = datetime.utcnow()
         
-        # Execute the update
-        result = await events_collection.update_one(
-            {"_id": ObjectId(actual_event_id)},
-            {"$set": update_fields}
-        )
+#         # Execute the update
+#         result = await events_collection.update_one(
+#             {"_id": ObjectId(actual_event_id)},
+#             {"$set": update_fields}
+#         )
         
-        if result.matched_count != 1:
-            raise HTTPException(status_code=500, detail="Failed to update persistent attendees")
+#         if result.matched_count != 1:
+#             raise HTTPException(status_code=500, detail="Failed to update persistent attendees")
         
-        # Return the updated attendees list
-        return {
-            "success": True,
-            "message": f"Updated {len(enriched_attendees)} persistent attendees",
-            "persistent_attendees": enriched_attendees,
-            "total_associated": len(enriched_attendees),
-            "updated_at": datetime.utcnow().isoformat()
-        }
+#         # Return the updated attendees list
+#         return {
+#             "success": True,
+#             "message": f"Updated {len(enriched_attendees)} persistent attendees",
+#             "persistent_attendees": enriched_attendees,
+#             "total_associated": len(enriched_attendees),
+#             "updated_at": datetime.utcnow().isoformat()
+#         }
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating persistent attendees: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Error updating persistent attendees: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/events/{event_id}/persistent-attendees")
-async def get_persistent_attendees(
-    event_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Get persistent attendees for an event with their ticket and financial information.
-    Returns attendance_status ONLY for the specific date being requested.
-    """
-    try:
-        print(f"GET /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
+# @app.get("/events/{event_id}/persistent-attendees")
+# async def get_persistent_attendees(
+#     event_id: str,
+#     current_user: dict = Depends(get_current_user)
+# ):
+#     """
+#     Get persistent attendees for an event with their ticket and financial information.
+#     Returns attendance_status ONLY for the specific date being requested.
+#     """
+#     try:
+#         print(f"GET /events/{event_id}/persistent-attendees - User: {current_user.get('email')}")
 
-        actual_event_id = event_id
-        target_date = None
+#         actual_event_id = event_id
+#         target_date = None
 
-        if "_" in event_id:
-            parts = event_id.split("_")
-            if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
-                actual_event_id = parts[0]
-                if len(parts) >= 2:
-                    try:
-                        target_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
-                    except Exception:
-                        pass
+#         if "_" in event_id:
+#             parts = event_id.split("_")
+#             if len(parts) >= 1 and ObjectId.is_valid(parts[0]):
+#                 actual_event_id = parts[0]
+#                 if len(parts) >= 2:
+#                     try:
+#                         target_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
+#                     except Exception:
+#                         pass
 
-        if not ObjectId.is_valid(actual_event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID format")
+#         if not ObjectId.is_valid(actual_event_id):
+#             raise HTTPException(status_code=400, detail="Invalid event ID format")
 
-        event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+#         event = await events_collection.find_one({"_id": ObjectId(actual_event_id)})
+#         if not event:
+#             raise HTTPException(status_code=404, detail="Event not found")
 
-        if not target_date:
-            event_date = None
-            for date_field in ["date", "Date Of Event", "eventDate", "startDate"]:
-                if date_field in event:
-                    date_val = event[date_field]
-                    if isinstance(date_val, datetime):
-                        event_date = date_val.date()
-                        break
-                    elif isinstance(date_val, str):
-                        try:
-                            if "T" in date_val:
-                                event_date = datetime.fromisoformat(
-                                    date_val.replace("Z", "+00:00")
-                                ).date()
-                            else:
-                                event_date = datetime.strptime(date_val, "%Y-%m-%d").date()
-                            break
-                        except Exception:
-                            continue
-            target_date = event_date or datetime.now().date()
+#         if not target_date:
+#             event_date = None
+#             for date_field in ["date", "Date Of Event", "eventDate", "startDate"]:
+#                 if date_field in event:
+#                     date_val = event[date_field]
+#                     if isinstance(date_val, datetime):
+#                         event_date = date_val.date()
+#                         break
+#                     elif isinstance(date_val, str):
+#                         try:
+#                             if "T" in date_val:
+#                                 event_date = datetime.fromisoformat(
+#                                     date_val.replace("Z", "+00:00")
+#                                 ).date()
+#                             else:
+#                                 event_date = datetime.strptime(date_val, "%Y-%m-%d").date()
+#                             break
+#                         except Exception:
+#                             continue
+#             target_date = event_date or datetime.now().date()
 
-        exact_date_str = target_date.isoformat()
+#         exact_date_str = target_date.isoformat()
 
-        persistent_attendees = event.get("persistent_attendees", [])
+#         persistent_attendees = event.get("persistent_attendees", [])
 
-        attendance_data   = event.get("attendance", {}) or {}
-        date_attendance   = get_attendance_by_date(attendance_data, exact_date_str)
+#         attendance_data   = event.get("attendance", {}) or {}
+#         date_attendance   = get_attendance_by_date(attendance_data, exact_date_str)
 
-        if date_attendance:
-            # This date has a submitted record — use it directly.
-            attendance_status   = date_attendance.get("status", "incomplete")
-            checked_in_from_db  = date_attendance.get("attendees", [])
-            total_headcounts    = date_attendance.get("total_headcounts", 0)
-        else:
-            # ── No record for this date → it is a NEW / uncaptured week ─────
-            # Return "incomplete" regardless of what root-level fields say.
-            attendance_status   = "incomplete"
-            checked_in_from_db  = []
-            total_headcounts    = 0
+#         if date_attendance:
+#             # This date has a submitted record — use it directly.
+#             attendance_status   = date_attendance.get("status", "incomplete")
+#             checked_in_from_db  = date_attendance.get("attendees", [])
+#             total_headcounts    = date_attendance.get("total_headcounts", 0)
+#         else:
+#             # ── No record for this date → it is a NEW / uncaptured week ─────
+#             # Return "incomplete" regardless of what root-level fields say.
+#             attendance_status   = "incomplete"
+#             checked_in_from_db  = []
+#             total_headcounts    = 0
 
-        # Only expose checked-in attendees when the week is actually complete.
-        is_complete = attendance_status == "complete"
+#         # Only expose checked-in attendees when the week is actually complete.
+#         is_complete = attendance_status == "complete"
 
-        # ── Build enriched persistent list ───────────────────────────────────
-        # Index the checked-in rows by id for O(1) lookup.
-        checked_in_index = {
-            att.get("id"): att
-            for att in checked_in_from_db
-            if isinstance(att, dict) and att.get("id")
-        }
+#         # ── Build enriched persistent list ───────────────────────────────────
+#         # Index the checked-in rows by id for O(1) lookup.
+#         checked_in_index = {
+#             att.get("id"): att
+#             for att in checked_in_from_db
+#             if isinstance(att, dict) and att.get("id")
+#         }
 
-        enriched_attendees = []
-        for attendee in persistent_attendees:
-            if not isinstance(attendee, dict):
-                continue
+#         enriched_attendees = []
+#         for attendee in persistent_attendees:
+#             if not isinstance(attendee, dict):
+#                 continue
 
-            checked_in_data = checked_in_index.get(attendee.get("id"))
+#             checked_in_data = checked_in_index.get(attendee.get("id"))
 
-            enriched = {
-                "id":           attendee.get("id", ""),
-                "name":         attendee.get("name", ""),
-                "fullName":     attendee.get("fullName", attendee.get("name", "")),
-                "email":        attendee.get("email", ""),
-                "phone":        attendee.get("phone", ""),
-                "leader12":     attendee.get("leader12", ""),
-                "leader144":    attendee.get("leader144", ""),
-                "invitedBy":    attendee.get("invitedBy", ""),
-                "isPersistent": True,
-                # Base ticket / financial data from the persistent record
-                "priceName":    attendee.get("priceName", ""),
-                "price":        attendee.get("price", 0),
-                "ageGroup":     attendee.get("ageGroup", ""),
-                "paymentMethod": attendee.get("paymentMethod", ""),
-                "paidAmount":   attendee.get("paid", attendee.get("paidAmount", 0)),
-                "paid":         attendee.get("paid", attendee.get("paidAmount", 0)),
-                "owing":        attendee.get("owing", 0),
-                "change":       attendee.get("change", 0),
-                # Default check-in state: always FALSE for new weeks
-                "checked_in":   False,
-                "decision":     "",
-                "check_in_date": "",
-            }
+#             enriched = {
+#                 "id":           attendee.get("id", ""),
+#                 "name":         attendee.get("name", ""),
+#                 "fullName":     attendee.get("fullName", attendee.get("name", "")),
+#                 "email":        attendee.get("email", ""),
+#                 "phone":        attendee.get("phone", ""),
+#                 "leader12":     attendee.get("leader12", ""),
+#                 "leader144":    attendee.get("leader144", ""),
+#                 "invitedBy":    attendee.get("invitedBy", ""),
+#                 "isPersistent": True,
+#                 # Base ticket / financial data from the persistent record
+#                 "priceName":    attendee.get("priceName", ""),
+#                 "price":        attendee.get("price", 0),
+#                 "ageGroup":     attendee.get("ageGroup", ""),
+#                 "paymentMethod": attendee.get("paymentMethod", ""),
+#                 "paidAmount":   attendee.get("paid", attendee.get("paidAmount", 0)),
+#                 "paid":         attendee.get("paid", attendee.get("paidAmount", 0)),
+#                 "owing":        attendee.get("owing", 0),
+#                 "change":       attendee.get("change", 0),
+#                 # Default check-in state: always FALSE for new weeks
+#                 "checked_in":   False,
+#                 "decision":     "",
+#                 "check_in_date": "",
+#             }
 
-            # Only override with per-week data when this week is complete
-            if is_complete and checked_in_data:
-                enriched["checked_in"]    = checked_in_data.get("checked_in", True)
-                enriched["decision"]      = checked_in_data.get("decision", "")
-                enriched["check_in_date"] = checked_in_data.get("check_in_date", "")
+#             # Only override with per-week data when this week is complete
+#             if is_complete and checked_in_data:
+#                 enriched["checked_in"]    = checked_in_data.get("checked_in", True)
+#                 enriched["decision"]      = checked_in_data.get("decision", "")
+#                 enriched["check_in_date"] = checked_in_data.get("check_in_date", "")
 
-                # Per-week ticket overrides (only when week is captured)
-                for field in ("priceName", "ageGroup", "paymentMethod"):
-                    val = checked_in_data.get(field)
-                    if val:
-                        enriched[field] = val
-                if checked_in_data.get("price") is not None:
-                    enriched["price"] = checked_in_data["price"]
-                if checked_in_data.get("paid") is not None:
-                    enriched["paidAmount"] = checked_in_data["paid"]
-                    enriched["paid"]       = checked_in_data["paid"]
-                if checked_in_data.get("owing") is not None:
-                    enriched["owing"]  = checked_in_data["owing"]
-                if checked_in_data.get("change") is not None:
-                    enriched["change"] = checked_in_data["change"]
+#                 # Per-week ticket overrides (only when week is captured)
+#                 for field in ("priceName", "ageGroup", "paymentMethod"):
+#                     val = checked_in_data.get(field)
+#                     if val:
+#                         enriched[field] = val
+#                 if checked_in_data.get("price") is not None:
+#                     enriched["price"] = checked_in_data["price"]
+#                 if checked_in_data.get("paid") is not None:
+#                     enriched["paidAmount"] = checked_in_data["paid"]
+#                     enriched["paid"]       = checked_in_data["paid"]
+#                 if checked_in_data.get("owing") is not None:
+#                     enriched["owing"]  = checked_in_data["owing"]
+#                 if checked_in_data.get("change") is not None:
+#                     enriched["change"] = checked_in_data["change"]
 
-            enriched_attendees.append(enriched)
+#             enriched_attendees.append(enriched)
 
-        # ── Build checked-in list (only meaningful when complete) ────────────
-        checked_in_list = []
-        if is_complete:
-            for att in checked_in_from_db:
-                if not isinstance(att, dict):
-                    continue
-                checked_in_list.append({
-                    "id":            att.get("id", ""),
-                    "name":          att.get("name", ""),
-                    "fullName":      att.get("fullName", att.get("name", "")),
-                    "email":         att.get("email", ""),
-                    "phone":         att.get("phone", ""),
-                    "leader12":      att.get("leader12", ""),
-                    "leader144":     att.get("leader144", ""),
-                    "checked_in":    att.get("checked_in", True),
-                    "decision":      att.get("decision", ""),
-                    "check_in_date": att.get("check_in_date", ""),
-                    "priceName":     att.get("priceName", ""),
-                    "price":         att.get("price", 0),
-                    "ageGroup":      att.get("ageGroup", ""),
-                    "paymentMethod": att.get("paymentMethod", ""),
-                    "paid":          att.get("paid", 0),
-                    "owing":         att.get("owing", 0),
-                    "change":        att.get("change", 0),
-                })
+#         # ── Build checked-in list (only meaningful when complete) ────────────
+#         checked_in_list = []
+#         if is_complete:
+#             for att in checked_in_from_db:
+#                 if not isinstance(att, dict):
+#                     continue
+#                 checked_in_list.append({
+#                     "id":            att.get("id", ""),
+#                     "name":          att.get("name", ""),
+#                     "fullName":      att.get("fullName", att.get("name", "")),
+#                     "email":         att.get("email", ""),
+#                     "phone":         att.get("phone", ""),
+#                     "leader12":      att.get("leader12", ""),
+#                     "leader144":     att.get("leader144", ""),
+#                     "checked_in":    att.get("checked_in", True),
+#                     "decision":      att.get("decision", ""),
+#                     "check_in_date": att.get("check_in_date", ""),
+#                     "priceName":     att.get("priceName", ""),
+#                     "price":         att.get("price", 0),
+#                     "ageGroup":      att.get("ageGroup", ""),
+#                     "paymentMethod": att.get("paymentMethod", ""),
+#                     "paid":          att.get("paid", 0),
+#                     "owing":         att.get("owing", 0),
+#                     "change":        att.get("change", 0),
+#                 })
 
-        return {
-            "persistent_attendees":  enriched_attendees,
-            "checked_in_attendees":  checked_in_list,
-            "attendance_status":     attendance_status,   # "incomplete" | "complete" | "did_not_meet"
-            "total_headcounts":      total_headcounts,
-            "event_date":            exact_date_str,
-            "is_ticketed":           event.get("isTicketed", False),
-            "total_associated":      len(persistent_attendees),
-        }
+#         return {
+#             "persistent_attendees":  enriched_attendees,
+#             "checked_in_attendees":  checked_in_list,
+#             "attendance_status":     attendance_status,   # "incomplete" | "complete" | "did_not_meet"
+#             "total_headcounts":      total_headcounts,
+#             "event_date":            exact_date_str,
+#             "is_ticketed":           event.get("isTicketed", False),
+#             "total_associated":      len(persistent_attendees),
+#         }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting persistent attendees: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Error getting persistent attendees: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/events/{event_id}/last-attendance")
 async def get_last_attendance(

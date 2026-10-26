@@ -53,6 +53,7 @@ pytz
 pandas
 requests
 resend
+bson
 # deactive schedulers 
 apscheduler==3.10.4
 

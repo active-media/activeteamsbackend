@@ -226,7 +226,7 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
         result = (
             supabase.table("Tasks")
             .select("*")
-            .eq('"Organization"', org_name)
+            .eq('Organization', org_name)
             .eq('assigned_to_email', user_email)
             .or_(
                 'is_consolidation_task.eq.true,'

@@ -419,6 +419,29 @@ def get_all_unique_cells(
 
     return result
   
+def _fetch_all_event_sessions(start_date, end_date, event_ids, status=None):
+    sessions = []
+    page_size = 1000
+    offset = 0
+
+    while True:
+        query = (
+            supabase.table("event_sessions")
+            .select("*")
+            .gte("session_date", start_date)
+            .lte("session_date", end_date)
+            .in_("event_id", event_ids)
+        )
+        if status:
+            query = query.eq("status", status)
+
+        page = query.range(offset, offset + page_size - 1).execute().data or []
+        sessions.extend(page)
+        if len(page) < page_size:
+            return sessions
+        offset += page_size
+
+
 @router.get("/events/cells")
 async def get_cell_events(
     current_user: dict = Depends(get_current_user),
@@ -505,7 +528,7 @@ async def get_cell_events(
 
         disciples_cells_params = {
             "p_event_type": event_type,
-            "p_leader12_email": "kennybebel@gmail.com"
+            "p_leader12_email": current_user.get('email')
         }
 
 
@@ -538,13 +561,9 @@ async def get_cell_events(
             ]
             print("getting all event small gatherings sessions")
 
-            event_sessions = ( 
-                supabase.table("event_sessions")
-                .select("*").gte("session_date", start_str).lte("session_date", end_str)
-                .in_("event_id", fetched_event_ids)
-                .limit(limit)
-                .execute().data
-                )
+            event_sessions = _fetch_all_event_sessions(
+                start_str, end_str, fetched_event_ids
+            )
             print(len(event_sessions))
         elif fetch_all_cells and not personal_cells and not disciples_cells:
             #getting all running small gathering events
@@ -554,14 +573,9 @@ async def get_cell_events(
             ]
             print("getting all event small gatherings sessions")
 
-            event_sessions = ( 
-                supabase.table("event_sessions")
-                .select("*").gte("session_date", start_str).lte("session_date", end_str)
-                .eq("status", status)
-                .in_("event_id", fetched_event_ids)
-                .limit(limit)
-                .execute().data
-                )
+            event_sessions = _fetch_all_event_sessions(
+                start_str, end_str, fetched_event_ids, status
+            )
             print(len(event_sessions))
         elif personal_cells and not disciples_cells:
             print("getting personal cells")
@@ -643,20 +657,20 @@ async def get_cell_events(
         print(f"Error in /events/cells: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# @router.get("/create_instances")
+@router.get("/create_instances")
 async def create_instances(event_types: list):
     """ 
     creates instances of events every week
     """
     try:
         #getting all active cells
+        event_types = ['cells']
         for event_type in event_types:
                 params = {
                     "p_event_type": event_type
                 }
                 events = supabase.rpc("get_all_unique_cells_auto", params).execute().data
-                
-            
+                return [i.get('event_name') for i in  events]
 
                 #formulating current week's date
                 today_date = datetime.now() 
@@ -671,8 +685,8 @@ async def create_instances(event_types: list):
                 days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
                 instances = []
                 num_of_errors = []
-                for event in events[:15]:
-                    for day in event.get("recurring_day").split(","):
+                for event in events:
+                    for day in event.get("recurring_day", "").split(","):
                         weekday = days.index(day) + 1
                         
                         session_date = datetime.fromisocalendar(year_int, week_no_int, weekday).date().strftime("%Y-%m-%d")
@@ -702,7 +716,7 @@ async def create_instances(event_types: list):
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(create_instances,'cron',hour=10,minute=57,args=[['global_events','cells' ]]) 
+scheduler.add_job(create_instances,'cron',hour=12,minute=48,args=[['global_events','cells' ]]) 
 # scheduler.add_job(create_instances, 'cron', day_of_week='sun', hour=1, minute=0,args=['Global Events'])
 scheduler.start()
 sleep(10)
@@ -960,7 +974,7 @@ async def get_other_events(
                     "time": i.get("time", "07:20") ,
                     "attendance":  i.get("checked_in_count", 0),
                     "new_people":i.get("new_people_total",0),
-                    "total_consolidation":i.get("total_consolidation",0)    
+                    "total_consolidation":i.get("decisions_total",0)    
                 }
                 for i in general_events
             ]
@@ -2959,8 +2973,15 @@ async def check_person_in(
         event_type = body.get("event_type", "Cells")
 
         # Route to the correct table based on event type
-        table = "event_service_attendees" if event_type == "Global Events" else "event_small_gatherings"
-        print(f"event_type={event_type!r} → table={table}")
+        match event_type:
+            case "cells":
+                table = "event_small_gatherings"
+            case "global_events":
+                table = "event_service_attendees"
+            case 'ticketed_events':
+                table = "event_ticketed_attendees"
+            case _:
+                table = "event_small_gatherings"
         
         if not event_id or not person_id:
             raise HTTPException(status_code=400, detail="event_id and person_id are required")
@@ -4169,8 +4190,21 @@ async def submit_attendance(
 ):
     try:
         today_str = date.today().strftime("%Y-%m-%d")
-        # Route to the correct table based on event type
-        table = "event_service_attendees" if submission.event_type == "Global Events" else "event_small_gatherings"
+        # Route to the correct table based on event type if submission.event_type else "cells"
+        event_type = submission.event_type
+        match event_type:
+            case "cells": 
+                query_function = "get_persistent_attendees"
+                table = "event_small_gatherings"
+            case "global_events":
+                query_function = "get_persistent_attendees_service"
+                table = "event_service_attendees"
+            case 'ticketed_events':
+                query_function = "get_persistent_attendees_ticketed"
+                table = "event_ticketed_attendees"
+            case _:
+                query_function = "get_persistent_attendees"
+                table = "event_small_gatherings"
         print(f"submit_attendance: event_type={submission.event_type!r} → table={table}")
 
         # #inserting attendees:
