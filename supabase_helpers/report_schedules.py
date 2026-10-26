@@ -9,10 +9,12 @@ tables is used (there are none for this table), so this module doesn't
 need the post-fetch-filter workaround described in technical-notes.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from supabase_helpers.supabase_connection import supabase_admin as supabase  # service_role client, bypasses RLS
+from zoneinfo import ZoneInfo
+
+from supabase_helpers.supabase_connection import supabase_admin as supabase
 
 TABLE = "report_schedules"
 
@@ -30,6 +32,9 @@ VALID_REPORT_TYPES = {
 VALID_FREQUENCIES = {"daily", "weekly", "monthly"}
 VALID_WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
 VALID_FORMATS = {"pdf", "csv", "xlsx"}
+
+SAST = ZoneInfo("Africa/Johannesburg")
+UTC = ZoneInfo("UTC")
 
 
 class ReportScheduleValidationError(ValueError):
@@ -68,6 +73,76 @@ def _validate_schedule_payload(payload: dict, partial: bool = False) -> None:
         recipients = payload.get("recipients")
         if not recipients or not isinstance(recipients, list):
             raise ReportScheduleValidationError("recipients must be a non-empty list of email addresses")
+
+
+def compute_next_run(schedule: dict, after_utc: datetime) -> str:
+    """
+    Compute the next run_at timestamp in UTC ISO format based on schedule
+    frequency and time_of_day. after_utc is the just-completed run time in UTC.
+    """
+    freq = schedule.get("frequency", "daily")
+    time_str = schedule.get("time_of_day", "00:00")  # 'HH:MM' or 'HH:MM:SS'
+    org = schedule.get("Organization", "")
+
+    # Parse time_of_day: support both 'HH:MM' and 'HH:MM:SS'
+    parts = time_str.split(":")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, AttributeError):
+        hour, minute = 0, 0
+
+    # Convert after_utc to SAST for day-of-week/day-of-month math
+    after_sast = after_utc.astimezone(SAST)
+
+    if freq == "daily":
+        # Next run: same time tomorrow in SAST, convert back to UTC
+        next_sast = after_sast.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=1)
+        return next_sast.astimezone(UTC).isoformat()
+
+    if freq == "weekly":
+        # Find next matching weekday after today
+        dow_map = {
+            "monday": 0, "tuesday": 1, "wednesday": 2,
+            "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6,
+        }
+        target_dow = dow_map.get(schedule.get("weekday", "monday"))
+        if target_dow is None:
+            next_sast = after_sast.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=1)
+        else:
+            current_dow = after_sast.weekday()
+            # Days ahead to reach target, at least 1
+            ahead = (target_dow - current_dow) % 7
+            if ahead == 0:
+                ahead = 7  # next week if same day
+            next_sast = after_sast + timedelta(days=ahead)
+            next_sast = next_sast.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return next_sast.astimezone(UTC).isoformat()
+
+    if freq == "monthly":
+        day_of_month = schedule.get("day_of_month", 1)
+        # Cap at 28 to avoid month-end issues
+        capped_dom = min(day_of_month, 28)
+        # Move to next month, set day
+        year = after_sast.year
+        month = after_sast.month + 1
+        if month > 12:
+            month = 1
+            year += 1
+        # Clamp day if the next month is shorter
+        import calendar
+        max_day = calendar.monthrange(year, month)[1]
+        real_dom = min(capped_dom, max_day)
+        try:
+            next_date = after_sast.replace(year=year, month=month, day=real_dom, hour=hour, minute=minute, second=0, microsecond=0)
+        except ValueError:
+            # Fallback: first day of next month
+            next_date = datetime(year, month, 1, hour, minute, 0, tzinfo=SAST)
+        return next_date.astimezone(UTC).isoformat()
+
+    # Default daily
+    next_sast = after_sast.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=1)
+    return next_sast.astimezone(UTC).isoformat()
 
 
 def list_report_schedules(organization: str) -> list[dict]:
@@ -165,13 +240,16 @@ def delete_report_schedule(schedule_id: str, organization: str) -> bool:
     return bool(res.data)
 
 
-def mark_schedule_run(schedule_id: str, status: str, error: Optional[str] = None) -> None:
+def mark_schedule_run(schedule_id: str, status: str, error: Optional[str] = None, next_run_at: Optional[str] = None) -> None:
     """Called by the runner after each attempted send."""
-    supabase.table(TABLE).update({
+    update_fields = {
         "last_run_at": datetime.now(timezone.utc).isoformat(),
         "last_run_status": status,
         "last_run_error": error,
-    }).eq("id", schedule_id).execute()
+    }
+    if next_run_at is not None:
+        update_fields["next_run_at"] = next_run_at
+    supabase.table(TABLE).update(update_fields).eq("id", schedule_id).execute()
 
 
 def list_all_active_schedules() -> list[dict]:

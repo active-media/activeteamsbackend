@@ -19,6 +19,8 @@ from supabase_helpers.service_targets import sb_get_service_target_report
 from supabase_helpers.supabase_connection import supabase_admin
 from supabase_helpers.supabase_stats import sb_get_reporting_dashboard
 
+from .cells_drilldown import cell_payload, fetch_cell_sessions, leader_payload
+
 from .envelope import (
     cells_graph_envelope,
     dashboard_envelope,
@@ -35,7 +37,7 @@ from .schemas import (
     ReportNotImplementedResponse,
     ReportRunRecord,
 )
-from .scope import ReportScope, get_report_scope
+from .scope import ReportScope, downline_ids, ensure_visible, get_report_scope, load_scope_people
 
 
 logger = logging.getLogger(__name__)
@@ -285,6 +287,63 @@ async def get_report(
 ):
     resolved = _resolved_period(period, start_date, end_date)
     return await _report_envelope(report_type, scope, resolved, campus)
+
+
+@router.get("/reports/cells_graph/leader/{leader_id}", responses=REPORT_ERROR_RESPONSES)
+async def get_cells_leader_drilldown(
+    leader_id: str,
+    period: str | None = Query(None),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    view: str = Query("downline", alias="scope", pattern="^(downline|direct)$"),
+    scope: ReportScope = Depends(get_report_scope),
+):
+    """A leader's cells plus those of every disciple beneath them (or direct disciples only)."""
+    resolved = _resolved_period(period, start_date, end_date)
+    ensure_visible(scope, leader_id)
+    try:
+        people = await asyncio.to_thread(load_scope_people, scope)
+        ids = downline_ids(leader_id, people, direct_only=(view == "direct"))
+        if not ids:
+            raise HTTPException(status_code=404, detail="Leader not found")
+        start, end = _dates(resolved)
+        sessions = await asyncio.to_thread(fetch_cell_sessions, scope.org_filter, start, end)
+        return leader_payload(leader_id, ids, people, sessions, view, resolved)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unable to build cells leader drill-down")
+        raise HTTPException(status_code=500, detail="Unable to build leader drill-down") from exc
+
+
+@router.get("/reports/cells_graph/cell/{event_id}", responses=REPORT_ERROR_RESPONSES)
+async def get_cells_cell_drilldown(
+    event_id: str,
+    period: str | None = Query(None),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    scope: ReportScope = Depends(get_report_scope),
+):
+    """Stats for a single cell."""
+    resolved = _resolved_period(period, start_date, end_date)
+    try:
+        people = await asyncio.to_thread(load_scope_people, scope)
+        history = await asyncio.to_thread(fetch_cell_sessions, scope.org_filter, None, None, event_id)
+        if not history:
+            raise HTTPException(status_code=404, detail="Cell not found")
+        payload = cell_payload(event_id, history, people, *_dates(resolved), resolved)
+        # Leaders only see cells whose leader is uniquely resolved inside their downline.
+        # Unresolved or ambiguous leaders are denied rather than guessed.
+        if scope.visible_leader_ids is not None:
+            leader_id = payload["meta"]["leader_id"]
+            if not leader_id or leader_id not in scope.visible_leader_ids:
+                raise HTTPException(status_code=403, detail="You do not have access to this cell")
+        return payload
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unable to build cell drill-down")
+        raise HTTPException(status_code=500, detail="Unable to build cell drill-down") from exc
 
 
 def _csv_content(envelope: ReportEnvelope) -> str:

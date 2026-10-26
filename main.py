@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends,
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserCreater, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate, TaskTypeIn, TaskTypeOut, LeaderStatusResponse, UserProfile, OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role, require_super_admin
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, consolidations_collection, organizations_collection, org_config_collection
@@ -1294,7 +1294,7 @@ async def get_organization(org_id: str):
 
 
 @app.post("/organizations")
-async def create_organization(data: dict = Body(...)):
+async def create_organization(data: dict = Body(...), current_user: dict = Depends(require_super_admin)):
     """
     Create a new organization.
     Body: { "name": "City Church", "tag": "City Church", "description": "..." }
@@ -1330,7 +1330,7 @@ async def create_organization(data: dict = Body(...)):
 
 
 @app.put("/organizations/{org_id}")
-async def update_organization(org_id: str, data: dict = Body(...)):
+async def update_organization(org_id: str, data: dict = Body(...), current_user: dict = Depends(require_super_admin)):
     """
     Update an existing organization's name.
     This will ALSO update all users with the old organization name to the new name.
@@ -1433,7 +1433,7 @@ async def update_organization(org_id: str, data: dict = Body(...)):
     }
 
 @app.delete("/organizations/{org_id}")
-async def delete_organization(org_id: str):
+async def delete_organization(org_id: str, current_user: dict = Depends(require_super_admin)):
     """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
@@ -1441,12 +1441,10 @@ async def delete_organization(org_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Organization not found")
     logger.info(f"Organization deleted: {org_id}")
-
     # Invalidate org cache so deletions are reflected
     organizations_cache["data"] = []
     organizations_cache["last_loaded"] = None
     organizations_cache["expires_at"] = None
-
     return {"success": True, "message": "Organization deleted"}
 
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
@@ -7300,6 +7298,74 @@ async def delete_report_schedule(schedule_id: str, current_user: dict = Depends(
 
 
 
+@app.post("/report-schedules/{schedule_id}/run")
+async def run_schedule_now(schedule_id: str, current_user: dict = Depends(require_role("admin"))):
+    """Run a schedule immediately through the same code path as the scheduler.
+    Requires admin role. Schedule must belong to the caller's Organization.
+    A manual run must NOT change next_run_at.
+    """
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+    # Fetch schedule in caller's org (sync via to_thread)
+    schedule = await asyncio.to_thread(
+        report_schedules_helpers.get_report_schedule, schedule_id, organization
+    )
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    # Atomic claim: update next_run_at to new value where old value matches
+    # If next_run_at is null, we need to compute it first
+    now_utc = datetime.now(timezone.utc)
+    from supabase_helpers.report_schedule_runner import compute_next_run
+    if not schedule.get("next_run_at"):
+        new_next_run = compute_next_run(schedule, now_utc)
+    else:
+        new_next_run = compute_next_run(schedule, datetime.fromisoformat(schedule["next_run_at"]))
+
+    # Atomically claim by updating next_run_at; skip if another process claimed it
+    updated = supabase.table("report_schedules").update({
+        "next_run_at": new_next_run,
+    }).eq("id", schedule_id).eq("next_run_at", schedule.get("next_run_at")).eq("Organization", organization).execute()
+
+    if not updated.data:
+        # Another process already claimed it; or next_run_at changed; skip
+        return {"status": "skipped", "error": "Schedule already being processed by another instance"}
+
+    # Now generate and send the report (same code path as scheduler)
+    try:
+        from supabase_helpers.report_schedule_runner import _generate_report
+        from auth.email_utils import send_report_email
+        report_bytes = _generate_report(schedule)
+        recipients = schedule.get("recipients", [])
+        send_report_email(
+            to_email=recipients[0] if recipients else "",
+            subject=f"Scheduled Report: {schedule['report_type']}",
+            body=f"Your {schedule['report_type']} report has been generated.",
+            attachment_bytes=report_bytes,
+            filename=f"{schedule['report_type']}.{schedule['format']}",
+            mimetype=f"application/{schedule['format']}",
+        )
+        # Mark success
+        from supabase_helpers.report_schedules import mark_schedule_run
+        mark_schedule_run(schedule_id, status="success", next_run_at=new_next_run)
+        # Note: manual run does NOT change next_run_at beyond the initial claim
+        # The next_run_at was already set above via the claim
+
+    except ValueError as ve:
+        # Unsupported report_type or format
+        from supabase_helpers.report_schedules import mark_schedule_run
+        mark_schedule_run(schedule_id, status="error", error=str(ve))
+        return {"status": "error", "error": str(ve)}
+    except Exception as e:
+        from supabase_helpers.report_schedules import mark_schedule_run
+        mark_schedule_run(schedule_id, status="error", error=str(e))
+        return {"status": "error", "error": str(e)}
+
+    return {"status": "success"}
+
+
 # Check-in (no auth required)
 # -------------------------
 # http://localhost:8000/checkin
@@ -9333,7 +9399,7 @@ async def create_user(
     current_user: dict = Depends(get_current_user)
 ):
     """Create a new user - Admin only (uses lowercase 'organization' for new users)"""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    is_supreme = is_true(current_user.get("is_supreme_admin"))
     
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -9411,7 +9477,7 @@ async def get_all_users(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+        is_supreme = is_true(current_user.get("is_supreme_admin"))
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
@@ -9499,7 +9565,7 @@ async def get_admin_stats(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        is_supreme = is_true(current_user.get("is_supreme_admin"))
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
@@ -9567,7 +9633,7 @@ async def get_distinct_roles(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+        is_supreme = is_true(current_user.get("is_supreme_admin"))
         
         org_filter = None
         if is_supreme and organization:
@@ -9649,7 +9715,7 @@ async def update_user_role(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL or current_user.get("is_supreme_admin", False)
+        is_supreme = is_true(current_user.get("is_supreme_admin"))
         
         if not is_supreme and current_user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="Admin access required")
@@ -9681,8 +9747,14 @@ async def update_user_role(
                     status_code=400,
                     detail=f"Active Church only supports standard roles: {', '.join(system_roles)}"
                 )
-            
-            ROLE_HIERARCHY = {
+
+        if new_role.lower() in RESERVED_ROLES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reserved role '{new_role}' cannot be assigned",
+            )
+
+        ROLE_HIERARCHY = {
                 "registrant": 2,
                 "user": 1,
                 "leader": 3,
@@ -9691,45 +9763,7 @@ async def update_user_role(
                 "supreme_admin": 6
             }
             
-            # if not is_supreme:
-            #     current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
-            #     target_user_level = ROLE_HIERARCHY.get(old_role, 0)
-            #     new_role_level = ROLE_HIERARCHY.get(new_role, 0)
-                
-            #     if target_user_level >= current_user_role_level:
-            #         raise HTTPException(
-            #             status_code=403,
-            #             detail="Cannot modify users with equal or higher role"
-            #         )
-                
-            #     if new_role_level >= current_user_role_level:
-            #         raise HTTPException(
-            #             status_code=403,
-            #             detail="Cannot assign role equal to or higher than your own"
-            #         )
-        else:
-            if new_role == "admin" and not is_supreme:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cannot assign admin role"
-                )
             
-            # if new_role in system_roles and not is_supreme:
-            #     ROLE_HIERARCHY = {
-            #         "registrant": 2,
-            #         "user": 1,
-            #         "leader": 3,
-            #         "leaderAt12": 4,
-            #         "admin": 5
-            #     }
-                current_user_role_level = ROLE_HIERARCHY.get(current_user.get("role"), 0)
-                new_role_level = ROLE_HIERARCHY.get(new_role, 0)
-                
-                # if new_role_level >= current_user_role_level:
-                #     raise HTTPException(
-                #         status_code=403,
-                #         detail="Cannot assign system role equal to or higher than your own"
-                #     )
         
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
@@ -9766,7 +9800,7 @@ async def delete_user(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete a user - Admin only"""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    is_supreme = is_true(current_user.get("is_supreme_admin"))
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -10025,7 +10059,7 @@ async def get_all_organizations(
     current_user: dict = Depends(get_current_user)
 ):
     """Get all organizations - Supreme Admin only"""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not is_true(current_user.get("is_supreme_admin")):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
     
     try:
@@ -10058,10 +10092,10 @@ async def get_all_organizations(
 @app.post("/admin/organizations", response_model=MessageResponse)
 async def create_organization(
     org_data: OrganizationCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_super_admin)
 ):
     """Create a new organization - Supreme Admin only"""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not is_true(current_user.get("is_supreme_admin")):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
     
     try:
@@ -10098,10 +10132,10 @@ async def create_organization(
 async def update_organization(
     org_id: str,
     org_data: OrganizationUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_super_admin)
 ):
     """Update organization - Supreme Admin only"""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not is_true(current_user.get("is_supreme_admin")):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
     
     try:
@@ -10136,10 +10170,10 @@ async def update_organization(
 @app.delete("/admin/organizations/{org_id}", response_model=MessageResponse)
 async def delete_organization(
     org_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_super_admin)
 ):
     """Delete organization - Supreme Admin only"""
-    if current_user.get("email") != SUPREME_ADMIN_EMAIL:
+    if not is_true(current_user.get("is_supreme_admin")):
         raise HTTPException(status_code=403, detail="Supreme admin access required")
     
     try:
@@ -10181,7 +10215,7 @@ async def get_all_people(
     current_user: dict = Depends(get_current_user)
 ):
     """Get all people from People collection - Filtered by organization"""
-    is_supreme = current_user.get("email") == SUPREME_ADMIN_EMAIL
+    is_supreme = is_true(current_user.get("is_supreme_admin"))
     
     if not is_supreme and current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")

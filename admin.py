@@ -1095,6 +1095,9 @@ async def get_distinct_roles(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+RESERVED_ROLES = {"super_admin", "supreme_admin"}
+
+
 @router.put("/users/{user_id}/role", response_model=MessageResponse)
 async def update_user_role(
     user_id: str,
@@ -1131,6 +1134,12 @@ async def update_user_role(
         ACTIVE_CHURCH_NAME = "Active Church"
         system_roles = ["admin", "leader", "leaderAt12", "user", "registrant"]
 
+        if new_role.lower() in RESERVED_ROLES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reserved role '{new_role}' cannot be assigned",
+            )
+
         if user_org == ACTIVE_CHURCH_NAME:
             if new_role not in system_roles:
                 raise HTTPException(
@@ -1140,6 +1149,11 @@ async def update_user_role(
         else:
             if new_role == "admin" and not is_supreme:
                 raise HTTPException(status_code=403, detail="Cannot assign admin role")
+            if new_role.lower() in RESERVED_ROLES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Reserved role '{new_role}' cannot be assigned",
+                )
 
         supabase.table("Users").update(
             {"role": new_role, "updated_at": datetime.utcnow().isoformat()}

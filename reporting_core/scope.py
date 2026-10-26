@@ -27,10 +27,10 @@ def _normal(value: Any) -> str:
     return str(value or "").strip().casefold()
 
 
-def _leader_ids(current_user: dict, people: list[dict]) -> set[str]:
+def _find_root(current_user: dict, people: list[dict]) -> dict | None:
     user_id = str(current_user.get("user_id") or current_user.get("_id") or "")
     email = _normal(current_user.get("email"))
-    root = next(
+    return next(
         (
             person for person in people
             if (email and _normal(person.get("Email") or person.get("email")) == email)
@@ -38,10 +38,11 @@ def _leader_ids(current_user: dict, people: list[dict]) -> set[str]:
         ),
         None,
     )
-    if not root:
-        return set()
 
-    root_id = str(root.get("_id") or user_id)
+
+def _downline_from_root(root: dict, people: list[dict], fallback_id: str = "") -> set[str]:
+    """Root plus everyone beneath them, at every depth (12 -> 144 -> 1728 ...)."""
+    root_id = str(root.get("_id") or fallback_id)
     root_name = " ".join(
         str(root.get(key) or "").strip()
         for key in ("Name", "Surname")
@@ -66,6 +67,39 @@ def _leader_ids(current_user: dict, people: list[dict]) -> set[str]:
                 visible.add(person_id)
 
     return visible
+
+
+def _leader_ids(current_user: dict, people: list[dict]) -> set[str]:
+    root = _find_root(current_user, people)
+    if not root:
+        return set()
+    user_id = str(current_user.get("user_id") or current_user.get("_id") or "")
+    return _downline_from_root(root, people, user_id)
+
+
+def downline_ids(leader_id: str, people: list[dict], direct_only: bool = False) -> set[str]:
+    """IDs of `leader_id` plus their downline (or only their direct disciples).
+
+    Reuses the same tree walk that builds a leader's own visibility, so the
+    drill-down can never disagree with the scope rules. Returns an empty set
+    if the leader is not among `people`.
+    """
+    wanted = str(leader_id or "")
+    root = next((p for p in people if wanted and str(p.get("_id") or "") == wanted), None)
+    if not root:
+        return set()
+    if direct_only:
+        return {wanted} | {
+            str(p.get("_id")) for p in people
+            if p.get("_id") and _normal(p.get("LeaderId")) == _normal(wanted)
+        }
+    return _downline_from_root(root, people)
+
+
+def ensure_visible(scope: "ReportScope", leader_id: str) -> None:
+    """403 unless the caller may see this leader. Admins/super admins see their whole org."""
+    if scope.visible_leader_ids is not None and str(leader_id) not in scope.visible_leader_ids:
+        raise HTTPException(status_code=403, detail="You do not have access to this leader")
 
 
 def build_report_scope(current_user: dict, people: list[dict] | None = None) -> ReportScope:
@@ -120,3 +154,25 @@ async def get_report_scope(
     except Exception as exc:
         logger.exception("Unable to resolve reporting hierarchy")
         raise HTTPException(status_code=500, detail="Unable to resolve reporting hierarchy") from exc
+
+
+def load_scope_people(scope: ReportScope) -> list[dict]:
+    """All People rows the caller's organization covers (paginated past Supabase's 1000-row cap)."""
+    people: list[dict] = []
+    offset, page = 0, 1000
+    while True:
+        batch = (
+            supabase.table("People").select("*").order("_id")
+            .range(offset, offset + page - 1).execute().data or []
+        )
+        people.extend(batch)
+        if len(batch) < page:
+            break
+        offset += page
+    if scope.org_filter:
+        organization = _normal(scope.org_filter.get("Organization"))
+        people = [
+            p for p in people
+            if _normal(p.get("Organization") or p.get("organization")) == organization
+        ]
+    return people

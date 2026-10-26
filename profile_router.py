@@ -22,7 +22,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials
 
-from auth.utils import get_current_user
+from auth.utils import get_current_user, is_true
 from supabase_helpers.supabase_connection import supabase as _supabase, supabase_admin as _supabase_admin
 
 router = APIRouter(tags=["profile"])
@@ -65,7 +65,7 @@ def _format_user(user: dict) -> dict:
         "leader144":      user.get("leader144", ""),
         "leader1728":     user.get("leader1728", ""),
         "stage":          user.get("stage", ""),
-        "is_supreme_admin": user.get("is_supreme_admin") or False,
+        "is_supreme_admin": is_true(user.get("is_supreme_admin")),
     }
 
 

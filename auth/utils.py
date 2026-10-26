@@ -22,7 +22,6 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 SUPREME_ADMIN_EMAIL = "plaatjiessamuel98@gmail.com"
-SUPREME_ADMIN_EMAIL = "chibuzorobi738@gmail.com"
 ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
@@ -132,7 +131,7 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     email = user.get("email", "")
-    is_supreme = email == SUPREME_ADMIN_EMAIL or is_true(user.get("is_supreme_admin"))
+    is_supreme = is_true(user.get("is_supreme_admin"))
     organization = user.get("Organization") or user.get("organization", "")
     org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
     org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
@@ -276,7 +275,7 @@ async def get_current_user(
     # 3. Build the current_user dict consumed by all endpoints
     # ------------------------------------------------------------------
     email = db_user.get("email", "")
-    is_supreme = email == SUPREME_ADMIN_EMAIL or is_true(db_user.get("is_supreme_admin"))
+    is_supreme = is_true(db_user.get("is_supreme_admin"))
     organization = db_user.get("Organization") or db_user.get("organization") or ""
 
     org_id = db_user.get("org_id") or ""
@@ -334,10 +333,8 @@ def require_role(*allowed_roles: str):
 
 
 def require_super_admin(
-    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    from fastapi import HTTPException, status
-    current_user = await get_current_user(token)
     if not current_user.get('is_supreme_admin'):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Super admin access required')
     return current_user
@@ -346,6 +343,65 @@ def sanitize_document(doc: dict) -> dict:
     Recursively convert ObjectId and other non-serializable fields.
     """
     from bson import ObjectId
+
+
+WEEKDAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def get_next_occurrence_single(start_dt: datetime, recurring_day: str) -> datetime:
+    if recurring_day is None:
+        return start_dt
+    target_weekday = WEEKDAY_MAP[recurring_day.lower()]
+    today = datetime.utcnow().date()
+    today_weekday = today.weekday()
+    days_ahead = (target_weekday - today_weekday) % 7
+    candidate_date = today + timedelta(days=days_ahead)
+    if candidate_date < start_dt.date():
+        candidate_date += timedelta(days=7)
+    return datetime.combine(candidate_date, start_dt.time())
+
+
+# ==============================
+# MISC HELPERS
+# ==============================
+
+async def get_leader_cell_name_async(leader_id: str) -> str:
+    try:
+        result = (
+            _supabase_admin.table("Users")
+            .select("name, surname")
+            .eq("_id", leader_id)
+            .single()
+            .execute()
+        )
+        doc = result.data
+    except Exception:
+        doc = None
+    if doc:
+        name_parts = [p for p in [doc.get("name", ""), doc.get("surname", "")] if p]
+        if name_parts:
+            return " ".join(name_parts) + "'s cell"
+    return ""
+
+
+def parse_time_string(t: Optional[str]) -> Optional[time_type]:
+    if not t:
+        return None
+    try:
+        hh, mm = t.split(":")
+        return time_type(int(hh), int(mm))
+    except Exception:
+        return None
+
+
+def task_type_serializer(task_type) -> dict:
+    return {
+        "id": str(task_type.get("_id") or task_type.get("id", "")),
+        "name": task_type["name"],
+    }
 
 
 # ==============================
