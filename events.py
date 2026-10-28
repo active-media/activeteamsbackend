@@ -92,7 +92,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         print("event_type query result:", event_type,org_id,event_type_name)
         if len(event_type) == 0:
             raise HTTPException(status_code=404, detail="Event type not found")
-
+        event_type = event_type[0] if event_type and len(event_type) > 0 else None
         # Check if it's a CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             print("Creating CELLS event with built-in type")
@@ -105,16 +105,16 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             # Try to find the event type 
             
                         
-            event_type = event_type[0] if event_type and len(event_type) > 0 else None
+        
             # If found, check if it's global
             if event_type:
-                is_global = event_type.get("isGlobal", False)
+                is_global = event_type.get("is_global", False)
                 print(f"Found event type: {event_type_name} (global={is_global})")
                 event_data["eventTypeId"] = event_type.get("event_type_id")
                 event_data["eventTypeName"] = event_type.get("name")
-                event_data["isGlobal"] = event_type.get("isGlobal", False)
-                event_data["hasPersonSteps"] = event_type.get("hasPersonSteps", False)
-                event_data["isTicketed"] = event_type.get("isTicketed", False)
+                event_data["isGlobal"] = event_type.get("is_global", False)
+                event_data["hasPersonSteps"] = event_type.get("has_person_steps", False)
+                event_data["isTicketed"] = event_type.get("is_ticketed", False)
                 event_data["status"] = "open"
             else:
                 # Event type not found, use default
@@ -265,10 +265,10 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "status": event_data.get("status", "open"),
                 "recurring_day": ",".join(event_data.get("recurring_day",[""])),
                 "is_recurring": bool(event_data.get("recurring_day")),
-                "organization": event_data.get("Organization"),
+                "Organization": event_data.get("Organization"),
                 "event_date": final_event_date.isoformat(),
                 "org_id": event_data.get("org_id"),
-                **leaders
+                # **leaders
             }  
 
          
@@ -277,8 +277,9 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             result = post_event.data[0]["event_id"]
             
             print(f"[RECURRING CREATE] Inserted _id: {result}")
-               #creating price tiers if 
-            if event_type_name == 'ticketed_events' and event.priceTiers:
+            
+            #creating price tiers if 
+            if event_type.get('is_ticketed') and event.priceTiers:
                 price_tiers = event.priceTiers
                 for pr in price_tiers:
                     tier = {
@@ -511,6 +512,8 @@ async def get_cell_events(
 
         today_day = today_date.strftime('%A')
      
+        if event_type == 'cells':
+            event_type ='Cells'
 
         #parameters used when fetching the cells
         all_cells_params = {
@@ -518,6 +521,7 @@ async def get_cell_events(
             "p_event_leader_email": user_email,
             "p_org_id": current_user.get("org_id")
         }
+        print('PARAMS',all_cells_params)
 
         personal_cells_params = {
             "p_event_type": event_type,
@@ -559,7 +563,7 @@ async def get_cell_events(
             fetched_event_ids = [
                 event.get("event_id") for event in events
             ]
-            print("getting all event small gatherings sessions")
+            print("getting every event small gatherings sessions",len(events))
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids
@@ -571,7 +575,7 @@ async def get_cell_events(
             fetched_event_ids = [
                 event.get("event_id") for event in events
             ]
-            print("getting all event small gatherings sessions")
+            print("getting all event small gatherings sessions",len(events))
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids, status
@@ -658,19 +662,18 @@ async def get_cell_events(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/create_instances")
-async def create_instances(event_types: list):
+async def create_instances():
     """ 
     creates instances of events every week
     """
     try:
         #getting all active cells
-        event_types = ['cells']
+        event_types = ['Cells']
         for event_type in event_types:
                 params = {
                     "p_event_type": event_type
                 }
-                events = supabase.rpc("get_all_unique_cells_auto", params).execute().data
-                return [i.get('event_name') for i in  events]
+                events = supabase.rpc("get_all_unique_cells_auto", params).execute().data  
 
                 #formulating current week's date
                 today_date = datetime.now() 
@@ -716,7 +719,7 @@ async def create_instances(event_types: list):
 
 
 scheduler = AsyncIOScheduler()    
-scheduler.add_job(create_instances,'cron',hour=12,minute=48,args=[['global_events','cells' ]]) 
+# scheduler.add_job(create_instances,'cron',hour=12,minute=48,args=[['global_events','cells' ]]) 
 # scheduler.add_job(create_instances, 'cron', day_of_week='sun', hour=1, minute=0,args=['Global Events'])
 scheduler.start()
 sleep(10)
@@ -856,6 +859,8 @@ async def update_session_attendees():
     #             count+=1
     # print(updated)
     return count
+
+
 
 @router.get("/events/eventsdata")
 async def get_other_events(
@@ -1433,63 +1438,30 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
         if not event_type.name or not event_type.description:
             raise HTTPException(status_code=400, detail="Name and description are required.")
 
-        # Convert to title case (first letter of each word uppercase)
-        name = event_type.name.strip().title()
-        name_lower = name.lower()  # Keep lowercase version for regex checks
-
-        # Check for reserved keywords (case insensitive)
-        if re.search(r'\bcell[s]?\b', name_lower) or 'cell' in name_lower:
-            raise HTTPException(
-                status_code=400,
-                detail="Event types containing 'cell' or 'cells' are reserved and cannot be created."
-            )
-
         org_id = current_user.get("org_id") or (current_user.get("organization", "").lower().replace(" ", "-")) or "active-teams"
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
         organization = current_user.get("Organization") or current_user.get("organization", "")
-
+        name = event_type.name  # Convert to title case (first letter of each word uppercase)
         # Check for existing event type (case insensitive)
-        existing = await events_collection.find_one({
-            "$or": [
-                {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
-                {"eventType": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
-                {"eventTypeName": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
-            ],
-            "isEventType": True,
-            "org_id": org_id
-        })
+        existing = supabase.table("event_types").select("*").eq("org_id", org_id).ilike("name", event_type.name.strip()).execute().data
 
         if existing:
             raise HTTPException(status_code=400, detail=f"Event type '{name}' already exists")
 
+        
         event_type_data = {
-            "name": name,  # Now stored in title case
-            # "eventType": name,  # Now stored in title case
-            # "eventTypeName": name,  # Now stored in title case
+            "name": name, 
+            "event_type_category": event_type.event_category,
             "description": event_type.description.strip(),
-            # "isEventType": True,
-            "is_ticketed": event_type.isTicketed if hasattr(event_type, 'isTicketed') else False,
+            "is_ticketed": event_type.event_category == "ticketed" if hasattr(event_type, 'event_category') else False,
             "is_global": event_type.isGlobal if hasattr(event_type, 'isGlobal') else False,
             "has_person_steps": event_type.hasPersonSteps if hasattr(event_type, 'hasPersonSteps') else False,
             "org_id": org_id,
-            # "Organization": organization,
-            "uuid_ref": str(uuid.uuid4()),
             # "created_at": datetime.utcnow(),
-            # "updatedAt": datetime.utcnow(),
-            "is_training": event_type.hasPersonSteps if hasattr(event_type, 'isTraining') else False,
+            "is_training": event_type.event_category == "training" if hasattr(event_type, 'event_category') else False,
         }
 
-        # if event_type_data.get("isGlobal") is None:
-        #     event_type_data["isGlobal"] = "global" in name_lower
-
-        # if event_type_data.get("hasPersonSteps") is None:
-        #     event_type_data["hasPersonSteps"] = any(
-        #         keyword in name_lower for keyword in ["person", "individual"]
-            # )
-
         print("NEW TYPE", event_type_data)
-        # eg
-        # NEW TYPE {'name': 'Divine', 'eventType': 'Divine', 'eventTypeName': 'Divine', 'description': 'mmm', 'isEventType': True, 'isTicketed': True, 'isGlobal': False, 'hasPersonSteps': False, 'org_id': 'active-teams', 'Organization': 'Active Church', 'UUID': 'f25614d1-2aff-427d-9b61-1ee840983fae', 'createdAt': datetime.datetime(2026, 8, 18, 21, 21, 0, 633504), 'updatedAt': datetime.datetime(2026, 8, 18, 21, 21, 0, 633535)}
         result = supabase.table("event_types").insert(event_type_data).execute().data
         
 
@@ -2251,8 +2223,28 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
         update_data= event_data
         person_name = current_user.get("name")
         event_name = event_data.get("eventName") or event_data.get("Event Name")
+        session_id = event_data.get("session_id")
 
-                
+        if event_data.get("priceTiers",[]) and isinstance(event_data.get("priceTiers"), list):
+            price_tiers = event_data.get("priceTiers",[])
+            for pt in price_tiers:
+                if pt.get("tier_id",""):
+                    supabase.table("event_price_tiers").update(pt).eq("tier_id",pt.get("tier_id")).execute().data
+                else:
+                    price_tier = {
+                        "event_id": event_id,
+                        "org_id": current_user.get("org_id"),
+                        "tier_name": pt.get("name"),
+                        "price":pt.get("price"),
+                        "age_group":pt.get("ageGroup"),
+                        "member_type":pt.get("memberType"),
+                        "payment_method": pt.get("paymentMethod"),
+                    }
+                    supabase.table("event_price_tiers").insert(price_tier).execute().data
+
+
+
+        #normalize fields to match data schema  
         normalized = {
             'eventName': 'event_name',
             'Event Name':'event_name',
@@ -2274,6 +2266,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
                 continue
             event_updates[normalized.get(i)] = update_data[i]
 
+        
         session_updates = {
             "session_date": update_data.get("date"),
             "event_name": update_data.get("event_name") or event_name
@@ -2774,6 +2767,14 @@ async def get_person_uuid(
     person = supabase.rpc("match_people",params).execute().data
     return person[0]["person_id"]
 
+def _get_event_type_category(event_type: str,org_id:str) -> str:
+    """Helper function to categorize event type."""
+    supabase.table("event_types").select("event_type_category").eq("name", event_type).execute().data
+    result = supabase.table("event_types").select("event_type_category").eq("name", event_type).eq("org_id",org_id).execute().data
+    if result and len(result) > 0:
+        return result[0].get("event_type_category", "").lower()
+
+    
 @router.put("/events/{event_id}/persistent-attendees")
 async def update_persistent_attendees(
     event_id: str,
@@ -2793,16 +2794,20 @@ async def update_persistent_attendees(
         event_type = str(event_type).strip()
 
         # Choose the correct table based on event type
-        match event_type:
-            case "cells":
+        event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
+        match event_type_category:
+            case "small_gatherings":
                 query_function = "get_persistent_attendees"
                 table = "event_small_gatherings"
-            case "global_events":
+            case "service":
                 query_function = "get_persistent_attendees_service"
                 table = "event_service_attendees"
-            case 'ticketed_events':
+            case 'ticketed':
                 query_function = "get_persistent_attendees_ticketed"
                 table = "event_ticketed_attendees"
+            case 'training':
+                query_function = "get_persistent_attendees_training"
+                table = "event_training_attendance"
             case _:
                 query_function = "get_persistent_attendees"
                 table = "event_small_gatherings"
@@ -3277,14 +3282,19 @@ async def get_persistent_attendees(
         per_params = {"p_event_id":event_id, "p_event_name": event_name}
         query_function = "get_persistent_attendees"
         table = "event_small_gatherings"
-        match event_type:
-            case "cells":
+
+        event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
+        match event_type_category:
+            case "small_gatherings":
                 query_function = "get_persistent_attendees"
                 table = "event_small_gatherings"
-            case "global_events":
+            case "service":
                 query_function = "get_persistent_attendees_service"
                 table = "event_service_attendees"
-            case 'ticketed_events':
+            case 'training':
+                query_function = "get_persistent_attendees_training"
+                table = "event_training_attendance"
+            case 'ticketed':
                 query_function = "get_persistent_attendees_ticketed"
                 table = "event_ticketed_attendees"
             case _:
@@ -3650,14 +3660,15 @@ def sanitize_document(doc):
 @router.get("/events/{event_id}")
 async def get_event_by_id(event_id: str = Path(...)):
     try:
-        if not ObjectId.is_valid(event_id):
-            raise HTTPException(status_code=400, detail="Invalid event ID format")
-           
-        event = await events_collection.find_one({"_id": ObjectId(event_id)})
+        if not event_id:
+            raise HTTPException(status_code=400, detail="Event ID is required")
+
+        event = supabase.table("events").select("*").eq("event_id", event_id).execute().data[0]
+
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
        
-        event["_id"] = str(event["_id"])
+        # event["_id"] = str(event["_id"])
         event = convert_datetime_to_iso(event)
         event = sanitize_document(event)
         
@@ -3666,23 +3677,29 @@ async def get_event_by_id(event_id: str = Path(...)):
         if event.get('Time'):
             event['Time'] = event.get('Time')
        
-        #  ENSURE NEW FIELDS ARE RETURNED
-        event.setdefault("isTicketed", False)
-        event.setdefault("isGlobal", False)
-        event.setdefault("hasPersonSteps", False)
-        event.setdefault("priceTiers", [])
-       
-        # Ensure leader hierarchy fields
-        event.setdefault("leader1", "")
-        event.setdefault("leader12", "")
-        event.setdefault("leader144", "")
-        event.setdefault("leaders", {
-            "1": event.get("leader1", ""),
-            "12": event.get("leader12", ""),
-            "144": event.get("leader144", "")
-        })
-       
-        return event
+        if event.get('is_ticketed') :
+            price_tiers = supabase.table("event_price_tiers").select("*").eq("event_id", event_id).execute().data
+            event['price_tiers'] = price_tiers
+
+        event_normalized = {
+            "eventName": event.get("event_name", ""),
+            "email": event.get("email", ""),
+            "date": event.get("event_date", ""),
+            "time": event.get("time", ""),
+            "timePeriod": "AM",
+            "recurringDays": event.get("recurring_day", []).join(", ") if isinstance(event.get("recurring_day"), list) else event.get("recurring_day", ""),
+            "location":event.get("location", ""),
+            "eventLeader": event.get("event_leader", ""),
+            "eventLeaderEmail": event.get("event_leader_email", ""),
+            "description": event.get("description", ""),
+            "leader1": event.get("leader1", ""),
+            "leader12": event.get("leader12", ""),
+            "isSchoolCell": event.get("is_school_cell", False),
+            "priceTiers": event.get("price_tiers", []),
+            "is_ticketed": event.get("is_ticketed", False),
+            "eventType": event.get("event_type_name", ""),
+        }
+        return event_normalized 
     except HTTPException:
         raise
     except Exception as e:

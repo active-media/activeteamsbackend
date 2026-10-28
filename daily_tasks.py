@@ -315,7 +315,7 @@ async def get_user_tasks(
         if is_super_admin and view_all:
             pass
         else:
-            query = query.eq('"Organization"', org_name)
+            query = query.eq('Organization', org_name)
 
         rows = (query.execute().data) or []
 
