@@ -760,3 +760,137 @@ async def get_cached_people(
             "cached_data": [],
             "total_count": 0,
         }
+
+
+
+# ── Leader Fields Helper Functions ─────────────────────────────────────────────
+
+def _extract_leader_fields(row: dict) -> Dict[str, Any]:
+    """Extract required leader fields from a person row."""
+    raw_path = row.get("LeaderPath")
+    path_list = raw_path if isinstance(raw_path, (list, tuple)) else []
+
+    def get_path_item(idx: int):
+        val = row.get(f"LeaderPath[{idx}]")
+        if val is not None and val != "":
+            return val
+        if idx < len(path_list) and path_list[idx] is not None:
+            return path_list[idx]
+        return row.get(f"LeaderPath[{idx}]")
+
+    return {
+        "LeaderPath[0]": get_path_item(0),
+        "LeaderPath[1]": get_path_item(1),
+        "LeaderPath[2]": get_path_item(2),
+        "LeaderPath[3]": get_path_item(3),
+        "Leader @1": row.get("Leader @1") if row.get("Leader @1") is not None else row.get("leader1"),
+        "Leader @12": row.get("Leader @12") if row.get("Leader @12") is not None else row.get("leader12"),
+        "Leader @144": row.get("Leader @144") if row.get("Leader @144") is not None else row.get("leader144"),
+        "Leader @1728": row.get("Leader @1728") if row.get("Leader @1728") is not None else row.get("leader1728"),
+    }
+
+
+def _get_person_from_cache(person_id: Any) -> Optional[dict]:
+    """Retrieve person dict from people_cache by _id or person_id."""
+    if person_id is None:
+        return None
+    data = people_cache.get("data") or []
+    if not data:
+        return None
+
+    pid_str = str(person_id).strip()
+    if not pid_str:
+        return None
+
+    # Check if indexed cache is up to date with people_cache version
+    cache_version = people_cache.get("version", 1)
+    id_map = people_cache.get("_by_id_map")
+    if id_map is None or people_cache.get("_by_id_version") != cache_version:
+        id_map = {}
+        for p in data:
+            if not isinstance(p, dict):
+                continue
+            for key in ("_id", "person_id", "id"):
+                val = p.get(key)
+                if val is not None:
+                    id_map[str(val).strip()] = p
+        people_cache["_by_id_map"] = id_map
+        people_cache["_by_id_version"] = cache_version
+
+    return id_map.get(pid_str)
+
+
+def get_person_leader_fields(person_id: Any) -> Optional[Dict[str, Any]]:
+    """Takes in a person's id as a parameter and returns the following fields from the person's row:
+        LeaderPath[0]
+        LeaderPath[1]
+        LeaderPath[2]
+        LeaderPath[3]
+        Leader @1
+        Leader @12
+        Leader @144
+        Leader @1728
+
+    Uses the background cache (people_cache) for efficiency and falls back
+    to Supabase database query if not present in the cache.
+    """
+    if person_id is None:
+        return None
+
+    if isinstance(person_id, dict):
+        person_id = person_id.get("_id") or person_id.get("person_id") or person_id.get("id")
+        if not person_id:
+            return None
+
+    pid_str = str(person_id).strip()
+    if not pid_str:
+        return None
+
+    # 1. Try to fetch from background cache first for maximum efficiency
+    cached_person = _get_person_from_cache(pid_str)
+    if cached_person:
+        return _extract_leader_fields(cached_person)
+
+    # 2. Fall back to direct database query
+    print('finding person',pid_str)
+    try:
+        # Match by _id
+        res = (
+            supabase.table(PEOPLE_TABLE)
+            .select("*")
+            .eq("_id", pid_str)
+            .limit(1)
+            .execute()
+        )
+        row = res.data[0] if (res and res.data) else None
+
+        # Fallback to match by person_id
+        if not row:
+            res = (
+                supabase.table(PEOPLE_TABLE)
+                .select("*")
+                .eq("person_id", pid_str)
+                .limit(1)
+                .execute()
+            )
+            row = res.data[0] if (res and res.data) else None
+
+        if row:
+            # Store in cache map for future lookups
+            id_map = people_cache.get("_by_id_map")
+            if id_map is not None:
+                for key in ("_id", "person_id", "id"):
+                    v = row.get(key)
+                    if v is not None:
+                        id_map[str(v).strip()] = row
+            return _extract_leader_fields(row)
+
+    except Exception as e:
+        print(f"Error fetching leader fields for person_id '{person_id}': {e}")
+
+    return None
+
+
+# Aliases for flexibility and convenience
+get_person_leaders = get_person_leader_fields
+get_person_leader_info = get_person_leader_fields

@@ -18,6 +18,7 @@ from supabase_helpers.supabase_connection import supabase
 import os
 from supabase import Client
 from uuid import UUID
+from people import get_person_leader_fields, get_person_leaders
 
 router = APIRouter()
 DAY_INDEX = {
@@ -2977,14 +2978,17 @@ async def check_person_in(
         checked_in = body.get("checked_in", False)
         event_type = body.get("event_type", "Cells")
 
+        event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
         # Route to the correct table based on event type
-        match event_type:
-            case "cells":
+        match event_type_category:
+            case "small_gatherings":
                 table = "event_small_gatherings"
-            case "global_events":
+            case "service":
                 table = "event_service_attendees"
-            case 'ticketed_events':
+            case 'ticketed':
                 table = "event_ticketed_attendees"
+            case 'training':
+                table = "event_training_attendance"
             case _:
                 table = "event_small_gatherings"
         
@@ -3304,7 +3308,14 @@ async def get_persistent_attendees(
         persistent_attendees = supabase.rpc(query_function, per_params).execute().data
         attendees = supabase.table(table).select("*").eq("session_id",session_id).eq("is_checked_in",True).execute().data
         # price_tiers = supabase.table("event_price_tiers").select("*").eq("event_id", event.get("event_id")).execute().data
-    
+        # for pa in persistent_attendees:
+        #     leaders = get_person_leader_fields(pa.get("person_id"))
+        #     if leaders:
+        #         pa["leader1"] = leaders.get("Leader @1")
+        #         pa["leader12"] = leaders.get("Leader @12")
+        #         pa["leader144"] = leaders.get("Leader @144")
+
+
         return {
             "attendees":  [
                     {  
@@ -3339,8 +3350,9 @@ async def get_persistent_attendees(
                         "fullName": p.get("full_name"),
                         "email": p.get("email"),
                         "phone": p.get("phone",""),
-                        "leader12": leader_at_12,
-                        "leader144": event_leader if event_leader != leader_at_12 or event_leader != p.get("fullname", "")  else "",
+                        "leader1":       p.get("leader1", ""),
+                        "leader12":      p.get("leader12", ""),
+                        "leader144":     p.get("leader144", ""),
                         "invitedBy": p.get("invited_by", ""),
                         "isPersistent": p.get("is_persistent", True),
                         "priceName":     p.get("priceName", ""),

@@ -24,6 +24,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from auth.utils import get_current_user, is_true
 from supabase_helpers.supabase_connection import supabase as _supabase, supabase_admin as _supabase_admin
+from people import get_person_leader_fields, get_person_leaders
 
 router = APIRouter(tags=["profile"])
 
@@ -133,32 +134,12 @@ async def get_profile(
     user = rows[0]
 
     # ── Resolve leader IDs → names ─────────────────────────────────────────
-    leader_ids = [
-        uid for uid in [
-            user.get("leader12"),
-            user.get("leader144"),
-            user.get("leader1728"),
-        ] if uid
-    ]
+    leaders = get_person_leader_fields(user.get("person_id"))
+    print("LEADERS =====", leaders)
 
-    users_by_id: dict = {}
-    if leader_ids:
-        try:
-            lr = (
-                _supabase_admin.table("Users")
-                .select("_id, name, surname, email, phone_number")
-                .in_("_id", leader_ids)
-                .execute()
-            )
-            for row in (lr.data or []):
-                users_by_id[row["_id"]] = row
-        except Exception:
-            pass  # non-fatal — leaders will just be empty
-
-    leader_at_1   = _resolve_leader_obj(user.get("leader12"),   users_by_id)
-    leader_at_12  = _resolve_leader_obj(user.get("leader144"),  users_by_id)
-    leader_at_144 = _resolve_leader_obj(user.get("leader1728"), users_by_id)
-
+    leader_at_1 = leaders.get("Leader @1")
+    leader_at_12 = leaders.get("Leader @12")
+    leader_at_144 = leaders.get("Leader @144")
     # ── Also try to enrich invited_by from People table ───────────────────
     invited_by = user.get("invited_by", "")
     if not invited_by and leader_at_1:
