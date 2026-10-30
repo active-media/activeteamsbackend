@@ -10855,24 +10855,38 @@ async def get_user_tasks(
             # Case-insensitive email match using regex
             email_regex = {"$regex": f"^{re.escape(user_email)}$", "$options": "i"}
             query = {
-                "Organization": org_name,   # always scope to org
-                "$or": [
-                    {"leader_assigned": email_regex},
-                    {"assignedfor": email_regex},
-                    {"assigned_to_email": email_regex},
-                    {"created_by_email": email_regex},   # catches tasks user created
+                # Org scope mirrors the dashboard stats scope: the user's org
+                # plus legacy tasks written without an Organization field (e.g.
+                # older consolidation tasks), so the Daily Tasks page and the
+                # Stats "All Tasks by Person" rows count the same tasks.
+                "$and": [
                     {
-                        "$and": [
-                            {"leader_name": user_name},
-                            {"is_consolidation_task": True}
+                        "$or": [
+                            {"Organization": org_name},
+                            {"Organization": {"$in": [None, ""]}},
+                            {"Organization": {"$exists": False}},
                         ]
                     },
                     {
-                        "$and": [
-                            {"leader_assigned": user_name},
-                            {"is_consolidation_task": True}
+                        "$or": [
+                            {"leader_assigned": email_regex},
+                            {"assignedfor": email_regex},
+                            {"assigned_to_email": email_regex},
+                            {"created_by_email": email_regex},   # catches tasks user created
+                            {
+                                "$and": [
+                                    {"leader_name": user_name},
+                                    {"is_consolidation_task": True}
+                                ]
+                            },
+                            {
+                                "$and": [
+                                    {"leader_assigned": user_name},
+                                    {"is_consolidation_task": True}
+                                ]
+                            }
                         ]
-                    }
+                    },
                 ]
             }
 
@@ -12983,7 +12997,13 @@ async def create_consolidation(
             },
             "created_at": datetime.utcnow(),
             "created_by": current_user.get("email", ""),
-            "is_consolidation_task": True
+            "is_consolidation_task": True,
+            # Keep the org scope identical to regular tasks so dashboard stats
+            # (which filter by Organization) count consolidation tasks too.
+            "Organization": next(
+                (v for k, v in current_user.items() if k.lower() == "organization"),
+                None,
+            ),
         }
 
         task_result = await tasks_collection.insert_one(task_doc)
@@ -14342,6 +14362,31 @@ async def initialize_event_structure(
 #         print(f"Error in bulk migration: {str(e)}")
 #         raise HTTPException(status_code=500, detail=f"Error migrating events: {str(e)}")
 
+def _sast_now():
+    """Current time in Africa/Johannesburg (UTC+2, no daylight saving)."""
+    return datetime.now(pytz.timezone("Africa/Johannesburg"))
+
+
+def _to_utc_naive(dt_sast: datetime) -> datetime:
+    """
+    Convert a tz-aware SAST datetime to the naive-UTC representation that Mongo
+    stores for task timestamps (createdAt / completedAt / followup_date).
+    """
+    return dt_sast.astimezone(pytz.utc).replace(tzinfo=None)
+
+
+def _sast_date_str(dt_utc_naive: datetime) -> str:
+    """Format a naive-UTC datetime as its Africa/Johannesburg calendar date."""
+    if dt_utc_naive is None:
+        return ""
+    return (
+        dt_utc_naive.replace(tzinfo=pytz.utc)
+        .astimezone(pytz.timezone("Africa/Johannesburg"))
+        .date()
+        .isoformat()
+    )
+
+
 def get_period_range(period: str):
     """
     Accurate date range calculator matching frontend's DailyTasks filter:
@@ -14351,61 +14396,49 @@ def get_period_range(period: str):
     - previous7 (last 7 days)
     - previousWeek
     - previousMonth
+
+    Boundaries are computed on the Africa/Johannesburg calendar — the same
+    wall-clock days the browser uses on the Daily Tasks page — and returned as
+    naive UTC datetimes, which is how task timestamps are stored in Mongo.
+    Keeping both on SAST is what makes the Stats totals and the Daily Tasks
+    totals agree at the day/week edges.
     """
-    now = datetime.utcnow()
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    
+    today = _sast_now().replace(hour=0, minute=0, second=0, microsecond=0)
+
     if period == "today":
         start = today
-        end = today.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return start, end
-    
-    
+        end = today + timedelta(days=1) - timedelta(microseconds=1)
+        return _to_utc_naive(start), _to_utc_naive(end)
+
     if period == "thisWeek":
-        start = today - timedelta(days=today.weekday())  
-        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
-        return start, end
-    
-    
+        start = today - timedelta(days=today.weekday())  # Monday
+        end = start + timedelta(days=7) - timedelta(microseconds=1)
+        return _to_utc_naive(start), _to_utc_naive(end)
+
     if period == "thisMonth":
         start = today.replace(day=1)
-        if today.month == 12:
-            end = datetime(today.year + 1, 1, 1) - timedelta(microseconds=1)
-        else:
-            end = datetime(today.year, today.month + 1, 1) - timedelta(microseconds=1)
-        return start, end
-    
-    
+        end = (start + timedelta(days=32)).replace(day=1) - timedelta(microseconds=1)
+        return _to_utc_naive(start), _to_utc_naive(end)
+
     if period == "previous7":
-        end = today - timedelta(days=1)  
-        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
-        start = end - timedelta(days=6)  
-        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start, end
-    
-    
+        end = today - timedelta(microseconds=1)  # yesterday 23:59:59.999999
+        start = (end - timedelta(days=6)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return _to_utc_naive(start), _to_utc_naive(end)
+
     if period == "previousWeek":
         last_week = today - timedelta(weeks=1)
-        start = last_week - timedelta(days=last_week.weekday())  
-        end = start + timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999)
-        return start, end
-    
-    
+        start = last_week - timedelta(days=last_week.weekday())
+        end = start + timedelta(days=7) - timedelta(microseconds=1)
+        return _to_utc_naive(start), _to_utc_naive(end)
+
     if period == "previousMonth":
-        year = today.year
-        month = today.month - 1
-        if month == 0:
-            month = 12
-            year -= 1
-        
-        start = datetime(year, month, 1)
-        if month == 12:
-            end = datetime(year + 1, 1, 1) - timedelta(microseconds=1)
-        else:
-            end = datetime(year, month + 1, 1) - timedelta(microseconds=1)
-        return start, end
-    
+        first_of_this_month = today.replace(day=1)
+        start = (first_of_this_month - timedelta(days=1)).replace(day=1)
+        end = first_of_this_month - timedelta(microseconds=1)
+        return _to_utc_naive(start), _to_utc_naive(end)
+
     raise ValueError(f"Invalid period '{period}'")
 
 
@@ -14414,19 +14447,24 @@ EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
 
 def parse_custom_period(start_date, end_date):
     """
-    Build (start, end) datetimes for a custom range used by dashboard stats:
-    - start -> 00:00:00 of start_date
-    - end   -> 23:59:59.999999 of end_date
+    Build (start, end) datetimes for a custom range used by dashboard stats.
+    The dates are interpreted on the Africa/Johannesburg calendar:
+    - start -> 00:00:00 SAST of start_date
+    - end   -> 23:59:59.999999 SAST of end_date
+    Returned as naive UTC datetimes (how Mongo stores task timestamps).
     Falls back to today's range on any parse error.
     """
+    tz = pytz.timezone("Africa/Johannesburg")
     try:
         start = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
         end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
     except (ValueError, AttributeError, TypeError):
         return get_period_range("today")
+    start = tz.localize(start) if start.tzinfo is None else start.astimezone(tz)
+    end = tz.localize(end) if end.tzinfo is None else end.astimezone(tz)
     start = start.replace(hour=0, minute=0, second=0, microsecond=0)
     end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
-    return start, end
+    return _to_utc_naive(start), _to_utc_naive(end)
 
 
 def build_dashboard_task_match(status, task_type, consolidation_only):
@@ -14481,8 +14519,8 @@ async def get_dashboard_comprehensive(
             start, end = parse_custom_period(start_date, end_date)
         else:
             start, end = get_period_range(period)
-        start_date_str = start.date().isoformat()
-        end_date_str = end.date().isoformat()
+        start_date_str = _sast_date_str(start)
+        end_date_str = _sast_date_str(end)
 
         # Task types filtered by organization
         task_types_cursor = tasktypes_collection.find(org_filter, {"name": 1})
@@ -14590,18 +14628,118 @@ async def get_dashboard_comprehensive(
         # Task filter applied after computed fields (status / task type / overdue / consolidation)
         dashboard_task_match = build_dashboard_task_match(status, task_type, consolidation_only)
 
+        def _task_str_expr(field):
+            """Trimmed string field, or "" when missing / not a string."""
+            return {
+                "$cond": [
+                    {"$eq": [{"$type": field}, "string"]},
+                    {"$trim": {"input": field}},
+                    "",
+                ]
+            }
+
+        def _task_lower_expr(field):
+            """Lowercased + trimmed string field, or "" when missing."""
+            return {
+                "$cond": [
+                    {"$eq": [{"$type": field}, "string"]},
+                    {"$toLower": {"$trim": {"input": field}}},
+                    "",
+                ]
+            }
+
+        # Owner of a task — mirrors the Daily Tasks page, which shows a task to
+        # the user when any of assignedfor / assigned_to_email / leader_assigned
+        # is their email. The first email-like value wins; if none of the three
+        # is an email (consolidation tasks store a leader's *name*), the first
+        # non-empty value is kept so name-only tasks still group as before.
+        owner_expression = {
+            "$let": {
+                "vars": {
+                    "af_low": _task_lower_expr("$assignedfor"),
+                    "ate_low": _task_lower_expr("$assigned_to_email"),
+                    "la_low": _task_lower_expr("$leader_assigned"),
+                    "af_raw": _task_str_expr("$assignedfor"),
+                    "ate_raw": _task_str_expr("$assigned_to_email"),
+                    "la_raw": _task_str_expr("$leader_assigned"),
+                },
+                "in": {
+                    "$switch": {
+                        "branches": [
+                            {"case": {"$gte": [{"$indexOfBytes": ["$$af_low", "@"]}, 0]}, "then": "$$af_low"},
+                            {"case": {"$gte": [{"$indexOfBytes": ["$$ate_low", "@"]}, 0]}, "then": "$$ate_low"},
+                            {"case": {"$gte": [{"$indexOfBytes": ["$$la_low", "@"]}, 0]}, "then": "$$la_low"},
+                            {"case": {"$ne": ["$$af_raw", ""]}, "then": "$$af_raw"},
+                            {"case": {"$ne": ["$$ate_raw", ""]}, "then": "$$ate_raw"},
+                        ],
+                        "default": "$$la_raw",
+                    }
+                },
+            }
+        }
+
+        # Tasks scope: the same org scope the Daily Tasks page sees — the user's
+        # org plus legacy tasks written without an Organization field (e.g.
+        # consolidation tasks created before Organization was tracked).
+        if is_super_admin:
+            task_org_match = {}
+        else:
+            task_org_match = {
+                "$or": [
+                    {"Organization": org_name},
+                    {"Organization": {"$in": [None, ""]}},
+                    {"Organization": {"$exists": False}},
+                ]
+            }
+
+        # A task is "captured" in the period when any of its dates falls inside
+        # the window — identical to the client-side rule on Daily Tasks.
+        window_match = {
+            "$or": [
+                {"_followup_dt": {"$gte": start, "$lte": end}},
+                {"_completed_dt": {"$gte": start, "$lte": end}},
+                {"_created_dt": {"$gte": start, "$lte": end}},
+            ]
+        }
+        if task_org_match:
+            window_match = {"$and": [task_org_match, window_match]}
+
         # Tasks pipeline
         tasks_pipeline = [
             {
-                "$match": {
-                    **org_filter,
-                    "$or": [
-                        {"followup_date": {"$gte": start, "$lte": end}},
-                        {"completedAt": {"$gte": start, "$lte": end}},
-                        {"createdAt": {"$gte": start, "$lte": end}}
-                    ]
+                "$addFields": {
+                    # Task dates are stored inconsistently (native datetimes on
+                    # some write paths, ISO strings on others). Normalise them
+                    # to Date so string-dated tasks are counted in the period
+                    # window exactly as the browser parses them.
+                    "_followup_dt": {
+                        "$convert": {
+                            "input": "$followup_date",
+                            "to": "date",
+                            "onError": None,
+                            "onNull": None,
+                        }
+                    },
+                    "_completed_dt": {
+                        "$convert": {
+                            "input": {"$ifNull": ["$completedAt", "$completed_at"]},
+                            "to": "date",
+                            "onError": None,
+                            "onNull": None,
+                        }
+                    },
+                    "_created_dt": {
+                        "$convert": {
+                            "input": {"$ifNull": ["$createdAt", "$created_at"]},
+                            "to": "date",
+                            "onError": None,
+                            "onNull": None,
+                        }
+                    },
+                    "_owner": owner_expression,
                 }
             },
+            {"$match": window_match},
             {
                 "$addFields": {
                     "task_type_label": {"$ifNull": ["$taskType", "Uncategorized"]},
@@ -14647,9 +14785,9 @@ async def get_dashboard_comprehensive(
                         "$cond": [
                             {
                                 "$and": [
-                                    {"$ne": ["$completedAt", None]},
-                                    {"$gte": ["$completedAt", start]},
-                                    {"$lte": ["$completedAt", end]},
+                                    {"$ne": ["$_completed_dt", None]},
+                                    {"$gte": ["$_completed_dt", start]},
+                                    {"$lte": ["$_completed_dt", end]},
                                     {
                                         "$in": [
                                             {"$toLower": {"$ifNull": ["$status", "pending"]}},
@@ -14676,9 +14814,9 @@ async def get_dashboard_comprehensive(
                         "$cond": [
                             {
                                 "$and": [
-                                    {"$ne": ["$followup_date", None]},
-                                    {"$gte": ["$followup_date", start]},
-                                    {"$lte": ["$followup_date", end]}
+                                    {"$ne": ["$_followup_dt", None]},
+                                    {"$gte": ["$_followup_dt", start]},
+                                    {"$lte": ["$_followup_dt", end]}
                                 ]
                             },
                             True,
@@ -14689,8 +14827,8 @@ async def get_dashboard_comprehensive(
                         "$cond": [
                             {
                                 "$and": [
-                                    {"$ne": ["$followup_date", None]},
-                                    {"$lt": ["$followup_date", "$$NOW"]},
+                                    {"$ne": ["$_followup_dt", None]},
+                                    {"$lt": ["$_followup_dt", "$$NOW"]},
                                     {
                                         "$not": [
                                             {
@@ -14730,7 +14868,7 @@ async def get_dashboard_comprehensive(
             },
             {
                 "$group": {
-                    "_id": "$assignedfor",
+                    "_id": "$_owner",
                     "tasks": {
                         "$push": {
                             "_id": "$_id",
