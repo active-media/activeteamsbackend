@@ -423,7 +423,8 @@ async def service_checkin_person(
                         "phone": person_data.get("number", ""),
                         "is_checked_in": True,
                         "check_in_date": now_iso,
-                        "person_id": person_data.get("person_id")
+                        "person_id": person_data.get("person_id") or person_data.get("id"),
+                        "mongo_person_id": person_data.get("mongo_person_id"),
                     }
                 )
                 .execute()
