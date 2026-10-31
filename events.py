@@ -2977,6 +2977,7 @@ async def check_person_in(
         person_id = body.get("person_id", "") or body.get("id", "")
         checked_in = body.get("checked_in", False)
         event_type = body.get("event_type", "Cells")
+        session_id = body.get("session_id", "")
 
         event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
         # Route to the correct table based on event type
@@ -2995,11 +2996,11 @@ async def check_person_in(
         if not event_id or not person_id:
             raise HTTPException(status_code=400, detail="event_id and person_id are required")
         
-        # First, check if an attendee record exists for this person and event
+        # First, check if an attendee record exists for this person and session
         existing = (
             supabase.table(table)
             .select("is_checked_in")
-            .eq("event_id", event_id)
+            .eq("session_id", session_id)
             .eq("person_id", person_id)
             .execute()
         )
@@ -3008,7 +3009,7 @@ async def check_person_in(
             # Update existing record
             supabase.table(table).update({
                 "is_checked_in": checked_in
-            }).eq("event_id", event_id).eq("person_id", person_id).execute()
+            }).eq("session_id", session_id).eq("person_id", person_id).execute()
         else:
             # Create new attendee record
             attendee_data = {
@@ -3021,6 +3022,7 @@ async def check_person_in(
                 "is_checked_in": checked_in,
                 "phone": body.get("phone", ""),
                 "check_in_date": datetime.utcnow().strftime("%Y-%m-%d")
+                # "decisio"
             }
 
             print("inserting new attendee", attendee_data)
@@ -3068,6 +3070,7 @@ async def create_consolidation(
             if dup.data:
                 raise HTTPException(
                     status_code=400,
+                    detail=f"Duplicate consolidation: Person {person_id} already has a consolidation for session {session_id}"
                 )
 
 
@@ -3080,6 +3083,7 @@ async def create_consolidation(
         if not person_data.data:
             raise HTTPException(status_code=404, detail=f"Error creating consolidation: Person not found")
         person = person_data.data[0]
+        print("person------>>>>>>>>>>", person)
 
         def normalize_leader_path(person: dict) -> str | None:
             # 1. Safely retrieve the leader path using your fallback chain
@@ -3092,27 +3096,28 @@ async def create_consolidation(
 
             if raw_path is None:
                 return None
-
+            value = raw_path
             # 2. Handle MongoDB $oid dictionary structure
-            if isinstance(raw_path, dict) and "$oid" in raw_path:
-                normalized = str(raw_path["$oid"])
-            else:
-                # Handle regular strings, numbers, or other types
-                normalized = str(raw_path).strip()
-
-            # 3. Optional: Add any extra validation (e.g., check if it's a valid 24-char hex string)
-            if len(normalized) == 24:
-                return normalized
-
-            return normalized if normalized else None
+            # Already a dict
+            if isinstance(value, dict):
+                value = value.get("$oid")
+        
+            if not isinstance(value, str):
+                return None
+        
+            # Works for a plain id or a JSON-looking string containing one
+            match = re.search(r"\b[0-9a-fA-F]{24}\b", value)
+            return match.group(0) if match else None
 
         direct_leader_path = normalize_leader_path(person)
 
         leader_details = {}
         print("has leader path", direct_leader_path)
         if not direct_leader_path:
-            leader_details["email"] = consolidation.event_leader_email,
+            #assign to event leader if no direct leader found
+            leader_details["email"] = consolidation.event_leader_email
             leader_details["full_name"] = consolidation.event_leader_name
+            leader_details["person_id"] = current_user.get("person_id")
         else:
             direct_leader = None
             def is_valid_uuid(val: str, version: int = 4) -> bool:
@@ -3145,15 +3150,19 @@ async def create_consolidation(
                     # Safely grab the first item if data exists
                     if response.data:
                         direct_leader = response.data[0]
+                        leader_details["email"] = direct_leader.get("Email")
+                        leader_details["full_name"] = f"{direct_leader.get('Name', '')} {direct_leader.get('Surname', '')}"
+                        leader_details["person_id"] = direct_leader.get("person_id")
                     else:
                         leader_details["email"] = consolidation.event_leader_email,
                         leader_details["full_name"] = consolidation.event_leader_name
+                        leader_details["person_id"] = current_user.get("person_id"),
                 except Exception as e:
                     print(f"Error querying direct leader: {e}")
-
-            direct_leader_fullname = f'{direct_leader.get("Name") if direct_leader else None} {direct_leader.get("Surname") if direct_leader else None}'
-            leader_details["email"] = direct_leader.get("Email") if direct_leader else None
-            leader_details["full_name"] = direct_leader_fullname
+            else:
+                leader_details["email"] = consolidation.event_leader_email,
+                leader_details["full_name"] = consolidation.event_leader_name
+                leader_details["person_id"] = current_user.get("person_id"),
 
 
         decision_type = "First Time" if consolidation.decision_type == "first_time" else "Recommitment"
@@ -3205,11 +3214,11 @@ async def create_consolidation(
             "taskType": consolidation.task_type,
             "description": description,
             "status": "open",
-            "assignedfor": direct_leader_fullname,
-            "assigned_to_email": direct_leader.get("Email") if direct_leader else None,
-            "assigned_to_user_id": direct_leader.get("_id") if direct_leader else None,
-            "leader_assigned": direct_leader_fullname,
-            "leader_name": direct_leader_fullname,
+            "assignedfor": leader_details["full_name"] if leader_details.get("full_name") else None,
+            "assigned_to_email": leader_details["email"] if leader_details.get("email") else None,
+            "assigned_to_user_id": leader_details["_id"] if leader_details.get("_id") else None,
+            "leader_assigned": leader_details["full_name"] if leader_details.get("full_name") else None,
+            "leader_name": leader_details["full_name"] if leader_details.get("full_name") else None,
             "type":consolidation.task_type,
             "priority":"high",
             "consolidation_id": consolidation_id,
@@ -3248,15 +3257,14 @@ async def create_consolidation(
                 ).eq("session_id", session_id).execute()
 
         return {
-            "message": f"{consolidation.person_name} {consolidation.person_surname} recorded successfully and assigned to {direct_leader_fullname}",
+            "message": f"{consolidation.person_name} {consolidation.person_surname} recorded successfully and assigned to {leader_details.get('full_name') if leader_details.get('full_name') else None}",
             "consolidation_id": consolidation_id,
             "person_id": person.get("_id"),
             "task_id": new_task.data[0]['_id'],
             "decision_type": consolidation.decision_type.value,
-            "assigned_to": direct_leader_fullname,
-            "assigned_to_email": direct_leader.get("Email") if direct_leader else None,
-            "leader_user_id": direct_leader.get("_id") if direct_leader else None,
-            # "people_count_updated": total_people_count,
+            "assigned_to": leader_details.get("full_name") if leader_details.get("full_name") else None,
+            "assigned_to_email": leader_details.get("email") if leader_details.get("email") else None,
+            "leader_user_id": leader_details.get("_id") if leader_details.get("_id") else None,
             "success": True
         }
 
@@ -4236,23 +4244,20 @@ async def submit_attendance(
                 table = "event_small_gatherings"
         print(f"submit_attendance: event_type={submission.event_type!r} → table={table}")
 
-        # #inserting attendees:
-        # for attendee in submission.attendees:
-        #     session_attendee = {
-        #         "session_id": submission.session_id,
-        #         "event_id": submission.event_id,
-        #         "event_name": submission.event_name,
-        #         "full_name": attendee.fullName,
-        #         "email": attendee.email,
-        #         "phone": attendee.phone,
-        #         "is_checked_in": attendee.checked_in,
-        #         "check_in_date": today_str,
-        #         "decision": attendee.decision,
-        #         "person_id": attendee.id
-        #     }
-        #     print(f"INSERTING ATTENDEE: {session_attendee}")
-        #     new = supabase.table(table).insert(session_attendee).execute().data
-        #     print("data", new)
+        
+        for attendee in submission.attendees:
+            if attendee.decision:
+                # Check if attendee already exists in the table for this session
+                existing_attendee = supabase.table(table).select("*").eq("session_id", submission.session_id).eq("person_id", attendee.id).execute().data
+                if existing_attendee:
+                    #updating attendee with new decision if it exists
+                    update_data = {
+                        "decision": attendee.decision,
+                    }
+                    supabase.table(table).update(update_data).eq("session_id", submission.session_id).eq("person_id", attendee.id).execute()
+                else:
+                    continue
+            
 
 
 
