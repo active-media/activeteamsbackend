@@ -3677,13 +3677,14 @@ def sanitize_document(doc):
                     v[i] = None
     return doc
 
-@router.get("/events/{event_id}")
-async def get_event_by_id(event_id: str = Path(...)):
+@router.get("/events/{event_id}/{session_id}")
+async def get_event_by_id(event_id: str = Path(...), session_id: str = Path(...)):
     try:
         if not event_id:
             raise HTTPException(status_code=400, detail="Event ID is required")
 
         event = supabase.table("events").select("*").eq("event_id", event_id).execute().data[0]
+        session = supabase.table("event_sessions").select("*").eq("session_id", session_id).execute().data[0]   
 
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
@@ -3704,7 +3705,7 @@ async def get_event_by_id(event_id: str = Path(...)):
         event_normalized = {
             "eventName": event.get("event_name", ""),
             "email": event.get("email", ""),
-            "date": event.get("event_date", ""),
+            "date": session.get("session_date", ""),
             "time": event.get("time", ""),
             "timePeriod": "AM",
             "recurringDays": event.get("recurring_day", []).join(", ") if isinstance(event.get("recurring_day"), list) else event.get("recurring_day", ""),
