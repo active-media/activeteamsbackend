@@ -240,7 +240,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
             leader12 = ""
             leader12email= ''
             if len(leader12Query) > 0:
-                leader12 = f"{leader12Query[0].get("Name")} {leader12Query[0].get("Surname")}"
+                leader12 = f"{leader12Query[0].get('Name')} {leader12Query[0].get('Surname')}"
                 leader12email = leader12Query[0].get("Email")
 
             leaders = {
@@ -731,7 +731,7 @@ async def update_event_table():
         person = supabase.rpc("get_cell_leader",{"p_email":event.get("event_leader_email"),"p_fullname":event.get("event_leader")}).execute().data
         if len(person) > 0:
             leader = person[0]
-            leader_fullname = f"{leader.get("Name")} {leader.get("Surname")}" 
+            leader_fullname = f"{leader.get('Name')} {leader.get('Surname')}" 
             if leader.get("LeaderPath[0]") == "692d97e550555e9dfdccea4e":
                 leader1 = "Gavin Enslin"
             elif leader.get("LeaderPath[0]") == "692d97ec50555e9dfdccecee":
@@ -741,7 +741,7 @@ async def update_event_table():
             leader12 = ""
             leader12email= ''
             if len(leader12Query) > 0:
-                leader12 = f"{leader12Query[0].get("Name")} {leader12Query[0].get("Surname")}"
+                leader12 = f"{leader12Query[0].get('Name')} {leader12Query[0].get('Surname')}"
                 leader12email = leader12Query[0].get("Email")
             leaders = {
                 "leader_at_1": leader1,
