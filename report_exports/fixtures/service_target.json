@@ -1,0 +1,265 @@
+{
+ "services": [
+  "Friday",
+  "Sunday"
+ ],
+ "groups": [
+  [
+   {
+    "name": "Esdras",
+    "targets": {
+     "Friday": 10.0,
+     "Sunday": 10.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Gloire",
+    "targets": {
+     "Friday": 20.0,
+     "Sunday": 20.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "John S",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Kenny",
+    "targets": {
+     "Friday": 35.0,
+     "Sunday": 35.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Nash",
+    "targets": {
+     "Friday": 50.0,
+     "Sunday": 50.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Ryan",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Shane",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Thabo",
+    "targets": {
+     "Friday": 30.0,
+     "Sunday": 30.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Vusi",
+    "targets": {
+     "Friday": 8.0,
+     "Sunday": 12.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Yannis",
+    "targets": {
+     "Friday": 5.0,
+     "Sunday": 5.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   }
+  ],
+  [
+   {
+    "name": "Aiden",
+    "targets": {
+     "Friday": 5.0,
+     "Sunday": 3.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Austin",
+    "targets": {
+     "Friday": 7.0,
+     "Sunday": 7.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Ben",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Blessing",
+    "targets": {
+     "Friday": 10.0,
+     "Sunday": 10.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Chibuzor",
+    "targets": {
+     "Friday": 5.0,
+     "Sunday": 5.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "David",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Jaiden",
+    "targets": {
+     "Friday": 8.0,
+     "Sunday": 8.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Jeffrey",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Karabo",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Musa",
+    "targets": {
+     "Friday": null,
+     "Sunday": null
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Nhlakanipho",
+    "targets": {
+     "Friday": 5.0,
+     "Sunday": 5.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Sinako",
+    "targets": {
+     "Friday": 10.0,
+     "Sunday": 10.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   },
+   {
+    "name": "Tegra",
+    "targets": {
+     "Friday": 7.0,
+     "Sunday": 7.0
+    },
+    "actuals": {
+     "Friday": null,
+     "Sunday": null
+    }
+   }
+  ]
+ ]
+}

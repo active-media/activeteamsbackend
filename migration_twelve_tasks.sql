@@ -19,6 +19,9 @@ CREATE INDEX IF NOT EXISTS twelve_tasks_tracked_people_leader_active_idx
 CREATE TABLE IF NOT EXISTS public.twelve_tasks_targets (
     person_id text PRIMARY KEY,
     target integer NOT NULL,
+    week_identifier text,
+    organization text NOT NULL DEFAULT 'Active Church',
+    is_default boolean NOT NULL DEFAULT false,
     updated_at timestamptz NOT NULL DEFAULT now(),
     updated_by text
 );

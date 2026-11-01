@@ -210,7 +210,11 @@ def leader_payload(
             "cells": len(lcells), "meetings": len(held), "attendance": total,
             "average": round(total / len(held), 1) if held else None,
         })
-    leader_rows.sort(key=lambda r: (-r["attendance"], r["leader"].casefold()))
+    leader_rows.sort(key=lambda r: (
+    0 if r["leader"] in ("Gavin Enslin", "Vicky Enslin") else 1,
+    -r["attendance"],
+    r["leader"].casefold()
+))
 
     return {
         "meta": {
