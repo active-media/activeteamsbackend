@@ -2155,6 +2155,7 @@ async def backfill_event_leaders(current_user: dict = Depends(get_current_user))
 #     status: Optional[str] = Query(None),
 #     search: Optional[str] = Query(None),
 #     event_type: Optional[str] = Query(None),
+
 #     personal: Optional[bool] = Query(False),
 #     start_date: Optional[str] = Query(None),
 #     leader_at_12_view: Optional[bool] = Query(None),
