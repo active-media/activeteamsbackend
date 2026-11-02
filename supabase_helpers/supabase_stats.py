@@ -64,8 +64,29 @@ _CELL_TYPE_VALUES = ["Cells", "cells", "CELLS"]
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _period_range(period: str) -> tuple[datetime, datetime]:
+def _period_range(
+    period: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> tuple[datetime, datetime]:
     """Return (start, end) UTC-aware datetimes for the requested period."""
+    if period == "custom":
+        if not start_date or not end_date:
+            raise ValueError("start_date and end_date are required for a custom range")
+        try:
+            start = datetime.fromisoformat(str(start_date)[:10]).replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc
+            )
+            end = datetime.fromisoformat(str(end_date)[:10]).replace(
+                hour=23, minute=59, second=59, microsecond=999_999,
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            raise ValueError("Custom range dates must use YYYY-MM-DD") from None
+        if end < start:
+            raise ValueError("end_date must be on or after start_date")
+        return start, end
+
     if len(period) == 7 and period[4] == "-":
         try:
             year, month = (int(part) for part in period.split("-"))
@@ -1141,6 +1162,8 @@ def sb_get_dashboard_comprehensive(
     period: str = "today",
     limit: int = 100,
     org_filter: Optional[dict] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> dict:
     """
     Supabase replacement for GET /stats/dashboard-comprehensive.
@@ -1149,9 +1172,9 @@ def sb_get_dashboard_comprehensive(
     assignedfor.  Here we fetch all Tasks touching the period in one query
     and do the grouping in Python — same output shape, no pipeline needed.
     """
-    start, end = _period_range(period)
+    start, end = _period_range(period, start_date, end_date)
     start_iso, end_iso = _iso(start), _iso(end)
-    end_date = datetime.now().strftime("%Y-%m-%d")
+    overdue_end_date = datetime.now().strftime("%Y-%m-%d")
 
     # ── Overdue cells ─────────────────────────────────────────────────────────
    
@@ -1159,7 +1182,7 @@ def sb_get_dashboard_comprehensive(
     supabase.rpc(
         "get_overdue_sessions",
         {
-            "p_end_iso": end_date,
+            "p_end_iso": overdue_end_date,
             "p_cell_types": _CELL_TYPE_VALUES
         }
     )
