@@ -13579,4 +13579,331 @@ async def preview_spreadsheet_columns(
         "column_mapping": column_mapping,
         "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
         "sample_rows":    sample,
+    } 
+# target routes placeholder
+# ===================== TARGET SETTING ENDPOINTS =====================
+
+def _build_target_org_filter(current_user: dict) -> None:
+    """
+    Returns org filter dict for target endpoints, or None for super_admins.
+    """
+    is_super = current_user.get('is_supreme_admin') or current_user.get('role') == 'super_admin'
+    if is_super:
+        return None
+    org = current_user.get('Organization') or current_user.get('organization')
+    if not org:
+        return None
+    return {'Organization': org}
+
+@app.post('/targets/service', response_model=dict)
+async def set_service_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Set a service target for a leader or person for a specific week.
+    """
+    try:
+        leader_name = payload.get('leader_name')
+        person_id = payload.get('person_id')
+        target_count = payload.get('target_count', 0)
+        email = payload.get('email', current_user.get('email', ''))
+        week_identifier = payload.get('week_identifier')
+        target_type = payload.get('target_type', 'service')
+        if not target_count or not week_identifier:
+            raise HTTPException(status_code=400, detail='target_count and week_identifier are required')
+        org_filter = _build_target_org_filter(current_user)
+        if not (org_filter or {}).get('Organization'):
+            org_name = payload.get('organization') or current_user.get('Organization')
+            org_filter = {'Organization': org_name} if org_name else None
+        result = sb_upsert_service_target(
+            leader_name=leader_name,
+            target_count=target_count,
+            email=email,
+            org_filter=org_filter,
+            week_identifier=week_identifier,
+            person_id=person_id,
+            target_type=target_type,
+        )
+        return {
+            'status': 'success',
+            'target': result,
+            'message': f'Service target set for {week_identifier}',
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Error setting service target: {str(e)}')
+
+@app.post('/targets/twelve-tasks', response_model=dict)
+async def set_twelve_tasks_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Set a Twelve Tasks target for a specific person for a specific week.
+    """
+    try:
+        person_id = payload.get('person_id')
+        target = payload.get('target')
+        week_identifier = payload.get('week_identifier')
+        organization = payload.get('organization') or current_user.get('Organization') or current_user.get('organization')
+        if not person_id or not target or not week_identifier:
+            raise HTTPException(status_code=400, detail='person_id, target, and week_identifier are required')
+        org_filter = _build_target_org_filter(current_user)
+        data = {
+            'person_id': person_id,
+            'target': target,
+            'week_identifier': week_identifier,
+            'organization': organization or 'Active Church',
+            'is_default': False,
+            'updated_by': current_user.get('email', '').lower(),
+        }
+        try:
+            result = (
+                supabase.table('twelve_tasks_targets')
+                .upsert(data, on_conflict=['person_id', 'week_identifier', 'organization'])
+                .execute())
+            target_record = result.data[0] if result.data else None
+        except Exception:
+            target_record = None
+        if not target_record:
+            try:
+                result = supabase.table('twelve_tasks_targets').insert(data).execute()
+                target_record = result.data[0] if result.data else None
+            except Exception:
+                target_record = None
+        return {
+            'status': 'success',
+            'target': target_record,
+            'message': f'Twelve Tasks target set for {week_identifier}',
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Error setting Twelve Tasks target: {str(e)}')
+
+@app.get('/targets/service', response_model=dict)
+async def get_service_targets(
+    week: Optional[str] = Query(None),
+    org: Optional[str] = Query(None),
+    person_id: Optional[str] = Query(None),
+    target_type: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    List service targets, optionally filtered by week, person, or type.
+    """
+    org_filter = None
+    if org:
+        org_filter = {'Organization': org}
+    elif current_user:
+        org_filter = _build_target_org_filter(current_user)
+    result = sb_list_service_targets(
+        week=week,
+        org_filter=org_filter,
+        person_id=person_id,
+        target_type=target_type,
+    )
+    return {
+        'status': 'success',
+        'targets': result,
     }
+
+@app.get('/targets/available-weeks', response_model=dict)
+async def get_available_weeks(
+    organization: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    from supabase_helpers.supabase_connection import supabase_admin
+    weeks = set()
+    for table in ("service_targets", "twelve_tasks_targets"):
+        q = supabase_admin.table(table).select("week_identifier")
+        if organization:
+            q = q.eq("organization", organization)
+        weeks.update(r["week_identifier"] for r in (q.execute().data or []) if r.get("week_identifier"))
+    return {"status": "success", "weeks": sorted(weeks, reverse=True)}    
+
+@app.get('/targets/twelve-tasks', response_model=dict)
+async def get_twelve_tasks_targets(
+    week: Optional[str] = Query(None),
+    person_id: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    List Twelve Tasks targets, optionally filtered by week or person.
+    """
+    org_filter = _build_target_org_filter(current_user)
+    query = supabase.table('twelve_tasks_targets').select('*')
+    if org_filter:
+        query = query.eq('organization', org_filter.get('Organization'))
+    if week:
+        query = query.eq('week_identifier', week)
+    if person_id:
+        query = query.eq('person_id', person_id)
+    result = query.execute()
+    targets = result.data or []
+    transformed = []
+    for row in targets:
+        transformed.append({
+            'person_id': row.get('person_id'),
+            'target': row.get('target'),
+            'week_identifier': row.get('week_identifier'),
+            'organization': row.get('organization'),
+            'is_default': row.get('is_default', False),
+            'updated_by': row.get('updated_by'),
+            'updated_at': row.get('updated_at'),
+        })
+    return {
+        'status': 'success',
+        'targets': transformed
+    }
+
+@app.post('/targets/default-twelve-tasks', response_model=dict)
+async def set_default_twelve_tasks_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Set a default Twelve Tasks target for the entire organisation.
+    """
+    try:
+        target = payload.get('target')
+        week_identifier = payload.get('week_identifier')
+        if not target or not week_identifier:
+            raise HTTPException(status_code=400, detail='target and week_identifier are required')
+        user_role = current_user.get('role', '').lower()
+        if user_role not in ['admin', 'supreme_admin']:
+            raise HTTPException(status_code=403, detail='Admin access required')
+        org_filter = _build_target_org_filter(current_user)
+        org_value = org_filter.get('Organization') if org_filter else None
+        data = {
+            'person_id': '',
+            'target': target,
+            'week_identifier': week_identifier,
+            'organization': org_value or current_user.get('Organization') or current_user.get('organization'),
+            'is_default': True,
+            'updated_by': current_user.get('email', '').lower(),
+        }
+        conflict_keys = ['week_identifier', 'organization']
+        try:
+            result = (
+                supabase.table('twelve_tasks_targets')
+                .upsert(data, on_conflict=conflict_keys)
+                .execute())
+            target_record = result.data[0] if result.data else None
+        except Exception:
+            target_record = None
+        if not target_record:
+            try:
+                result = supabase.table('twelve_tasks_targets').insert(data).execute()
+                target_record = result.data[0] if result.data else None
+            except Exception:
+                target_record = None
+        return {
+            'status': 'success',
+            'target': target_record,
+            'message': f'Default Twelve Tasks target set to {target} for {week_identifier}',
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Error setting default Twelve Tasks target: {str(e)}')
+
+@app.post('/targets/copy-last-week', response_model=dict)
+async def copy_last_week_targets(
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Copy last week targets forward to this week.
+    """
+    try:
+        user_role = current_user.get('role', 'lower').lower()
+        if user_role not in ['admin', 'supreme_admin']:
+            raise HTTPException(status_code=403, detail='Admin access required')
+        org_filter = _build_target_org_filter(current_user)
+        org_value = org_filter.get('Organization') if org_filter else None
+        from datetime import datetime, timedelta
+        today = datetime.utcnow()
+        last_monday = today - timedelta(days=today.weekday() + 7)
+        last_week_start = last_monday - timedelta(days=last_monday.weekday())
+        last_week_identifier = f'{last_week_start.year}-W{last_week_start.isocalendar()[1]:02d}'
+        last_week_twelve_tasks = (
+            supabase.table('twelve_tasks_targets')
+            .select('*')
+            .eq('organization', org_value)
+            .eq('is_default', False)
+            .execute())
+        service_targets_copied = 0
+        twelve_tasks_copied = 0
+        if last_week_twelve_tasks.data:
+            for row in last_week_twelve_tasks.data:
+                this_week_start = today - timedelta(days=today.weekday())
+                this_week_identifier = f'{this_week_start.year}-W{this_week_start.isocalendar()[1]:02d}'
+                existing = (
+                    supabase.table('service_targets')
+                    .select('*')
+                    .eq('person_id', row.get('person_id'))
+                    .eq('week_identifier', this_week_identifier)
+                    .eq('organization', org_value)
+                    .execute())
+                if not existing.data:
+                    copy_data = {
+                        'leader_name': row.get('leader_name') or '',
+                        'target_count': row.get('target_count'),
+                        'email': row.get('email'),
+                        'organization': org_value,
+                        'week_identifier': this_week_identifier,
+                        'target_type': row.get('target_type', 'service'),
+                        'friday_target': row.get('friday_target', 0),
+                        'sunday_target': row.get('sunday_target', 0),
+                        'friday_actual': row.get('friday_actual', 0),
+                        'sunday_actual': row.get('sunday_actual', 0),
+                        'created_at': datetime.utcnow().isoformat(),
+                        'updated_at': datetime.utcnow().isoformat(),
+                    }
+                    try:
+                        supabase.table('service_targets').insert(copy_data).execute()
+                        service_targets_copied += 1
+                    except Exception:
+                        pass
+        if last_week_twelve_tasks.data:
+            for row in last_week_twelve_tasks.data:
+                this_week_start = today - timedelta(days=today.weekday())
+                this_week_identifier = f'{this_week_start.year}-W{this_week_start.isocalendar()[1]:02d}'
+                existing = (
+                    supabase.table('twelve_tasks_targets')
+                    .select('*')
+                    .eq('person_id', row.get('person_id'))
+                    .eq('week_identifier', this_week_identifier)
+                    .eq('organization', org_value)
+                    .execute())
+                if not existing.data:
+                    copy_data = {
+                        'person_id': row.get('person_id'),
+                        'target': row.get('target'),
+                        'week_identifier': this_week_identifier,
+                        'organization': org_value,
+                        'is_default': False,
+                        'updated_by': current_user.get('email', '').lower(),
+                        'updated_at': datetime.utcnow().isoformat(),
+                    }
+                    try:
+                        supabase.table('twelve_tasks_targets').upsert(
+                            copy_data, on_conflict=['person_id', 'week_identifier', 'organization']
+                        ).execute()
+                        twelve_tasks_copied += 1
+                    except Exception:
+                        pass
+        return {
+            'status': 'success',
+            'service_targets_copied': service_targets_copied,
+            'twelve_tasks_copied': twelve_tasks_copied,
+            'message': f'Copied targets from {last_week_identifier} to this week'
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Error copying last week targets: {str(e)}')
+
+SUPREME_ADMIN_EMAIL = 'tkgenia1234@gmail.com'

@@ -117,7 +117,7 @@ def dashboard_envelope(
                     {"key": "name", "label": "Cell"},
                     {"key": "leader", "label": "Leader"},
                     {"key": "attendance", "label": "Attendance", "format": "number"},
-                    {"key": "location", "label": "Campus"},
+                    {"key": "location", "label": "Area"},
                 ],
                 "rows": [
                     {
@@ -140,7 +140,7 @@ def dashboard_envelope(
             },
             {
                 "key": "campus_comparison",
-                "title": "Campus Comparison",
+                "title": "Area Comparison",
                 "type": "bar",
                 "points": [
                     {
@@ -193,6 +193,7 @@ def twelve_tasks_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
             "title": "Twelve Tasks",
             "columns": [
                 {"key": "name", "label": "Name"},
+                {"key": "gender", "label": "Gender"},
                 {"key": "last_week", "label": "Last Week", "format": "number"},
                 {"key": "target", "label": "Target", "format": "number"},
                 {"key": "this_week", "label": "This Week", "format": "number"},
@@ -208,6 +209,7 @@ def school_cell_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
     leaders = data.get("leaders") or []
     captured = sum(_number(row.get("total_captured")) or 0 for row in leaders)
     return ReportEnvelope.model_validate({
+        "meta": _meta("school_cell", "School Cell", period, None),
         "kpis": [
             {"key": "captured", "label": "Cells Captured", "value": captured, "format": "number"},
             {"key": "leaders", "label": "Leaders", "value": len(leaders), "format": "number"},
@@ -222,13 +224,11 @@ def school_cell_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
                     {"key": "cell_count", "label": "Cells", "format": "number"},
                     {"key": "attendance", "label": "Attendance", "format": "number"},
                 ],
-                "rows": [
-                    _clean_row(row)
-                    for row in weekly
-                ],
+                "rows": [_clean_row(row) for row in weekly],
             },
             {
                 "key": "leaders",
+                "title": "Leaders",
                 "columns": [
                     {"key": "name", "label": "Leader"},
                     {"key": "total_captured", "label": "Captured", "format": "number"},
@@ -269,11 +269,28 @@ def service_target_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelop
     })
 
 
-def cells_graph_envelope(data: dict, period: ResolvedPeriod, campus: str | None = None) -> ReportEnvelope:
+def cells_graph_envelope(data: dict, period: ResolvedPeriod, campus: str | None = None, visible_leader_ids: set | None = None) -> ReportEnvelope:
     result = dashboard_envelope(data, period, campus)
     result.meta.report_type = "cells_graph"
     result.meta.title = "Cells Graph"
     result.kpis = result.kpis[:2]
     result.tables = [table for table in result.tables if table.key == "cells"]
-    result.series = [series for series in result.series if series.key in {"attendance_trend", "active_cells_trend"}]
+    # Hide the trend chart for Gavin Enslin (men) and Vicky Enslin (women)
+    if visible_leader_ids:
+        excluded = {name.strip().casefold() for name in ("Gavin Enslin", "Vicky Enslin") if name.strip().casefold() in {lid.casefold() for lid in visible_leader_ids}}
+        if excluded:
+            result.series = []
+        else:
+            result.series = [series for series in result.series if series.key in {"attendance_trend", "active_cells_trend"}]
+    else:
+        result.series = [series for series in result.series if series.key in {"attendance_trend", "active_cells_trend"}]
     return result
+
+def training_envelope(report_type: str, title: str, view: dict, period: ResolvedPeriod) -> ReportEnvelope:
+    """Life Class / School of Leaders / Plan 40 (view built by report_exports.training_exports.build_training_view)."""
+    return ReportEnvelope.model_validate({
+        "meta": _meta(report_type, title, period, None),
+        "kpis": view["kpis"],
+        "tables": [{**t, "rows": [_clean_row(r) for r in t["rows"]]} for t in view["tables"]],
+        "series": view["series"],
+    })

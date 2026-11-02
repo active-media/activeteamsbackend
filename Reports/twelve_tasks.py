@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -9,6 +10,8 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from supabase_helpers.supabase_connection import supabase_admin as supabase
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # NOTE / ASSUMPTION: this module assumes Tasks.assignedfor stores the
@@ -120,6 +123,22 @@ def sb_get_tracked_people(
 
     # Supabase SDK rule: never filter on joined-table columns with .eq()/.ilike();
     # fetch and filter Organization in Python instead.
+    # Join with People table to get gender
+    if rows:
+        person_ids = [str(r.get("person_id") or "") for r in rows if r.get("person_id")]
+        people_query = (
+            supabase.table("People")
+            .select("_id, Gender")
+            .in_("_id", person_ids)
+        )
+        people_result = people_query.execute().data or []
+        people_by_id = {str(p.get("_id")): p.get("Gender") or "" for p in people_result if p.get("_id")}
+        for row in rows:
+            pid = str(row.get("person_id") or "")
+            row["gender"] = people_by_id.get(pid, "")
+    else:
+        people_by_id = {}
+
     if org_filter:
         org_value = org_filter.get("Organization") or org_filter.get("organization")
         if org_value:
@@ -351,18 +370,22 @@ def sb_get_twelve_tasks_report(
         this_week_start, this_week_end = _period_range("thisWeek")
         last_week_start, last_week_end = _period_range("previousWeek")
 
-    roster = sb_get_tracked_people(
-        leader12_id=leader12_id,
-        org_filter=org_filter,
-        visible_leader_ids=visible_leader_ids,
-    )
-    person_ids = [r["person_id"] for r in roster]
-    targets = sb_get_targets(person_ids)
+    try:
+        roster = sb_get_tracked_people(
+            leader12_id=leader12_id,
+            org_filter=org_filter,
+            visible_leader_ids=visible_leader_ids,
+        )
+        person_ids = [r["person_id"] for r in roster]
+        targets = sb_get_targets(person_ids)
 
-    # Fetch once across the full span, then split in Python (cheaper than two round trips).
-    tasks = _fetch_completed_tasks(last_week_start, this_week_end, org_filter=org_filter)
-    last_week_counts = _count_completed_by_person(tasks, last_week_start, last_week_end)
-    this_week_counts = _count_completed_by_person(tasks, this_week_start, this_week_end)
+        # Fetch once across the full span, then split in Python (cheaper than two round trips).
+        tasks = _fetch_completed_tasks(last_week_start, this_week_end, org_filter=org_filter)
+        last_week_counts = _count_completed_by_person(tasks, last_week_start, last_week_end)
+        this_week_counts = _count_completed_by_person(tasks, this_week_start, this_week_end)
+    except Exception:
+        logger.exception("Unable to build twelve_tasks report data")
+        raise
 
     rows = []
     for person in roster:

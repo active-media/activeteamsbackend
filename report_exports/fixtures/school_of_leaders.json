@@ -1,0 +1,3582 @@
+{
+ "groups": [
+  {
+   "sheet_name": "Sheet1",
+   "show_leader144": false,
+   "cohorts": [
+    {
+     "label": "Destiny 1 & 2",
+     "attendees": [
+      {
+       "name": "Mislen Mbuyi",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Eunice Fagbohun",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Favour Lossala",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Keneiloe Mokhampanyane",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Favour Mpasi",
+       "leader12": "Esdras Muta",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Collins Mgboh",
+       "leader12": "Esdras Muta",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Phumelele Mkhwanazi",
+       "leader12": "Glenda Olgena",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Joel Nyamimba",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Lesedi Shasha",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Melody Sibliki",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Wandile Nyamimba",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mbogiseni Sibanda",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Ransom Ntambwe",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Stewart Chitopota",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Sinqobile Chitopota",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Siphosethu Chitopota",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Redeem Mukaya",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Ishmael Balayi",
+       "leader12": "Nash Bobo",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Annick Nkonko",
+       "leader12": "Esdras Muta",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Jaiden Bennett",
+       "leader12": "Nash Bobo",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Rahul Bennett",
+       "leader12": "Nash Bobo",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Shaun Ndlovu",
+       "leader12": "Nash Bobo",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Neo Mokhampayane",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Aaron Desmond",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Joshua van de Sandt",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Caleb van de Sandt",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Karabo Dinn",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Chris Paul",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Nathaniel van Aswegan",
+       "leader12": "Ryan van de Sandt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Miradi Lumbayi",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Casey Aote",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Thabo Simon",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Neo Sewelleh",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Tristan van Awegen",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Eben Harams",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Kemisetso Maubane",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Micheal Dickinson",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Jordan Ndaishimiye",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Ano Jingo",
+       "leader12": "Vusi Kweyiya",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Brian Vunganayi",
+       "leader12": "Vusi Kweyiya",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Pride Vumganayi",
+       "leader12": "Vusi Kweyiya",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Thabiso Pondoyi",
+       "leader12": "Vusi Kweyiya",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Ace Jingo",
+       "leader12": "Vusi Kweyiya",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Esdras Muta",
+       "leader12": "Gavin Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Lesedi Dinne",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Ryan Sewecha",
+       "leader12": "Esdras Muta",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      }
+     ]
+    },
+    {
+     "label": "Destiny 3 & 4",
+     "attendees": [
+      {
+       "name": "Unathi Mazibuko",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Thato Mohau",
+       "leader12": "Glenda Olgena",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Bonginkosi Mbatha",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Hilary Nyamimba",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Djenyfer Macheque",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Curtis Mbayi",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Blessing van der Walt",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Tiisetso Seleke",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Adriaan Harmse",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Alan Ndou",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nathan Mabunda",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Jemima Tshiama",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      }
+     ]
+    },
+    {
+     "label": "Destiny 5 & 6",
+     "attendees": [
+      {
+       "name": "Ben Mpasi",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Blessed Manana",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Chibuzor Obi",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Curtis Mbayi",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "David Jr Wembadio",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Jeffrey Shotsha",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "John Mukendi",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kai Lemba",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Keyton Nunes",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Samuel Mbaya",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Blessing Mbele",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Sinako Qobisa",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Jacques Coetzee",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "sheet_name": "YOML",
+   "show_leader144": true,
+   "cohorts": [
+    {
+     "label": "Destiny 1 & 2",
+     "attendees": [
+      {
+       "name": "Kamanga, Glodia",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Muyo, Jordy",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngoyi, Carmel",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Tshisuaka, Niclette",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Isoapango, Hadassa",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kiele, Lucia",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Madziwa, Denise Megan",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngwenya,Kimberly",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nunes, Britney",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Chadhebha, Owen",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Lekitlane, Khensani",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Lesol, Keabetswe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Lupenda, Musaja Joseph",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Modise Kegomoditswe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mofokeng, Simphiwe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nakeli, Keitumetse",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngoma, Ralph",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ntshangase, Ntombiningi",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ntombela, Paballo",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ramphere, Thato",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Tsoaela, Mandisa",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nyoka, Yannis",
+       "leader12": "Gavin Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Fortune, Joy",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kabuya, Morris",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mukendi, Daniella",
+       "leader12": "Kayla Enslin",
+       "leader144": "Tracy Bebel",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ntambwe, Divine",
+       "leader12": "Kayla Enslin",
+       "leader144": "Tracy Bebel",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Sibeko Anele",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Bhungane, Vusumzi",
+       "leader12": "Kenny Bebel",
+       "leader144": "Jeffrey Shotsha",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mbaya, Samuel",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Massamba, Rich",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Munduku, Parole",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Obi, Chibuzor",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Madlanga, Nhlakanipho",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mvula,Wilfred",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kahite, Ketia",
+       "leader12": "Sasha -Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kapila, Elvine",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kwangu,Elysabeth",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Malengi, Laurantine",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Moyo, Keisha",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mpoy, Kereena",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngonda, Gloria",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nkongolo, Elijah",
+       "leader12": "Shan van der Walt",
+       "leader144": "Karabo Ndebele",
+       "sessions": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Dladla, Sifiso",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nkongolo, Daniel",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nkongolo, Gabriel",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kabango, Jeremie",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mumbongo, Ozias",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Zauma, Chris",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      }
+     ]
+    },
+    {
+     "label": "Destiny 3 & 4",
+     "attendees": [
+      {
+       "name": "Kamanga, Glodia",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Muyo, Jordy",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngoyi, Carmel",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Tshisuaka, Niclette",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Isoapango, Hadassa",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kiele, Lucia",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Madziwa, Denise Megan",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Ngwenya,Kimberly",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Nunes, Britney",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Chadhebha, Owen",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Lekitlane, Khensani",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Lesol, Keabetswe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Lupenda, Musaja Joseph",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Modise Kegomoditswe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mofokeng, Simphiwe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nakeli, Keitumetse",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngoma, Ralph",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ntombela, Paballo",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ntshangase, Ntombiningi",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Tsoaela, Mandisa",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nyoka, Yannis",
+       "leader12": "Gavin Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Fortune, Joy",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kabuya, Morris",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mukendi, Daniella",
+       "leader12": "Kayla Enslin",
+       "leader144": "Tracy Bebel",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ntambwe, Divine",
+       "leader12": "Kayla Enslin",
+       "leader144": "Tracy Bebel",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Sibeko Anele",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Bhungane, Vusumzi",
+       "leader12": "Kenny Bebel",
+       "leader144": "Jeffrey Shotsha",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mbaya, Samuel",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Munduku, Parole",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Obi, Chibuzor",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Madlanga, Nhlakanipho",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mvula,Wilfred",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kahite, Ketia",
+       "leader12": "Sasha -Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kapila, Elvine",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Kwangu,Elysabeth",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Malengi, Laurantine",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Moyo, Keisha",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mpoy, Kereena",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Ngonda, Gloria",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nkongolo, Elijah",
+       "leader12": "Shan van der Walt",
+       "leader144": "Karabo Ndebele",
+       "sessions": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Dladla, Sifiso",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Nkongolo, Daniel",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Nkongolo, Gabriel",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true
+       ]
+      },
+      {
+       "name": "Kabango, Jeremie",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Mumbongo, Ozias",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "Blessing Mbele",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      },
+      {
+       "name": "Zauma, Chris",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+       ]
+      }
+     ]
+    },
+    {
+     "label": "Destiny 5 & 6",
+     "attendees": [
+      {
+       "name": "Kamanga, Glodia",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Muyo, Jordy",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Ngonda, Gloria",
+       "leader12": "Bernice van der Walt",
+       "leader144": "Keren Botombe",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Ngoyi, Carmel",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Tshisuaka, Niclette",
+       "leader12": "Bernice van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Isoapango, Hadassa",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kiele, Lucia",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nunes, Britney",
+       "leader12": "Cynthia Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Lekitlane, Khensani",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Lesol, Keabetswe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Lupenda, Musaja Joseph",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Modise Kegomoditswe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Mofokeng, Simphiwe",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nakeli, Keitumetse",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false
+       ]
+      },
+      {
+       "name": "Ngoma, Ralph",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Ntombela, Paballo",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Ntshangase, Ntombiningi",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Tsoaela, Mandisa",
+       "leader12": "Ebenezer Kiluba",
+       "leader144": "Adrian Floor",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nyoka, Yannis",
+       "leader12": "Gavin Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Fortune, Joy",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kabuya, Morris",
+       "leader12": "Gloire Tsina",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Mukendi, Daniella",
+       "leader12": "Kayla Enslin",
+       "leader144": "Tracy Bebel",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Ntambwe, Divine",
+       "leader12": "Kayla Enslin",
+       "leader144": "Tracy Bebel",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Sibeko, Anele",
+       "leader12": "Kayla Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Bhungane, Vusumzi",
+       "leader12": "Kenny Bebel",
+       "leader144": "Jeffrey Shotsha",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Mbaya, Samuel",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Munduku, Parole",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Obi, Chibuzor",
+       "leader12": "Kenny Bebel",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Madlanga, Nhlakanipho",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Mvula,Wilfred",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Zauma, Chris",
+       "leader12": "Nash Bobo",
+       "leader144": "Tegra Mungudi",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kahite, Ketia",
+       "leader12": "Sasha -Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kapila, Elvine",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kwangu,Elysabeth",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Malengi, Laurantine",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "Gia Katufu",
+       "sessions": [
+        true,
+        false,
+        true,
+        true,
+        false,
+        true,
+        false,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Moyo, Keisha",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Mpoy, Kereena",
+       "leader12": "Sasha-Lee Enslin",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nkongolo, Elijah",
+       "leader12": "Shan van der Walt",
+       "leader144": "Karabo Ndebele",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Dladla, Sifiso",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nkongolo, Daniel",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Nkongolo, Gabriel",
+       "leader12": "Shane van der Walt",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Kabango, Jeremie",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      },
+      {
+       "name": "Mumbongo, Ozias",
+       "leader12": "Thabo Tshabalala",
+       "leader144": "Blessing Mbele",
+       "sessions": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
