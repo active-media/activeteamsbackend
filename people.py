@@ -835,6 +835,7 @@ def get_person_leader_fields(person_id: Any) -> Optional[Dict[str, Any]]:
     to Supabase database query if not present in the cache.
     """
     if person_id is None:
+        print("get_person_leader_fields: person_id is None")
         return None
 
     if isinstance(person_id, dict):

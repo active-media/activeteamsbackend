@@ -76,6 +76,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from auth.utils import get_current_user
 from database import events_collection, people_collection, tasks_collection, db
 from supabase_helpers.supabase_connection import supabase  # synchronous Supabase client
+from people import get_person_leader_fields, get_person_leaders
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,7 @@ async def get_service_checkin_real_time_data(
         #     }
 
         # ── Fetch attendees ───────────────────────────────────────────────────
+        new_people = 0
         if is_recurring and instance_date:
             session_resp = (
                 supabase.table("event_sessions")
@@ -246,6 +248,7 @@ async def get_service_checkin_real_time_data(
             )
             if session_resp.data:
                 session_id = session_resp.data[0]["session_id"]
+                new_people  = session_resp.data[0].get("new_people_total", 0)
                 att_resp = (
                     supabase.table("event_session_attendees")
                     .select("*")
@@ -269,7 +272,6 @@ async def get_service_checkin_real_time_data(
         if is_recurring and instance_date:
             np_query = np_query.eq("session_date", instance_date)
         np_resp = np_query.execute()
-        new_people = np_resp.data or []
 
         # ── Fetch consolidations ─────────────────────────────────────────────
         cons_query = (
@@ -288,7 +290,7 @@ async def get_service_checkin_real_time_data(
             "event_name": event.get("event_name") or event.get("eventName", "Unknown Event"),
             "present_attendees": attendees,
             "new_people": new_people,
-            "consolidations": consolidations,
+            "consolidations": consolidations, 
             "present_count": len(attendees),
             "new_people_count": len(new_people),
             "consolidation_count": len(consolidations),
@@ -1734,7 +1736,7 @@ async def get_service_checkin_events(
                 .execute()
             )
             attendees = attendee_resp.data or []
-
+            
         new_people_resp = (
             supabase.table("event_new_people")
             .select("*")
@@ -1768,7 +1770,7 @@ async def get_service_checkin_events(
             "total_attendance": len(attendees),
             "present_attendees": attendees,
             "present_count": len(attendees),
-            "new_people_count": len(new_people),
+            "new_people_count": session.get("new_people_total", 0) if session else 0,
             "consolidation_count": len(consolidations),
         }
     

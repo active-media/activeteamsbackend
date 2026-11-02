@@ -134,7 +134,8 @@ async def get_profile(
     user = rows[0]
 
     # ── Resolve leader IDs → names ─────────────────────────────────────────
-    leaders = get_person_leader_fields(user.get("person_id"))
+
+    leaders = get_person_leader_fields(current_user.get("person_id"))
     print("LEADERS =====", leaders)
 
     leader_at_1 = leaders.get("Leader @1")
