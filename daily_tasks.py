@@ -268,16 +268,25 @@ async def create_task(
 
 # GET /tasks/my-special-tasks
 @router.get("/tasks/my-special-tasks")
-async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
+async def get_my_special_tasks(
+    page:          int           = Query(1, ge=1),
+    limit:         int           = Query(50, ge=1, le=500),
+    email:         Optional[str] = Query(None),
+    start_date:    Optional[str] = Query(None),
+    end_date:      Optional[str] = Query(None),
+    task_type:     Optional[str] = Query(None),
+    status:        Optional[str] = Query(None),
+    current_user:  dict          = Depends(get_current_user),
+):
     try:
         org_name   = _org_name_from_user(current_user)
-        user_email = current_user.get("email", "").strip().lower()
+        user_email = (email or current_user.get("email", "")).strip().lower()
         user_name  = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
         if not org_name:
             raise HTTPException(status_code=403, detail="No organization found")
 
-        result = (
+        query = (
             supabase.table("Tasks")
             .select("*")
             .eq('Organization', org_name)
@@ -293,12 +302,21 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
             .neq('consolidation_source', 'manual')
             .neq('source_display', 'Manual')
             .order("followup_date", desc=True)
-            .limit(200)
-            .execute()
         )
 
-        rows = result.data or []
-        print('ROWS:', rows)
+        # Optional date range filters
+        if start_date:
+            query = query.gte("followup_date", start_date)
+        if end_date:
+            query = query.lte("followup_date", f"{end_date}T23:59:59.999999")
+
+        # Optional task type / status filters (case-insensitive contains)
+        if task_type:
+            query = query.ilike("taskType", f"%{task_type}%")
+        if status:
+            query = query.ilike("status", f"%{status}%")
+
+        rows = (query.limit(5000).execute().data) or []
 
         def is_mine(row: dict) -> bool:
             return (
@@ -310,7 +328,19 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
             )
 
         tasks = [_format_task_row(r) for r in rows if is_mine(r)]
-        return {"tasks": tasks, "total": len(tasks), "status": "success"}
+        total = len(tasks)
+        start = (page - 1) * limit
+        page_tasks = tasks[start:start + limit]
+
+        return {
+            "tasks":       page_tasks,
+            "total":       total,
+            "total_tasks": total,
+            "has_more":    start + limit < total,
+            "page":        page,
+            "limit":       limit,
+            "status":      "success",
+        }
 
     except HTTPException:
         raise
@@ -326,9 +356,13 @@ async def get_user_tasks(
     assigned_to_email: Optional[str] = Query(None),
     assignedfor:       Optional[str] = Query(None),
     userId:            Optional[str] = Query(None),
-    start_date:       Optional[str] = Query(None),
-    end_date:         Optional[str] = Query(None),
+    start_date:        Optional[str] = Query(None),
+    end_date:          Optional[str] = Query(None),
+    task_type:         Optional[str] = Query(None),
+    status:            Optional[str] = Query(None),
     view_all:          bool          = Query(False),
+    page:              int           = Query(1, ge=1),
+    limit:             int           = Query(50, ge=1, le=500),
     current_user:      dict          = Depends(get_current_user),
 ):
     try:
@@ -374,14 +408,20 @@ async def get_user_tasks(
             ).isoformat()
             query = query.gte("followup_date", sixty_days_ago)
 
-        query = query.order("followup_date", desc=True).limit(500)
+        query = query.order("followup_date", desc=True)
 
         if is_super_admin and view_all:
             pass
         else:
             query = query.eq('Organization', org_name)
 
-        rows = (query.execute().data) or []
+        # Optional task type / status filters (case-insensitive contains)
+        if task_type:
+            query = query.ilike("taskType", f"%{task_type}%")
+        if status:
+            query = query.ilike("status", f"%{status}%")
+
+        rows = (query.limit(5000).execute().data) or []
 
         if not (is_super_admin and view_all) and not (is_leader and view_all):
             def owned(row: dict) -> bool:
@@ -405,10 +445,18 @@ async def get_user_tasks(
             reverse=True,
         )
 
+        total = len(tasks)
+        start = (page - 1) * limit
+        page_tasks = tasks[start:start + limit]
+
         return {
             "user_email":     "all_users" if (is_leader and view_all) else current_user.get("email"),
-            "total_tasks":    len(tasks),
-            "tasks":          tasks,
+            "total_tasks":    total,
+            "total":          total,
+            "has_more":       start + limit < total,
+            "page":           page,
+            "limit":          limit,
+            "tasks":          page_tasks,
             "status":         "success",
             "is_leader_view": is_leader and view_all,
             "Organization":   org_name,
