@@ -12655,6 +12655,9 @@ async def set_service_target(
     Set a service target for a leader or person for a specific week.
     """
     try:
+        user_role = current_user.get('role', '').lower()
+        if user_role not in ['admin', 'supreme_admin']:
+            raise HTTPException(status_code=403, detail='Admin access required')
         leader_name = payload.get('leader_name')
         person_id = payload.get('person_id')
         target_count = payload.get('target_count', 0)
@@ -12684,7 +12687,10 @@ async def set_service_target(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Error setting service target: {str(e)}')
+        logger.exception('Error setting service target')
+        status = getattr(e, 'status_code', None) or getattr(e, 'code', None) or 500
+        detail = getattr(e, 'message', None) or str(e)
+        raise HTTPException(status_code=int(status), detail=detail)
 
 @app.post('/targets/twelve-tasks', response_model=dict)
 async def set_twelve_tasks_target(
@@ -12695,6 +12701,9 @@ async def set_twelve_tasks_target(
     Set a Twelve Tasks target for a specific person for a specific week.
     """
     try:
+        user_role = current_user.get('role', '').lower()
+        if user_role not in ['admin', 'supreme_admin']:
+            raise HTTPException(status_code=403, detail='Admin access required')
         person_id = payload.get('person_id')
         target = payload.get('target')
         week_identifier = payload.get('week_identifier')
@@ -12732,7 +12741,10 @@ async def set_twelve_tasks_target(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Error setting Twelve Tasks target: {str(e)}')
+        logger.exception('Error setting Twelve Tasks target')
+        status = getattr(e, 'status_code', None) or getattr(e, 'code', None) or 500
+        detail = getattr(e, 'message', None) or str(e)
+        raise HTTPException(status_code=int(status), detail=detail)
 
 @app.get('/targets/service', response_model=dict)
 async def get_service_targets(
