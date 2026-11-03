@@ -11191,17 +11191,17 @@ async def startup_event():
 
 # Helper function to log activities
 async def log_activity(user_id: str, action: str, details: str):
-    """Log admin activities to database"""
+    """Persist admin activities to the Supabase Activity Logs audit trail."""
     try:
-        activity_doc = {
-            "user_id": user_id,
-            "action": action,
-            "details": details,
-            "timestamp": datetime.utcnow()
-        }
-       
-        # Insert into activity_logs collection
-        await db.activity_logs.insert_one(activity_doc)
+        supabase_admin.table("Activity Logs").insert(
+            {
+                "_id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "action": str(action or "UNKNOWN").upper(),
+                "details": details,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        ).execute()
     except Exception as e:
         print(f"Error logging activity: {str(e)}")
         # Don't raise exception, just log the error
@@ -11211,25 +11211,36 @@ async def get_activity_logs(
     limit: int = 50,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get activity logs - Admin only"""
-    if current_user.get("role") != "admin":
+    """Get the persistent activity log - Admin / Supreme Admin only."""
+    role = (
+        str(current_user.get("role") or "")
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+    )
+    if role not in {"admin", "superadmin", "supremeadmin"} and not current_user.get("is_supreme_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
-   
+
     try:
-        logs = []
-        cursor = db.activity_logs.find({}).sort("timestamp", -1).limit(limit)
-       
-        async for log in cursor:
-            logs.append({
-                "id": str(log["_id"]),
-                "action": log.get("action"),
-                "details": log.get("details"),
-                "timestamp": log.get("timestamp"),
-                "user_id": log.get("user_id")
-            })
-       
+        result = (
+            supabase_admin.table("Activity Logs")
+            .select("_id, action, details, timestamp, user_id")
+            .order("timestamp", desc=True)
+            .limit(max(1, min(limit, 500)))
+            .execute()
+        )
+        logs = [
+            {
+                "id": row.get("_id"),
+                "action": row.get("action"),
+                "details": row.get("details"),
+                "timestamp": row.get("timestamp"),
+                "user_id": row.get("user_id"),
+            }
+            for row in (result.data or [])
+        ]
         return {"logs": logs}
-       
+
     except Exception as e:
         print(f"Error fetching activity logs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching logs: {str(e)}")
@@ -12524,19 +12535,32 @@ async def get_stats_calendar_events(
 async def get_dashboard_comprehensive(
     period: str = Query(
         "today",
-        pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth)$",
+        pattern="^(today|thisWeek|thisMonth|previous7|previousWeek|previousMonth|custom)$",
     ),
     limit: int = Query(100, ge=1, le=1000),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
     org_name = current_user.get("Organization")
     if not org_name and current_user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Organization not associated with user")
- 
+
+    if period == "custom" and (not start_date or not end_date):
+        raise HTTPException(
+            status_code=422,
+            detail="start_date and end_date are required for a custom range",
+        )
+
     org_filter = _build_stats_org_filter(current_user)
     try:
         return await asyncio.to_thread(
-            sb_get_dashboard_comprehensive, period, limit, org_filter
+            sb_get_dashboard_comprehensive,
+            period,
+            limit,
+            org_filter,
+            start_date,
+            end_date,
         )
     except Exception as e:
         traceback.print_exc()

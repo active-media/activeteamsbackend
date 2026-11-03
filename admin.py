@@ -153,6 +153,7 @@ async def log_activity(user_id: str, action: str, details: str):
     try:
         supabase.table("Activity Logs").insert(
             {
+                "_id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "action": action,
                 "details": details,
@@ -1272,8 +1273,14 @@ async def get_role_permissions(role_name: str, current_user: dict = Depends(get_
 async def get_activity_logs(
     limit: int = 50, current_user: dict = Depends(get_current_user)
 ):
-    """Get activity logs - Admin only."""
-    if current_user.get("role") != "admin":
+    """Get activity logs - Admin / Supreme Admin only."""
+    role = (
+        str(current_user.get("role") or "")
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+    )
+    if role not in {"admin", "superadmin", "supremeadmin"} and not current_user.get("is_supreme_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
@@ -1281,7 +1288,7 @@ async def get_activity_logs(
             supabase.table("Activity Logs")
             .select("_id, action, details, timestamp, user_id")
             .order("timestamp", desc=True)
-            .limit(limit)
+            .limit(max(1, min(limit, 500)))
             .execute()
         )
 

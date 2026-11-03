@@ -36,6 +36,32 @@ ORG_ID_MAP = {
     "active church": "69c63afc4c3e2fdfc5a4840d",
 }
 
+
+def _event_day_matches(event_day, requested_day) -> bool:
+    """Match a stored recurring day (possibly comma separated) to a filter."""
+    requested = str(requested_day or "").strip().lower()
+    if not requested or requested == "all":
+        return True
+    stored_parts = [
+        part.strip().lower()
+        for part in re.split(r"[,/|]", str(event_day or ""))
+        if part.strip()
+    ]
+    return any(
+        part == requested
+        or (len(part) >= 3 and len(requested) >= 3 and part[:3] == requested[:3])
+        for part in stored_parts
+    )
+
+
+def _converts_decision_bucket(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if "first" in normalized:
+        return "first_time"
+    if "recommit" in normalized or "re-commit" in normalized or "rededic" in normalized:
+        return "recommitment"
+    return "other"
+
 # Events Section  ----------------------------------------------
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
 # South African timezone
@@ -456,6 +482,7 @@ async def get_cell_events(
     all_events: Optional[bool] = Query(False),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    day: Optional[str] = Query(None),
     leader_at_12_view: Optional[bool] = Query(None),
     show_personal_cells: Optional[bool] = Query(None),
     show_all_authorized: Optional[bool] = Query(None),
@@ -636,8 +663,14 @@ async def get_cell_events(
                 "time": i.get("time", "07:20") 
             })
 
+        if day and day.strip().lower() != "all":
+            cells = [
+                cell for cell in cells
+                if _event_day_matches(cell.get("day"), day)
+            ]
+
         if must_paginate:
-            total_count = len(cell_events)
+            total_count = len(cells)
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
             skip = (page - 1) * limit
             # paginated = cell_instances[skip:skip + limit]
@@ -875,6 +908,7 @@ async def get_other_events(
     personal: Optional[bool] = Query(None),
     start_date: Optional[str] = Query("2025-10-10"),
     end_date: Optional[str] = Query(None),
+    day: Optional[str] = Query(None),
     show_all_dates: Optional[bool] = Query(False),  # still unused
     is_global: Optional[bool] = Query(None)
 ):  
@@ -1038,6 +1072,12 @@ async def get_other_events(
                 for i in general_events
             ]
 
+        if day and day.strip().lower() != "all":
+            all_other_events = [
+                event for event in all_other_events
+                if _event_day_matches(event.get("day"), day)
+            ]
+
         return {
             "events": all_other_events,
             # "total_events": total_count,
@@ -1052,6 +1092,212 @@ async def get_other_events(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.get("/events/converts-report")
+async def get_converts_report(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    event_id: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """Aggregate first-time and recommitment decisions by event and date.
+
+    This restores the old Events-page "View Converts" workflow without adding a
+    new reporting screen. Access is limited to event oversight roles; data is
+    scoped to the user's organisation where one is available.
+    """
+    try:
+        role_key = re.sub(r"[\s@_-]", "", str(current_user.get("role") or "").lower())
+        allowed_roles = {
+            "admin", "superadmin", "registrant", "leader",
+            "leaderat12", "leaderat144", "leaderat1728",
+        }
+        if role_key not in allowed_roles and not current_user.get("is_supreme_admin"):
+            raise HTTPException(status_code=403, detail="You do not have access to converts reporting")
+
+        today = date.today()
+        start_text = start_date or (today - timedelta(days=90)).isoformat()
+        end_text = end_date or today.isoformat()
+        try:
+            start_day = date.fromisoformat(str(start_text)[:10])
+            end_day = date.fromisoformat(str(end_text)[:10])
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Dates must use YYYY-MM-DD")
+        if end_day < start_day:
+            raise HTTPException(status_code=422, detail="end_date must be on or after start_date")
+
+        cons_query = (
+            supabase.table("event_consolidations")
+            .select("*")
+            .gte("created_at", f"{start_day.isoformat()}T00:00:00")
+            .lte("created_at", f"{end_day.isoformat()}T23:59:59.999999")
+        )
+        if event_id:
+            cons_query = cons_query.eq("event_id", event_id)
+
+        consolidations = cons_query.order("created_at", desc=True).limit(5000).execute().data or []
+        consolidations = [
+            row for row in consolidations
+            if str(row.get("status") or "").lower() != "removed"
+        ]
+
+        event_ids = sorted({str(row.get("event_id")) for row in consolidations if row.get("event_id")})
+        session_ids = sorted({str(row.get("session_id")) for row in consolidations if row.get("session_id")})
+
+        event_map: dict[str, dict] = {}
+        if event_ids:
+            event_rows = (
+                supabase.table("events")
+                .select("event_id, event_name, event_date, Organization, org_id")
+                .in_("event_id", event_ids)
+                .execute()
+                .data
+                or []
+            )
+            event_map = {str(row.get("event_id")): row for row in event_rows}
+
+        session_map: dict[str, str] = {}
+        if session_ids:
+            session_rows = (
+                supabase.table("event_sessions")
+                .select("session_id, session_date")
+                .in_("session_id", session_ids)
+                .execute()
+                .data
+                or []
+            )
+            for row in session_rows:
+                session_date = row.get("session_date")
+                if hasattr(session_date, "isoformat"):
+                    session_date = session_date.isoformat()
+                session_map[str(row.get("session_id"))] = str(session_date or "")[:10]
+
+        organization = (
+            current_user.get("Organization")
+            or current_user.get("organization")
+            or ""
+        ).strip()
+        org_id = str(current_user.get("org_id") or "").strip()
+        is_super = bool(
+            current_user.get("is_supreme_admin")
+            or role_key == "superadmin"
+        )
+
+        groups: dict[str, dict] = {}
+        total = first_time = recommitment = other = 0
+
+        for row in consolidations:
+            row_event_id = str(row.get("event_id") or "")
+            event = event_map.get(row_event_id) or {}
+            if organization and not is_super:
+                event_org = str(event.get("Organization") or event.get("organization") or "").strip()
+                event_org_id = str(event.get("org_id") or "").strip()
+                if event_org and event_org.casefold() != organization.casefold():
+                    continue
+                if not event_org and event_org_id and org_id and event_org_id != org_id:
+                    continue
+                if not event_org and not event_org_id and row_event_id not in event_map:
+                    continue
+
+            created_at = str(row.get("created_at") or "")
+            session_date = session_map.get(str(row.get("session_id") or ""))
+            event_date = event.get("event_date")
+            if hasattr(event_date, "isoformat"):
+                event_date = event_date.isoformat()
+            group_date = session_date or created_at[:10] or str(event_date or "")[:10]
+            decision = " ".join(
+                str(value)
+                for value in (
+                    row.get("decision_type"),
+                    row.get("decision_display_name"),
+                    row.get("consolidation_type"),
+                )
+                if value
+            )
+            bucket = _converts_decision_bucket(decision)
+
+            person = {
+                "id": row.get("id") or row.get("_id"),
+                "name": row.get("person_name") or "",
+                "surname": row.get("person_surname") or "",
+                "email": row.get("person_email") or "",
+                "phone": row.get("person_phone") or "",
+                "decision_type": row.get("decision_type") or "",
+                "decision_display_name": row.get("decision_display_name") or decision,
+                "assigned_to": row.get("assigned_to") or "",
+                "assigned_to_email": row.get("assigned_to_email") or "",
+                "status": row.get("status") or "active",
+                "created_at": created_at,
+            }
+
+            group_key = f"{row_event_id}|{group_date}"
+            group = groups.setdefault(
+                group_key,
+                {
+                    "event_id": row_event_id,
+                    "event_name": event.get("event_name") or "Unknown Event",
+                    "session_date": group_date,
+                    "total": 0,
+                    "first_time": 0,
+                    "recommitment": 0,
+                    "other": 0,
+                    "people": [],
+                },
+            )
+            group["people"].append(person)
+            group["total"] += 1
+            group[bucket] += 1
+
+            total += 1
+            if bucket == "first_time":
+                first_time += 1
+            elif bucket == "recommitment":
+                recommitment += 1
+            else:
+                other += 1
+
+        grouped = sorted(
+            groups.values(),
+            key=lambda item: (item.get("session_date") or "", item.get("event_name") or ""),
+            reverse=True,
+        )
+        for group in grouped:
+            group["people"].sort(
+                key=lambda person: (
+                    str(person.get("name") or "").casefold(),
+                    str(person.get("surname") or "").casefold(),
+                )
+            )
+
+        return {
+            "summary": {
+                "total": total,
+                "first_time": first_time,
+                "recommitment": recommitment,
+                "other": other,
+            },
+            "period": {"start_date": start_day.isoformat(), "end_date": end_day.isoformat()},
+            "groups": grouped,
+            "rows": [
+                {
+                    **person,
+                    "event_id": group["event_id"],
+                    "event_name": group["event_name"],
+                    "session_date": group["session_date"],
+                }
+                for group in grouped
+                for person in group["people"]
+            ],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"Error building converts report: {exc}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error building converts report: {str(exc)}")
+
 
 #not used
 @router.get("/events/{event_id}/attendance/{week}")
