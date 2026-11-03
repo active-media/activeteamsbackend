@@ -1,0 +1,7129 @@
+{
+ "MEN": [
+  {
+   "name": "Prince Muzezo",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Collins Mgboh",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Annick Nkonko",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Nqubeko Ndlovu",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Thevic Maweja",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sandile",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Luis",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Cooper",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jacob",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nkosane Modise",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Jero Zenete",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ryan Sewecha",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ephraim Kabamba",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Manase Kibese",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Favour Mpasi",
+   "leader12": "Esdras Muta",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bandile Mkuwanazi",
+   "leader12": "Glenda Olenga",
+   "leader144": "Phumelele Mkhawanzi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Abram Sijoana",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Emmanuel Bikambidi",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Joel Nyamimba",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Honey Zwane",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Shawn Muraba",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Samuel Yombet",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Bonginkosi Mbatha",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kleiton Bartolomeu",
+   "leader12": "Kenny Bebel",
+   "leader144": "Austin Mwelwa",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Oclide Bartolomeu",
+   "leader12": "Kenny Bebel",
+   "leader144": "Austin Mwelwa",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Jeffrey Shotsha",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "John Mukendi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Redeem Mukaya",
+   "leader12": "Kenny Bebel",
+   "leader144": "John Mukendi",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Ransom Ntambwe",
+   "leader12": "Kenny Bebel",
+   "leader144": "John Mukendi",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Ben Mpasi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Yasa Tuta",
+   "leader12": "Kenny Bebel",
+   "leader144": "Blessed Manana",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Saka",
+   "leader12": "Kenny Bebel",
+   "leader144": "Ben Mpasi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Leo",
+   "leader12": "Kenny Bebel",
+   "leader144": "Ben Mpasi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Obina",
+   "leader12": "Kenny Bebel",
+   "leader144": "Ben Mpasi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Khwezi Mgweshe",
+   "leader12": "Kenny Bebel",
+   "leader144": "Ben Mpasi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Katlego Pitsoane",
+   "leader12": "Kenny Bebel",
+   "leader144": "Ben Mpasi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Mbongiseni Sibanda",
+   "leader12": "Kenny Bebel",
+   "leader144": "Jeffrey Shotsha",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "David Jr Wembadio",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Inamandla.B",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Mthokozisi Nxele",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Nhlakanipho Nxele",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Thadiso",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Protias Ifatayi",
+   "leader12": "Kenny Bebel",
+   "leader144": "Ben Mpasi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Sandile Nxele",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Ryan njoloma",
+   "leader12": "Kenny Bebel",
+   "leader144": "Austin Mwelwa",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Austin Mwelwa",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Thabiso Matunda",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Lunathi Ntleki",
+   "leader12": "Kenny Bebel",
+   "leader144": "David Jr Wembadio",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Samuel Mbaya",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Claudio Da Costa",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Chibuzor Obi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Andrea Tshikalange",
+   "leader12": "Kenny Bebel",
+   "leader144": "Jeffrey Sotsha",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Blessed Manana",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kai Lamba",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Stwart Chitopota",
+   "leader12": "Kenny Bebel",
+   "leader144": "Samuel Mbaya",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Siphosato Chitopota",
+   "leader12": "Kenny Bebel",
+   "leader144": "Samuel Mbaya",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Keyton Nuans",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Musawenkosi Ngwenya",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Revelation Gould",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Uriel Louzolo",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tshepo Mahlaba",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Christopher Eodigb",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Lelentle Khumalo",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Proud Mlauzi",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Promise Mlauzi",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Siyabonga Mlauzi",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Amos Emo",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tadiawashe Mushayikwa",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tawanayasha Mushayikwa",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tegra Mungudi",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Lucas Da Graca",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: Second",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Winner Yenga",
+   "leader12": "Nash Bobo",
+   "leader144": "Tegra Mungudi",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Shaun Khumalo",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Tressy Matamba",
+   "leader12": "Nash Bobo",
+   "leader144": "Tegra Mungudi",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Zack Mancer",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Benny Issanza",
+   "leader12": "Nash Bobo",
+   "leader144": "Tegra Mungudi",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Nhlakanipho Madlanga",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Ismael Balayi",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Ben Mutombo",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Aiden Bennett",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Jules",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Clinton",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Shaun Galula",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Calvin Khumalo",
+   "leader12": "Nash Bobo",
+   "leader144": "Nhlakanipho Madlanga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Jaiden Bennett",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Odia Tshisausau",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Stewart Madenyika",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Vincent Chinkonda",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Christiano Malapane",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Marc Bennett",
+   "leader12": "Nash Bobo",
+   "leader144": "Jaiden Bennett",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Zayden Mancer",
+   "leader12": "Nash Bobo",
+   "leader144": "Jaiden Bennett",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Rahul Bennett",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Neo Mokhampanyane",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Joshua van de Sandt",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Caleb van de Sandt",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Aaron Desmond",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Karabo Dinne",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Nathaniel van Awegan",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Chris Pauls",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Phillip Fourie",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Wanga Sikamela",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Shaun",
+   "leader12": "Shane van der Walt",
+   "leader144": "John Shamshum",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Elijah van der Walt",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jouior Ncube",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thabiso Komako",
+   "leader12": "Shane van der Walt",
+   "leader144": "John Shamshum",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thabang",
+   "leader12": "Shane van der Walt",
+   "leader144": "John Shamshum",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kgetha Dikgale",
+   "leader12": "Shane van der Walt",
+   "leader144": "John Shamshum",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "John Shamshum",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Lesedi Dinne",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Lethokuhle Mthunzi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Owen Mthembu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Omphile Moenyehi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Buhle Moyo",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Hlompho Bosiu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Phumlani-Junior Ngwenya",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Musawenkosi Zulu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jaden Johnson",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Musa Morena",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sibusiso Mbhele",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ayanda Mbatha",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Aobakwe Qwabe",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Njabulo Buthelezi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thato Mphutu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ofentse Maraso",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Vukhosi Sono",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Lesiba Selona",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sherezade Piet Magdalene",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Munashe Munikwa",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Prince Ezeji",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Hugo Harmse",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Tristan van Aswegen",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Eben Harmse",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Brandon Vilakazi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Amohelang Motloung",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kholonathi Mntakatiwa",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Atlegang Dinni",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Adriaan Harmse",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Zainodean Steenkmp",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Serge Ndou",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ntsika Mvumvu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Munashe Munikwa",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Okuhle Ntumba",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ceefiso Gama",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Simphiwe Emben",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Simphiwe Mbele",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ayanda Qwabe",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Themba Valoyi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Minenhle Makombe",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Atlegang Seboni",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Katleho Mapota",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Njabulo Makhoba",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Royal Anih",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thato Mphithi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Letlotlo Mokhethi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tisetso Seleke",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Karabo Ndebele",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Aabakwe Morena",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Zeyad Shakal",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Ntando Masote",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Ayanda Vika",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Oobie Mothupi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Emeka Mwanja",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlagamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Prince Simwanza",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Ompfuna Nehhavhambe",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Koketso Phelo",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Mzingkesi Sejula",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Samuel Muya",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Dino Malajika",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Jacques Coetzee",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Bathandwa Ngwan",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Mashaba Hletela",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Tebogo Xisi",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gontse Rantsi",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nicholas Shamshum",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Joshua Mutebu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tshiamo Mabuwe",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thabo Simon",
+   "leader12": "Shane van der Walt",
+   "leader144": "John Shamshum",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Ronel Louzolo",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Joel Basele",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Roce Ngoma",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tshiamo Tsolo",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlangamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Joshua Mbuyu",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlangamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tswelopele Titipana",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlangamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ndyebo Zibi",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlangamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kevon Yang",
+   "leader12": "Shane van der Walt",
+   "leader144": "Thubelihle Ndlangamandla",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thubelihle Ndlangamandla",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Lesedi Lekoane",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Neo Sewellah",
+   "leader12": "Shane van der Walt",
+   "leader144": "Karabo Ndebele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bongani Dlomo",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Blessing van der Walt",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sinesipho Mafentile",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Carlton Malajika",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Russel Garrish",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Kwame Morgan",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Blessing Mbele",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sinako Qobisa",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sakhe Mtabane",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sandile Kala",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delage: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Nathan Mabunda",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "Blessing Mbele",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Micheal Dickinson",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Lwazi November",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Jordan Ndaishimiye",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kemisetso Maubane",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Ozwikona Makuya",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delage: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Christopher Matsimela",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delage: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Alan Ndou",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Someleze Mbalo",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delegate:First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Siya Moyo",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kwakhaya Gamakulu",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ziyanda Mlilo",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nkosinathi Moyo",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nkanyiso Moyo",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ano Jingo",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Brain Vunganayi",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Michael Mwenghe",
+   "leader12": "Yannis Nyoka",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Lucky Balayoi",
+   "leader12": "Yannis Nyoka",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gavin Enslin",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Yannis Nyoka",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Zion Olanga",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Delegate:Second Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Esdras Muta",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sandile Maseko",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Gloire Tsina",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kenny Bebel",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Nash Bobo",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Ryan van de Sandt",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Shane van der Walt",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Thabo Tshabalala",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Vusi Kweyiya",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  }
+ ],
+ "WOMEN": [
+  {
+   "name": "Shancel Beya",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Carmel Ngoyi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Omowele Isimeme",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Carmel Ngoyi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Anicia Nkomko",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Carmel Ngoyi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Niclette Tshisuaka",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Taytum Lessing",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Favour Isimeme",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Carmel Ngoyi",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nissi Lossala",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Eunice Fagbohun",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Favour Lossala",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Mislen Mbuyi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Hope Tupa",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Courtney Parker",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Anasha Nlaya",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Khakhu Ramuhashi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Palesa Moholo",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gloria Mukengeshayi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Birra Kisuhu",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "khumo Lekoko",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Hannah Ayansina",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Siyavuya Nyilika",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Sherezade Piet Magdalene",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Atlehang Mokhobo",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Mickayla Gulwa",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ntateleng Sekoei",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Unthai Mazibuko",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Rethabile Tladi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Unthai Mazibuko",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Aleah Padayachee",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Vuyile Mbulani",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Unthai Mazibuko",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Noxolo Nyoka",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Halley Babers",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nokubonga Mzibuko",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Merdi Ilunga Kalonji",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bonolo Khoemane",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Khensani Mthethwa",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Jabulile Mthethwa",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Trecia Maqabane",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Lucretcia Bailey",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Anastasia van Aswegen",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Onga Mtila",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Zoey van Aswegen",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Dimpho Mkubukeli",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Modi Moli",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Keneiloe Mokhapanyane",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Alexis Fourie",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nicky Masuku",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: Second Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jade Kasselman",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Mpumi Mokhabela",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Carmel Ngoyi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Colleen Hawkins",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Anita Jackson",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Paballo Bore",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Meddley Tupa",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Niclette Tshisuaka",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Keren Botombe",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Toni O'Neil",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Barbra Skinner",
+   "leader12": "Bernice van der Walt",
+   "leader144": "Colleen Hawkins",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ziyanda Mapitshane",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nichole Brown",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Hemina Lehoby",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Mokgadi Coetzee",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nkazimulo Mgemane",
+   "leader12": "Cynthia Bebel",
+   "leader144": "Britney Nunes",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Lihle Guliwe",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nandipha",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sthembiso Mkrweqana",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thoriso Ledwaba",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Laura Tsuro",
+   "leader12": "Cynthia Bebel",
+   "leader144": "Britney Nunes",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Praise Banda",
+   "leader12": "Cynthia Bebel",
+   "leader144": "Britney Nunes",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Priscilla Kaluseveiko",
+   "leader12": "Cynthia Bebel",
+   "leader144": "Privilege Chiwaya",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Carmeline Libongi",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Britney Nunes",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Precious Kaluseviko",
+   "leader12": "Cynthia Bebel",
+   "leader144": "Privilege Chiwaya",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Privilege Chiwaya",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Linda Sibanda",
+   "leader12": "Cynthia Bebel",
+   "leader144": "Privilege Chiwaya",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Naomi Mwengheya",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Lisa Mwengheya",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Mbali Ngcobo",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Cendice Forbey",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Grace",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Michelle Scoulelis",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Natasha Ogle",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Shireen Brown",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Emily Skosana",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Nothabile Kweyiya",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Naledi Ndzube",
+   "leader12": "Denise van de Sandt",
+   "leader144": "Franshaka Muta",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Onkenetse Maake",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Barbara Shibangu",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Roxanne Berry",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Sibongile Banda",
+   "leader12": "Denise van de Sandt",
+   "leader144": "Franshaka Muta",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Blessing Zadala",
+   "leader12": "Denise van de Sandt",
+   "leader144": "Franshaka Muta",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Franshaka Muta",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Mimi Maake",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Phoebe Kaluseviko",
+   "leader12": "Denise van de Sandt",
+   "leader144": "Franshaka Muta",
+   "registration_type": "Delegate:First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Noni Angel Matlakala",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Biphelo Mohau",
+   "leader12": "Glenda Olenga",
+   "leader144": "Thato Mohau",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Keabetswe Nombela",
+   "leader12": "Glenda Olenga",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Londeka Mvubu",
+   "leader12": "Glenda Olenga",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Samke Ntabeni",
+   "leader12": "Glenda Olenga",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Phumelele Mkhwanzi",
+   "leader12": "Glenda Olenga",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thato Mohau",
+   "leader12": "Glenda Olenga",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bontle Mohau",
+   "leader12": "Glenda Olenga",
+   "leader144": "Thato Mohau",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thabang Zita",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Danielle Holtzhausen",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Djenyfer Macheque",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Connie Ngoie",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Divine Nkiery",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Prisca Chauke",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Siphokzi Madani",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Buhle Nkosi",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Jaliana",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Layla",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Shalom Ngulube",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Shanty Ngulube",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Joyce Mwase",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Providence Ntambwe",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gulana Ntambwe",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Naledi",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ropa Madamombe",
+   "leader12": "Kayla Enslin",
+   "leader144": "Fatima Tsina",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Joyce Benda",
+   "leader12": "Kayla Enslin",
+   "leader144": "Fatima Tsina",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sinenhlanhla",
+   "leader12": "Kayla Enslin",
+   "leader144": "Luyanda Ntombela",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Siphosethu Gomba",
+   "leader12": "Kayla Enslin",
+   "leader144": "Anele Sibeko",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Danielle Tsina",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Aphelele Nkosi",
+   "leader12": "Kayla Enslin",
+   "leader144": "Anele Sibeko",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Juliana Ntambwe",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Samuela Sibeko",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ukhaliphe Dlekedla",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Minehle Lukhele",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Hillary Nyamimiba",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kele Walaza",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Wandile Nyamimba",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Melody Sidliki",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Lesedi Sasha",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Elise Mwanza",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Daniella Mukendi",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Divine Ntambwe",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Anele Sibeko",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Fatima Tsina",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sarah Kalonji",
+   "leader12": "Kayla Enslin",
+   "leader144": "Anele Sibeko",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Luyanda Ntombela",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Tracy Bebel",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Harley Rossouw",
+   "leader12": "Kayla Enslin",
+   "leader144": "Danielle Tsina",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sinqobile Chitopota",
+   "leader12": "KennyBebel",
+   "leader144": "",
+   "registration_type": "Delegate:First time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ntombi Jawuma",
+   "leader12": "Louange Ngoyi",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Chelsea Katiyo",
+   "leader12": "Louange Ngoyi",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Dora Bazoladio",
+   "leader12": "Louange Ngoyi",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Christina Bazoladio",
+   "leader12": "Louange Ngoyi",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jemima Tshiama",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Lesedi",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Ketia Kahite",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Samkelobbe",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Ketia Kahite",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Victoria",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Ketia Kahite",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ayanda Kahite",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Ketia Kahite",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Vinolia Kalume",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Ketia Kahite",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ngoyi Mwatcha",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Jessica Kapila",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kaletho S",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Jessica Kapila",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Karabo S",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Jessica Kapila",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Naledi S",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Jessica Kapila",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Talent Nyoni",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Jessica Kapila",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Yolanda Mtabane",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tracy Khoza",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Jessica Kapila",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "La Blonde Nkebani",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Inathi Mnyele",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Ketia Kahite",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Elvie Ntumba",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Kimberly Thobela",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Elvine Kapila",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Divne Ubite",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Laurantine Malengi",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Casey Aote",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "La Blonde Nkebani",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Keisha Moyo",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Miradi Lumbayi",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Vivian Vangu",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Beulah Shamshum",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Ketsia Tshiama",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Keren Tshiama",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Naomi Bebel",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Khumbo Mtonga",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bulelwa Ndzakana",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Tiffney Dickinson",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Bulelwa Ndzakana",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gia Katufu",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Carmel Kapila",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Jessica Kapila",
+   "registration_type": "Delegate: Second time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kaitlyn Ngwenya",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Khumbo Mtonga",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bernice van der Walt",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Cynthia Bebel",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    true
+   ]
+  },
+  {
+   "name": "Denise van de Sandt",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Glenda Olenga",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kayla Enslin",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false
+   ]
+  },
+  {
+   "name": "Louange Ngoyi",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    false,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Sasha-Lee Enslin",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "name": "Vicky Enslin",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Guide",
+   "sessions": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tshiamo Makitla",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Mahlatsi Chipara",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gift Ntambo",
+   "leader12": "",
+   "leader144": "",
+   "registration_type": "Delegate: First Time",
+   "sessions": [
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false
+   ]
+  }
+ ]
+}

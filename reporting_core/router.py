@@ -13,6 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from Reports.twelve_tasks import sb_get_twelve_tasks_report, export_twelve_tasks_xlsx
+from report_exports.training_exports import (
+    TRAINING_REPORT_TYPES, build_training_view, build_training_xlsx, load_training,
+)
+from report_exports import build_report as build_export_report
+from report_exports.staff_data import fetch_staff_report
+from report_exports.staff_interns_youth import build_view as staff_view
 from supabase_helpers.excel_export import build_cells_excel
 from supabase_helpers.school_cell_report import sb_get_school_cell_report, build_school_cell_excel
 from supabase_helpers.service_targets import sb_get_service_target_report
@@ -26,6 +32,7 @@ from .envelope import (
     dashboard_envelope,
     school_cell_envelope,
     service_target_envelope,
+    training_envelope,
     twelve_tasks_envelope,
 )
 from .periods import ResolvedPeriod, period_to_week_ids, resolve_period
@@ -64,25 +71,25 @@ REPORT_CATALOG = [
         report_type="life_class", title="Life Class",
         description="Life Class attendance report.",
         params=[{"name": "period", "allowed_values": PERIOD_TOKENS}, {"name": "start_date"}, {"name": "end_date"}, {"name": "campus"}],
-        supports_export=["csv", "xlsx"], implemented=False,
+        supports_export=["csv", "xlsx"], implemented=True,
     ),
     ReportCatalogItem(
         report_type="school_of_leaders", title="School of Leaders",
         description="School of Leaders attendance report.",
         params=[{"name": "period", "allowed_values": PERIOD_TOKENS}, {"name": "start_date"}, {"name": "end_date"}, {"name": "campus"}],
-        supports_export=["csv", "xlsx"], implemented=False,
+        supports_export=["csv", "xlsx"], implemented=True,
     ),
     ReportCatalogItem(
         report_type="plan_40", title="Plan 40",
         description="Plan 40 progress report.",
         params=[{"name": "period", "allowed_values": PERIOD_TOKENS}, {"name": "start_date"}, {"name": "end_date"}, {"name": "campus"}],
-        supports_export=["csv", "xlsx"], implemented=False,
+        supports_export=["csv", "xlsx"], implemented=True,
     ),
     ReportCatalogItem(
         report_type="staff_interns_youth", title="Staff/Interns/Youth",
         description="Staff, interns, and youth report.",
         params=[{"name": "period", "allowed_values": PERIOD_TOKENS}, {"name": "start_date"}, {"name": "end_date"}, {"name": "campus"}],
-        supports_export=["csv", "xlsx"], implemented=False,
+        supports_export=["csv", "xlsx"], implemented=True,
     ),
     ReportCatalogItem(
         report_type="school_cell", title="School Cell",
@@ -225,6 +232,20 @@ async def _report_envelope(
         raise _not_implemented(report_type, f"The {report_type} report is not implemented.")
 
     try:
+        if report_type in TRAINING_REPORT_TYPES:
+            start, end = _dates(period)
+            data = await asyncio.to_thread(
+                load_training, report_type, scope.org_filter, start, end, scope.visible_leader_ids
+            )
+            return training_envelope(
+                report_type, CATALOG_BY_TYPE[report_type].title, build_training_view(report_type, data), period
+            )
+        if report_type == "staff_interns_youth":
+            start, end = _dates(period)
+            payload = await asyncio.to_thread(
+                fetch_staff_report, scope.org_filter, start, end, scope.visible_leader_ids
+            )
+            return training_envelope(report_type, CATALOG_BY_TYPE[report_type].title, staff_view(payload), period)
         if report_type == "twelve_tasks":
             return twelve_tasks_envelope(await _twelve_tasks_data(scope, period), period)
         if report_type == "school_cell":
@@ -418,6 +439,33 @@ async def export_report(
     resolved = _resolved_period(period, start_date, end_date)
     if report_type not in CATALOG_BY_TYPE:
         raise HTTPException(status_code=404, detail=f"Unknown report_type '{report_type}'")
+    # Life Class / School of Leaders / Plan 40: XLSX in the admin team's exact workbook layout.
+    # The on-screen envelope for these is added separately, so the export does not depend on it.
+    if report_type in TRAINING_REPORT_TYPES and format == "xlsx":
+        start, end = _dates(resolved)
+        try:
+            content = await asyncio.to_thread(
+                build_training_xlsx, report_type, scope.org_filter, start, end, scope.visible_leader_ids
+            )
+        except Exception as exc:
+            logger.exception("Unable to export report %s", report_type)
+            raise HTTPException(status_code=500, detail=f"Unable to export report '{report_type}'") from exc
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{report_type}_{start}_{end}.xlsx"'},
+        )
+    if report_type == "staff_interns_youth" and format == "xlsx":
+        start, end = _dates(resolved)
+        payload = await asyncio.to_thread(
+            fetch_staff_report, scope.org_filter, start, end, scope.visible_leader_ids
+        )
+        content = await asyncio.to_thread(build_export_report, report_type, payload)
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{report_type}_{start}_{end}.xlsx"'},
+        )
     if not CATALOG_BY_TYPE[report_type].implemented:
         raise _not_implemented(report_type, f"The {report_type} report is not implemented.")
     if format == "pdf":

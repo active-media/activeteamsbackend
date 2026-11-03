@@ -1,0 +1,1104 @@
+{
+ "weeks": 5,
+ "MEN": [
+  {
+   "name": "Collins Mgboh",
+   "leader12": "Esadras Muta",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Abdulateef Bello",
+   "leader12": "Esdrras Muta",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Favour Mpasi",
+   "leader12": "Esdrras Muta",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gael Kinkeski",
+   "leader12": "Esadras Muta",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bonginoski Mbatha",
+   "leader12": "Gloire Tsina",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Austin Mwelwa",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ben Mpasi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Blessed Manana",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Chibuzor Obi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Curtis Mbayi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Claudio Da casta",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "David Wembadio",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jeffrey Shotsha",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "John Mukendi",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kai Lemba",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Keyton Nunes",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Samuel Mbaya",
+   "leader12": "Kenny Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Aiden Bennet",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jaiden Bennet",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nhlakanipho Madlanga",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Rahul Bennett",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tegra Mungudi",
+   "leader12": "Nash Bobo",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Aaron Desmond",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Karabo Dinne",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nathaniel van Awegan",
+   "leader12": "Ryan van de Sandt",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Blessing van der Walt",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Daniel Nkongolo",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jacques Coetzee",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Micheal Job Fataki",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "John Shamshum",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Karabo Ndebele",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nicholoas Shamshum",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thubelihle Ndlangamandla",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tiisetso Seleke",
+   "leader12": "Shane van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Blessing Mbele",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jordan Ndaishimiye",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Lwazi November",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sakhe Mtabane",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sinako Qobisa",
+   "leader12": "Thabo Tshabalala",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ano Jingo",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Brian Vunganayi",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Pardon Ace Jingo",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thabiso Pondoyi",
+   "leader12": "Vusi Kweyiya",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Esdras Muta",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Gloire Tsina",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kenny Bebel",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nash Bobo",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ryan van de Sandt",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Shane van der Walt",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Thabo Tshabalala",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Vusi Kweyiya",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  }
+ ],
+ "WOMEN": [
+  {
+   "name": "Carmel Ngoyi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Colleen Hawkins",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Toni O'neil",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Unathi Mazibuko",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kelebogile Medupe",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Mislen Mbuyi",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Niclette Tshishuaka",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Zandile Dube",
+   "leader12": "Bernice van der Walt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kimberly Ngwenya",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Britney Nunes",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Privildege Chiwaya",
+   "leader12": "Cynthia Bebel",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Roxanne Berry",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Frasheska Muta",
+   "leader12": "Denise van de Sandt",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Anele Sibeko",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Daniele Tsina",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Daniella Mukendi",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Divine Ntambwe",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Djenyfer Macheque",
+   "leader12": "Kayla Enslin",
+   "leader144": "Daniele Tsina",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Elise Mwanza",
+   "leader12": "Kayla Enslin",
+   "leader144": "Tracy Bebel",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Fatima Tsina",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Hillary N",
+   "leader12": "Kayla Enslin",
+   "leader144": "Daniele Tsina",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Luyanda Ntombela",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Nini",
+   "leader12": "Kayla Enslin",
+   "leader144": "Daniele Tsina",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Tracy Bebel",
+   "leader12": "Kayla Enslin",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Wandile N",
+   "leader12": "Kayla Enslin",
+   "leader144": "Daniele Tsina",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Beulah Shamshum",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bulelwa Ndzakana",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Jessica Kapila",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Keisha Moyo",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "Bulelwa Ndzakana",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Ketia Kahite",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Vivian Vungu",
+   "leader12": "Sasha-Lee Enslin",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Bernice van der Walt",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Cynthia Bebel",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Denise van de Sandt",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Glenda Olenga",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Kayla Enslin",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Louange Ngoyi",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    false,
+    false,
+    false,
+    false,
+    false
+   ]
+  },
+  {
+   "name": "Sasha-Lee Enslin",
+   "leader12": "",
+   "leader144": "",
+   "weeks": [
+    true,
+    true,
+    true,
+    false,
+    false
+   ]
+  }
+ ],
+ "leaders": {
+  "MEN": [
+   "Gavin Enslin",
+   "Esdras Muta",
+   "Gloire Tsina",
+   "John-Luke Nyoka",
+   "Kenny Bebel",
+   "Nash Bobo",
+   "Ryan van de Sandt",
+   "Shane van der Walt",
+   "Thabo Tshabalala",
+   "Vusi Kweyiya",
+   "Yannis Nyoka"
+  ],
+  "WOMEN": [
+   "Vicky Enslin",
+   "Bernice van der Walt",
+   "Cynthia Bebel",
+   "Denise van de Sandt",
+   "Kayla Enslin",
+   "Louange Ngoyi",
+   "Sasha-Lee Enslin",
+   "Glenda Olenga"
+  ]
+ },
+ "top_leader": {
+  "MEN": "Gavin Enslin",
+  "WOMEN": "Vicky Enslin"
+ }
+}

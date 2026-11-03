@@ -1,0 +1,242 @@
+{
+ "MEN": [
+  {
+   "leader12": "Esdras",
+   "leaders": [],
+   "potential": [
+    {
+     "name": "Collins Mgboh",
+     "comment": ""
+    },
+    {
+     "name": "Fovour Mpasi",
+     "comment": ""
+    },
+    {
+     "name": "Annick Nkonko",
+     "comment": ""
+    }
+   ]
+  },
+  {
+   "leader12": "Gloire",
+   "leaders": [],
+   "potential": [
+    {
+     "name": "Bonginkosi Mbatha",
+     "comment": ""
+    },
+    {
+     "name": "Joy Fortune",
+     "comment": ""
+    },
+    {
+     "name": "Keith Ndlovu",
+     "comment": ""
+    }
+   ]
+  },
+  {
+   "leader12": "John-Luke",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Kenny",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Nash",
+   "leaders": [
+    "Tegra",
+    "Nhlakanipho",
+    "Jaiden",
+    "Aiden"
+   ],
+   "potential": [
+    {
+     "name": "Winner Yanga",
+     "comment": ""
+    },
+    {
+     "name": "Benny Issanza",
+     "comment": ""
+    }
+   ]
+  },
+  {
+   "leader12": "Ryan",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Shane",
+   "leaders": [
+    "John Shamshum",
+    "Thubelihle Ndlangamandla"
+   ],
+   "potential": [
+    {
+     "name": "Titi Seleke",
+     "comment": ""
+    },
+    {
+     "name": "Adriaan Harmse",
+     "comment": ""
+    },
+    {
+     "name": "Daniel Nkongolo",
+     "comment": ""
+    },
+    {
+     "name": "Gabriel Nkongolo",
+     "comment": ""
+    },
+    {
+     "name": "Blessing van der Walt",
+     "comment": ""
+    }
+   ]
+  },
+  {
+   "leader12": "Thabo",
+   "leaders": [
+    "Blessing Mbele",
+    "Sinako Q"
+   ],
+   "potential": [
+    {
+     "name": "Lwazi",
+     "comment": ""
+    },
+    {
+     "name": "Sahke",
+     "comment": ""
+    },
+    {
+     "name": "Siya",
+     "comment": ""
+    },
+    {
+     "name": "Ziyanda",
+     "comment": ""
+    },
+    {
+     "name": "Jordan",
+     "comment": ""
+    },
+    {
+     "name": "Nathan",
+     "comment": ""
+    }
+   ]
+  },
+  {
+   "leader12": "Vusi",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Yannis",
+   "leaders": [],
+   "potential": []
+  }
+ ],
+ "WOMEN": [
+  {
+   "leader12": "Bernice",
+   "leaders": [],
+   "potential": [
+    {
+     "name": "Keren B",
+     "comment": ""
+    },
+    {
+     "name": "Niclette T",
+     "comment": ""
+    },
+    {
+     "name": "Colleen H",
+     "comment": ""
+    },
+    {
+     "name": "Carmal N",
+     "comment": ""
+    },
+    {
+     "name": "Unathi M",
+     "comment": ""
+    }
+   ]
+  },
+  {
+   "leader12": "Cynthia",
+   "leaders": [],
+   "potential": [
+    {
+     "name": "Britney",
+     "comment": ""
+    },
+    {
+     "name": "Privledge",
+     "comment": ""
+    },
+    {
+     "name": "Carmeline",
+     "comment": ""
+    },
+    {
+     "name": "Thando",
+     "comment": "She attendes Lifeclass and had people, she attendes cell but she does not attende church often"
+    }
+   ]
+  },
+  {
+   "leader12": "Denise",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Glenda",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Kayla",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Lounage",
+   "leaders": [],
+   "potential": []
+  },
+  {
+   "leader12": "Sasha-Lee",
+   "leaders": [],
+   "potential": [
+    {
+     "name": "Bulelwa N",
+     "comment": ""
+    },
+    {
+     "name": "Jessica K",
+     "comment": ""
+    },
+    {
+     "name": "Keisha M",
+     "comment": ""
+    },
+    {
+     "name": "Ketia K",
+     "comment": ""
+    },
+    {
+     "name": "Vivian V",
+     "comment": ""
+    }
+   ]
+  }
+ ]
+}
