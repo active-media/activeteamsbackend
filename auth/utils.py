@@ -1,5 +1,7 @@
 import os
 import secrets
+import base64
+import json
 from datetime import datetime, time as time_type, timedelta
 from typing import Optional, Dict, Any
 from passlib.context import CryptContext
@@ -7,6 +9,7 @@ from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from supabase_helpers.supabase_connection import supabase as _supabase, supabase_admin as _supabase_admin
 from database import users_collection
 from bson import ObjectId
 from datetime import datetime
@@ -16,16 +19,31 @@ from datetime import datetime
 # ==============================
 JWT_SECRET = os.getenv("JWT_SECRET", "replace_me_with_a_strong_secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
-SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+SUPREME_ADMIN_EMAIL = "plaatjiessamuel98@gmail.com"
 ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
 }
 
+
+def is_true(value):
+    """Check if a value is "truthy", handling TEXT columns from Supabase.
+    
+    Accepts: True, "true", "t", "1", "yes" (case-insensitive)
+    Everything else returns False (including bool False, "false", "0", "no", None, "")
+    """
+    if value is True or value is False:
+        return value is True
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "t", "1", "yes")
+    return bool(value)
+
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
+
 
 # ==============================
 # PASSWORD UTILS
@@ -36,18 +54,18 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
+
 # ==============================
 # TOKEN CREATION
+# (kept for password-reset flow in main.py — do not remove)
 # ==============================
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     now = datetime.utcnow()
     expire = now + (expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire, "iat": now})
-    
     if "is_supreme_admin" not in to_encode:
         to_encode["is_supreme_admin"] = False
-    
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def create_refresh_token() -> Dict[str, str]:
@@ -59,10 +77,14 @@ def create_refresh_token() -> Dict[str, str]:
         "id": refresh_token_id,
         "plain": refresh_plain,
         "hash": refresh_hash,
-        "expires": refresh_expires
+        "expires": refresh_expires,
     }
 
 def decode_access_token(token: str) -> Dict[str, Any]:
+    """
+    Decodes tokens signed with the app's own JWT_SECRET (HS256).
+    Used only for password-reset tokens — NOT for Supabase-issued JWTs.
+    """
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except ExpiredSignatureError:
@@ -72,9 +94,7 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 
 
 def convert_datetime_to_iso(doc: dict) -> dict:
-    """
-    Recursively converts all datetime values in a dict to ISO 8601 strings.
-    """
+    """Recursively converts all datetime values in a dict to ISO 8601 strings."""
     for key, value in doc.items():
         if isinstance(value, datetime):
             doc[key] = value.isoformat()
@@ -89,27 +109,36 @@ def convert_datetime_to_iso(doc: dict) -> dict:
 # REFRESH TOKEN HANDLING
 # ==============================
 async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dict[str, Any]:
-    user = await users_collection.find_one({"refresh_token_id": refresh_token_id})
+    result = (
+        _supabase_admin.table("Users")
+        .select(
+            "_id, email, role, Organization, org_id, is_supreme_admin, "
+            "refresh_token_id, refresh_token_hash, refresh_token_expires"
+        )
+        .eq("refresh_token_id", refresh_token_id)
+        .single()
+        .execute()
+    )
+    user = result.data
+
     if (
         not user
         or not user.get("refresh_token_hash")
         or not verify_password(refresh_token, user["refresh_token_hash"])
         or not user.get("refresh_token_expires")
-        or user["refresh_token_expires"] < datetime.utcnow()
+        or datetime.fromisoformat(user["refresh_token_expires"]) < datetime.utcnow()
     ):
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     email = user.get("email", "")
-    is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
-
-    # Derive and normalize org_id
+    is_supreme = is_true(user.get("is_supreme_admin"))
     organization = user.get("Organization") or user.get("organization", "")
     org_id = user.get("org_id") or organization.lower().replace(" ", "-") or "active-teams"
     org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
 
     new_access = create_access_token({
-        "user_id": str(user["_id"]),
-        "email": user["email"],
+        "user_id": user["_id"],
+        "email": email,
         "role": user.get("role", "user"),
         "is_supreme_admin": is_supreme,
         "org_id": org_id,
@@ -117,21 +146,20 @@ async def refresh_access_token(refresh_token_id: str, refresh_token: str) -> Dic
     })
 
     new_refresh = create_refresh_token()
-    await users_collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {
-            "refresh_token_id": new_refresh["id"],
-            "refresh_token_hash": new_refresh["hash"],
-            "refresh_token_expires": new_refresh["expires"],
-            "org_id": org_id,
-        }}
-    )
+    _supabase_admin.table("Users").update({
+        "refresh_token_id": new_refresh["id"],
+        "refresh_token_hash": new_refresh["hash"],
+        "refresh_token_expires": new_refresh["expires"].isoformat(),
+        "org_id": org_id,
+    }).eq("_id", user["_id"]).execute()
 
     return {
         "access_token": new_access,
         "refresh_token_id": new_refresh["id"],
-        "refresh_token": new_refresh["plain"]
+        "refresh_token": new_refresh["plain"],
     }
+
+
 # ==============================
 # FORGOT / RESET PASSWORD
 # ==============================
@@ -147,136 +175,182 @@ def verify_password_reset_token(token: str) -> Optional[str]:
     except JWTError:
         return None
 
+
 # ==============================
 # FASTAPI DEPENDENCIES
 # ==============================
-# In utils.py
-async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
+async def get_current_user(
+    token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> Dict[str, Any]:
+    """
+    1. Validates the Supabase JWT via supabase_admin.auth.get_user()
+       (requires service role key — handles ES256 + expiry automatically).
+    2. Extracts the user's email from the Supabase auth response.
+    3. Looks up the Users row by email (service role bypasses RLS) to get
+       role / org data. Uses email not UUID because Users._id is legacy Mongo format.
+    """
+    if not token or not token.credentials:
+        raise HTTPException(status_code=401, detail="No token provided")
+
+    raw_token = token.credentials
+
     try:
-        # First, check if token is None or empty
-        if not token or not token.credentials:
-            raise HTTPException(status_code=401, detail="No token provided")
-        
-        payload = decode_access_token(token.credentials)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
-        
-        # Try different possible user ID fields
-        user_id = payload.get("user_id") or payload.get("sub") or payload.get("id")
-        
-        if not user_id:
-            raise HTTPException(status_code=401, detail="User ID not found in token")
-        
-        # Convert user_id to string if it's not already
-        user_id = str(user_id)
-        
-        # Check if it's a valid ObjectId
-        if not ObjectId.is_valid(user_id):
-            raise HTTPException(status_code=401, detail=f"Invalid user ID format: {user_id}")
-        
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=401, detail=f"User not found with ID: {user_id}")
-        
-        # Convert ObjectId to string for JSON serialization
-        user_id_str = str(user["_id"])
-        
-        email = user.get("email", "")
-        is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
-        db_role = user.get("role", "user")
-        
-        # Handle both uppercase and lowercase Organization fields
-        organization = user.get("Organization") or user.get("organization", "")
-        
-        # Get org_id, handle if missing
-        org_id = user.get("org_id")
-        if not org_id and organization:
-            org_id = organization.lower().replace(" ", "-")
-        if not org_id:
-            org_id = "active-teams"
-        
-        # Apply ORG_ID_MAP if it exists
-        if org_id.lower() in ORG_ID_MAP:
-            org_id = ORG_ID_MAP[org_id.lower()]
-        
-        return {
-            "user_id": user_id_str,
-            "email": email,
-            "role": db_role,
-            "is_supreme_admin": is_supreme,
-            "organization": organization,
-            "Organization": organization,  # Include both for compatibility
-            "org_id": org_id,
-            "name": user.get("name", ""),
-            "surname": user.get("surname", ""),
-            "_id": user_id_str
-        }
+        parts = raw_token.split(".")
+        if len(parts) == 3:
+            payload = parts[1]
+            payload += "=" * (-len(payload) % 4)
+            decoded_payload = json.loads(
+                base64.urlsafe_b64decode(payload).decode("utf-8")
+            )
+
+            print("========== JWT CLAIMS DEBUG ==========")
+            print("iss:", decoded_payload.get("iss"))
+            print("aud:", decoded_payload.get("aud"))
+            print("sub:", decoded_payload.get("sub"))
+            print("email:", decoded_payload.get("email"))
+            print("role:", decoded_payload.get("role"))
+            print("exp:", decoded_payload.get("exp"))
+            print("iat:", decoded_payload.get("iat"))
+            print("======================================")
+        else:
+            print("JWT DEBUG: Unexpected token structure")
+    except Exception as e:
+        print("JWT DEBUG: Could not decode token payload:", repr(e))
+
+    print("========== AUTH TOKEN DEBUG ==========")
+    print("Token received:", bool(raw_token))
+    print("Token length:", len(raw_token))
+    print("Token starts with:", raw_token[:20])
+    print("======================================")
+
+    # ------------------------------------------------------------------
+    # 1. Validate token via Supabase Admin client (service role key)
+    # ------------------------------------------------------------------
+    try:
+        auth_response = _supabase_admin.auth.get_user(raw_token)
+        sb_user = auth_response.user
+        if not sb_user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Authentication error: {str(e)}")  # Add logging
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Token validation failed: {e}")
+
+    sb_email = sb_user.email
+    supabase_uuid = sb_user.id
+
+    if not sb_email:
+        raise HTTPException(status_code=401, detail="Token missing email claim")
+
+    # ------------------------------------------------------------------
+    # 2. Load the user row by EMAIL via service role (bypasses RLS).
+    #    Users._id is a legacy Mongo ObjectId, not the Supabase Auth UUID,
+    #    so we match on email. service role key means no RLS blocking.
+    # ------------------------------------------------------------------
+    try:
+        result = (
+            _supabase_admin.table("Users")
+            .select(
+                "_id, name, surname, email, role, "
+                "Organization, org_id, is_supreme_admin, person_id"
+            )
+            .eq("email", sb_email)
+            .order("created_at", desc=True)   # prefer the most recently created row if duplicates exist
+            .limit(1)
+            .execute()
+        )
+        rows = result.data
+        db_user = rows[0] if rows else None
+    except Exception as e:
+        print(f"AUTH DEBUG - Token validation failed: {repr(e)}")
+        raise HTTPException(status_code=401, detail=f"Token validation failed: {e}")
+
+    if not db_user:
+        raise HTTPException(status_code=401, detail=f"User not found in database: {sb_email}")
+    print(f"AUTH DEBUG - Supabase email: {sb_email}")
+    print(f"AUTH DEBUG - Supabase UUID: {supabase_uuid}")
+    print(f"AUTH DEBUG - Database user: {db_user}")
+
+    # ------------------------------------------------------------------
+    # 3. Build the current_user dict consumed by all endpoints
+    # ------------------------------------------------------------------
+    email = db_user.get("email", "")
+    is_supreme = is_true(db_user.get("is_supreme_admin"))
+    organization = db_user.get("Organization") or db_user.get("organization") or ""
+
+    org_id = db_user.get("org_id") or ""
+    if not org_id and organization:
+        org_id = organization.lower().replace(" ", "-")
+    if not org_id:
+        org_id = "active-teams"
+    org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
+
+    # Use the legacy Mongo _id for all downstream DB queries that reference it
+    legacy_id = db_user.get("_id", supabase_uuid)
+
+    return {
+        "_id": legacy_id,
+        "user_id": legacy_id,
+        "id": legacy_id,
+        "supabase_uuid": supabase_uuid,
+        "email": email,
+        "role": db_user.get("role", "user"),
+        "is_supreme_admin": is_supreme,
+        "Organization": organization,
+        "organization": organization,
+        "org_id": org_id,
+        "person_id": db_user.get("person_id"),
+        "name": db_user.get("name", ""),
+        "surname": db_user.get("surname", ""),
+    }
+
 
 def require_role(*allowed_roles: str):
-    async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-        payload = decode_access_token(token.credentials)
-        role = payload.get("role")
-        is_supreme = payload.get("is_supreme_admin", False)
-        
-        # Supreme admins have access to everything
-        if is_supreme:
-            return payload
-        
+    """Dependency for role-based access. Supreme admins and admins bypass all checks."""
+    async def _checker(
+        token: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    ):
+        current_user = await get_current_user(token)
+        role = current_user.get("role")
+        is_supreme = current_user.get("is_supreme_admin", False)
+
+        if is_supreme or role == "admin":
+            return current_user
         if not role:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role not present in token")
-        
-        # Admin has access to everything
-        if role == "admin":
-            return payload
-        
-        # Check system roles
-        SYSTEM_ROLES = ['admin', 'leader', 'leaderAt12', 'user', 'registrant']
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role not present")
+
+        SYSTEM_ROLES = {"admin", "leader", "leaderAt12", "user", "registrant"}
         if role in SYSTEM_ROLES:
             if role in allowed_roles:
-                return payload
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, 
-                detail="Insufficient permissions"
-            )
-        
-        # Custom roles
-        if 'user' in allowed_roles:
-            return payload
-        
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Insufficient permissions"
-        )
-        
+                return current_user
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
+        if "user" in allowed_roles:
+            return current_user
+
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
     return _checker
+
+
+def require_super_admin(
+    current_user: dict = Depends(get_current_user),
+) -> Dict[str, Any]:
+    if not current_user.get('is_supreme_admin'):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Super admin access required')
+    return current_user
 def sanitize_document(doc: dict) -> dict:
     """
     Recursively convert ObjectId and other non-serializable fields.
     """
     from bson import ObjectId
 
-    def sanitize(value):
-        if isinstance(value, ObjectId):
-            return str(value)
-        elif isinstance(value, dict):
-            return sanitize_document(value)
-        elif isinstance(value, list):
-            return [sanitize(v) for v in value]
-        return value
-
-    return {k: sanitize(v) for k, v in doc.items()}
 
 WEEKDAY_MAP = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
     "friday": 4, "saturday": 5, "sunday": 6,
 }
+
 
 def get_next_occurrence_single(start_dt: datetime, recurring_day: str) -> datetime:
     if recurring_day is None:
@@ -290,19 +364,29 @@ def get_next_occurrence_single(start_dt: datetime, recurring_day: str) -> dateti
         candidate_date += timedelta(days=7)
     return datetime.combine(candidate_date, start_dt.time())
 
+
+# ==============================
+# MISC HELPERS
+# ==============================
+
 async def get_leader_cell_name_async(leader_id: str) -> str:
     try:
-        doc = await users_collection.find_one({"_id": ObjectId(leader_id)})
+        result = (
+            _supabase_admin.table("Users")
+            .select("name, surname")
+            .eq("_id", leader_id)
+            .single()
+            .execute()
+        )
+        doc = result.data
     except Exception:
-        doc = await users_collection.find_one({"user_id": leader_id})
+        doc = None
     if doc:
-        if "cell_name" in doc and doc["cell_name"]:
-            return doc["cell_name"]
-        name_parts = [doc.get("name", ""), doc.get("surname", "")]
-        name_parts = [p for p in name_parts if p]
+        name_parts = [p for p in [doc.get("name", ""), doc.get("surname", "")] if p]
         if name_parts:
             return " ".join(name_parts) + "'s cell"
-    return f"Cell of {leader_id}"
+    return ""
+
 
 def parse_time_string(t: Optional[str]) -> Optional[time_type]:
     if not t:
@@ -313,9 +397,14 @@ def parse_time_string(t: Optional[str]) -> Optional[time_type]:
     except Exception:
         return None
 
-# --- Helper for ObjectId to string ---
+
 def task_type_serializer(task_type) -> dict:
     return {
-        "id": str(task_type["_id"]),
-        "name": task_type["name"]
+        "id": str(task_type.get("_id") or task_type.get("id", "")),
+        "name": task_type["name"],
     }
+
+
+# ==============================
+# MISC HELPERS
+# ==============================

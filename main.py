@@ -35,6 +35,44 @@ from apscheduler.schedulers.background import BackgroundScheduler, BlockingSched
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from time import sleep
 from supreme_admin import router as supreme_admin_router
+from fastapi.responses import StreamingResponse
+from auth.utils import require_role, require_super_admin
+from supabase_helpers import report_schedules as report_schedules_helpers
+from supabase_helpers.supabase_client import supabase
+from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
+from supabase_helpers.report_schedule_runner import start_report_schedule_runner
+from supabase_helpers.supabase_stats import (
+    sb_get_stats_overview,
+    sb_get_reporting_dashboard,
+    sb_get_outstanding_items,
+    sb_get_dashboard_quick,
+    sb_get_dashboard_comprehensive,
+    sb_get_stats_cells,
+    sb_get_stats_calendar_events,
+)
+from supabase_helpers.service_targets import (
+    sb_upsert_service_target,
+    sb_delete_service_target,
+    sb_list_service_targets,
+    sb_get_service_target_report,
+)
+from supabase_helpers.school_cell_report import (
+    sb_get_school_cell_report,
+    build_school_cell_excel,
+)
+from supabase_helpers.service_checkin_routes import router as service_checkin_router
+from Reports.twelve_tasks import sb_get_twelve_tasks_report
+from Reports.reports_routes import router as reports_router
+from reporting_core.router import router as reporting_router, CATALOG_BY_TYPE, LEGACY_SCHEDULE_TYPES
+from reporting_core.schemas import ReportScheduleCreate, ReportScheduleRecord, ReportScheduleUpdate
+from events import router as events_router
+from people import router as people_router
+from profile_router import router as profile_router
+from admin import router as admin_router
+from admin import event_type_router as admin_event_type_router
+from admin import task_type_router as admin_task_type_router
+from daily_tasks import router as tasks_router
+from task_types import router as task_types_router
 app = FastAPI()
 
 import pandas as pd
@@ -894,6 +932,7 @@ async def background_load_all_people():
 
 @app.on_event("startup")
 async def startup_event():
+    start_report_schedule_runner()
     """Kick off a single background load of all people on startup."""
     print("Starting background load of ALL people...")
     asyncio.create_task(background_load_all_people())
@@ -1736,7 +1775,7 @@ async def get_organization(org_id: str):
 @app.post("/organizations")
 async def create_organization(
     data: dict = Body(...),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_super_admin)
 ):
     """
     Create a new organization.
@@ -1776,7 +1815,7 @@ async def create_organization(
 async def update_organization(
     org_id: str,
     data: dict = Body(...),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_super_admin)
 ):
     """
     Update an existing organization's name.
@@ -1882,7 +1921,7 @@ async def update_organization(
 @app.delete("/organizations/{org_id}")
 async def delete_organization(
     org_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_super_admin)
 ):
     """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
     if not ObjectId.is_valid(org_id):
@@ -4473,8 +4512,11 @@ async def auto_reactivate_expired_events():
 
 scheduler = AsyncIOScheduler()    
 scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
-scheduler.start()
-sleep(10)
+
+@app.on_event("startup")
+async def start_background_scheduler():
+    if not scheduler.running:
+        scheduler.start()
   
 #------------------ MIGRATION ENDPOINTS ---------- 
 @app.post("/migrate-event-types-uuids")
@@ -16803,4 +16845,598 @@ async def preview_spreadsheet_columns(
         "column_mapping": column_mapping,
         "ignored_columns": [c["original"] for c in column_mapping if c["status"] == "ignored"],
         "sample_rows":    sample,
-    }  
+    }
+
+
+def _build_stats_org_filter(current_user: dict) -> Optional[dict]:
+    """
+    Returns None for super-admins (no restriction) or a dict that
+    supabase_stats helpers will apply as a WHERE clause.
+    """
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if is_super:
+        return None
+    org = current_user.get("Organization") or current_user.get("organization")
+    if not org:
+        return None
+    return {"Organization": org, "org_id": current_user.get("org_id")}
+
+
+def _build_stats_user_scope(current_user: dict) -> dict:
+    name = str(current_user.get("name") or "").strip()
+    surname = str(current_user.get("surname") or "").strip()
+    return {
+        "role": current_user.get("role"),
+        "email": current_user.get("email"),
+        "name": f"{name} {surname}".strip(),
+        "is_super": bool(
+            current_user.get("is_supreme_admin")
+            or str(current_user.get("role", "")).lower() == "super_admin"
+        ),
+    }
+
+
+def _legacy_schedule_type(report_type: str) -> str:
+    if report_type in LEGACY_SCHEDULE_TYPES:
+        return report_type
+    if report_type not in CATALOG_BY_TYPE:
+        raise HTTPException(status_code=400, detail=f"Invalid report_type: {report_type}")
+    return next(
+        (legacy for legacy, canonical in LEGACY_SCHEDULE_TYPES.items() if canonical == report_type),
+        report_type,
+    )
+
+
+@app.get("/cache/peopl")
+async def get_cached_people(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+ 
+        # ── Safely resolve org info ───────────────────────────────────────────
+        try:
+            _, _, aliases, is_super_admin = get_org_from_user(current_user)
+        except Exception as org_err:
+            print(f"get_org_from_user failed: {org_err}")
+            aliases = []
+            is_super_admin = True  # fail-open so data is still returned
+ 
+        org_label = current_user.get("Organization") or current_user.get("org_id") or "ALL"
+ 
+        def filter_by_org(data: list) -> list:
+            if is_super_admin or not aliases:
+                return [serialize_doc(p) for p in data]
+            result = []
+            for p in data:
+                p = serialize_doc(p)
+                person_org = (
+                    p.get("org_id") or p.get("Org_id") or p.get("orgId") or
+                    p.get("Organization") or p.get("Organisation") or
+                    p.get("organization") or p.get("organisation") or ""
+                ).strip().lower()
+                if person_org and person_org in aliases:
+                    result.append(p)
+            return result
+ 
+        def parse_expires(val):
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+            try:
+                dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                return None
+ 
+        expires_at = parse_expires(people_cache.get("expires_at"))
+ 
+        # Guard: ensure refresh_queue key exists to avoid KeyError in /status
+        if "refresh_queue" not in people_cache:
+            people_cache["refresh_queue"] = []
+ 
+        # ── 1. fresh valid cache ──────────────────────────────────────────────
+        if (
+            people_cache["data"] and
+            people_cache["is_valid"] and
+            expires_at and
+            current_time < expires_at
+        ):
+            filtered = filter_by_org(people_cache["data"])
+            print(f"CACHE HIT: {len(filtered)} people (org={org_label})")
+            return {
+                "success":       True,
+                "cached_data":   filtered,
+                "cached_at":     people_cache["last_updated"],
+                "expires_at":    people_cache["expires_at"],
+                "source":        "cache",
+                "total_count":   len(filtered),
+                "is_complete":   True,
+                "load_progress": 100,
+                "cache_version": people_cache["version"],
+                "is_valid":      True,
+                "organization":  org_label,
+            }
+ 
+        # ── 2. cache still loading — return partial ───────────────────────────
+        if people_cache["is_loading"]:
+            filtered = filter_by_org(people_cache["data"] or [])
+            return {
+                "success":           True,
+                "cached_data":       filtered,
+                "cached_at":         people_cache["last_updated"],
+                "source":            "loading",
+                "total_count":       len(filtered),
+                "is_complete":       False,
+                "load_progress":     people_cache["load_progress"],
+                "loaded_so_far":     people_cache["total_loaded"],
+                "total_in_database": people_cache["total_in_database"],
+                "message":           f"Loading... {people_cache['load_progress']}% complete",
+                "cache_version":     people_cache["version"],
+                "is_valid":          people_cache["is_valid"],
+                "organization":      org_label,
+            }
+ 
+        # ── 3. stale cache — serve stale, trigger refresh ─────────────────────
+        if people_cache["data"] and not people_cache["is_valid"]:
+            print("Cache stale — returning stale data while refreshing...")
+            if not people_cache["is_loading"] and people_cache.get("pending_refresh"):
+                background_tasks.add_task(
+                    background_refresh_people_cache,
+                    people_cache["data"].copy()
+                )
+            filtered = filter_by_org(people_cache["data"])
+            return {
+                "success":        True,
+                "cached_data":    filtered,
+                "cached_at":      people_cache["last_updated"],
+                "expires_at":     people_cache["expires_at"],
+                "source":         "stale_cache",
+                "total_count":    len(filtered),
+                "is_complete":    True,
+                "message":        "Stale data (refresh in progress)",
+                "cache_version":  people_cache["version"],
+                "is_valid":       False,
+                "refresh_queued": people_cache.get("pending_refresh"),
+                "organization":   org_label,
+            }
+ 
+        # ── 4. cache empty — trigger load ─────────────────────────────────────
+        if not people_cache["data"] and not people_cache["is_loading"]:
+            print("Cache empty — triggering background load...")
+            background_tasks.add_task(background_refresh_people_cache)  # ← FIXED: was create_task
+            return {
+                "success":       True,
+                "cached_data":   [],
+                "cached_at":     None,
+                "source":        "triggered_load",
+                "total_count":   0,
+                "is_complete":   False,
+                "message":       "Background loading started...",
+                "load_progress": 0,
+                "cache_version": people_cache["version"],
+                "organization":  org_label,
+            }
+ 
+        # ── 5. fallback ───────────────────────────────────────────────────────
+        filtered = filter_by_org(people_cache["data"] or [])
+        return {
+            "success":       True,
+            "cached_data":   filtered,
+            "cached_at":     people_cache["last_updated"],
+            "source":        "fallback",
+            "total_count":   len(filtered),
+            "is_complete":   bool(filtered),
+            "cache_version": people_cache["version"],
+            "organization":  org_label,
+        }
+ 
+    except Exception as e:
+        print(f"Error in /cache/people: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success":     False,
+            "error":       str(e),
+            "cached_data": [],
+            "total_count": 0,
+        }
+
+
+@app.post("/check-user-cell")
+async def check_user_cell(
+    email: str = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Check if a user has a cell event (alternative to direct Supabase query)."""
+    result = await user_has_cell(email)
+    return {"hasCell": result}
+
+
+@app.get("/report-schedules", response_model=List[ReportScheduleRecord], response_model_exclude_unset=True)
+async def get_report_schedules(current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    schedules = await asyncio.to_thread(
+        report_schedules_helpers.list_report_schedules, organization
+    )
+    return schedules
+
+
+@app.post("/report-schedules", response_model=ReportScheduleRecord, response_model_exclude_unset=True)
+async def create_report_schedule(payload: ReportScheduleCreate, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    created_by = current_user.get("_id") or current_user.get("id")
+    schedule_payload = payload.model_dump(exclude_unset=True)
+    schedule_payload["report_type"] = _legacy_schedule_type(schedule_payload["report_type"])
+    try:
+        schedule = await asyncio.to_thread(
+            report_schedules_helpers.create_report_schedule, schedule_payload, organization, created_by
+        )
+    except report_schedules_helpers.ReportScheduleValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return schedule
+
+
+@app.put("/report-schedules/{schedule_id}", response_model=ReportScheduleRecord, response_model_exclude_unset=True)
+async def update_report_schedule(schedule_id: str, payload: ReportScheduleUpdate, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    schedule_payload = payload.model_dump(exclude_unset=True)
+    if schedule_payload.get("report_type"):
+        schedule_payload["report_type"] = _legacy_schedule_type(schedule_payload["report_type"])
+    try:
+        schedule = await asyncio.to_thread(
+            report_schedules_helpers.update_report_schedule, schedule_id, schedule_payload, organization
+        )
+    except report_schedules_helpers.ReportScheduleValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return schedule
+
+
+@app.delete("/report-schedules/{schedule_id}", response_model=Dict[str, bool])
+async def delete_report_schedule(schedule_id: str, current_user: dict = Depends(require_role("admin"))):
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    deleted = await asyncio.to_thread(
+        report_schedules_helpers.delete_report_schedule, schedule_id, organization
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"success": True}
+
+
+@app.post("/report-schedules/{schedule_id}/run")
+async def run_schedule_now(schedule_id: str, current_user: dict = Depends(require_role("admin"))):
+    """Run a schedule immediately through the same code path as the scheduler.
+    Requires admin role. Schedule must belong to the caller's Organization.
+    A manual run must NOT change next_run_at.
+    """
+    organization = current_user.get("Organization") or current_user.get("organization")
+    if not organization:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+
+    # Fetch schedule in caller's org (sync via to_thread)
+    schedule = await asyncio.to_thread(
+        report_schedules_helpers.get_report_schedule, schedule_id, organization
+    )
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    # Atomic claim: update next_run_at to new value where old value matches
+    # If next_run_at is null, we need to compute it first
+    now_utc = datetime.now(timezone.utc)
+    from supabase_helpers.report_schedule_runner import compute_next_run
+    if not schedule.get("next_run_at"):
+        new_next_run = compute_next_run(schedule, now_utc)
+    else:
+        new_next_run = compute_next_run(schedule, datetime.fromisoformat(schedule["next_run_at"]))
+
+    # Atomically claim by updating next_run_at; skip if another process claimed it
+    updated = supabase.table("report_schedules").update({
+        "next_run_at": new_next_run,
+    }).eq("id", schedule_id).eq("next_run_at", schedule.get("next_run_at")).eq("Organization", organization).execute()
+
+    if not updated.data:
+        # Another process already claimed it; or next_run_at changed; skip
+        return {"status": "skipped", "error": "Schedule already being processed by another instance"}
+
+    # Now generate and send the report (same code path as scheduler)
+    try:
+        from supabase_helpers.report_schedule_runner import _generate_report
+        from auth.email_utils import send_report_email
+        report_bytes = _generate_report(schedule)
+        recipients = schedule.get("recipients", [])
+        send_report_email(
+            to_email=recipients[0] if recipients else "",
+            subject=f"Scheduled Report: {schedule['report_type']}",
+            body=f"Your {schedule['report_type']} report has been generated.",
+            attachment_bytes=report_bytes,
+            filename=f"{schedule['report_type']}.{schedule['format']}",
+            mimetype=f"application/{schedule['format']}",
+        )
+        # Mark success
+        from supabase_helpers.report_schedules import mark_schedule_run
+        mark_schedule_run(schedule_id, status="success", next_run_at=new_next_run)
+        # Note: manual run does NOT change next_run_at beyond the initial claim
+        # The next_run_at was already set above via the claim
+
+    except ValueError as ve:
+        # Unsupported report_type or format
+        from supabase_helpers.report_schedules import mark_schedule_run
+        mark_schedule_run(schedule_id, status="error", error=str(ve))
+        return {"status": "error", "error": str(ve)}
+    except Exception as e:
+        from supabase_helpers.report_schedules import mark_schedule_run
+        mark_schedule_run(schedule_id, status="error", error=str(e))
+        return {"status": "error", "error": str(e)}
+
+    return {"status": "success"}
+
+
+@app.post("/service-targets")
+async def create_or_update_service_target(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        result = await asyncio.to_thread(
+            sb_upsert_service_target,
+            payload.get("leader_name"),
+            payload.get("target_count"),
+            current_user.get("email", ""),
+            org_filter,
+            payload.get("week_identifier"),
+        )
+        return {"success": True, "target": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving service target: {str(e)}")
+
+
+@app.get("/service-targets")
+async def list_service_targets(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return {"targets": await asyncio.to_thread(sb_list_service_targets, week, org_filter)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service targets: {str(e)}")
+
+
+@app.delete("/service-targets/{target_id}")
+async def delete_service_target(
+    target_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        deleted = await asyncio.to_thread(sb_delete_service_target, target_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Target not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting service target: {str(e)}")
+
+
+@app.get("/stats/calendar-events")
+async def get_stats_calendar_events(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if org_filter is None and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(
+            sb_get_stats_calendar_events,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            org_filter,
+            _build_stats_user_scope(current_user),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching Stats calendar events: {str(e)}")
+
+
+@app.get("/stats/cells")
+async def get_stats_cells(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    is_super = current_user.get("is_supreme_admin") or str(current_user.get("role", "")).lower() == "super_admin"
+    if org_filter is None and not is_super:
+        raise HTTPException(status_code=403, detail="Organization not associated with user")
+    try:
+        return await asyncio.to_thread(
+            sb_get_stats_cells,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            org_filter,
+            _build_stats_user_scope(current_user),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching Stats cells: {str(e)}")
+
+
+@app.get("/stats/export-cells-excel")
+async def export_cells_excel(
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date:   str = Query(..., description="End date   YYYY-MM-DD"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Stream a Cells Attendance .xlsx workbook for the given date range.
+ 
+    Rows: TOTAL CELL ATTENDANCE and TOTAL NO. OF CELLS, one column per week.
+    Includes an embedded dual-line chart (blue = attendance, red = cell count).
+    """
+    import traceback as _tb
+    from supabase_helpers.excel_export import build_cells_excel
+    from fastapi.responses import StreamingResponse
+ 
+    org_filter = _build_stats_org_filter(current_user)
+ 
+    try:
+        excel_bytes = await asyncio.to_thread(
+            build_cells_excel, org_filter, start_date, end_date
+        )
+    except Exception as exc:
+        # Log the full traceback so it appears in the server console
+        _tb.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Excel generation failed: {exc}",
+        )
+ 
+    filename = f"cells_attendance_{start_date}_to_{end_date}.xlsx"
+ 
+    return StreamingResponse(
+        io.BytesIO(excel_bytes),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+@app.get("/stats/school-cell")
+async def get_school_cell_report(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_school_cell_report, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching School Cell report: {str(e)}")
+
+
+@app.get("/stats/school-cell/export-excel")
+async def export_school_cell_excel(
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        excel_bytes = await asyncio.to_thread(build_school_cell_excel, org_filter, start_date, end_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"School Cell Excel generation failed: {str(e)}")
+
+    filename = f"school_cells_{start_date}_to_{end_date}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+@app.get("/stats/service-target-report")
+async def get_service_target_report(
+    week: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_service_target_report, week, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching service target report: {str(e)}")
+
+
+@app.get("/stats/twelve-tasks")
+async def get_twelve_tasks_report(
+    period: str = Query("thisWeek", pattern="^(today|thisWeek|thisMonth|previousWeek|previousMonth)$"),
+    current_user: dict = Depends(get_current_user),
+):
+    org_filter = _build_stats_org_filter(current_user)
+    try:
+        return await asyncio.to_thread(sb_get_twelve_tasks_report, period, org_filter)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching Twelve Tasks report: {str(e)}")
+
+
+@app.post("/change-password")
+async def change_password(payload: dict = Body(...)):
+    """Change password for the current user using access token."""
+    token = payload.get("token")
+    new_password = payload.get("new_password")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Missing token or new password")
+    
+    try:
+        # Decode the token to get user info
+        payload_data = decode_access_token(token)
+        user_id = payload_data.get("user_id")
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Invalid token payload")
+        
+        hashed_pw = hash_password(new_password)
+        result = await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed_pw, "confirm_password": hashed_pw}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found or password unchanged")
+        
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+        access_token = create_access_token(
+            {"user_id": str(user["_id"]), "email": user["email"], "role": user.get("role", "user")},
+            expires_delta=timedelta(minutes=JWT_EXPIRE_MINUTES)
+        )
+        
+        logger.info(f"Password changed successfully for {user['email']}")
+        return {
+            "message": "Password has been changed successfully.",
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change password error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
+app.include_router(events_router)
+app.include_router(tasks_router)
+app.include_router(task_types_router)
+app.include_router(service_checkin_router)
+app.include_router(admin_router)
+app.include_router(admin_event_type_router)
+app.include_router(admin_task_type_router)
+app.include_router(reports_router)
+app.include_router(reporting_router)
+app.include_router(people_router)
+app.include_router(profile_router)

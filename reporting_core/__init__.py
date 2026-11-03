@@ -1,0 +1,1 @@
+"""Shared reporting API contracts and route adapters."""

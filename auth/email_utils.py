@@ -1,7 +1,10 @@
 import os
 import smtplib
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders as email_encoders
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -17,6 +20,59 @@ FROM_NAME = "Active Teams"
 
 print(f" Gmail User: {GMAIL_USER}")
 print(f" App Password configured: {' YES' if GMAIL_APP_PASSWORD else ' NO'}")
+
+
+def send_report_email(to_email: str, subject: str, body: str,
+                      attachment_bytes: bytes | None = None,
+                      filename: str | None = None,
+                      mimetype: str | None = None) -> bool:
+    """
+    Send a report email using Gmail SMTP.
+
+    Supports attaching a report file (bytes) with a given filename and mimetype.
+    Sets a socket timeout to avoid hanging on Render.
+
+    Returns True on success, False on failure.
+    """
+    if not GMAIL_APP_PASSWORD:
+        print(" No App Password configured!")
+        return False
+
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = f"{FROM_NAME} <{FROM_EMAIL}>"
+        msg['To'] = to_email
+
+        msg.attach(MIMEText(body, 'html'))
+
+        # Attachment handling
+        if attachment_bytes and filename and mimetype:
+            attachment_mime = MIMEBase('application', 'octet-stream')
+            attachment_mime.set_payload(attachment_bytes)
+            email_encoders.encode_base64(attachment_mime)
+            attachment_mime.add_header(
+                'Content-Disposition',
+                f'attachment; filename="{filename}"'
+            )
+            msg.attach(attachment_mime)
+
+        print(f" Connecting to Gmail SMTP (timeout=30s)...")
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as server:
+            print(" Logging in...")
+            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            print(" Sending...")
+            server.send_message(msg)
+
+        print(f" Email sent successfully to {to_email}")
+        return True
+    except socket.timeout:
+        print(f" SMTP connection timed out to {to_email}")
+        return False
+    except Exception as e:
+        print(f" Error sending report email to {to_email}: {e}")
+        return False
+
 
 def send_reset_email(to_email: str, recipient_name: str, reset_link: str):
     """Send password reset email using Gmail SMTP"""
