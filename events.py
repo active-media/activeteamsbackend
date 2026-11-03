@@ -533,7 +533,8 @@ async def get_cell_events(
 
         disciples_cells_params = {
             "p_event_type": event_type,
-            "p_leader12_email": current_user.get('email')
+            "p_leader12_email": "kennybebel@gmail.com"
+            # current_user.get('email')
         }
 
 
