@@ -537,9 +537,24 @@ def sb_get_reporting_dashboard(
         ).lte("session_date", to_date.isoformat())
 
     sessions = _execute_all_pages(sessions_query(start.date(), end.date()))
+    today = datetime.now(timezone.utc).date()
     duration = end.date() - start.date()
-    previous_end = start.date() - timedelta(days=1)
-    previous_start = previous_end - duration
+    # For in-progress periods compare against the same elapsed span of the
+    # previous calendar period (e.g. Nov 1-3 vs Oct 1-3) instead of the
+    # immediately preceding equal-length window.
+    _PREVIOUS_TOKEN = {"thisMonth": "previousMonth", "thisWeek": "previousWeek", "today": "previous7"}
+    if end.date() >= today and period in _PREVIOUS_TOKEN:
+        try:
+            prev_start_dt, prev_end_dt = _period_range(_PREVIOUS_TOKEN[period])
+            elapsed = (today - start.date()).days
+            previous_start = prev_start_dt.date()
+            previous_end = min(prev_end_dt.date(), previous_start + timedelta(days=elapsed))
+        except Exception:
+            previous_end = start.date() - timedelta(days=1)
+            previous_start = previous_end - duration
+    else:
+        previous_end = start.date() - timedelta(days=1)
+        previous_start = previous_end - duration
     previous_sessions = _execute_all_pages(sessions_query(previous_start, previous_end))
 
     people_query = supabase.table("People").select("_id", count="exact")

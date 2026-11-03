@@ -70,7 +70,7 @@ def dashboard_envelope(
     target_hint = f"Target {target_total:,.0f}" if target_total is not None else "Target unavailable"
     tasks_hint = f"Target {sum(targets):,.0f}" if targets else "Targets unavailable"
     new_visitors = data.get("new_visitors")
-    attendance_hint = f"{new_visitors:,} new visitors" if new_visitors is not None else "Attendance in selected period"
+    attendance_hint = "Sum of check-ins across completed services"
     active_cell_sessions = data.get("active_cell_sessions")
     active_cells_hint = (
         f"{active_cell_sessions:,} completed sessions"
