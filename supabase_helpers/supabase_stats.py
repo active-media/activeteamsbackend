@@ -425,7 +425,8 @@ def _aggregate_reporting_dashboard(
     week_labels = []
     week_cursor = first_day - timedelta(days=first_day.weekday())
     while week_cursor <= last_day:
-        week_labels.append(max(week_cursor, first_day).isoformat())
+        sunday = week_cursor + timedelta(days=6)
+        week_labels.append(sunday.isoformat())
         week_cursor += timedelta(days=7)
 
     for leader in leaders_by_name.values():
