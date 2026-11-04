@@ -358,6 +358,7 @@ async def get_user_tasks(
     userId:            Optional[str] = Query(None),
     start_date:        Optional[str] = Query(None),
     end_date:          Optional[str] = Query(None),
+    all_dates:         bool          = Query(False),
     task_type:         Optional[str] = Query(None),
     status:            Optional[str] = Query(None),
     view_all:          bool          = Query(False),
@@ -402,7 +403,7 @@ async def get_user_tasks(
                 query = query.gte("followup_date", start_date)
             if end_date:
                 query = query.lte("followup_date", f"{end_date}T23:59:59.999999")
-        else:
+        elif not all_dates:
             sixty_days_ago = (
                 datetime.now(timezone.utc) - timedelta(days=60)
             ).isoformat()
