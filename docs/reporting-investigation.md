@@ -12,12 +12,24 @@ This note describes the reporting dashboard implementation on
 - The backend reporting router resolves the period and organization scope, then
   calls `sb_get_reporting_dashboard` and builds the response with
   `dashboard_envelope`.
-- Report pages are served at `/reports/{report_type}`. The Active Cells,
-  Service Target, and Twelve Tasks cards link to `/reports/cells_graph`,
-  `/reports/service_target`, and `/reports/twelve_tasks`, respectively.
-- Total Attendance, Life Class, School of Leaders, and Plan 40 have no linked
-  detail page in the current dashboard; their cards are disabled and show
-  “Coming soon.” Total Attendance still displays its value and growth caption.
+- Report pages are served at `/reports/{report_type}`. Every dashboard KPI card
+  links to a corresponding report; there is no disabled or “Coming soon” state.
+
+## KPI-to-report mapping
+
+| Dashboard KPI | Report opened |
+|---|---|
+| Total Attendance | `/reports/cells_graph` — attendance trend and cell attendance |
+| Active Cells | `/reports/cells_graph` — active-cell trends and cell list |
+| Life Class | `/reports/life_class` |
+| School of Leaders | `/reports/school_of_leaders` |
+| Plan 40 | `/reports/plan_40` |
+| Service Target | `/reports/service_target` |
+| Twelve Tasks | `/reports/twelve_tasks` |
+| Staff/Interns/Youth | `/reports/staff_interns_youth` |
+
+These report types are registered in the backend catalog and are handled by
+their report builders. Unsupported KPI keys are not rendered as cards.
 
 ## KPI values and hints
 
@@ -26,7 +38,13 @@ sum of `checked_in_count` for complete `event_sessions` inside the selected
 period; it is not a distinct-person count. Its hint is “Sum of check-ins across
 completed services.” The growth percentage remains visible in the card header,
 and KPI hints are rendered below their values without removing the other cards’
-hints.
+hints. Cards use link semantics, visible keyboard focus, and respond to Enter
+and Space.
+
+Links retain the dashboard period (including custom date ranges), campus, and
+any `organization`/`org` query parameter. The reporting API applies the
+authenticated user's organization scope; the dashboard has no separate
+organization selector.
 
 For the in-progress `thisMonth`, `thisWeek`, and `today` periods, attendance
 growth compares the elapsed portion with the corresponding elapsed portion of
