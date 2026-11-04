@@ -360,6 +360,7 @@ async def get_user_tasks(
     end_date:          Optional[str] = Query(None),
     all_dates:         bool          = Query(False),
     task_type:         Optional[str] = Query(None),
+    task_stage:        Optional[str] = Query(None),
     status:            Optional[str] = Query(None),
     view_all:          bool          = Query(False),
     page:              int           = Query(1, ge=1),
@@ -374,30 +375,46 @@ async def get_user_tasks(
         is_super_admin = current_user.get("role") == "super_admin"
         is_leader      = current_user.get("role") in ["admin", "leader", "manager", "org_admin"]
 
-        # Resolve target email
+        # Resolve target email(s) - support multiple emails for disciples view
+        emails = []
         if email:
-            user_email = email.strip().lower()
+            # Support multiple emails (comma-separated or repeated param)
+            if isinstance(email, str):
+                emails = [e.strip().lower() for e in email.split(",") if e.strip()]
+            else:
+                emails = [e.strip().lower() for e in email if e.strip()]
         elif assigned_to_email:
-            user_email = assigned_to_email.strip().lower()
+            emails = [assigned_to_email.strip().lower()]
         elif assignedfor:
-            user_email = assignedfor.strip().lower()
+            emails = [assignedfor.strip().lower()]
         elif userId:
             user_doc   = await users_collection.find_one({"_id": ObjectId(userId)})
             user_email = (user_doc.get("email", "") if user_doc else "").lower()
+            if user_email:
+                emails = [user_email]
         else:
             user_email = current_user.get("email", "").lower()
+            if user_email:
+                emails = [user_email]
 
-        if not user_email and not (is_leader and view_all):
+        if not emails and not (is_leader and view_all):
             return {"error": "User email not found", "status": "failed"}
 
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
-        query = (
-            supabase.table("Tasks")
-            .select("*")
-            .eq("assigned_to_email", user_email)
-        )
+        # Build base query
+        query = supabase.table("Tasks").select("*")
+        
+        # Filter by email(s) - if multiple emails, use OR
+        if emails:
+            if len(emails) == 1:
+                query = query.eq("assigned_to_email", emails[0])
+            else:
+                # Use OR for multiple emails
+                email_conditions = ",".join([f"assigned_to_email.eq.{e}" for e in emails])
+                query = query.or_(email_conditions)
 
+        # Date range filters
         if start_date or end_date:
             if start_date:
                 query = query.gte("followup_date", start_date)
@@ -416,11 +433,15 @@ async def get_user_tasks(
         else:
             query = query.eq('Organization', org_name)
 
-        # Optional task type / status filters (case-insensitive contains)
+        # Optional task type filter (case-insensitive contains)
         if task_type:
             query = query.ilike("taskType", f"%{task_type}%")
-        if status:
-            query = query.ilike("status", f"%{status}%")
+        
+        # Optional task stage filter (exact match for stages: open, completed, awaiting task, overdue)
+        # Also support legacy status parameter
+        stage_filter = task_stage or status
+        if stage_filter:
+            query = query.ilike("status", f"%{stage_filter}%")
 
         rows = (query.limit(5000).execute().data) or []
 
