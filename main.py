@@ -12719,20 +12719,46 @@ async def set_twelve_tasks_target(
             'is_default': False,
             'updated_by': current_user.get('email', '').lower(),
         }
+        def supabase_write_error(error, operation):
+            raw_status = getattr(error, 'status_code', None)
+            try:
+                status = int(raw_status)
+            except (TypeError, ValueError):
+                status = 500
+            if status < 400 or status > 599:
+                status = 500
+            detail = getattr(error, 'message', None) or str(error)
+            logger.error(
+                'Twelve Tasks target %s failed (status=%s): %s',
+                operation,
+                status,
+                detail,
+            )
+            return HTTPException(status_code=status, detail=detail)
+
+        upsert_error = None
+        upsert_http_error = None
         try:
             result = (
                 supabase.table('twelve_tasks_targets')
                 .upsert(data, on_conflict=['person_id', 'week_identifier', 'organization'])
                 .execute())
             target_record = result.data[0] if result.data else None
-        except Exception:
+        except Exception as error:
+            upsert_error = error
+            upsert_http_error = supabase_write_error(error, 'upsert')
             target_record = None
         if not target_record:
             try:
                 result = supabase.table('twelve_tasks_targets').insert(data).execute()
                 target_record = result.data[0] if result.data else None
-            except Exception:
-                target_record = None
+            except Exception as error:
+                raise supabase_write_error(error, 'insert') from error
+        if not target_record:
+            if upsert_error is not None and upsert_http_error is not None:
+                raise upsert_http_error from upsert_error
+            logger.error('Twelve Tasks target insert returned no row (status=500)')
+            raise HTTPException(status_code=500, detail='Supabase did not return a Twelve Tasks target row')
         return {
             'status': 'success',
             'target': target_record,
