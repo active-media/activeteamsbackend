@@ -1029,33 +1029,51 @@ async def refresh_people_cache(background_tasks: BackgroundTasks):
  
 @app.get("/cache/people/status")
 async def get_cache_status():
-    """Get detailed cache status and loading progress."""
-    total_in_db = await people_collection.count_documents({})
-    cache_size = len(people_cache["data"])
- 
-    # Guard against missing key
-    refresh_queue = people_cache.get("refresh_queue", [])
- 
-    return {
-        "cache": {
-            "size": cache_size,
-            "last_updated": people_cache["last_updated"],
-            "expires_at": people_cache["expires_at"],
-            "is_loading": people_cache["is_loading"],
-            "load_progress": people_cache["load_progress"],
-            "total_loaded": people_cache["total_loaded"],
-            "last_error": people_cache["last_error"],
-            "is_valid": people_cache["is_valid"],
-            "pending_refresh": people_cache.get("pending_refresh"),
-            "version": people_cache["version"],
-            "refresh_queue_size": len(refresh_queue)
-        },
-        "database": {
-            "total_people": total_in_db,
-            "coverage_percentage": round((cache_size / total_in_db) * 100, 1) if total_in_db > 0 else 0
-        },
-        "is_complete": cache_size >= total_in_db if total_in_db > 0 else True
-    }
+    """Get detailed cache status and loading progress.
+
+    Reads the same in-memory cache that GET /cache/people (people.py) serves
+    from, so `is_complete` reflects the cache clients actually receive.
+    """
+    try:
+        from people import people_cache as live_people_cache
+
+        total_in_db = await people_collection.count_documents({})
+
+        cache = live_people_cache
+        cache_size = len(cache.get("data") or [])
+        is_loading = bool(cache.get("is_loading"))
+        is_valid = bool(cache.get("is_valid"))
+        load_progress = cache.get("load_progress") or 0
+
+        # Guard against missing key
+        refresh_queue = cache.get("refresh_queue") or []
+
+        return {
+            "cache": {
+                "size": cache_size,
+                "last_updated": cache.get("last_updated"),
+                "expires_at": cache.get("expires_at"),
+                "is_loading": is_loading,
+                "load_progress": load_progress,
+                "total_loaded": cache.get("total_loaded"),
+                "last_error": cache.get("last_error"),
+                "is_valid": is_valid,
+                "pending_refresh": cache.get("pending_refresh"),
+                "version": cache.get("version"),
+                "refresh_queue_size": len(refresh_queue)
+            },
+            "database": {
+                "total_people": total_in_db,
+                "coverage_percentage": round((cache_size / total_in_db) * 100, 1) if total_in_db > 0 else 0
+            },
+            "is_complete": bool(cache_size > 0 and is_valid and not is_loading and load_progress >= 100)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "is_complete": False
+        }
   
 @app.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
