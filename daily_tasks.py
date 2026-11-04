@@ -12,7 +12,7 @@ from auth.models import TaskModel
 from auth.utils import get_current_user
 from database import users_collection          # still needed for userId lookups
 from supabase_helpers.activity_log import log_activity
-from supabase_helpers.supabase_client import supabase
+from supabase_helpers.supabase_client import supabase_admin as supabase
 
 logger = logging.getLogger("daily_tasks")
 
