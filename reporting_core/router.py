@@ -6,6 +6,7 @@ import io
 import logging
 import os
 import tempfile
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -165,6 +166,12 @@ def _dates(period: ResolvedPeriod) -> tuple[str, str]:
     return period.start.isoformat(), period.end.isoformat()
 
 
+def _organization_scope(scope: ReportScope, organization: str | None) -> ReportScope:
+    if scope.is_super and organization:
+        return replace(scope, org_filter={"Organization": organization})
+    return scope
+
+
 async def _dashboard_data(scope: ReportScope, period: ResolvedPeriod, campus: str | None) -> dict:
     start, end = _dates(period)
     return await asyncio.to_thread(
@@ -280,8 +287,10 @@ async def get_reporting_dashboard(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     campus: str | None = Query(None, min_length=1, max_length=120),
+    organization: str | None = Query(None, min_length=1, max_length=120),
     scope: ReportScope = Depends(get_report_scope),
 ):
+    scope = _organization_scope(scope, organization)
     resolved = _resolved_period(period, start_date, end_date)
     try:
         data, service_data, twelve_data = await asyncio.gather(
@@ -304,8 +313,10 @@ async def get_report(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     campus: str | None = Query(None, min_length=1, max_length=120),
+    organization: str | None = Query(None, min_length=1, max_length=120),
     scope: ReportScope = Depends(get_report_scope),
 ):
+    scope = _organization_scope(scope, organization)
     resolved = _resolved_period(period, start_date, end_date)
     return await _report_envelope(report_type, scope, resolved, campus)
 
@@ -434,8 +445,10 @@ async def export_report(
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     campus: str | None = Query(None, min_length=1, max_length=120),
+    organization: str | None = Query(None, min_length=1, max_length=120),
     scope: ReportScope = Depends(get_report_scope),
 ):
+    scope = _organization_scope(scope, organization)
     resolved = _resolved_period(period, start_date, end_date)
     if report_type not in CATALOG_BY_TYPE:
         raise HTTPException(status_code=404, detail=f"Unknown report_type '{report_type}'")
@@ -523,6 +536,7 @@ async def generate_report(
     organization: str | None = Query(None, min_length=1),
     scope: ReportScope = Depends(get_report_scope),
 ):
+    scope = _organization_scope(scope, organization)
     resolved = _resolved_period(period, start_date, end_date)
     envelope = await _report_envelope(report_type, scope, resolved, campus)
     payload = envelope.model_dump(mode="json")

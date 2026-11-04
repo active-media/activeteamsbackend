@@ -12638,7 +12638,10 @@ def _build_target_org_filter(current_user: dict) -> None:
     """
     Returns org filter dict for target endpoints, or None for super_admins.
     """
-    is_super = current_user.get('is_supreme_admin') or current_user.get('role') == 'super_admin'
+    is_super = (
+        current_user.get('is_supreme_admin')
+        or current_user.get('role') in {'super_admin', 'supreme_admin'}
+    )
     if is_super:
         return None
     org = current_user.get('Organization') or current_user.get('organization')
@@ -12805,6 +12808,15 @@ async def get_available_weeks(
     current_user: dict = Depends(get_current_user),
 ):
     from supabase_helpers.supabase_connection import supabase_admin
+    is_super = (
+        current_user.get('is_supreme_admin')
+        or current_user.get('role') in {'super_admin', 'supreme_admin'}
+    )
+    if not is_super:
+        org_filter = _build_target_org_filter(current_user)
+        organization = (org_filter or {}).get('Organization')
+        if not organization:
+            raise HTTPException(status_code=403, detail='Organization not associated with user')
     weeks = set()
     for table in ("service_targets", "twelve_tasks_targets"):
         q = supabase_admin.table(table).select("week_identifier")
@@ -12817,12 +12829,26 @@ async def get_available_weeks(
 async def get_twelve_tasks_targets(
     week: Optional[str] = Query(None),
     person_id: Optional[str] = Query(None),
+    org: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
     """
     List Twelve Tasks targets, optionally filtered by week or person.
     """
     org_filter = _build_target_org_filter(current_user)
+    if org_filter is None:
+        is_super = (
+            current_user.get('is_supreme_admin')
+            or current_user.get('role') in {'super_admin', 'supreme_admin'}
+        )
+        if is_super and org:
+            org_filter = {'Organization': org}
+        elif not is_super:
+            organization = current_user.get('Organization') or current_user.get('organization')
+            if organization:
+                org_filter = {'Organization': organization}
+            else:
+                raise HTTPException(status_code=403, detail='Organization not associated with user')
     query = supabase.table('twelve_tasks_targets').select('*')
     if org_filter:
         query = query.eq('organization', org_filter.get('Organization'))
@@ -12874,7 +12900,7 @@ async def set_default_twelve_tasks_target(
             'is_default': True,
             'updated_by': current_user.get('email', '').lower(),
         }
-        conflict_keys = ['week_identifier', 'organization']
+        conflict_keys = ['person_id', 'week_identifier', 'organization']
         try:
             result = (
                 supabase.table('twelve_tasks_targets')

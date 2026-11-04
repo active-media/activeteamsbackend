@@ -29,7 +29,9 @@ This note describes the reporting dashboard implementation on
 | Staff/Interns/Youth | `/reports/staff_interns_youth` |
 
 These report types are registered in the backend catalog and are handled by
-their report builders. Unsupported KPI keys are not rendered as cards.
+their report builders. Unsupported KPI keys are not rendered as cards. The
+report API honors the `organization` query parameter for super-admin requests;
+regular users remain scoped to their authenticated organization.
 
 ## KPI values and hints
 
@@ -42,9 +44,10 @@ hints. Cards use link semantics, visible keyboard focus, and respond to Enter
 and Space.
 
 Links retain the dashboard period (including custom date ranges), campus, and
-any `organization`/`org` query parameter. The reporting API applies the
-authenticated user's organization scope; the dashboard has no separate
-organization selector.
+any `organization`/`org` query parameter. Regular users remain restricted to
+their authenticated organization. For super-admins, the dashboard and report
+API apply the selected `organization` query parameter. The dashboard has no
+separate organization selector.
 
 For the in-progress `thisMonth`, `thisWeek`, and `today` periods, attendance
 growth compares the elapsed portion with the corresponding elapsed portion of
@@ -90,6 +93,35 @@ returns a row, the endpoint responds with an error instead of a null target.
 The Service Target write endpoint is `POST /targets/service`; it uses
 `sb_upsert_service_target`, which raises on write errors or when Supabase
 returns no row.
+
+## Twelve Tasks report source
+
+The Admin page does not define twelve named task categories. It defines
+per-person target rows for a selected week and organization in
+`twelve_tasks_targets`; the number of people/rows is variable. The Twelve Tasks
+report now uses those Admin rows as its source of truth, scoped to the report
+organization and ISO week(s), and displays each person's current name, target,
+week, and completed task actuals. It no longer uses the separate
+`twelve_tasks_tracked_people` roster to create report rows or defaults missing
+targets. An Admin-defined organization default remains one “Leader default”
+row; it is not expanded into synthetic person rows.
+`migration_twelve_tasks_weekly_targets.sql` replaces the old person-only
+primary key with a unique person/week/organization index, so weekly definitions
+can coexist; the default-target writer uses the same conflict key. The
+migration must be applied to the database before weekly targets can persist
+independently. No live database migration was run.
+
+Rows are not padded or truncated to twelve. If a person has since been deleted
+from `People`, their target row remains visible under the person ID and the
+report does not fail. Actuals are matched by the current person's ID/email, so
+unmatched historical task assignments do not get attributed to someone else.
+A week without Admin target rows has no zero-filled KPIs or report rows; the
+report page shows “No tasks set for this week” with a link to Admin.
+
+Admin's target-list and available-week routes accept organization selection
+for super-admins while enforcing the authenticated organization for regular
+users. The KPI link carries its current week/period and organization context
+to the report.
 
 ## Read-only KPI audit
 

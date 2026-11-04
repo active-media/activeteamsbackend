@@ -184,7 +184,7 @@ def twelve_tasks_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
     total = sum(_number(row.get("this_week")) or 0 for row in rows)
     return ReportEnvelope.model_validate({
         "meta": _meta("twelve_tasks", "Twelve Tasks", period, None),
-        "kpis": [
+        "kpis": [] if not rows else [
             {"key": "completed_tasks", "label": "Completed Tasks", "value": total, "format": "number"},
             {"key": "tracked_people", "label": "Tracked People", "value": len(rows), "format": "number"},
         ],
@@ -192,6 +192,7 @@ def twelve_tasks_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
             "key": "twelve_tasks",
             "title": "Twelve Tasks",
             "columns": [
+                {"key": "week_identifier", "label": "Week"},
                 {"key": "name", "label": "Name"},
                 {"key": "gender", "label": "Gender"},
                 {"key": "last_week", "label": "Last Week", "format": "number"},

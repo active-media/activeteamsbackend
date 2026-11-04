@@ -231,6 +231,32 @@ def test_dashboard_and_cells_graph_use_identical_resolved_helper_params(
     assert dashboard.json()["kpis"][0]["value"] == cells_graph.json()["kpis"][0]["value"]
 
 
+def test_super_admin_report_honors_selected_organization(client, monkeypatch):
+    set_scope(ReportScope(None, True, "super_admin", "super-1", None))
+    calls = []
+    dashboard_calls = []
+
+    mock_calculators(monkeypatch, dashboard_calls)
+
+    def twelve(period, org_filter, *args):
+        calls.append(org_filter)
+        return {"rows": []}
+
+    monkeypatch.setattr(reporting_routes, "sb_get_twelve_tasks_report", twelve)
+
+    response = client.get(
+        "/reporting/reports/twelve_tasks?period=thisWeek&organization=Example%20Org"
+    )
+    dashboard = client.get(
+        "/reporting/dashboard?period=thisWeek&organization=Example%20Org"
+    )
+
+    assert response.status_code == 200
+    assert dashboard.status_code == 200
+    assert calls == [{"Organization": "Example Org"}, {"Organization": "Example Org"}]
+    assert dashboard_calls[0][1] == {"Organization": "Example Org"}
+
+
 def test_dashboard_and_twelve_tasks_use_identical_helper_params_and_values(
     client, admin_scope, monkeypatch
 ):
