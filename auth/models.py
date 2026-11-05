@@ -102,10 +102,13 @@ class PersonCreate(BaseModel):
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
+    event_type_id: Optional[str] = None
     name: str
     description: str
     event_category: str = "small_gatherings"  # Default to "Global"
     isGlobal: Optional[bool] = None
+    isTicketed: Optional[bool] = None
+    isTraining: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
     createdAt: Optional[datetime] = None
 
@@ -149,6 +152,8 @@ class EventBase(BaseModel):
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
     deactivation_reason: Optional[str] = None
+    class_level: Optional[int] = 0
+    total_sessions: Optional[int] = 0
 
 class EventCreate(EventBase):
     pass
@@ -180,6 +185,7 @@ class EventUpdate(BaseModel):
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
     deactivation_reason: Optional[str] = None
+
 class CellDeactivateRequest(BaseModel):
     weeks: int = Field(1, ge=1, le=12, description="Number of weeks to deactivate (1-12)")
     reason: Optional[str] = Field(None, max_length=200, description="Reason for deactivation")
