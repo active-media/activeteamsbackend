@@ -5,9 +5,22 @@ from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, Backgr
 from auth.models import PersonCreate
 from auth.utils import get_current_user
 from database import supabase, PEOPLE_TABLE
+# supabase_admin uses the service-role key (bypasses RLS). Server-side caches
+# and aggregates must use it: RLS only permits authenticated user JWTs, so the
+# anon client returns 0 rows with a 200 OK for People reads.
+from supabase_helpers.supabase_connection import supabase_admin
 import traceback
 
 router = APIRouter()
+
+# Columns needed by the client-side people cache (People page + Daily Tasks).
+# Deliberately NOT "select(*)" — the People table is wide, and fetching every
+# column for 17k+ rows is what made the cache load take forever.
+PEOPLE_CACHE_COLUMNS = (
+    '_id, person_id, Name, Surname, Email, Number, Gender, Birthday, Address, '
+    'InvitedBy, Stage, org_id, Organization, UpdatedAt, '
+    '"Leader @1", "Leader @12", "Leader @144", "Leader @1728"'
+)
 
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -236,7 +249,10 @@ async def get_all_people_minimal(current_user: dict = Depends(get_current_user))
     try:
         response = (
             _apply_people_org_filter(
-                supabase.table(PEOPLE_TABLE).select("_id, person_id, Name, Surname, Email, Number"),
+                supabase_admin.table(PEOPLE_TABLE).select(
+                    '_id, person_id, Name, Surname, Email, Number, '
+                    '"Leader @1", "Leader @12", "Leader @144", "Leader @1728"'
+                ),
                 current_user,
             )
             .limit(1000)
@@ -252,6 +268,10 @@ async def get_all_people_minimal(current_user: dict = Depends(get_current_user))
                 "Surname": person.get("Surname") or "",
                 "Email": person.get("Email") or "",
                 "Number": person.get("Number") or "",
+                "Leader @1": person.get("Leader @1") or "",
+                "Leader @12": person.get("Leader @12") or "",
+                "Leader @144": person.get("Leader @144") or "",
+                "Leader @1728": person.get("Leader @1728") or "",
             })
 
         return {"people": people}
@@ -585,7 +605,7 @@ async def background_refresh_people_cache():
         print("Starting paginated background load from Supabase...")
 
         # 1. Get total record count first
-        count_response = supabase.table("People").select("person_id", count="exact").limit(1).execute()
+        count_response = supabase_admin.table("People").select("person_id", count="exact").limit(1).execute()
         total_in_db = count_response.count if count_response.count is not None else 0
         people_cache["total_in_database"] = total_in_db
 
@@ -596,7 +616,12 @@ async def background_refresh_people_cache():
         # 2. Paginate until all rows are retrieved
         while True:
             end = start + page_size - 1
-            response = supabase.table("People").select("*").range(start, end).execute()
+            response = (
+                supabase_admin.table("People")
+                .select(PEOPLE_CACHE_COLUMNS)
+                .range(start, end)
+                .execute()
+            )
             chunk = response.data or []
 
             if not chunk:
