@@ -233,15 +233,43 @@ def sb_get_admin_task_targets(
 def _fetch_target_people(person_ids: list[str]) -> dict[str, dict]:
     if not person_ids:
         return {}
-    rows = (
-        supabase.table("People")
-        .select("_id, Name, Surname, Gender, Email")
+    user_rows = (
+        supabase.table("Users")
+        .select("_id, name, surname, gender, email")
         .in_("_id", person_ids)
         .execute()
         .data
         or []
     )
-    return {str(row["_id"]): row for row in rows if row.get("_id") is not None}
+    people = {
+        str(row["_id"]): {
+            "Name": row.get("name"),
+            "Surname": row.get("surname"),
+            "Gender": row.get("gender"),
+            "Email": row.get("email"),
+        }
+        for row in user_rows
+        if row.get("_id") is not None
+    }
+
+    missing_ids = [person_id for person_id in person_ids if person_id not in people]
+    if missing_ids:
+        legacy_rows = (
+            supabase.table("People")
+            .select("_id, Name, Surname, Gender, Email")
+            .in_("_id", missing_ids)
+            .execute()
+            .data
+            or []
+        )
+        people.update(
+            {
+                str(row["_id"]): row
+                for row in legacy_rows
+                if row.get("_id") is not None
+            }
+        )
+    return people
 
 
 def sb_set_target(person_id: str, target: int, updated_by: Optional[str] = None) -> dict:

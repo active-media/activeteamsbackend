@@ -85,9 +85,7 @@ def test_catalog_has_eight_types_and_implementation_flags(client, admin_scope):
     assert response.status_code == 200
     items = {item["report_type"]: item for item in response.json()}
     assert len(items) == 8
-    assert {name for name, item in items.items() if item["implemented"]} == {
-        "twelve_tasks", "cells_graph", "school_cell", "service_target"
-    }
+    assert all(item["implemented"] for item in items.values())
 
 
 def test_dashboard_and_twelve_tasks_are_valid_envelopes_and_nulls_are_real_nulls(
@@ -160,30 +158,23 @@ def test_dashboard_core_source_failure_returns_500(client, admin_scope, monkeypa
     "report_type",
     ["life_class", "school_of_leaders", "plan_40", "staff_interns_youth"],
 )
-@pytest.mark.parametrize("operation", ["report", "csv_export", "generate", "pdf_export"])
-def test_unimplemented_reports_have_exact_501_shape(
-    client, admin_scope, report_type, operation
-):
+def test_implemented_report_routes_and_csv_exports(client, admin_scope, monkeypatch, report_type):
     set_scope(admin_scope)
-    if operation == "report":
-        response = client.get(f"/reporting/reports/{report_type}")
-        message = f"The {report_type} report is not implemented."
-    elif operation == "generate":
-        response = client.post(f"/reporting/reports/{report_type}/generate")
-        message = f"The {report_type} report is not implemented."
-    else:
-        format_value = "pdf" if operation == "pdf_export" else "csv"
-        response = client.get(f"/reporting/reports/{report_type}/export?format={format_value}")
-        message = f"The {report_type} report is not implemented."
+    empty_view = {"kpis": [], "tables": [], "series": []}
+    monkeypatch.setattr(reporting_routes, "load_training", lambda *_args: [])
+    monkeypatch.setattr(reporting_routes, "build_training_view", lambda *_args: empty_view)
+    monkeypatch.setattr(reporting_routes, "fetch_staff_report", lambda *_args: {})
+    monkeypatch.setattr(reporting_routes, "staff_view", lambda *_args: empty_view)
 
-    assert response.status_code == 501
-    assert response.json() == {
-        "detail": {
-            "code": "not_implemented",
-            "report_type": report_type,
-            "message": message,
-        }
-    }
+    report = client.get(f"/reporting/reports/{report_type}")
+    csv_export = client.get(f"/reporting/reports/{report_type}/export?format=csv")
+    pdf_export = client.get(f"/reporting/reports/{report_type}/export?format=pdf")
+
+    assert report.status_code == 200
+    assert csv_export.status_code == 200
+    assert csv_export.headers["content-type"].startswith("text/csv")
+    assert pdf_export.status_code == 501
+    assert pdf_export.json()["detail"]["message"] == "PDF export is not implemented."
 
 
 @pytest.mark.parametrize("role,organization", [("admin", None), ("user", "Example Org"), ("registrant", "Example Org")])

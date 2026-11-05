@@ -45,10 +45,11 @@ class MockSupabaseQuery:
 
 
 class MockSupabase:
-    def __init__(self, targets, people=(), tasks=()):
+    def __init__(self, targets, people=(), users=(), tasks=()):
         self.tables = {
             "twelve_tasks_targets": list(targets),
             "People": list(people),
+            "Users": list(users),
             "Tasks": list(tasks),
         }
         self.queries = []
@@ -81,6 +82,16 @@ def person(person_id):
         "Surname": "Person",
         "Gender": "Female",
         "Email": f"{person_id}@example.test",
+    }
+
+
+def admin_user(person_id, name, surname, email):
+    return {
+        "_id": person_id,
+        "name": name,
+        "surname": surname,
+        "gender": "Female",
+        "email": email,
     }
 
 
@@ -171,6 +182,35 @@ def test_month_sums_multiple_week_targets_and_actuals_per_person(monkeypatch):
     assert report["rows"][0]["target"] == 20
     assert report["rows"][0]["this_week"] == 2
     assert report["rows"][0]["week_identifier"] == "2026-W45, 2026-W46"
+
+
+def test_admin_user_ids_resolve_names_and_email_assigned_actuals(monkeypatch):
+    supabase = MockSupabase(
+        targets=[target("admin-user-1", 10)],
+        users=[admin_user("admin-user-1", "Gloire", "Tsina", "gloire@example.test")],
+        tasks=[
+            {
+                "status": "completed",
+                "completedAt": "2026-11-03T10:00:00+00:00",
+                "assigned_to_email": "gloire@example.test",
+                "Organization": ORG,
+            },
+        ],
+    )
+
+    report = report_for(monkeypatch, supabase, "thisWeek", WEEK_START, WEEK_END)
+
+    assert report["rows"] == [
+        {
+            "person_id": "admin-user-1",
+            "name": "Gloire Tsina",
+            "gender": "Female",
+            "week_identifier": "2026-W45",
+            "last_week": 0,
+            "target": 10,
+            "this_week": 1,
+        },
+    ]
 
 
 def test_targets_outside_month_return_period_empty_state(monkeypatch):
