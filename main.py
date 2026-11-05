@@ -45,7 +45,11 @@ from supabase_helpers.supabase_stats import (
     sb_get_dashboard_quick,
     sb_get_dashboard_comprehensive,
 )
-from Reports.twelve_tasks import sb_get_twelve_tasks_report
+from Reports.twelve_tasks import (
+    _iso_week_range,
+    sb_get_completed_task_actuals,
+    sb_get_twelve_tasks_report,
+)
 from Reports.reports_routes import router as reports_router
 from reporting_core.router import router as reporting_router
 from reporting_core.router import CATALOG_BY_TYPE, LEGACY_SCHEDULE_TYPES
@@ -12858,8 +12862,27 @@ async def get_twelve_tasks_targets(
         query = query.eq('person_id', person_id)
     result = query.execute()
     targets = result.data or []
+    actual_ranges = {}
+    person_ids = []
+    for row in targets:
+        target_person_id = str(row.get('person_id') or '')
+        target_week = week or row.get('week_identifier')
+        if target_person_id:
+            person_ids.append(target_person_id)
+        if target_person_id and target_week and target_week not in actual_ranges:
+            try:
+                actual_ranges[target_week] = _iso_week_range(target_week)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+    actuals_by_week = sb_get_completed_task_actuals(
+        org_filter,
+        actual_ranges,
+        list(dict.fromkeys(person_ids)),
+    )
     transformed = []
     for row in targets:
+        target_person_id = str(row.get('person_id') or '')
+        target_week = week or row.get('week_identifier')
         transformed.append({
             'person_id': row.get('person_id'),
             'target': row.get('target'),
@@ -12868,6 +12891,7 @@ async def get_twelve_tasks_targets(
             'is_default': row.get('is_default', False),
             'updated_by': row.get('updated_by'),
             'updated_at': row.get('updated_at'),
+            'actual': actuals_by_week.get(target_week, {}).get(target_person_id, 0),
         })
     return {
         'status': 'success',
