@@ -29,7 +29,11 @@ def write_routes():
         methods = {m for m in route.methods if m not in SAFE_METHODS}
         if not methods:
             continue
-        requires_auth = "get_current_user" in inspect.getsource(route.endpoint)
+        source = inspect.getsource(route.endpoint)
+        requires_auth = any(
+            marker in source
+            for marker in ("get_current_user", "require_role", "require_super_admin")
+        )
         for method in sorted(methods):
             yield method, route.path, requires_auth, route.endpoint.__name__
 
@@ -49,6 +53,8 @@ EXPECTED_PUBLIC = {
     ("POST", "/refresh-token"),
     ("POST", "/forgot-password"),
     ("POST", "/reset-password"),
+    # Carries its own signed token in the body instead of a bearer header.
+    ("POST", "/change-password"),
 }
 
 

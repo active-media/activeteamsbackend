@@ -1,0 +1,1511 @@
+"""
+supabase_helpers/stats_queries.py
+==================================
+Pure synchronous Supabase query functions for the four stats/dashboard
+endpoints.  FastAPI async endpoints call these via asyncio.to_thread().
+
+Tables consumed (per Stats_ServiceCheckin_Tables.txt):
+  events               – event_id, event_name, event_type_name, event_leader,
+                         event_leader_email, location, event_date, status,
+                         Organization, org_id, is_active
+  event_sessions       – session_id, event_id, session_date, status,
+                         checked_in_count, total_headcounts
+  Tasks                – _id, name, taskType, status, followup_date,
+                         completedAt, created_at, assignedfor,
+                         assigned_to_email, Organization, org_id,
+                         contacted_person_name/email/phone,
+                         is_consolidation_task, consolidation_source,
+                         source_display, person_name, person_surname,
+                         decision_display_name, priority
+  Task Types           – _id, name, Organization, org_id
+  Users                – _id, name, surname, email, Organization, org_id
+  people               – _id, Name, Surname, Email, InvitedBy, Organization
+
+Key field-name notes
+--------------------
+* `Tasks` keeps MongoDB-style camelCase column names (taskType, followup_date,
+  completedAt, created_at, assignedfor) — confirmed from the sample row in
+  Stats_ServiceCheckin_Tables.txt.
+* `events` uses snake_case Supabase columns (event_type_name, event_leader,
+  event_date) — confirmed from the sample row.
+* `Task Types` uses `name` and `Organization` (capital O) — confirmed.
+* `Users` uses `Organization` (capital O) — confirmed.
+* `people` uses `Organization` (capital O) — confirmed.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+import logging
+import re
+from zoneinfo import ZoneInfo
+from typing import Optional
+
+from supabase_helpers.supabase_connection import supabase
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+EXCLUDED_TASK_TYPES: list[str] = ["no answer", "Awaiting Call"]
+_STATUS_COMPLETED: tuple[str, ...] = ("completed", "done", "closed", "finished")
+
+# Supabase .not_.in_() requires a list
+_STATUS_COMPLETED_LIST = list(_STATUS_COMPLETED)
+
+# The three cell-type values we match against events.event_type_name
+_CELL_TYPE_VALUES = ["Cells", "cells", "CELLS"]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _period_range(period: str) -> tuple[datetime, datetime]:
+    """Return (start, end) UTC-aware datetimes for the requested period."""
+    if len(period) == 7 and period[4] == "-":
+        try:
+            year, month = (int(part) for part in period.split("-"))
+            start = datetime(year, month, 1, tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            raise ValueError(f"Unknown period: {period!r}") from None
+        if month == 12:
+            next_month = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            next_month = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        return start, next_month - timedelta(microseconds=1)
+
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if period in ("today", "daily"):
+        return today, today.replace(hour=23, minute=59, second=59, microsecond=999_999)
+
+    if period in ("thisWeek", "weekly"):
+        start = today - timedelta(days=today.weekday())          # Monday
+        return start, start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+
+    if period in ("thisMonth", "monthly"):
+        start = today.replace(day=1)
+        if today.month == 12:
+            end = datetime(today.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        else:
+            end = datetime(today.year, today.month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        return start, end
+
+    if period == "thisQuarter":
+        quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+        start = today.replace(month=quarter_start_month, day=1)
+        if quarter_start_month == 10:
+            end = datetime(today.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        else:
+            end = datetime(today.year, quarter_start_month + 3, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        return start, end
+
+    if period == "previous7":
+        end = (today - timedelta(days=1)).replace(hour=23, minute=59, second=59)
+        start = (end - timedelta(days=6)).replace(hour=0, minute=0, second=0)
+        return start, end
+
+    if period == "previousWeek":
+        last = today - timedelta(weeks=1)
+        start = last - timedelta(days=last.weekday())
+        return start, start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+
+    if period == "previousMonth":
+        year, month = today.year, today.month - 1
+        if month == 0:
+            year, month = year - 1, 12
+        start = datetime(year, month, 1, tzinfo=timezone.utc)
+        if month == 12:
+            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        else:
+            end = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        return start, end
+
+    if period == "yearly":
+        start = today.replace(month=1, day=1)
+        end = today.replace(month=12, day=31, hour=23, minute=59, second=59)
+        return start, end
+
+    raise ValueError(f"Unknown period: {period!r}")
+
+
+def _iso(dt: datetime) -> str:
+    """Return an ISO-8601 string with timezone offset (Supabase-compatible)."""
+    return dt.isoformat()
+
+
+def _apply_org(query, org_filter: Optional[dict]):
+    """
+    Append organisation filtering to a Supabase query builder.
+
+    org_filter can be:
+      None / {}                            → no restriction (super-admin)
+      {"Organization": "Active Church"}    → filter on capital-O column
+      {"Organization": "Active Church"}    → same, lower-case key accepted
+    """
+    if not org_filter:
+        return query
+    # Normalise key: both "Organization" and "Organization" are accepted
+    org_value = org_filter.get("Organization")
+    if org_value:
+        # Tasks / Task Types / Users / people use "Organization" (capital O).
+        query = query.eq("Organization", org_value)
+    return query
+
+
+def _apply_org_events(query, org_filter: Optional[dict]):
+    """Scope event queries by stable org ID, falling back to organization name."""
+    if not org_filter:
+        return query
+    org_id = org_filter.get("org_id")
+    org_value = org_filter.get("Organization")
+    if org_id:
+        query = query.eq("org_id", org_id)
+    elif org_value:
+        query = query.eq("Organization", org_value)
+    return query
+
+
+def _execute_all_pages(query_factory, page_size: int = 1000) -> list[dict]:
+    """Read all rows from a Supabase query using bounded range requests."""
+    rows: list[dict] = []
+    start = 0
+    while True:
+        page = query_factory().range(start, start + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start += page_size
+
+
+def _person_key(row: dict) -> str | None:
+    for key in ("mongo_person_id", "person_id", "email", "full_name", "attendee_id"):
+        value = str(row.get(key) or "").strip().casefold()
+        if value:
+            return value
+    return None
+
+
+def _ministry_rows(
+    events: list[dict], sessions: list[dict], start: datetime, end: datetime
+) -> list[dict]:
+    ministry_names = ("Life Class", "School of Leaders", "Plan 40", "School Cell")
+    result = {
+        name: {
+            "ministry": name,
+            "registered": None,
+            "attended": None,
+            "completed": None,
+            "attendance_percent": None,
+            "completion_percent": None,
+        }
+        for name in ministry_names
+    }
+    event_by_id = {
+        str(event.get("event_id")): event
+        for event in events
+        if event.get("event_id") is not None
+    }
+    selected_event_ids = set()
+    for session in sessions:
+        event_id = str(session.get("event_id") or "")
+        if event_id in event_by_id:
+            selected_event_ids.add(event_id)
+    for event_id, event in event_by_id.items():
+        try:
+            event_date = date.fromisoformat(str(event.get("event_date") or "")[:10])
+        except ValueError:
+            continue
+        if start.date() <= event_date <= end.date():
+            selected_event_ids.add(event_id)
+
+    life_class_ids = {
+        event_id for event_id in selected_event_ids
+        if str(event_by_id[event_id].get("event_type_name") or "").strip().casefold() == "life class"
+    }
+    if life_class_ids:
+        try:
+            attendee_rows = _execute_all_pages(
+                lambda: supabase.table("event_attendees").select(
+                    "event_id, mongo_person_id, full_name, email, is_persistent"
+                ).in_("event_id", sorted(life_class_ids))
+            )
+            registered = {
+                key for row in attendee_rows
+                if str(row.get("event_id") or "") in life_class_ids
+                if (key := _person_key(row)) is not None
+            }
+            attended = {
+                key for row in attendee_rows
+                if str(row.get("event_id") or "") in life_class_ids and row.get("is_persistent") is True
+                if (key := _person_key(row)) is not None
+            }
+            result["Life Class"].update(
+                registered=len(registered),
+                attended=len(attended),
+                attendance_percent=round(len(attended) / len(registered) * 100, 1) if registered else None,
+            )
+        except Exception:
+            logger.exception("Unable to calculate Life Class dashboard metrics")
+
+    for ministry in ("School of Leaders", "Plan 40", "School Cell"):
+        matching_ids = {
+            event_id for event_id in selected_event_ids
+            if (
+                str(event_by_id[event_id].get("event_type_name") or "").strip().casefold() == ministry.casefold()
+                or (ministry == "School Cell" and event_by_id[event_id].get("is_school_cell") is True)
+            )
+        }
+        matching_sessions = [
+            session for session in sessions
+            if str(session.get("event_id") or "") in matching_ids
+        ]
+        if matching_sessions:
+            result[ministry]["attended"] = sum(
+                int(session.get("checked_in_count") or 0) for session in matching_sessions
+            )
+
+    return [result[name] for name in ministry_names]
+
+
+def _new_visitor_count(events: list[dict], sessions: list[dict], start: datetime, end: datetime) -> int | None:
+    event_by_id = {
+        str(event.get("event_id")): event
+        for event in events
+        if event.get("event_id") is not None
+    }
+    period_event_ids = {
+        str(session.get("event_id"))
+        for session in sessions
+        if str(session.get("event_id") or "") in event_by_id
+    }
+    for event_id, event in event_by_id.items():
+        try:
+            event_date = date.fromisoformat(str(event.get("event_date") or "")[:10])
+        except ValueError:
+            continue
+        if start.date() <= event_date <= end.date():
+            period_event_ids.add(event_id)
+    if not period_event_ids:
+        return 0
+
+    try:
+        rows = _execute_all_pages(
+            lambda: supabase.table("event_new_people").select(
+                "id, event_id, session_date, added_at, is_checked_in"
+            ).in_("event_id", sorted(period_event_ids))
+        )
+    except Exception:
+        logger.exception("Unable to calculate dashboard new-visitor hint")
+        return None
+
+    visitor_ids = set()
+    for row in rows:
+        if row.get("is_checked_in") is False:
+            continue
+        date_value = row.get("session_date") or row.get("added_at")
+        try:
+            visitor_date = date.fromisoformat(str(date_value or "")[:10])
+        except ValueError:
+            continue
+        if start.date() <= visitor_date <= end.date() and row.get("id") is not None:
+            visitor_ids.add(str(row["id"]))
+    return len(visitor_ids)
+
+
+def _aggregate_reporting_dashboard(
+    period: str,
+    start: datetime,
+    end: datetime,
+    events: list[dict],
+    sessions: list[dict],
+    previous_sessions: list[dict],
+    total_people: int,
+    campus_options: list[dict] | None = None,
+) -> dict:
+    """Build dashboard aggregates from organization-scoped events and sessions."""
+    event_by_id = {str(event.get("event_id")): event for event in events if event.get("event_id") is not None}
+    sessions_by_event: dict[str, list[dict]] = defaultdict(list)
+    sessions_by_week: dict[str, int] = defaultdict(int)
+    cells_by_week: dict[str, set[str]] = defaultdict(set)
+    campus_attendance: dict[str, int] = defaultdict(int)
+    campus_trends: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    total_attendance = 0
+
+    first_day = start.date()
+    last_day = end.date()
+    for session in sessions:
+        event_id = str(session.get("event_id", ""))
+        if event_id not in event_by_id:
+            continue
+        try:
+            session_day = date.fromisoformat(str(session.get("session_date", ""))[:10])
+        except ValueError:
+            continue
+        if session_day < first_day or session_day > last_day:
+            continue
+        if str(session.get("status") or "complete").lower() != "complete":
+            continue
+        count = int(session.get("checked_in_count") or 0)
+        campus_id = event_by_id[event_id].get("campus_id")
+        sessions_by_event[event_id].append({
+            "date": session_day.isoformat(),
+            "attendance": count,
+            "status": "Complete",
+        })
+        total_attendance += count
+        week_start = session_day - timedelta(days=session_day.weekday())
+        week_label = max(week_start, first_day).isoformat()
+        sessions_by_week[week_label] += count
+        if campus_id is not None:
+            campus_attendance[str(campus_id)] += count
+            campus_trends[str(campus_id)][week_label] += count
+
+    previous_by_event: dict[str, int] = defaultdict(int)
+    for session in previous_sessions:
+        event_id = str(session.get("event_id", ""))
+        if event_id in event_by_id:
+            previous_by_event[event_id] += int(session.get("checked_in_count") or 0)
+    previous_attendance = sum(previous_by_event.values())
+    growth_rate = (
+        round((total_attendance - previous_attendance) / previous_attendance * 100, 1)
+        if previous_attendance
+        else (100.0 if total_attendance else 0.0)
+    )
+
+    active_cells = []
+    for event in events:
+        event_id = str(event.get("event_id", ""))
+        if str(event.get("event_type_name") or "").lower() != "cells":
+            continue
+        if event.get("is_active") is False:
+            continue
+        event_sessions = sorted(sessions_by_event.get(event_id, []), key=lambda row: row["date"])
+        if not event_sessions:
+            continue
+        attendance = sum(row["attendance"] for row in event_sessions)
+        previous_cell_attendance = previous_by_event.get(event_id, 0)
+        active_cells.append({
+            "id": event_id,
+            "leader": event.get("event_leader") or "Unassigned",
+            "name": event.get("event_name") or "Cell",
+            "location": event.get("location") or "Unknown",
+            "campus_id": event.get("campus_id"),
+            "date": event.get("event_date") or "",
+            "attendance": attendance,
+            "previous_attendance": previous_cell_attendance,
+            "growth_rate": round((attendance - previous_cell_attendance) / previous_cell_attendance * 100, 1) if previous_cell_attendance else (100.0 if attendance else 0.0),
+            "average": round(attendance / len(event_sessions), 1) if event_sessions else 0,
+            "session_count": len(event_sessions),
+            "sessions": event_sessions,
+        })
+
+    leaders_by_name: dict[str, dict] = {}
+    for cell in active_cells:
+        leader = leaders_by_name.setdefault(cell["leader"], {
+            "id": cell["leader"].strip().lower().replace(" ", "-"),
+            "name": cell["leader"], "cells": 0, "attendance": 0,
+            "previous_attendance": 0,
+            "sessions": 0, "last": "", "attendance_by_week": defaultdict(int),
+        })
+        leader["cells"] += 1
+        leader["attendance"] += cell["attendance"]
+        leader["sessions"] += cell["session_count"]
+        for session in cell["sessions"]:
+            session_day = date.fromisoformat(session["date"])
+            week_label = max(session_day - timedelta(days=session_day.weekday()), first_day).isoformat()
+            leader["attendance_by_week"][week_label] += session["attendance"]
+            cells_by_week[week_label].add(cell["id"])
+            leader["last"] = max(leader["last"], session["date"])
+        leader["previous_attendance"] += cell["previous_attendance"]
+
+    week_labels = []
+    week_cursor = first_day - timedelta(days=first_day.weekday())
+    while week_cursor <= last_day:
+        week_labels.append(max(week_cursor, first_day).isoformat())
+        week_cursor += timedelta(days=7)
+
+    for leader in leaders_by_name.values():
+        leader["average"] = round(leader["attendance"] / leader["sessions"], 1) if leader["sessions"] else 0
+        leader["growth_rate"] = round((leader["attendance"] - leader["previous_attendance"]) / leader["previous_attendance"] * 100, 1) if leader["previous_attendance"] else (100.0 if leader["attendance"] else 0.0)
+        leader["attendance_by_week"] = [leader["attendance_by_week"].get(label, 0) for label in week_labels]
+
+    return {
+        "period": period,
+        "date_range": {"start": first_day.isoformat(), "end": last_day.isoformat()},
+        "total_attendance": total_attendance,
+        "growth_rate": growth_rate,
+        "total_people": total_people,
+        "active_cells": len(active_cells),
+        "active_cell_sessions": sum(cell["session_count"] for cell in active_cells),
+        "active_leaders": len(leaders_by_name),
+        "active_cells_by_week": [len(cells_by_week.get(label, set())) for label in week_labels],
+        "attendance_trend": {
+            "labels": week_labels,
+            "values": [sessions_by_week.get(label, 0) for label in week_labels],
+        },
+        "attendance_by_campus": dict(campus_attendance),
+        "attendance_trend_by_campus": {
+            campus: [weeks.get(label, 0) for label in week_labels]
+            for campus, weeks in campus_trends.items()
+        },
+        "leaders": sorted(leaders_by_name.values(), key=lambda row: row["name"].lower()),
+        "cells": active_cells,
+        "campuses": campus_options or [],
+        "ministry_performance": _ministry_rows(events, sessions, start, end),
+        "campus_comparison": [
+            {"campus_id": campus_id, "value": count}
+            for campus_id, count in sorted(campus_attendance.items())
+        ],
+    }
+
+
+def sb_get_reporting_dashboard(
+    period: str = "thisMonth",
+    org_filter: Optional[dict] = None,
+    campus: Optional[str] = None,
+    visible_leader_ids: Optional[set[str]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> dict:
+    """Fetch organization-scoped event/session data for the reporting dashboard."""
+    if start_date and end_date:
+        start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
+    else:
+        start, end = _period_range(period)
+    event_query = lambda: _apply_org_events(
+        supabase.table("events").select(
+            "event_id, event_name, event_type_name, event_leader, location, campus_id, event_date, status, is_active, Organization"
+        ),
+        org_filter,
+    )
+    events = _execute_all_pages(event_query)
+    if visible_leader_ids is not None:
+        people = _execute_all_pages(
+            lambda: supabase.table("People").select("_id, Name, Surname, Email")
+        )
+        visible_leader_names = set()
+        for person in people:
+            if str(person.get("_id") or "") not in visible_leader_ids:
+                continue
+            full_name = " ".join(
+                str(person.get(key) or "").strip()
+                for key in ("Name", "Surname")
+                if str(person.get(key) or "").strip()
+            )
+            if full_name:
+                visible_leader_names.add(full_name.casefold())
+            if person.get("Email"):
+                visible_leader_names.add(str(person["Email"]).casefold())
+        events = [
+            event for event in events
+            if any(
+                identity and identity in str(event.get("event_leader") or "").casefold()
+                for identity in visible_leader_names
+            )
+        ]
+    campus_ids = sorted({str(event["campus_id"]) for event in events if event.get("campus_id") is not None})
+    campus_options = []
+    if campus_ids:
+        campus_rows = _execute_all_pages(
+            lambda: supabase.table("campuses").select("*").in_("campus_id", campus_ids)
+        )
+        campus_options = [
+            {
+                "campus_id": str(row["campus_id"]),
+                "label": next(
+                    (str(row[key]).strip() for key in ("name", "campus_name", "label", "title") if row.get(key)),
+                    str(row["campus_id"]),
+                ),
+            }
+            for row in campus_rows
+            if row.get("campus_id") is not None
+        ]
+        campus_options.sort(key=lambda row: row["label"].casefold())
+    if campus:
+        events = [event for event in events if str(event.get("campus_id")) == str(campus)]
+    def sessions_query(from_date: date, to_date: date):
+        return lambda: supabase.table("event_sessions").select(
+            "event_id, session_date, status, checked_in_count"
+        ).eq("status", "complete").gte(
+            "session_date", from_date.isoformat()
+        ).lte("session_date", to_date.isoformat())
+
+    sessions = _execute_all_pages(sessions_query(start.date(), end.date()))
+    duration = end.date() - start.date()
+    previous_end = start.date() - timedelta(days=1)
+    previous_start = previous_end - duration
+    previous_sessions = _execute_all_pages(sessions_query(previous_start, previous_end))
+
+    people_query = supabase.table("People").select("_id", count="exact")
+    if org_filter and org_filter.get("Organization"):
+        people_query = people_query.eq("Organization", org_filter["Organization"])
+    if visible_leader_ids is not None:
+        people_query = people_query.in_("_id", list(visible_leader_ids))
+    total_people = people_query.execute().count or 0
+
+    result = _aggregate_reporting_dashboard(
+        period, start, end, events, sessions, previous_sessions, total_people, campus_options
+    )
+    result["new_visitors"] = _new_visitor_count(events, sessions, start, end)
+    return result
+_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _fetch_all_pages(query_factory, page_size: int = 1000) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = query_factory().range(offset, offset + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
+
+
+def _recurring_weekdays(value) -> list[int]:
+    if isinstance(value, list):
+        text = " ".join(str(item) for item in value)
+    else:
+        text = str(value or "")
+    names = re.findall(
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return list(dict.fromkeys(_WEEKDAYS[name.lower()] for name in names))
+
+
+def _event_query(org_filter: Optional[dict], *, cells_only: bool):
+    fields = (
+        "event_id, event_name, event_type_name, event_leader, event_leader_email, "
+        "location, description, status, event_date, recurring_day, is_recurring, "
+        "is_active, org_id, Organization, is_global"
+    )
+    query = supabase.table("events").select(fields)
+    if cells_only:
+        query = query.in_("event_type_name", _CELL_TYPE_VALUES)
+    return _apply_org_events(query, org_filter)
+
+
+def _visible_events(events: list[dict], user_scope: Optional[dict], *, cells_only: bool) -> list[dict]:
+    if not user_scope:
+        return events
+    role = str(user_scope.get("role") or "").lower().replace("_", "").replace(" ", "")
+    if user_scope.get("is_super") or role in {"admin", "leaderat12", "registrant"}:
+        return events
+
+    email = str(user_scope.get("email") or "").strip().lower()
+    name = str(user_scope.get("name") or "").strip().lower()
+
+    def is_visible(event: dict) -> bool:
+        event_email = str(event.get("event_leader_email") or "").strip().lower()
+        event_name = str(event.get("event_leader") or "").strip().lower()
+        is_global = event.get("is_global") is True
+        if not cells_only and is_global:
+            return True
+        return bool((email and event_email == email) or (name and event_name == name))
+
+    return [event for event in events if is_visible(event)]
+
+
+def _event_occurrence_dates(event: dict, start: date, end: date) -> list[date]:
+    event_date_value = event.get("event_date")
+    try:
+        event_start = date.fromisoformat(str(event_date_value)[:10])
+    except (TypeError, ValueError):
+        event_start = start
+
+    weekdays = _recurring_weekdays(event.get("recurring_day"))
+    if not weekdays:
+        return [event_start] if start <= event_start <= end else []
+
+    first_date = max(start, event_start)
+    occurrences = []
+    for weekday in weekdays:
+        occurrence = first_date + timedelta(days=(weekday - first_date.weekday()) % 7)
+        while occurrence <= end:
+            occurrences.append(occurrence)
+            occurrence += timedelta(days=7)
+    return sorted(set(occurrences))
+
+
+def sb_get_stats_cells(
+    start_date: str,
+    end_date: str,
+    org_filter: Optional[dict] = None,
+    user_scope: Optional[dict] = None,
+) -> dict:
+    """Build period-scoped cell instances from Supabase events and sessions."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("end_date must be on or after start_date")
+
+    events = _fetch_all_pages(
+        lambda: _event_query(org_filter, cells_only=True)
+    )
+    events = _visible_events(events, user_scope, cells_only=True)
+    events = [event for event in events if event.get("is_active") is not False]
+    event_ids = {str(event.get("event_id")) for event in events if event.get("event_id")}
+
+    sessions = _fetch_all_pages(
+        lambda: supabase.table("event_sessions")
+        .select(
+            "session_id, event_id, session_date, status, is_did_not_meet, "
+            "checked_in_count, total_headcounts"
+        )
+        .gte("session_date", start.isoformat())
+        .lte("session_date", end.isoformat())
+    )
+    session_map = {
+        (str(session.get("event_id")), str(session.get("session_date"))): session
+        for session in sessions
+        if str(session.get("event_id")) in event_ids
+    }
+
+    today = datetime.now(ZoneInfo("Africa/Johannesburg")).date()
+    instances = []
+    for event in events:
+        event_id = str(event.get("event_id") or "")
+        event_type = str(event.get("event_type_name") or "").lower()
+        if "cell" not in event_type:
+            continue
+        for occurrence in _event_occurrence_dates(event, start, end):
+            occurrence_iso = occurrence.isoformat()
+            session = session_map.get((event_id, occurrence_iso), {})
+            raw_status = str(session.get("status") or event.get("status") or "incomplete").lower()
+            if session.get("is_did_not_meet") or raw_status == "did_not_meet":
+                status = "did_not_meet"
+            elif raw_status in ("complete", "completed", "closed"):
+                status = "complete"
+            elif int(session.get("checked_in_count") or 0) > 0:
+                status = "complete"
+            else:
+                status = "incomplete"
+
+            instances.append(
+                {
+                    "_id": f"{event_id}_{occurrence_iso}",
+                    "event_id": event_id,
+                    "eventName": event.get("event_name") or "Unnamed Cell",
+                    "eventType": "Cells",
+                    "eventLeaderName": event.get("event_leader") or "",
+                    "eventLeaderEmail": event.get("event_leader_email") or "",
+                    "location": event.get("location") or "",
+                    "description": event.get("description") or "",
+                    "date": occurrence_iso,
+                    "day": occurrence.strftime("%A"),
+                    "status": status,
+                    "Status": status.replace("_", " ").title(),
+                    "did_not_meet": status == "did_not_meet",
+                    "is_overdue": occurrence < today and status == "incomplete",
+                    "isRecurring": bool(_recurring_weekdays(event.get("recurring_day"))),
+                    "attendee_count": int(session.get("checked_in_count") or 0),
+                    "attendees": [],
+                }
+            )
+
+    instances.sort(key=lambda item: (item["date"], item["eventName"]), reverse=True)
+    return {"cells": instances, "total": len(instances), "start_date": start_date, "end_date": end_date}
+
+
+def sb_get_stats_calendar_events(
+    start_date: str,
+    end_date: str,
+    org_filter: Optional[dict] = None,
+    user_scope: Optional[dict] = None,
+) -> dict:
+    """Return non-cell calendar occurrences from Supabase event definitions."""
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        raise ValueError("end_date must be on or after start_date")
+
+    events = _fetch_all_pages(lambda: _event_query(org_filter, cells_only=False))
+    events = _visible_events(events, user_scope, cells_only=False)
+    results = []
+    for event in events:
+        if event.get("is_active") is False:
+            continue
+        event_type = str(event.get("event_type_name") or "")
+        if "cell" in event_type.lower():
+            continue
+        event_id = str(event.get("event_id") or "")
+        for occurrence in _event_occurrence_dates(event, start, end):
+            results.append(
+                {
+                    "_id": f"{event_id}_{occurrence.isoformat()}",
+                    "event_id": event_id,
+                    "eventName": event.get("event_name") or "Unnamed Event",
+                    "eventTypeName": event_type,
+                    "date": occurrence.isoformat(),
+                    "location": event.get("location") or "",
+                    "description": event.get("description") or "",
+                    "eventLeaderName": event.get("event_leader") or "",
+                    "eventLeaderEmail": event.get("event_leader_email") or "",
+                    "isRecurring": bool(_recurring_weekdays(event.get("recurring_day"))),
+                }
+            )
+    results.sort(key=lambda item: (item["date"], item["eventName"]))
+    return {"events": results, "total": len(results), "start_date": start_date, "end_date": end_date}
+
+
+def _is_completed_flag(status: str, task_type: str) -> bool:
+    """Return True if the task counts as completed (not excluded by type)."""
+    return (status or "").lower() in _STATUS_COMPLETED and task_type not in EXCLUDED_TASK_TYPES
+
+
+# ---------------------------------------------------------------------------
+# 1.  /stats/overview
+# ---------------------------------------------------------------------------
+
+def sb_get_stats_overview(
+    period: str = "monthly",
+    org_filter: Optional[dict] = None,
+) -> dict:
+    """
+    Supabase replacement for GET /stats/overview.
+
+    Uses event_sessions for attendance figures (sum of checked_in_count)
+    instead of iterating raw event documents.  This is accurate for both
+    recurring (cells) and one-off events once sessions are recorded.
+    """
+    start, end = _period_range(period)
+    start_iso, end_iso = _iso(start), _iso(end)
+    start_date = start.date().isoformat()
+    end_date   = end.date().isoformat()
+
+    # ── Outstanding cell events (Cells-type, not complete/closed) ──────────
+    cell_q = (
+        supabase.table("events")
+        .select("event_id", count="exact")
+        .in_("event_type_name", _CELL_TYPE_VALUES)
+        .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
+    )
+    cell_q = _apply_org_events(cell_q, org_filter)
+    outstanding_cells = cell_q.execute().count or 0
+
+    # ── Outstanding Tasks ───────────────────────────────────────────────────
+    task_q = (
+        supabase.table("Tasks")
+        .select("_id", count="exact")
+        .not_.in_("status", _STATUS_COMPLETED_LIST)
+    )
+    task_q = _apply_org(task_q, org_filter)
+    outstanding_Tasks = task_q.execute().count or 0
+
+    # ── Total people ────────────────────────────────────────────────────────
+    ppl_q = supabase.table("People").select("_id", count="exact")
+    if org_filter:
+        org_value = org_filter.get("Organization") 
+        if org_value:
+            ppl_q = ppl_q.eq("Organization", org_value)
+    total_people = ppl_q.execute().count or 0
+
+    # ── Attendance in period via event_sessions ──────────────────────────────
+    # session_date is a DATE column in Supabase (YYYY-MM-DD)
+    sess_q = (
+        supabase.table("event_sessions")
+        .select("checked_in_count, session_date")
+        .gte("session_date", start_date)
+        .lte("session_date", end_date)
+        .eq("status", "complete")
+    )
+    sessions = sess_q.execute().data or []
+    total_attendance = sum(int(s.get("checked_in_count") or 0) for s in sessions)
+
+    # ── Previous period attendance for growth rate ──────────────────────────
+    delta     = end - start
+    prev_end  = start - timedelta(microseconds=1)
+    prev_start = prev_end - delta
+
+    prev_sess_q = (
+        supabase.table("event_sessions")
+        .select("checked_in_count")
+        .gte("session_date", prev_start.date().isoformat())
+        .lte("session_date", prev_end.date().isoformat())
+        .eq("status", "complete")
+    )
+    prev_sessions  = prev_sess_q.execute().data or []
+    prev_attendance = sum(int(s.get("checked_in_count") or 0) for s in prev_sessions)
+
+    if prev_attendance > 0:
+        growth_rate = round(((total_attendance - prev_attendance) / prev_attendance) * 100, 1)
+    else:
+        growth_rate = 100.0 if total_attendance > 0 else 0.0
+
+    # ── Attendance breakdown ─────────────────────────────────────────────────
+    attendance_breakdown: dict[str, int] = {}
+    for sess in sessions:
+        date_str = sess.get("session_date", "")
+        if not date_str:
+            continue
+        try:
+            sess_date = datetime.fromisoformat(date_str).date()
+        except ValueError:
+            continue
+
+        if period in ("today", "daily"):
+            key = date_str[:10]
+        elif period in ("thisWeek", "weekly"):
+            key = datetime.strptime(date_str[:10], "%Y-%m-%d").strftime("%A")
+        else:
+            days_back = sess_date.weekday()
+            week_start = sess_date - timedelta(days=days_back)
+            key = week_start.isoformat()
+
+        attendance_breakdown[key] = attendance_breakdown.get(key, 0) + int(
+            sess.get("checked_in_count") or 0
+        )
+
+    return {
+        "outstanding_cells":     outstanding_cells,
+        "outstanding_Tasks":     outstanding_Tasks,
+        "total_people":          total_people,
+        "total_attendance":      total_attendance,
+        "growth_rate":           growth_rate,
+        "attendance_breakdown":  attendance_breakdown,
+        "period":                period,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2.  /stats/outstanding-items
+# ---------------------------------------------------------------------------
+
+def sb_get_outstanding_items(org_filter: Optional[dict] = None) -> dict:
+    """
+    Supabase replacement for GET /stats/outstanding-items.
+    Returns cells and Tasks that are not yet complete.
+    """
+    # ── Cells ────────────────────────────────────────────────────────────────
+    cell_q = (
+        supabase.table("events")
+        .select(
+            "event_id, event_name, event_leader, location, event_date, status"
+        )
+        .in_("event_type_name", _CELL_TYPE_VALUES)
+        .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
+        .limit(200)
+    )
+    cell_q = _apply_org_events(cell_q, org_filter)
+    raw_cells = cell_q.execute().data or []
+
+    cells_data = [
+        {
+            "name":     c.get("event_leader", "Unknown Leader"),
+            "location": c.get("location", "Unknown Location"),
+            "title":    c.get("event_name", "Untitled Cell"),
+            "date":     c.get("event_date"),
+            "status":   c.get("status", "pending"),
+        }
+        for c in raw_cells
+    ]
+
+    # ── Tasks ────────────────────────────────────────────────────────────────
+    task_q = (
+        supabase.table("Tasks")
+        .select(
+            "_id, name, assignedfor, assigned_to_email, "
+            "followup_date, status, taskType"
+        )
+        .not_.in_("status", _STATUS_COMPLETED_LIST)
+        .limit(300)
+    )
+    task_q = _apply_org(task_q, org_filter)
+    raw_Tasks = task_q.execute().data or []
+
+    Tasks_data = [
+        {
+            "name":    t.get("assignedfor", "Unassigned"),
+            "email":   t.get("assigned_to_email", ""),
+            "title":   t.get("name", "Untitled Task"),
+            "count":   1,
+            "dueDate": t.get("followup_date"),
+            "status":  t.get("status", "pending"),
+        }
+        for t in raw_Tasks
+    ]
+
+    return {
+        "outstanding_cells": cells_data,
+        "outstanding_Tasks": Tasks_data,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3.  /stats/dashboard-quick
+# ---------------------------------------------------------------------------
+
+def sb_get_dashboard_quick(
+    period: str = "today",
+    org_filter: Optional[dict] = None,
+) -> dict:
+    """
+    Supabase replacement for GET /stats/dashboard-quick.
+
+    Replicates every count_documents / aggregate call from the MongoDB version.
+    The task-type breakdown is computed in Python from a single broad fetch
+    (avoids running ~10 separate count queries against the Tasks table).
+    """
+    start, end = _period_range(period)
+    start_iso, end_iso = _iso(start), _iso(end)
+
+    # ── Fetch all Tasks touching the period in ONE query ─────────────────────
+    # We use .or_() with a broad date window, then filter in Python.
+    # Supabase .or_() format: "col.op.value,col.op.value"
+    period_Tasks_q = (
+        supabase.table("Tasks")
+        .select(
+            "_id, taskType, status, followup_date, completedAt, created_at"
+        )
+        .or_(
+            f"followup_date.gte.{start_iso},"
+            f"completedAt.gte.{start_iso},"
+            f"created_at.gte.{start_iso}"
+        )
+    )
+    period_Tasks_q = _apply_org(period_Tasks_q, org_filter)
+    period_Tasks_raw = period_Tasks_q.execute().data or []
+
+    # Python-side filtering + counting — mirrors the MongoDB aggregation pipeline
+    total_Tasks_in_period = 0
+    Tasks_due_in_period   = 0
+    Tasks_comp_in_period  = 0
+    task_type_stats: dict[str, dict] = {}
+
+    for t in period_Tasks_raw:
+        tt           = t.get("taskType") or "Uncategorized"
+        status_lower = (t.get("status") or "").lower()
+        is_excluded  = tt in EXCLUDED_TASK_TYPES
+        is_completed = status_lower in _STATUS_COMPLETED and not is_excluded
+
+        due_iso  = t.get("followup_date") or ""
+        comp_iso = t.get("completedAt")   or ""
+        cre_iso  = t.get("created_at")     or ""
+
+        # "touches the period" check (mirrors the $or in the MongoDB query)
+        touches = (
+            (due_iso  and start_iso <= due_iso  <= end_iso) or
+            (comp_iso and start_iso <= comp_iso <= end_iso) or
+            (cre_iso  and start_iso <= cre_iso  <= end_iso)
+        )
+        if not touches:
+            continue
+
+        total_Tasks_in_period += 1
+
+        is_due         = bool(due_iso  and start_iso <= due_iso  <= end_iso)
+        is_comp_period = bool(
+            is_completed and comp_iso and start_iso <= comp_iso <= end_iso
+        )
+
+        # "due in period and not yet complete"
+        if is_due and not is_completed:
+            Tasks_due_in_period += 1
+
+        if is_comp_period:
+            Tasks_comp_in_period += 1
+
+        # Per-type stats
+        if tt not in task_type_stats:
+            task_type_stats[tt] = {
+                "total": 0, "completed": 0,
+                "completed_in_period": 0, "due_in_period": 0,
+                "is_excluded": is_excluded,
+            }
+        task_type_stats[tt]["total"] += 1
+        if is_completed:
+            task_type_stats[tt]["completed"] += 1
+        if is_comp_period:
+            task_type_stats[tt]["completed_in_period"] += 1
+        if is_due:
+            task_type_stats[tt]["due_in_period"] += 1
+
+    # Compute rates
+    for stats in task_type_stats.values():
+        t = stats["total"]
+        d = stats["due_in_period"]
+        stats["completion_rate"] = round(stats["completed"] / t * 100, 2) if t else 0
+        stats["completion_rate_in_period"] = (
+            round(stats["completed_in_period"] / d * 100, 2) if d else 0
+        )
+
+    # ── Overall completed (all time, not excluded) ────────────────────────────
+    total_comp_q = (
+        supabase.table("Tasks")
+        .select("_id", count="exact")
+        .in_("status", _STATUS_COMPLETED_LIST)
+        .not_.in_("taskType", EXCLUDED_TASK_TYPES)
+    )
+    total_comp_q = _apply_org(total_comp_q, org_filter)
+    total_completed = total_comp_q.execute().count or 0
+
+    # ── Consolidation-specific counts ─────────────────────────────────────────
+    cons_total_q = (
+        supabase.table("Tasks")
+        .select("_id", count="exact")
+        .eq("taskType", "consolidation")
+    )
+    cons_total_q = _apply_org(cons_total_q, org_filter)
+    total_consolidation = cons_total_q.execute().count or 0
+
+    cons_done_q = (
+        supabase.table("Tasks")
+        .select("_id", count="exact")
+        .eq("taskType", "consolidation")
+        .in_("status", _STATUS_COMPLETED_LIST)
+    )
+    cons_done_q = _apply_org(cons_done_q, org_filter)
+    total_consolidation_completed = cons_done_q.execute().count or 0
+
+    cons_period_q = (
+        supabase.table("Tasks")
+        .select("_id", count="exact")
+        .eq("taskType", "consolidation")
+        .in_("status", _STATUS_COMPLETED_LIST)
+        .gte("completedAt", start_iso)
+        .lte("completedAt", end_iso)
+    )
+    cons_period_q = _apply_org(cons_period_q, org_filter)
+    consolidation_completed_in_period = cons_period_q.execute().count or 0
+
+    # ── Overdue cells ──────────────────────────────────────────────────────────
+    overdue_q = (
+        supabase.table("events")
+        .select("event_id", count="exact")
+        .in_("event_type_name", _CELL_TYPE_VALUES)
+        .lte("event_date", end_iso)
+        .not_.in_("status", ["Complete", "complete", "closed", "did_not_meet"])
+    )
+    overdue_q = _apply_org_events(overdue_q, org_filter)
+    overdue_cells = overdue_q.execute().count or 0
+
+    return {
+        "period": period,
+        "date_range": {
+            "start": start.date().isoformat(),
+            "end":   end.date().isoformat(),
+        },
+        "taskCount":                     total_Tasks_in_period,
+        "TasksDueInPeriod":              Tasks_due_in_period,
+        "TasksCompletedInPeriod":        Tasks_comp_in_period,
+        "totalCompletedTasks":           total_completed,
+        "consolidationTasks":            total_consolidation,
+        "consolidationCompleted":        total_consolidation_completed,
+        "consolidationCompletedInPeriod": consolidation_completed_in_period,
+        "consolidationCompletionRate": (
+            round(total_consolidation_completed / total_consolidation * 100, 2)
+            if total_consolidation else 0
+        ),
+        "overdueCells": overdue_cells,
+        "completionRateDueTasks": (
+            round(Tasks_comp_in_period / Tasks_due_in_period * 100, 2)
+            if Tasks_due_in_period else 0
+        ),
+        "overallCompletionRate": (
+            round(total_completed / total_Tasks_in_period * 100, 2)
+            if total_Tasks_in_period else 0
+        ),
+        "taskTypeBreakdown":      task_type_stats,
+        "totalTaskTypesFound":    len(task_type_stats),
+        "excludedTaskTypes":      EXCLUDED_TASK_TYPES,
+        "timestamp":              datetime.now(timezone.utc).isoformat(),
+        "note": (
+            "'no answer' and 'Awaiting Call' task types are excluded "
+            "from completed counts"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4.  /stats/dashboard-comprehensive
+# ---------------------------------------------------------------------------
+
+def sb_get_dashboard_comprehensive(
+    period: str = "today",
+    limit: int = 100,
+    org_filter: Optional[dict] = None,
+) -> dict:
+    """
+    Supabase replacement for GET /stats/dashboard-comprehensive.
+
+    The MongoDB version used a large aggregation pipeline to group Tasks by
+    assignedfor.  Here we fetch all Tasks touching the period in one query
+    and do the grouping in Python — same output shape, no pipeline needed.
+    """
+    start, end = _period_range(period)
+    start_iso, end_iso = _iso(start), _iso(end)
+    end_date = datetime.now().strftime("%Y-%m-%d")
+
+    # ── Overdue cells ─────────────────────────────────────────────────────────
+   
+    cell_q = (
+    supabase.rpc(
+        "get_overdue_sessions",
+        {
+            "p_end_iso": end_date,
+            "p_cell_types": _CELL_TYPE_VALUES
+        }
+    )
+    .execute()
+)
+
+
+    overdue_cells_raw = cell_q.data
+
+    overdue_cells = [
+        {
+            "_id":              c.get("event_id", ""),
+            "eventName":        c.get("event_name", ""),
+            "eventType":        "Cells",
+            "eventLeaderName":  c.get("event_leader", ""),
+            "eventLeaderEmail": c.get("event_leader_email", ""),
+            "location":         c.get("location", ""),
+            "date":             c.get("event_date", ""),
+            "status":           (c.get("status") or "incomplete").lower(),
+            "_is_overdue":      True,
+        }
+        for c in overdue_cells_raw
+    ]
+
+    # ── Fetch all Tasks touching the period ───────────────────────────────────
+    task_q = (
+        supabase.table("Tasks")
+        .select(
+            "_id, name, taskType, followup_date, completedAt, created_at, "
+            "status, assignedfor, assigned_to_email, type, "
+            "contacted_person_name, contacted_person_email, contacted_person_phone, "
+            "is_consolidation_task, consolidation_source, source_display, "
+            "person_name, person_surname, decision_display_name, priority"
+        )
+        .or_(
+            f"followup_date.gte.{start_iso},"
+            f"completedAt.gte.{start_iso},"
+            f"created_at.gte.{start_iso}"
+        )
+        .limit(5000)
+    )
+    task_q = _apply_org(task_q, org_filter)
+    all_Tasks_raw = task_q.execute().data or []
+
+    # ── Group Tasks by assignedfor (mirrors MongoDB $group stage) ─────────────
+    groups: dict[str, list[dict]] = defaultdict(list)
+    task_type_stats: dict[str, dict] = {}
+
+    global_total        = 0
+    global_completed    = 0
+    global_comp_period  = 0
+    global_due_period   = 0
+    global_inc_due      = 0
+
+    for t in all_Tasks_raw:
+        tt           = t.get("taskType") or "Uncategorized"
+        status_lower = (t.get("status") or "").lower()
+        is_excluded  = tt in EXCLUDED_TASK_TYPES
+        is_completed = status_lower in _STATUS_COMPLETED and not is_excluded
+
+        due_iso  = t.get("followup_date") or ""
+        comp_iso = t.get("completedAt")   or ""
+        cre_iso  = t.get("created_at")     or ""
+
+        # Restrict to Tasks that actually touch this period
+        touches = (
+            (due_iso  and start_iso <= due_iso  <= end_iso) or
+            (comp_iso and start_iso <= comp_iso <= end_iso) or
+            (cre_iso  and start_iso <= cre_iso  <= end_iso)
+        )
+        if not touches:
+            continue
+
+        is_due         = bool(due_iso  and start_iso <= due_iso  <= end_iso)
+        is_comp_period = bool(
+            is_completed and comp_iso and start_iso <= comp_iso <= end_iso
+        )
+
+        clean = {
+            "_id":           str(t.get("_id") or ""),
+            "name":          t.get("name", "Unnamed Task"),
+            "taskType":      tt,
+            "task_type_label": tt,
+            "followup_date": due_iso,
+            "due_date":      due_iso,
+            "completedAt":   comp_iso,
+            "created_at":     cre_iso,
+            "status":        t.get("status", "Open"),
+            "assignedfor":   t.get("assignedfor", ""),
+            "type":          t.get("type", "call"),
+            "contacted_person": {
+                "name":  t.get("contacted_person_name", ""),
+                "email": t.get("contacted_person_email", ""),
+                "phone": t.get("contacted_person_phone", ""),
+            },
+            "isRecurring":           False,
+            "priority":              t.get("priority", ""),
+            "is_completed":          is_completed,
+            "is_due_in_period":      is_due,
+            "completed_in_period":   is_comp_period,
+            "is_excluded_type":      is_excluded,
+            "is_consolidation_task": bool(t.get("is_consolidation_task")),
+            "consolidation_source":  t.get("consolidation_source", "manual"),
+            "source_display":        t.get("source_display", "Manual"),
+            "person_name":           t.get("person_name", ""),
+            "person_surname":        t.get("person_surname", ""),
+            "decision_display_name": t.get("decision_display_name", ""),
+            "description":           "",
+        }
+        groups[t.get("assignedfor") or "unassigned"].append(clean)
+
+        # Global aggregates
+        global_total += 1
+        if is_completed:
+            global_completed += 1
+        if is_comp_period:
+            global_comp_period += 1
+        if is_due:
+            global_due_period += 1
+        if is_due and not is_completed:
+            global_inc_due += 1
+
+        # Per-type aggregates
+        if tt not in task_type_stats:
+            task_type_stats[tt] = {
+                "total": 0, "completed": 0,
+                "completed_in_period": 0, "due_in_period": 0,
+                "incomplete_due": 0, "is_excluded": is_excluded,
+            }
+        task_type_stats[tt]["total"] += 1
+        if is_completed:
+            task_type_stats[tt]["completed"] += 1
+        if is_comp_period:
+            task_type_stats[tt]["completed_in_period"] += 1
+        if is_due:
+            task_type_stats[tt]["due_in_period"] += 1
+        if is_due and not is_completed:
+            task_type_stats[tt]["incomplete_due"] += 1
+
+    # ── Fetch users for name lookup ───────────────────────────────────────────
+    users_raw = []
+    page_size = 1000
+    offset = 0
+    while True:
+        users_q = (
+            supabase.table("Users")
+            .select("_id, email, name, surname, leader12, leader144, leader1728")
+        )
+        if org_filter:
+            org_value = org_filter.get("Organization")
+            if org_value:
+                users_q = users_q.eq("Organization", org_value)
+        page = users_q.range(offset, offset + page_size - 1).execute().data or []
+        users_raw.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    user_map: dict[str, dict] = {}
+    for u in users_raw:
+        email = (u.get("email") or "").lower()
+        name  = (u.get("name") or "").strip()
+        surn  = (u.get("surname") or "").strip()
+        full  = f"{name} {surn}".strip() or (email.split("@")[0] if "@" in email else email)
+        info  = {
+            "_id": str(u.get("_id", "")),
+            "email": email,
+            "fullName": full,
+            "leader12": u.get("leader12"),
+            "leader144": u.get("leader144"),
+            "leader1728": u.get("leader1728"),
+        }
+        if email:
+            user_map[email] = info
+
+    # ── Build grouped-task list ───────────────────────────────────────────────
+    grouped_Tasks: list[dict] = []
+    all_Tasks_list: list[dict] = []
+
+    for email, Tasks_list in groups.items():
+        user_info = user_map.get(email.lower()) or {
+            "_id":      f"unknown_{email}",
+            "email":    email,
+            "fullName": email.split("@")[0] if "@" in email else email,
+        }
+        total_u      = len(Tasks_list)
+        comp_u       = sum(1 for t in Tasks_list if t["is_completed"])
+        incomplete_u = total_u - comp_u
+        due_u        = sum(1 for t in Tasks_list if t["is_due_in_period"])
+        comp_period_u = sum(1 for t in Tasks_list if t["completed_in_period"])
+        inc_due_u    = sum(1 for t in Tasks_list if t["is_due_in_period"] and not t["is_completed"])
+
+        grouped_Tasks.append({
+            "user":                       user_info,
+            "Tasks":                      Tasks_list,
+            "totalCount":                 total_u,
+            "completedCount":             comp_u,
+            "incompleteCount":            incomplete_u,
+            "dueInPeriodCount":           due_u,
+            "completedInPeriodCount":     comp_period_u,
+            "incompleteDueInPeriodCount": inc_due_u,
+            "taskTypes": list({t["taskType"] for t in Tasks_list}),
+        })
+        all_Tasks_list.extend(Tasks_list)
+
+    grouped_Tasks.sort(key=lambda x: x["user"]["fullName"].lower())
+
+    # ── Available task types from Task Types table ────────────────────────────
+    tt_q = supabase.table("Task Types").select("name")
+    if org_filter:
+        org_value = org_filter.get("Organization")
+        if org_value:
+            tt_q = tt_q.eq("Organization", org_value)
+    all_task_types = [
+        r["name"] for r in (tt_q.execute().data or []) if r.get("name")
+    ]
+
+    # ── Compute rates ─────────────────────────────────────────────────────────
+    comp_rate_due     = round(global_comp_period / global_due_period * 100, 2) if global_due_period else 0
+    comp_rate_overall = round(global_completed / global_total * 100, 2) if global_total else 0
+    cons_stats        = task_type_stats.get("consolidation", {})
+
+    overview = {
+        "total_attendance":                  sum(len(c.get("attendees", [])) for c in overdue_cells),
+        "outstanding_cells":                 len(overdue_cells),
+        "outstanding_Tasks":                 global_inc_due,
+        "Tasks_due_in_period":               global_due_period,
+        "Tasks_completed_in_period":         global_comp_period,
+        "total_Tasks_in_period":             global_total,
+        "total_Tasks_completed":             global_completed,
+        "total_Tasks_incomplete":            global_total - global_completed,
+        "consolidation_Tasks":               cons_stats.get("total", 0),
+        "consolidation_completed":           cons_stats.get("completed", 0),
+        "consolidation_completed_in_period": cons_stats.get("completed_in_period", 0),
+        "people_behind":                     sum(1 for g in grouped_Tasks if g["incompleteDueInPeriodCount"] > 0),
+        "total_users":                       len(users_raw),
+        "completion_rate_due_Tasks":         comp_rate_due,
+        "completion_rate_overall":           comp_rate_overall,
+        "consolidation_completion_rate": (
+            round(cons_stats.get("completed", 0) / cons_stats.get("total", 1) * 100, 2)
+            if cons_stats.get("total") else 0
+        ),
+        "task_type_breakdown":    task_type_stats,
+        "users_with_Tasks":       len(grouped_Tasks),
+        "users_without_Tasks":    len(users_raw) - len(grouped_Tasks),
+        "available_task_types":   all_task_types,
+        "task_types_found":       list(task_type_stats.keys()),
+        "excluded_task_types":    EXCLUDED_TASK_TYPES,
+        "total_unique_task_types": len(task_type_stats),
+        "note": (
+            "'no answer' and 'Awaiting Call' task types are excluded "
+            "from completed counts"
+        ),
+    }
+
+    all_users_list = [
+        {
+            "_id":      u["_id"],
+            "email":    u["email"],
+            "name":     u["fullName"].split()[0] if u["fullName"].split() else "",
+            "surname":  " ".join(u["fullName"].split()[1:]) if len(u["fullName"].split()) > 1 else "",
+            "fullName": u["fullName"],
+            "leader12": u.get("leader12"),
+            "leader144": u.get("leader144"),
+            "leader1728": u.get("leader1728"),
+        }
+        for u in user_map.values()
+        if not u["_id"].startswith("unknown_")
+    ]
+
+    return {
+        "overview":             overview,
+        "overdueCells":         overdue_cells,
+        "groupedTasks":         grouped_Tasks,
+        "allTasks":             all_Tasks_list,
+        "allUsers":             all_users_list,
+        "period":               period,
+        "date_range": {
+            "start": start.date().isoformat(),
+            "end":   end.date().isoformat(),
+        },
+        "task_type_stats":      task_type_stats,
+        "available_task_types": all_task_types,
+        "task_types_found":     list(task_type_stats.keys()),
+        "excluded_task_types":  EXCLUDED_TASK_TYPES,
+        "timestamp":            datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 5.  /stats/people-with-Tasks  (capture stats)
+# ---------------------------------------------------------------------------
+
+def sb_get_people_capture_stats(org_filter: Optional[dict] = None) -> dict:
+    """
+    Supabase replacement for GET /stats/people-with-Tasks.
+
+    The old MongoDB version relied on a `captured_by` field that was
+    inconsistently populated.  This version groups by `InvitedBy` in the
+    people table — the canonical field set at signup / import.
+    """
+    ppl_q = supabase.table("People").select("InvitedBy, Name, Surname, Email")
+    if org_filter:
+        org_value = org_filter.get("Organization") 
+        if org_value:
+            ppl_q = ppl_q.eq("Organization", org_value)
+
+    people_rows = ppl_q.execute().data or []
+
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for p in people_rows:
+        inviter = (p.get("InvitedBy") or "").strip()
+        if inviter:
+            name = f"{p.get('Name','').strip()} {p.get('Surname','').strip()}".strip()
+            groups[inviter].append({"name": name, "email": p.get("Email", "")})
+
+    stats = sorted(
+        [
+            {
+                "capturer_name":        name,
+                "capturer_email":       "",   # email not stored on InvitedBy string
+                "people_captured_count": len(people),
+                "captured_people":      people,
+            }
+            for name, people in groups.items()
+        ],
+        key=lambda x: x["people_captured_count"],
+        reverse=True,
+    )
+
+    total_captured = sum(s["people_captured_count"] for s in stats)
+
+    if not stats:
+        return {
+            "capture_stats":        [],
+            "total_capturers":       0,
+            "total_people_captured": 0,
+            "message":               "No capture data found",
+        }
+
+    return {
+        "capture_stats":        stats,
+        "total_capturers":       len(stats),
+        "total_people_captured": total_captured,
+        "message": (
+            f"Found {len(stats)} team members who captured "
+            f"{total_captured} people total"
+        ),
+    }

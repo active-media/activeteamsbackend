@@ -76,6 +76,11 @@ class AttendanceSubmission(BaseModel):
     isTicketed: bool = False
     invitedBy: Optional[str] = None
     headcount: Optional[int] = 0
+    session_id: str
+    event_id: str
+    event_name: str
+    event_type: Optional[str] = "Cells"  # "Cells" or "Global Events"
+    
 
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
@@ -92,17 +97,19 @@ class PersonCreate(BaseModel):
     dob: str
     address: str
     leaders: list[str]
+    leader1Id: Optional[str] = None
+    leader12Id: Optional[str] = None
+    leader144Id: Optional[str] = None
     stage: Literal["Win"]
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
     name: str
     description: str
-    isTicketed: Optional[bool] = False
+    event_category: str = "small_gatherings"  # Default to "Global"
     isGlobal: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
     createdAt: Optional[datetime] = None
-    isEventType: Optional[bool] = True
 
 # ===== Attendance =====
 class CheckIn(BaseModel):
@@ -310,6 +317,7 @@ class TaskTypeIn(BaseModel):
 class TaskTypeOut(BaseModel):
     id: str
     name: str
+    organization: str
 
 class PersonInfo(BaseModel):
     name: Optional[str]
@@ -419,10 +427,15 @@ class ConsolidationCreate(BaseModel):
     assigned_to_email: Optional[str] = None
     leaders: list = Field(default_factory=list)
     event_id: Optional[str] = None
-    is_check_in: bool = False
-    attendance_status: str = "checked_in"
+    is_check_in: Optional[bool] = False
+    attendance_status: Optional[str] = "checked_in"
     notes: Optional[str] = ""
     source: ConsolidationSource = ConsolidationSource.MANUAL
+    task_type: Optional[str] = "consolidation"
+    person_id:str
+    session_id:str
+    event_leader_name:Optional[str] = None
+    event_leader_email: Optional[str] = None
 
 class ConsolidationTask(TaskModel):
     consolidation_id: str
@@ -485,5 +498,3 @@ class SupremeAdminResponse(BaseModel):
 class SupremeAdminList(BaseModel):
     admins: List[SupremeAdminResponse]
     total: int
-
-

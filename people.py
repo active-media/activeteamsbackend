@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+import re
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends
 from auth.models import PersonCreate
@@ -96,6 +97,11 @@ async def get_people(
                 "Stage": person.get("Stage", "Win"),
                 "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "staffStatus": person.get("staffStatus") or person.get("StaffStatus") or "none",
+                "fridayServiceTarget": person.get("fridayServiceTarget") or person.get("FridayServiceTarget") or 0,
+                "sundayServiceTarget": person.get("sundayServiceTarget") or person.get("SundayServiceTarget") or 0,
+                "fridayActual": person.get("fridayActual") or person.get("FridayActual") or 0,
+                "sundayActual": person.get("sundayActual") or person.get("SundayActual") or 0,
             }
             people_list.append(mapped)
 
@@ -112,6 +118,64 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+async def get_people_paginated(
+    page: int = Query(1, ge=1),
+    perPage: int = Query(50, ge=1, le=200),
+    name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lightweight, paginated people list for the attendance modal."""
+    try:
+        query = {}
+        if name and name.strip():
+            escaped = re.escape(name.strip())
+            query["$or"] = [
+                {"Name": {"$regex": escaped, "$options": "i"}},
+                {"Surname": {"$regex": escaped, "$options": "i"}},
+                {"Email": {"$regex": escaped, "$options": "i"}},
+            ]
+
+        projection = {
+            "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
+            "InvitedBy": 1, "Stage": 1, "person_id": 1,
+            "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+        }
+
+        start = (page - 1) * perPage
+        cursor = people_collection.find(query, projection).skip(start).limit(perPage)
+
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person.get("_id", "")),
+                "person_id": person.get("person_id") or "",
+                "Name": person.get("Name") or "",
+                "Surname": person.get("Surname") or "",
+                "Email": person.get("Email") or "",
+                "Number": person.get("Number") or "",
+                "InvitedBy": person.get("InvitedBy") or "",
+                "Stage": person.get("Stage") or "",
+                "Leader @1": person.get("Leader @1") or "",
+                "Leader @12": person.get("Leader @12") or "",
+                "Leader @144": person.get("Leader @144") or "",
+                "Leader @1728": person.get("Leader @1728") or "",
+            })
+
+        total = await people_collection.count_documents(query)
+
+        return {
+            "page": page,
+            "perPage": perPage,
+            "total": total,
+            "hasMore": start + len(results) < total,
+            "results": results,
+        }
+
+    except Exception as e:
+        print(f"Error fetching paginated people: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 # ========== SEARCH & AUTOCOMPLETE ENDPOINTS - MUST COME BEFORE {person_id} ==========
 
 @router.get("/people/search-fast")
@@ -419,6 +483,11 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
             "Leader @1728": updated_person.get("Leader @1728", ""),
             "Stage": updated_person.get("Stage", "Win"),
             "UpdatedAt": updated_person.get("UpdatedAt"),
+            "staffStatus": updated_person.get("staffStatus") or "none",
+            "fridayServiceTarget": updated_person.get("fridayServiceTarget") or 0,
+            "sundayServiceTarget": updated_person.get("sundayServiceTarget") or 0,
+            "fridayActual": updated_person.get("fridayActual") or 0,
+            "sundayActual": updated_person.get("sundayActual") or 0,
         }
         return mapped
 
@@ -440,4 +509,41 @@ async def delete_person(person_id: str = Path(...)):
         raise
     except Exception as e:
         print(f"Error deleting person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@router.put("/people/{person_id}/staff-intern")
+async def update_staff_intern(person_id: str = Path(...), data: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    try:
+        from auth.utils import SUPREME_ADMIN_EMAIL
+        role = (current_user.get("role") or "").lower() if current_user else ""
+        is_allowed = role in ["admin", "leaderat12"] or current_user.get("email") == SUPREME_ADMIN_EMAIL or role == "leader@12" or role == "leader at 12"
+        if not is_allowed:
+            raise HTTPException(status_code=403, detail="Admin or Leader@12 access required")
+        staff_status = data.get("staffStatus")
+        if staff_status not in [None, "none", "staff", "intern"]:
+            raise HTTPException(status_code=400, detail="Invalid staffStatus")
+        update = {}
+        if staff_status is not None:
+            update["staffStatus"] = staff_status
+        for k in ["fridayServiceTarget", "sundayServiceTarget", "fridayActual", "sundayActual"]:
+            if k in data:
+                v = data[k]
+                try:
+                    v = int(v)
+                except Exception:
+                    raise HTTPException(status_code=400, detail=f"{k} must be integer")
+                if v < 0:
+                    raise HTTPException(status_code=400, detail=f"{k} must be >= 0")
+                update[k] = v
+        if not update:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+        update["UpdatedAt"] = datetime.utcnow().isoformat()
+        result = await people_collection.update_one({"_id": ObjectId(person_id)}, {"$set": update})
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+        updated = await people_collection.find_one({"_id": ObjectId(person_id)})
+        updated["_id"] = str(updated["_id"])
+        return {"message": "Staff/intern data updated successfully", "person": updated}
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
