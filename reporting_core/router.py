@@ -207,6 +207,11 @@ async def _twelve_tasks_data(
     period: ResolvedPeriod,
     nullable_targets: bool = True,
 ) -> dict:
+    if scope.is_super and not scope.org_filter:
+        raise HTTPException(
+            status_code=422,
+            detail="organization is required to run the Twelve Tasks report",
+        )
     return await asyncio.to_thread(
         sb_get_twelve_tasks_report,
         period.token,

@@ -98,10 +98,13 @@ returns no row.
 
 The Admin page does not define twelve named task categories. It defines
 per-person target rows for a selected week and organization in
-`twelve_tasks_targets`; the number of people/rows is variable. The Twelve Tasks
-report now uses those Admin rows as its source of truth, scoped to the report
-organization and ISO week(s), and displays each person's current name, target,
-week, and completed task actuals. It no longer uses the separate
+`twelve_tasks_targets`; the relevant columns are `person_id`, `target`,
+`week_identifier`, `organization`, and `is_default`. The Admin UI displays
+“Custom” when `is_default` is false; there is no separate target-type column.
+The number of people/rows is variable. The Twelve Tasks report uses those
+Admin rows as its source of truth, scoped to the report organization and ISO
+weeks overlapping the selected period, and displays each person's current
+name, target, weeks, and completed task actuals. It no longer uses the separate
 `twelve_tasks_tracked_people` roster to create report rows or defaults missing
 targets. An Admin-defined organization default remains one “Leader default”
 row; it is not expanded into synthetic person rows.
@@ -111,12 +114,25 @@ can coexist; the default-target writer uses the same conflict key. The
 migration must be applied to the database before weekly targets can persist
 independently. No live database migration was run.
 
+For bucket resolution, the report uses `build_week_buckets` from
+`supabase_helpers/weekly_buckets.py`. Every source ISO week intersecting the
+period is queried (for November 2026: `2026-W44` through `2026-W49`); when the
+attendance bucketing rule folds a trailing partial week, its canonical display
+bucket is mapped to the preceding bucket. Targets are aggregated to one row
+per person: targets are summed across that person's in-period weekly rows, and
+actuals are summed over completed tasks whose completion timestamps fall in
+the selected period. The current implementation also sums the preceding-week
+actual for each target row into the “Prior-week actuals” column.
+
 Rows are not padded or truncated to twelve. If a person has since been deleted
 from `People`, their target row remains visible under the person ID and the
 report does not fail. Actuals are matched by the current person's ID/email, so
 unmatched historical task assignments do not get attributed to someone else.
-A week without Admin target rows has no zero-filled KPIs or report rows; the
-report page shows “No tasks set for this week” with a link to Admin.
+A period without Admin target rows in any overlapping week has no zero-filled
+KPIs or report rows; the report page shows “No tasks set for this period” (or
+the matching week label for week periods) with a link to Admin. Super-admin
+report requests require an explicit organization; the report page's
+organization selector and dashboard KPI links preserve that context.
 
 Admin's target-list and available-week routes accept organization selection
 for super-admins while enforcing the authenticated organization for regular

@@ -257,6 +257,15 @@ def test_super_admin_report_honors_selected_organization(client, monkeypatch):
     assert dashboard_calls[0][1] == {"Organization": "Example Org"}
 
 
+def test_super_admin_twelve_tasks_requires_organization(client):
+    set_scope(ReportScope(None, True, "super_admin", "super-1", None))
+
+    response = client.get("/reporting/reports/twelve_tasks?period=thisWeek")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "organization is required to run the Twelve Tasks report"
+
+
 def test_dashboard_and_twelve_tasks_use_identical_helper_params_and_values(
     client, admin_scope, monkeypatch
 ):
