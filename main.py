@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends,
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserCreater, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate, TaskTypeIn, TaskTypeOut, LeaderStatusResponse, UserProfile, OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role, require_super_admin
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role, require_super_admin, SUPREME_ADMIN_EMAIL
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, consolidations_collection, organizations_collection, org_config_collection
@@ -43,6 +43,7 @@ from reports import router as reports_router
 from people import router as people_router
 from profile_router import router as profile_router
 from push_notifications import router as push_notifications_router
+from routers.staff_intern import router as staff_intern_router
 
 #add routers here:
 def include_router(app):
@@ -3613,6 +3614,7 @@ app.include_router(tasks_router)
 app.include_router(task_types_router)
 app.include_router(service_checkin_router)
 app.include_router(supreme_admin_router)
+app.include_router(staff_intern_router)
 app.include_router(admin_router)
 app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
@@ -9083,6 +9085,81 @@ async def change_password(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
+
+@app.put("/people/{person_id}/staff-intern")
+async def update_staff_intern(
+    person_id: str,
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a person's Staff/Intern classification and service figures."""
+    try:
+        role_text = (current_user.get("role") or "").lower().strip()
+        email_text = (current_user.get("email") or "").lower().strip()
+        is_supreme = (
+            current_user.get("is_supreme_admin", False) or
+            email_text == SUPREME_ADMIN_EMAIL.lower()
+        )
+        allowed = (
+            is_supreme or
+            role_text == "admin" or
+            "admin" in role_text or
+            role_text == "leaderat12" or
+            "leaderat12" in role_text or
+            "leader at 12" in role_text or
+            "leader@12" in role_text
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Not authorized to update staff/intern data")
+
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+
+        set_fields: dict = {}
+        if "staffStatus" in update_data:
+            status = update_data.get("staffStatus")
+            status = status.strip().lower() if isinstance(status, str) else ""
+            if status not in {"none", "staff", "intern"}:
+                raise HTTPException(status_code=400, detail="staffStatus must be one of: none, staff, intern")
+            set_fields["staffStatus"] = status
+
+        for key in ("fridayServiceTarget", "sundayServiceTarget", "fridayActual", "sundayActual"):
+            if key in update_data and update_data[key] is not None:
+                value = update_data[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise HTTPException(status_code=400, detail=f"{key} must be a non-negative integer")
+                set_fields[key] = value
+
+        if not set_fields:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        set_fields["UpdatedAt"] = datetime.utcnow().isoformat()
+
+        result = await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": set_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        if people_cache.get("data"):
+            for i, person in enumerate(people_cache["data"]):
+                if str(person.get("_id")) == person_id:
+                    for field, new_value in set_fields.items():
+                        people_cache["data"][i][field] = new_value
+                    break
+
+        return {
+            "success": True,
+            "message": "Staff/intern data updated successfully",
+            "person_id": person_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating staff/intern data for {person_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating staff/intern data: {str(e)}")
 
 # ========== EVENT-SPECIFIC PEOPLE ENDPOINT - RETURNS ALL PEOPLE WITH COMPLETE FIELDS ==========
 @app.get("/events/{event_id}/all-people-for-attendance")
