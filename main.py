@@ -65,7 +65,7 @@ from Reports.reports_routes import router as reports_router
 from reporting_core.router import router as reporting_router, CATALOG_BY_TYPE, LEGACY_SCHEDULE_TYPES
 from reporting_core.schemas import ReportScheduleCreate, ReportScheduleRecord, ReportScheduleUpdate
 from events import router as events_router
-from people import router as people_router
+from people import router as people_router, get_people_paginated, get_all_people_minimal
 from profile_router import router as profile_router
 from admin import router as admin_router
 from admin import event_type_router as admin_event_type_router
@@ -73,6 +73,7 @@ from admin import task_type_router as admin_task_type_router
 from daily_tasks import router as tasks_router
 from task_types import router as task_types_router
 from routers.staff_intern import router as staff_intern_router
+from auth_migration import router as auth_migration_router
 app = FastAPI()
 
 import pandas as pd
@@ -98,6 +99,7 @@ app.add_middleware(
 
 app.include_router(supreme_admin_router)
 app.include_router(staff_intern_router)
+app.include_router(auth_migration_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -10312,6 +10314,67 @@ async def search_people_fast(
         print(f"Error in search-fast: {str(e)}")
         return {"results": [], "error": str(e)}
     
+@app.get("/people/leaders-only")
+async def get_leaders_only():
+    """
+    Get only people who are leaders (have people under them)
+    Optimized for signup form where we mostly need leaders
+    """
+    try:
+        # Find people who appear as leaders in other people's records
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"Leader @1": {"$exists": True, "$ne": ""}},
+                        {"Leader @12": {"$exists": True, "$ne": ""}},
+                        {"Leader @144": {"$exists": True, "$ne": ""}},
+                        {"Leader @1728": {"$exists": True, "$ne": ""}}
+                    ]
+                }
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "Name": 1,
+                    "Surname": 1,
+                    "Email": 1,
+                    "Phone": 1,
+                    "Leader @1": 1,
+                    "Leader @12": 1,
+                    "Leader @144": 1,
+                    "Leader @1728": 1
+                }
+            },
+            {"$limit": 500}  # Leaders only, so smaller set
+        ]
+       
+        cursor = people_collection.aggregate(pipeline)
+        leaders = []
+       
+        async for person in cursor:
+            leaders.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+       
+        return {"leaders": leaders}
+       
+    except Exception as e:
+        print(f"Error fetching leaders: {e}")
+        return {"leaders": []}
+
+
+app.add_api_route("/people/paginated", get_people_paginated, methods=["GET"], tags=["people"])
+app.add_api_route("/people/all-minimal", get_all_people_minimal, methods=["GET"], tags=["people"])
+
 @app.get("/people/{person_id}")
 async def get_person(
     person_id: str,
@@ -10653,64 +10716,6 @@ async def delete_person(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/people/leaders-only")
-async def get_leaders_only():
-    """
-    Get only people who are leaders (have people under them)
-    Optimized for signup form where we mostly need leaders
-    """
-    try:
-        # Find people who appear as leaders in other people's records
-        pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"Leader @1": {"$exists": True, "$ne": ""}},
-                        {"Leader @12": {"$exists": True, "$ne": ""}},
-                        {"Leader @144": {"$exists": True, "$ne": ""}},
-                        {"Leader @1728": {"$exists": True, "$ne": ""}}
-                    ]
-                }
-            },
-            {
-                "$project": {
-                    "_id": 1,
-                    "Name": 1,
-                    "Surname": 1,
-                    "Email": 1,
-                    "Phone": 1,
-                    "Leader @1": 1,
-                    "Leader @12": 1,
-                    "Leader @144": 1,
-                    "Leader @1728": 1
-                }
-            },
-            {"$limit": 500}  # Leaders only, so smaller set
-        ]
-       
-        cursor = people_collection.aggregate(pipeline)
-        leaders = []
-       
-        async for person in cursor:
-            leaders.append({
-                "_id": str(person["_id"]),
-                "Name": person.get("Name", ""),
-                "Surname": person.get("Surname", ""),
-                "Email": person.get("Email", ""),
-                "Phone": person.get("Phone", ""),
-                "Leader @1": person.get("Leader @1", ""),
-                "Leader @12": person.get("Leader @12", ""),
-                "Leader @144": person.get("Leader @144", ""),
-                "Leader @1728": person.get("Leader @1728", "")
-            })
-       
-        return {"leaders": leaders}
-       
-    except Exception as e:
-        print(f"Error fetching leaders: {e}")
-        return {"leaders": []}
-
-
 # -------------------------
 # Tasks Management
 # -------------------------
@@ -10718,6 +10723,7 @@ async def get_leaders_only():
 # ====================== POST /tasks ======================
 
 from fastapi.encoders import jsonable_encoder
+
 
 @app.post("/tasks")
 async def create_task(task: TaskModel, current_user: dict = Depends(get_current_user)):

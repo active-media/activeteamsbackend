@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+import re
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends
 from auth.models import PersonCreate
@@ -117,6 +118,64 @@ async def get_people(
     except Exception as e:
         print(f"Error fetching people: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+async def get_people_paginated(
+    page: int = Query(1, ge=1),
+    perPage: int = Query(50, ge=1, le=200),
+    name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Lightweight, paginated people list for the attendance modal."""
+    try:
+        query = {}
+        if name and name.strip():
+            escaped = re.escape(name.strip())
+            query["$or"] = [
+                {"Name": {"$regex": escaped, "$options": "i"}},
+                {"Surname": {"$regex": escaped, "$options": "i"}},
+                {"Email": {"$regex": escaped, "$options": "i"}},
+            ]
+
+        projection = {
+            "Name": 1, "Surname": 1, "Email": 1, "Number": 1,
+            "InvitedBy": 1, "Stage": 1, "person_id": 1,
+            "Leader @1": 1, "Leader @12": 1, "Leader @144": 1, "Leader @1728": 1,
+        }
+
+        start = (page - 1) * perPage
+        cursor = people_collection.find(query, projection).skip(start).limit(perPage)
+
+        results = []
+        async for person in cursor:
+            results.append({
+                "_id": str(person.get("_id", "")),
+                "person_id": person.get("person_id") or "",
+                "Name": person.get("Name") or "",
+                "Surname": person.get("Surname") or "",
+                "Email": person.get("Email") or "",
+                "Number": person.get("Number") or "",
+                "InvitedBy": person.get("InvitedBy") or "",
+                "Stage": person.get("Stage") or "",
+                "Leader @1": person.get("Leader @1") or "",
+                "Leader @12": person.get("Leader @12") or "",
+                "Leader @144": person.get("Leader @144") or "",
+                "Leader @1728": person.get("Leader @1728") or "",
+            })
+
+        total = await people_collection.count_documents(query)
+
+        return {
+            "page": page,
+            "perPage": perPage,
+            "total": total,
+            "hasMore": start + len(results) < total,
+            "results": results,
+        }
+
+    except Exception as e:
+        print(f"Error fetching paginated people: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 # ========== SEARCH & AUTOCOMPLETE ENDPOINTS - MUST COME BEFORE {person_id} ==========
 
 @router.get("/people/search-fast")
