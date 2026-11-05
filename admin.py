@@ -1092,6 +1092,8 @@ async def get_distinct_roles(
             "can_create_custom_roles": org_filter != ACTIVE_CHURCH_NAME,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1644,6 +1646,18 @@ async def get_event_types(current_user: dict = Depends(get_current_user)):
         )
         org_id = ORG_ID_MAP.get(org_id.lower(), org_id)
 
+        def _normalise_event_type(et: dict) -> dict:
+            """Expose both snake_case (existing consumers) and camelCase
+            (EventTypesModal prefill) flags."""
+            et["is_training"] = bool(et.get("is_training"))
+            et["event_type_category"] = et.get("event_type_category") or "small_gatherings"
+            et["isTraining"] = et["is_training"]
+            et["isTicketed"] = bool(et.get("is_ticketed"))
+            et["isGlobal"] = bool(et.get("is_global"))
+            et["hasPersonSteps"] = bool(et.get("has_person_steps"))
+            et["event_category"] = et["event_type_category"]
+            return et
+
         event_types = []
         if org_id in ("active-teams", DEFAULT_ORG_ID):
             event_types.append(
@@ -1653,13 +1667,20 @@ async def get_event_types(current_user: dict = Depends(get_current_user)):
                     "is_built_in": True,
                     "is_event_type": True,
                     "is_global": False,
+                    "is_training": False,
+                    "event_type_category": "small_gatherings",
+                    "isTraining": False,
+                    "isTicketed": False,
+                    "isGlobal": False,
+                    "hasPersonSteps": False,
+                    "event_category": "small_gatherings",
                     "org_id": org_id,
                 }
             )
 
         result = (
             supabase.table("event_types")
-            .select("event_type_id, name, description, is_ticketed, is_global, has_person_steps, org_id, created_at, uuid_ref")
+            .select("event_type_id, name, description, is_ticketed, is_global, has_person_steps, is_training, event_type_category, org_id, created_at, uuid_ref")
             .eq("org_id", org_id)
             .order("created_at")
             .execute()
@@ -1669,14 +1690,14 @@ async def get_event_types(current_user: dict = Depends(get_current_user)):
                 continue
             # Normalise PK to "id" for frontend compatibility
             et["id"] = et.pop("event_type_id", et.get("id"))
-            event_types.append(et)
+            event_types.append(_normalise_event_type(et))
 
         # Also surface event types stored under the org's display name (legacy)
         organization = get_org_name(current_user)
         if organization:
             org_result = (
                 supabase.table("event_types")
-                .select("event_type_id, name, description, is_ticketed, is_global, has_person_steps, org_id, created_at, uuid_ref")
+                .select("event_type_id, name, description, is_ticketed, is_global, has_person_steps, is_training, event_type_category, org_id, created_at, uuid_ref")
                 .ilike("org_id", organization.lower().replace(" ", "-"))
                 .execute()
             )
@@ -1684,7 +1705,7 @@ async def get_event_types(current_user: dict = Depends(get_current_user)):
             for et in org_result.data or []:
                 et["id"] = et.pop("event_type_id", et.get("id"))
                 if et.get("id") not in existing_ids and (et.get("name") or "").upper() != "CELLS":
-                    event_types.append(et)
+                    event_types.append(_normalise_event_type(et))
 
         return event_types
 
@@ -1734,6 +1755,9 @@ async def create_event_type(
             if event_type.hasPersonSteps is not None
             else any(keyword in name_lower for keyword in ["person", "individual"])
         )
+        event_category = (event_type.event_category or "small_gatherings").strip()
+        if event_category not in ("ticketed", "training", "small_gatherings", "service"):
+            event_category = "small_gatherings"
 
         event_type_doc = {
             "name": name,
@@ -1741,6 +1765,8 @@ async def create_event_type(
             "is_ticketed": bool(getattr(event_type, "isTicketed", False)),
             "is_global": bool(is_global),
             "has_person_steps": bool(has_person_steps),
+            "is_training": bool(getattr(event_type, "isTraining", False)),
+            "event_type_category": event_category,
             "org_id": org_id,
             "uuid_ref": str(uuid.uuid4()),
             "created_at": datetime.utcnow().isoformat(),
@@ -1804,7 +1830,11 @@ async def update_event_type(event_type_name: str, updated_data: EventTypeCreate 
         name_changed = new_name.lower() != current_name.lower()
 
         current_is_global = existing_event_type.get("is_global", False)
-        new_is_global = updated_data.isGlobal if updated_data.isGlobal is not None else False
+        new_is_global = (
+            updated_data.isGlobal
+            if updated_data.isGlobal is not None
+            else bool(current_is_global)
+        )
         is_global_changed = current_is_global != new_is_global
 
         if name_changed:
@@ -1854,6 +1884,14 @@ async def update_event_type(event_type_name: str, updated_data: EventTypeCreate 
             "is_global": new_is_global,
             "has_person_steps": getattr(
                 updated_data, "hasPersonSteps", existing_event_type.get("has_person_steps", False)
+            ),
+            "is_training": getattr(
+                updated_data, "isTraining", existing_event_type.get("is_training", False)
+            ),
+            "event_type_category": (
+                updated_data.event_category
+                or existing_event_type.get("event_type_category")
+                or "small_gatherings"
             ),
         }
         update_payload = {k: v for k, v in update_payload.items() if v is not None}

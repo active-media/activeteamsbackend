@@ -104,9 +104,11 @@ class PersonCreate(BaseModel):
 class EventTypeCreate(BaseModel):
     name: str
     description: str
-    event_category: str = "small_gatherings"  # Default to "Global"
+    event_category: Optional[str] = None
     isGlobal: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
+    isTicketed: Optional[bool] = None
+    isTraining: Optional[bool] = None
     createdAt: Optional[datetime] = None
 
 # ===== Attendance =====
