@@ -104,7 +104,11 @@ per-person target rows for a selected week and organization in
 The number of people/rows is variable. The Twelve Tasks report uses those
 Admin rows as its source of truth, scoped to the report organization and ISO
 weeks overlapping the selected period, and displays each person's current
-name, target, weeks, and completed task actuals. It no longer uses the separate
+name, target, weeks, and completed task actuals. Admin `person_id` values come
+from the `Users` directory, so the report resolves names and email addresses
+from `Users` first, with a `People` lookup fallback for legacy target IDs. This
+also lets task assignments by email map back to the Admin target person. The
+report no longer uses the separate
 `twelve_tasks_tracked_people` roster to create report rows or defaults missing
 targets. An Admin-defined organization default remains one “Leader default”
 row; it is not expanded into synthetic person rows.
