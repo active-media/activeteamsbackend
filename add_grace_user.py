@@ -1,7 +1,7 @@
 # add_grace_user.py
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
-from passlib.context import CryptContext
+from auth.utils import hash_password
 from datetime import datetime
 
 from database import resolve_mongo_uri
@@ -9,7 +9,6 @@ from database import resolve_mongo_uri
 MONGO_URI = resolve_mongo_uri()
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["test-data-active-teams"]
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 async def main():
     # Add grace-church config
@@ -39,7 +38,7 @@ async def main():
             "name": "Grace",
             "surname": "Test",
             "email": "grace@test.com",
-            "password": pwd_context.hash("test1234"),
+            "password": hash_password("test1234"),
             "role": "admin",
             "org_id": "grace-church",
             "created_at": datetime.utcnow(),

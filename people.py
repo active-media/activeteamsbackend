@@ -96,6 +96,11 @@ async def get_people(
                 "Stage": person.get("Stage", "Win"),
                 "Date Created": person.get("Date Created") or datetime.utcnow().isoformat(),
                 "UpdatedAt": person.get("UpdatedAt") or datetime.utcnow().isoformat(),
+                "staffStatus": person.get("staffStatus") or person.get("StaffStatus") or "none",
+                "fridayServiceTarget": person.get("fridayServiceTarget") or person.get("FridayServiceTarget") or 0,
+                "sundayServiceTarget": person.get("sundayServiceTarget") or person.get("SundayServiceTarget") or 0,
+                "fridayActual": person.get("fridayActual") or person.get("FridayActual") or 0,
+                "sundayActual": person.get("sundayActual") or person.get("SundayActual") or 0,
             }
             people_list.append(mapped)
 
@@ -419,6 +424,11 @@ async def update_person(person_id: str = Path(...), update_data: dict = Body(...
             "Leader @1728": updated_person.get("Leader @1728", ""),
             "Stage": updated_person.get("Stage", "Win"),
             "UpdatedAt": updated_person.get("UpdatedAt"),
+            "staffStatus": updated_person.get("staffStatus") or "none",
+            "fridayServiceTarget": updated_person.get("fridayServiceTarget") or 0,
+            "sundayServiceTarget": updated_person.get("sundayServiceTarget") or 0,
+            "fridayActual": updated_person.get("fridayActual") or 0,
+            "sundayActual": updated_person.get("sundayActual") or 0,
         }
         return mapped
 
@@ -440,4 +450,41 @@ async def delete_person(person_id: str = Path(...)):
         raise
     except Exception as e:
         print(f"Error deleting person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@router.put("/people/{person_id}/staff-intern")
+async def update_staff_intern(person_id: str = Path(...), data: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    try:
+        from auth.utils import SUPREME_ADMIN_EMAIL
+        role = (current_user.get("role") or "").lower() if current_user else ""
+        is_allowed = role in ["admin", "leaderat12"] or current_user.get("email") == SUPREME_ADMIN_EMAIL or role == "leader@12" or role == "leader at 12"
+        if not is_allowed:
+            raise HTTPException(status_code=403, detail="Admin or Leader@12 access required")
+        staff_status = data.get("staffStatus")
+        if staff_status not in [None, "none", "staff", "intern"]:
+            raise HTTPException(status_code=400, detail="Invalid staffStatus")
+        update = {}
+        if staff_status is not None:
+            update["staffStatus"] = staff_status
+        for k in ["fridayServiceTarget", "sundayServiceTarget", "fridayActual", "sundayActual"]:
+            if k in data:
+                v = data[k]
+                try:
+                    v = int(v)
+                except Exception:
+                    raise HTTPException(status_code=400, detail=f"{k} must be integer")
+                if v < 0:
+                    raise HTTPException(status_code=400, detail=f"{k} must be >= 0")
+                update[k] = v
+        if not update:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+        update["UpdatedAt"] = datetime.utcnow().isoformat()
+        result = await people_collection.update_one({"_id": ObjectId(person_id)}, {"$set": update})
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+        updated = await people_collection.find_one({"_id": ObjectId(person_id)})
+        updated["_id"] = str(updated["_id"])
+        return {"message": "Staff/intern data updated successfully", "person": updated}
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

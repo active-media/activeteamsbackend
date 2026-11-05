@@ -26,7 +26,6 @@ import base64
 import uuid
 from fastapi.security import HTTPBearer
 oauth2_scheme = HTTPBearer()
-from passlib.context import CryptContext
 import json
 from urllib.parse import unquote
 import traceback
@@ -73,6 +72,7 @@ from admin import event_type_router as admin_event_type_router
 from admin import task_type_router as admin_task_type_router
 from daily_tasks import router as tasks_router
 from task_types import router as task_types_router
+from routers.staff_intern import router as staff_intern_router
 app = FastAPI()
 
 import pandas as pd
@@ -97,6 +97,7 @@ app.add_middleware(
 )
 
 app.include_router(supreme_admin_router)
+app.include_router(staff_intern_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -530,23 +531,10 @@ def build_event_object(event: dict, timezone, today_date: date) -> dict:
         }
 
 
-# --- Password hashing setup ---
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth")
 
 oauth2_scheme = HTTPBearer()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 JWT_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
@@ -806,6 +794,11 @@ def transform_person_full(p, id_to_full: dict = None):
         "leaders":      leaders,
         "LeaderId":     leader_id,
         "LeaderPath":   path_strs,
+        "staffStatus":          p.get("staffStatus") or "none",
+        "fridayServiceTarget":  p.get("fridayServiceTarget") or 0,
+        "sundayServiceTarget":  p.get("sundayServiceTarget") or 0,
+        "fridayActual":         p.get("fridayActual") or 0,
+        "sundayActual":         p.get("sundayActual") or 0,
     }
     return convert_objectids(result)
     
@@ -4514,10 +4507,12 @@ scheduler = AsyncIOScheduler()
 scheduler.add_job(auto_reactivate_expired_events,'cron',hour=0,minute=0) 
 
 @app.on_event("startup")
-async def start_background_scheduler():
+async def start_scheduler_on_startup():
+    # AsyncIOScheduler.start() needs a running event loop, so start it here
+    # instead of at import time (which breaks on Python 3.14).
     if not scheduler.running:
         scheduler.start()
-  
+
 #------------------ MIGRATION ENDPOINTS ---------- 
 @app.post("/migrate-event-types-uuids")
 async def migrate_event_types_uuids(
@@ -9301,31 +9296,26 @@ async def change_password(
         if not ObjectId.is_valid(user_id):
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        current_password = password_data.get("currentPassword")
         new_password = password_data.get("newPassword")
 
-        if not current_password or not new_password:
-            raise HTTPException(status_code=400, detail="Current password and new password are required")
+        if not new_password:
+            raise HTTPException(status_code=400, detail="New password is required")
 
         # Basic password validation
         if len(new_password) < 8:
             raise HTTPException(status_code=400, detail="New password must be at least 8 characters long")
 
-        # Get user and verify current password
+        # Get user
         user = await users_collection.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Verify current password
-        if not verify_password(current_password, user["password"]):
-            raise HTTPException(status_code=400, detail="Current password is incorrect")
-
         # Hash new password and update
         hashed_new_password = hash_password(new_password)
-       
+
         result = await users_collection.update_one(
             {"_id": ObjectId(user_id)},
-            {"$set": {"password": hashed_new_password}}
+            {"$set": {"password": hashed_new_password, "confirm_password": hashed_new_password}}
         )
 
         if result.modified_count == 0:
@@ -9476,7 +9466,12 @@ async def get_people(
                 "LeaderId": 1,
                 "LeaderPath": 1,
                 "DateCreated": 1,
-                "UpdatedAt": 1
+                "UpdatedAt": 1,
+                "staffStatus": 1,
+                "fridayServiceTarget": 1,
+                "sundayServiceTarget": 1,
+                "fridayActual": 1,
+                "sundayActual": 1
             }}
         ]
         
@@ -9581,6 +9576,11 @@ async def get_people(
                 "Leader @144": leader144,
                 "Leader @1728": leader1728,
                 "FullName": full_name,
+                "staffStatus": person.get("staffStatus") or "none",
+                "fridayServiceTarget": person.get("fridayServiceTarget") or 0,
+                "sundayServiceTarget": person.get("sundayServiceTarget") or 0,
+                "fridayActual": person.get("fridayActual") or 0,
+                "sundayActual": person.get("sundayActual") or 0,
             }
             # Add score for sorting if name search is used
             if name:
@@ -10545,6 +10545,89 @@ async def update_person(
         print(f"Error updating person {person_id}: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error updating person: {str(e)}")
+
+@app.put("/people/{person_id}/staff-intern")
+async def update_staff_intern(
+    person_id: str,
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a person's Staff/Intern classification, service targets and attendance.
+
+    Restricted to admins and leader@12. Numeric fields must be non-negative
+    integers.
+    """
+    try:
+        role_text = (current_user.get("role") or "").lower().strip()
+        email_text = (current_user.get("email") or "").lower().strip()
+        is_supreme = (
+            current_user.get("is_supreme_admin", False) or
+            email_text == SUPREME_ADMIN_EMAIL.lower()
+        )
+        allowed = (
+            is_supreme or
+            role_text == "admin" or
+            "admin" in role_text or
+            role_text == "leaderat12" or
+            "leaderat12" in role_text or
+            "leader at 12" in role_text or
+            "leader@12" in role_text
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Not authorized to update staff/intern data")
+
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+
+        set_fields: dict = {}
+
+        if "staffStatus" in update_data:
+            status = update_data.get("staffStatus")
+            status = status if isinstance(status, str) else ""
+            status = status.strip().lower()
+            if status not in {"none", "staff", "intern"}:
+                raise HTTPException(status_code=400, detail="staffStatus must be one of: none, staff, intern")
+            set_fields["staffStatus"] = status
+
+        for key in ("fridayServiceTarget", "sundayServiceTarget", "fridayActual", "sundayActual"):
+            if key in update_data and update_data[key] is not None:
+                value = update_data[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise HTTPException(status_code=400, detail=f"{key} must be a non-negative integer")
+                set_fields[key] = value
+
+        if not set_fields:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        set_fields["UpdatedAt"] = datetime.utcnow().isoformat()
+
+        result = await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": set_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        # Keep the in-memory cache in sync without a full reload.
+        if people_cache.get("data"):
+            for i, p in enumerate(people_cache["data"]):
+                if str(p.get("_id")) == person_id:
+                    for db_field, new_val in set_fields.items():
+                        people_cache["data"][i][db_field] = new_val
+                    break
+
+        return {
+            "success": True,
+            "message": "Staff/intern data updated successfully",
+            "person_id": person_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating staff/intern data for {person_id}: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error updating staff/intern data: {str(e)}")
 
 @app.delete("/people/{person_id}")
 async def delete_person(
@@ -11787,9 +11870,7 @@ async def create_user(
         if not is_supreme and user_data.role == "admin":
             raise HTTPException(status_code=403, detail="Cannot create admin users")
         
-        from passlib.context import CryptContext
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        hashed_password = pwd_context.hash(user_data.password)
+        hashed_password = hash_password(user_data.password)
         
         # Use lowercase 'organization' for all new users (consistency)
         user_doc = {

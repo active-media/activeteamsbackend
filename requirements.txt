@@ -31,7 +31,6 @@ python-http-client==3.3.7
 sendgrid==6.12.4
 
 # Supabase
-supabase>=2.31.0
 # python-gotrue==1.4.0
 # postgrest-py==0.16.2
 # realtime-py==1.2.0
@@ -54,6 +53,7 @@ pandas
 requests
 resend
 bson
+supabase==2.32.0
 # deactive schedulers 
 apscheduler==3.10.4
 
