@@ -70,7 +70,7 @@ def dashboard_envelope(
     target_hint = f"Target {target_total:,.0f}" if target_total is not None else "Target unavailable"
     tasks_hint = f"Target {sum(targets):,.0f}" if targets else "Targets unavailable"
     new_visitors = data.get("new_visitors")
-    attendance_hint = f"{new_visitors:,} new visitors" if new_visitors is not None else "Attendance in selected period"
+    attendance_hint = "Sum of check-ins across completed services"
     active_cell_sessions = data.get("active_cell_sessions")
     active_cells_hint = (
         f"{active_cell_sessions:,} completed sessions"
@@ -184,7 +184,7 @@ def twelve_tasks_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
     total = sum(_number(row.get("this_week")) or 0 for row in rows)
     return ReportEnvelope.model_validate({
         "meta": _meta("twelve_tasks", "Twelve Tasks", period, None),
-        "kpis": [
+        "kpis": [] if not rows else [
             {"key": "completed_tasks", "label": "Completed Tasks", "value": total, "format": "number"},
             {"key": "tracked_people", "label": "Tracked People", "value": len(rows), "format": "number"},
         ],
@@ -192,11 +192,12 @@ def twelve_tasks_envelope(data: dict, period: ResolvedPeriod) -> ReportEnvelope:
             "key": "twelve_tasks",
             "title": "Twelve Tasks",
             "columns": [
+                {"key": "week_identifier", "label": "Weeks"},
                 {"key": "name", "label": "Name"},
                 {"key": "gender", "label": "Gender"},
-                {"key": "last_week", "label": "Last Week", "format": "number"},
+                {"key": "last_week", "label": "Prior-week actuals", "format": "number"},
                 {"key": "target", "label": "Target", "format": "number"},
-                {"key": "this_week", "label": "This Week", "format": "number"},
+                {"key": "this_week", "label": "Actual in period", "format": "number"},
             ],
             "rows": [_clean_row(row) for row in rows],
         }],
