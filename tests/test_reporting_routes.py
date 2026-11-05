@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -48,6 +49,13 @@ def set_scope(scope):
     app.dependency_overrides[get_report_scope] = lambda: scope
 
 
+def stub_report_run_writes(monkeypatch):
+    """Prevent POST /generate from writing run rows into the live Supabase."""
+    stub = MagicMock()
+    monkeypatch.setattr(reporting_routes, "supabase_admin", stub)
+    return stub
+
+
 def dashboard_helper(period, org_filter, campus, visible_ids, start_date, end_date):
     return {
         "total_attendance": 24,
@@ -85,8 +93,10 @@ def test_catalog_has_eight_types_and_implementation_flags(client, admin_scope):
     assert response.status_code == 200
     items = {item["report_type"]: item for item in response.json()}
     assert len(items) == 8
+    # All catalog report types are implemented now.
     assert {name for name, item in items.items() if item["implemented"]} == {
-        "twelve_tasks", "cells_graph", "school_cell", "service_target"
+        "twelve_tasks", "cells_graph", "life_class", "school_of_leaders",
+        "plan_40", "staff_interns_youth", "school_cell", "service_target",
     }
 
 
@@ -161,29 +171,56 @@ def test_dashboard_core_source_failure_returns_500(client, admin_scope, monkeypa
     ["life_class", "school_of_leaders", "plan_40", "staff_interns_youth"],
 )
 @pytest.mark.parametrize("operation", ["report", "csv_export", "generate", "pdf_export"])
-def test_unimplemented_reports_have_exact_501_shape(
-    client, admin_scope, report_type, operation
+def test_ministry_reports_are_implemented(
+    client, admin_scope, monkeypatch, report_type, operation
 ):
+    """These ministry reports used to return 501 (not implemented).
+
+    They are all implemented now. PDF export remains intentionally unsupported
+    (the catalog supports csv/xlsx only), so it must keep returning the exact
+    not-implemented 501 shape. report_runs writes are stubbed so tests never
+    write into the live Supabase.
+    """
     set_scope(admin_scope)
+    stub = stub_report_run_writes(monkeypatch)
+    stub.table.return_value.insert.return_value.execute.return_value.data = [
+        {
+            "id": f"run-{report_type}",
+            "org": "Example Org",
+            "report_type": report_type,
+            "params": {},
+            "payload": {},
+            "generated_by": "admin-1",
+            "created_at": None,
+        }
+    ]
+
     if operation == "report":
         response = client.get(f"/reporting/reports/{report_type}")
-        message = f"The {report_type} report is not implemented."
     elif operation == "generate":
         response = client.post(f"/reporting/reports/{report_type}/generate")
-        message = f"The {report_type} report is not implemented."
     else:
         format_value = "pdf" if operation == "pdf_export" else "csv"
-        response = client.get(f"/reporting/reports/{report_type}/export?format={format_value}")
-        message = f"The {report_type} report is not implemented."
+        response = client.get(
+            f"/reporting/reports/{report_type}/export?format={format_value}"
+        )
 
-    assert response.status_code == 501
-    assert response.json() == {
-        "detail": {
-            "code": "not_implemented",
-            "report_type": report_type,
-            "message": message,
-        }
-    }
+    if operation in ("report", "generate"):
+        assert response.status_code == 200, response.text[:400]
+        if operation == "report":
+            envelope = ReportEnvelope.model_validate(response.json())
+            assert envelope.meta.report_type == report_type
+        else:
+            record = response.json()
+            assert record["report_type"] == report_type
+    elif operation == "csv_export":
+        assert response.status_code == 200, response.text[:400]
+        assert response.headers["content-type"].startswith("text/csv")
+    else:
+        assert response.status_code == 501
+        detail = response.json()["detail"]
+        assert detail["code"] == "not_implemented"
+        assert detail["report_type"] == report_type
 
 
 @pytest.mark.parametrize("role,organization", [("admin", None), ("user", "Example Org"), ("registrant", "Example Org")])

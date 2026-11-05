@@ -126,6 +126,10 @@ def _unique_operation_id(route):
 
 app = FastAPI(generate_unique_id_function=_unique_operation_id)
 
+# Supabase-native event-type CRUD (admin.py) is registered before the legacy
+# Mongo-backed /event-types handlers below so it wins first-match resolution.
+app.include_router(admin_event_type_router)
+
 ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
@@ -3318,7 +3322,6 @@ app.include_router(task_types_router)
 app.include_router(service_checkin_router)
 app.include_router(supreme_admin_router)
 app.include_router(admin_router)
-app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
 app.include_router(reports_router)
 app.include_router(reporting_router)

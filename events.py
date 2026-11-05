@@ -1359,140 +1359,127 @@ async def get_weekly_attendance(
 @router.put("/events/cells/{identifier}")
 async def update_cell_event_working(identifier: str, event_data: dict):
     """
-    SINGLE EVENT UPDATE: Update ONLY the existing event, NEVER create new ones
+    Update a single cell/event.
+
+    Cell listings are served from Supabase (`events` + `event_sessions`), so the
+    identifier sent by the UI is a Supabase UUID (`events.event_id`). For
+    backward compatibility we also resolve a Mongo ObjectId through the
+    `events.mongo_id` back-reference. Only real Supabase columns are written.
     """
     try:
-        from datetime import datetime as dt
-        
-        # Find the SINGLE event by ID
+        def _is_uuid(value: str) -> bool:
+            try:
+                return str(uuid.UUID(str(value))) == str(value).lower()
+            except (ValueError, AttributeError, TypeError):
+                return False
+
         event = None
-        if ObjectId.is_valid(identifier):
-            event = await events_collection.find_one({"_id": ObjectId(identifier)})
-        
+        if _is_uuid(identifier):
+            response = (
+                supabase.table("events")
+                .select("*")
+                .eq("event_id", identifier)
+                .limit(1)
+                .execute()
+            )
+            event = response.data[0] if response.data else None
+        else:
+            # Legacy identifiers: Mongo ObjectId or a stored mongo_id value.
+            lookup = identifier
+            if ObjectId.is_valid(identifier):
+                mongo_doc = await events_collection.find_one({"_id": ObjectId(identifier)})
+                lookup = str(mongo_doc["_id"]) if mongo_doc else identifier
+            response = (
+                supabase.table("events")
+                .select("*")
+                .eq("mongo_id", lookup)
+                .limit(1)
+                .execute()
+            )
+            event = response.data[0] if response.data else None
+
         if not event:
             raise HTTPException(
                 status_code=404,
-                detail=f"Event not found with identifier: {identifier}"
+                detail=f"Event not found with identifier: {identifier}",
             )
-        
-        # Prepare update fields
+
+        # Legacy request keys (camelCase / display labels) -> Supabase columns.
+        normalized = {
+            "eventName": "event_name",
+            "Event Name": "event_name",
+            "Day": "recurring_day",
+            "day": "recurring_day",
+            "Address": "location",
+            "location": "location",
+            "Time": "time",
+            "time": "time",
+            "date": "event_date",
+            "Date Of Event": "event_date",
+            "Email": "event_leader_email",
+            "eventLeaderEmail": "event_leader_email",
+            "Leader": "event_leader",
+            "eventLeader": "event_leader",
+            "eventLeaderName": "event_leader",
+            "status": "status",
+            "Status": "status",
+            "description": "description",
+            "is_permanent_deact": "is_permanent_deact",
+            "is_active": "is_active",
+            "is_recurring": "is_recurring",
+            "is_school_cell": "is_school_cell",
+            "is_global": "is_global",
+            "is_training": "is_training",
+            "is_ticketed": "is_ticketed",
+            "has_person_steps": "has_person_steps",
+            "class_level": "class_level",
+            "campus_id": "campus_id",
+            "deactivation_end": "deactivation_end",
+            "deactivation_reason": "deactivation_reason",
+        }
+
         update_fields = {}
-        
-        # Event Name mapping
-        if 'eventName' in event_data or 'Event Name' in event_data:
-            event_name_value = event_data.get('eventName') or event_data.get('Event Name')
-            update_fields['eventName'] = event_name_value
-            update_fields['Event Name'] = event_name_value
-        
-        # Day mapping
-        if 'Day' in event_data or 'day' in event_data:
-            day_value = event_data.get('Day') or event_data.get('day')
-            update_fields['Day'] = day_value
-            update_fields['day'] = day_value
-        
-        # Address/location mapping
-        if 'Address' in event_data or 'location' in event_data:
-            location_value = event_data.get('Address') or event_data.get('location')
-            update_fields['Address'] = location_value
-            update_fields['location'] = location_value
-        
-        # Time mapping
-        if 'Time' in event_data or 'time' in event_data:
-            time_value = event_data.get('Time') or event_data.get('time')
-            update_fields['Time'] = time_value
-            update_fields['time'] = time_value
-        
-        # Date mapping - Handle both formats AND display_date
-        if 'date' in event_data or 'Date Of Event' in event_data:
-            date_value = event_data.get('date')
-            date_of_event_value = event_data.get('Date Of Event')
-            
-            if date_of_event_value:
-                update_fields['Date Of Event'] = date_of_event_value
-                if date_value:
-                    update_fields['date'] = date_value
-                else:
-                    try:
-                        dt_obj = dt.fromisoformat(date_of_event_value.replace('Z', '+00:00'))
-                        update_fields['date'] = dt_obj.strftime('%Y-%m-%dT%H:%M')
-                    except:
-                        update_fields['date'] = date_of_event_value
-                
-                # Update display_date for table
-                try:
-                    dt_obj = dt.fromisoformat(date_of_event_value.replace('Z', '+00:00'))
-                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
-                except:
-                    pass
-            
-            elif date_value:
-                update_fields['date'] = date_value
-                try:
-                    dt_obj = dt.fromisoformat(date_value)
-                    update_fields['Date Of Event'] = dt_obj.isoformat() + 'Z'
-                    # Update display_date for table
-                    update_fields['display_date'] = dt_obj.strftime('%d - %m - %Y')
-                except:
-                    update_fields['Date Of Event'] = date_value
-        
-        # Email mapping
-        if 'Email' in event_data or 'eventLeaderEmail' in event_data:
-            email_value = event_data.get('Email') or event_data.get('eventLeaderEmail')
-            update_fields['Email'] = email_value
-            update_fields['eventLeaderEmail'] = email_value
-        
-        # Leader mapping
-        if 'Leader' in event_data or 'eventLeader' in event_data or 'eventLeaderName' in event_data:
-            leader_value = event_data.get('Leader') or event_data.get('eventLeader') or event_data.get('eventLeaderName')
-            update_fields['Leader'] = leader_value
-            update_fields['eventLeader'] = leader_value
-            update_fields['eventLeaderName'] = leader_value
-        
-        # Status mapping
-        if 'status' in event_data or 'Status' in event_data:
-            status_value = event_data.get('status') or event_data.get('Status')
-            update_fields['status'] = status_value
-        
-        protected_fields = [
-            'eventName', 'Event Name', 'Day', 'day', 'Address', 'location', 
-            'Time', 'time', 'date', 'Date Of Event', 'Email', 
-            'eventLeaderEmail', 'Leader', 'eventLeader', 'eventLeaderName',
-            'status', 'Status',
-            'persistent_attendees', 
-            'attendees',             
-            'attendance',           
-            '_id', 'id', 'UUID',     
-            'created_at',            
-            'total_attendance'   
-        ]
-        
-        # Other fields - but skip protected ones
         for key, value in event_data.items():
-            if key not in protected_fields:
-                update_fields[key] = value
-         
-        if update_fields.get("deactivation_end"):
-            print("yay events!")
-            update_fields["deactivation_end"] = datetime.strptime(update_fields["deactivation_end"], "%Y-%m-%dT%H:%M:%S.%f")
-        
-        update_fields["updated_at"] = datetime.utcnow()
-        
-        print(f"Updating event {identifier} with fields: {update_fields}")
-        print(f"Protected fields excluded: persistent_attendees, attendees, attendance")
-        
-        # PERFORM THE UPDATE
-        result = await events_collection.update_one(
-            {"_id": event["_id"]},
-            {"$set": update_fields}
+            column = normalized.get(key)
+            if not column:
+                continue
+            if column == "event_date" and isinstance(value, str) and "T" in value:
+                value = value.split("T")[0]
+            update_fields[column] = value
+
+        if not update_fields:
+            return {
+                "success": True,
+                "message": "No supported fields to update",
+                "modified": False,
+                "event_id": event["event_id"],
+            }
+
+        update_fields["updated_at"] = datetime.utcnow().isoformat()
+
+        result = (
+            supabase.table("events")
+            .update(update_fields)
+            .eq("event_id", event["event_id"])
+            .execute()
         )
-        
+
+        # Keep denormalised session rows in sync when the name changed.
+        new_name = update_fields.get("event_name")
+        if new_name and new_name != event.get("event_name"):
+            supabase.table("event_sessions").update(
+                {"event_name": new_name}
+            ).eq("event_id", event["event_id"]).execute()
+
         return {
             "success": True,
             "message": "Event updated successfully",
-            "modified": result.modified_count > 0,
-            "event_id": str(event.get("_id"))
+            "modified": bool(result.data),
+            "event_id": event["event_id"],
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error updating event: {str(e)}")
         import traceback
@@ -1533,7 +1520,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
 
         session_updates = {
             "session_date": update_data.get("date"),
-            "event_name": update_data.get("event_name") or event_name
+            "event_name": update_data.get("event_name") or update_data.get("eventName") or event_name
         }
         print("original data", update_data)
         print("normalized event",event_updates)
@@ -1542,7 +1529,13 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
 
         
         #update event
-        updated_event = supabase.table("events").update(event_updates).eq('event_id',event_id).execute().data
+        if event_updates:
+            updated_event = supabase.table("events").update(event_updates).eq('event_id',event_id).execute().data
+        else:
+            updated_event = supabase.table("events").select("*").eq('event_id',event_id).limit(1).execute().data
+
+        if not updated_event:
+            raise HTTPException(status_code=404, detail=f"Event not found with identifier: {event_id}")
 
         #update session 
         if update_data.get("date"):
@@ -1561,9 +1554,9 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             "person": person_name,
             "original_event_name": event_name,
             "original_day": day_name,
-            "new_event_name": updated_event[0].get('Event Name'),
-            "new_day": updated_event[0].get('Day'),
-            "sample_time_stored": updated_event[0].get('time') if updated_event[0] else None
+            "new_event_name": updated_event[0].get('event_name'),
+            "new_day": updated_event[0].get('recurring_day'),
+            "sample_time_stored": updated_event[0].get('time')
         }
         
     except Exception as e:
@@ -1733,6 +1726,9 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"ORG CONFIG REQUEST - email: {current_user.get('email')} | org_id in token: {current_user.get('org_id')} | derived org_id: {org_id}")
 
         config = await org_config_collection.find_one({"_id": org_id})
+        if config is None and (current_user.get("Organization") or "").lower() == "active church":
+            # OrgConfig is keyed by the legacy slug for the original org.
+            config = await org_config_collection.find_one({"_id": "active-teams"})
         print(f"Config found: {config is not None}")  
 
         if config is None:
@@ -1742,6 +1738,8 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         config.pop("_id", None)
         return config
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"ORG CONFIG ERROR: {str(e)}") 
         import traceback
@@ -2459,6 +2457,95 @@ async def get_global_events_status_counts(
         raise HTTPException(status_code=500, detail=str(e))
     
    
+@router.put("/events/{event_id}/headcount")
+async def update_event_headcount(
+    event_id: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Persist a manually entered headcount for an event session.
+
+    `event_id` is the composite id used by the attendance UI
+    (`<mongo_id|uuid>_<YYYY-MM-DD>`) or a bare event id.
+    """
+    try:
+        def _is_uuid(value: str) -> bool:
+            try:
+                return str(uuid.UUID(str(value))) == str(value).lower()
+            except (ValueError, AttributeError, TypeError):
+                return False
+
+        match = re.match(r"^(.*)_(\d{4}-\d{2}-\d{2})$", event_id)
+        base_id = match.group(1) if match else event_id
+        session_date = match.group(2) if match else None
+
+        try:
+            headcount = max(0, int(payload.get("headcount") or 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="headcount must be an integer")
+
+        if _is_uuid(base_id):
+            event_res = (
+                supabase.table("events")
+                .select("event_id, event_name")
+                .eq("event_id", base_id)
+                .limit(1)
+                .execute()
+            )
+        else:
+            event_res = (
+                supabase.table("events")
+                .select("event_id, event_name")
+                .eq("mongo_id", base_id)
+                .limit(1)
+                .execute()
+            )
+
+        if not event_res.data:
+            raise HTTPException(status_code=404, detail=f"Event not found: {base_id}")
+        event = event_res.data[0]
+
+        session_query = (
+            supabase.table("event_sessions")
+            .select("session_id, session_date")
+            .eq("event_id", event["event_id"])
+        )
+        if session_date:
+            session_query = session_query.eq("session_date", session_date)
+        else:
+            session_query = session_query.order("session_date", desc=True).limit(1)
+
+        session_res = session_query.limit(1).execute()
+        if not session_res.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No session found for event {base_id}"
+                + (f" on {session_date}" if session_date else ""),
+            )
+        session = session_res.data[0]
+
+        supabase.table("event_sessions").update(
+            {"total_headcounts": headcount}
+        ).eq("session_id", session["session_id"]).execute()
+
+        return {
+            "success": True,
+            "headcount": headcount,
+            "event_id": event["event_id"],
+            "session_id": session["session_id"],
+            "session_date": session.get("session_date"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating headcount: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.put("/events/{event_id}")
 async def update_event(event_id: str, event_data: dict, current_user: dict = Depends(get_current_user)):
     """
@@ -2516,7 +2603,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
         
         session_updates = {
             "session_date": update_data.get("date"),
-            "event_name": update_data.get("event_name") or event_name
+            "event_name": update_data.get("event_name") or update_data.get("eventName") or event_name
         }
         print("original data", update_data)
         print("normalized event",event_updates)
@@ -2525,7 +2612,13 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
 
         
         #update event
-        updated_event = supabase.table("events").update(event_updates).eq('event_id',event_id).execute().data
+        if event_updates:
+            updated_event = supabase.table("events").update(event_updates).eq('event_id',event_id).execute().data
+        else:
+            updated_event = supabase.table("events").select("*").eq('event_id',event_id).limit(1).execute().data
+
+        if not updated_event:
+            raise HTTPException(status_code=404, detail=f"Event not found with identifier: {event_id}")
 
         #update session 
         if update_data.get("date"):
@@ -2544,9 +2637,9 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             "person": person_name,
             "original_event_name": event_name,
             # "original_day": day_name,
-            "new_event_name": updated_event[0].get('Event Name'),
-            "new_day": updated_event[0].get('Day'),
-            "sample_time_stored": updated_event[0].get('time') if updated_event[0] else None
+            "new_event_name": updated_event[0].get('event_name'),
+            "new_day": updated_event[0].get('recurring_day'),
+            "sample_time_stored": updated_event[0].get('time')
         }
                 
     except Exception as e:

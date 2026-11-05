@@ -135,7 +135,7 @@ async def get_profile(
 
     # ── Resolve leader IDs → names ─────────────────────────────────────────
 
-    leaders = get_person_leader_fields(current_user.get("person_id"))
+    leaders = get_person_leader_fields(current_user.get("person_id")) or {}
     print("LEADERS =====", leaders)
 
     leader_at_1 = leaders.get("Leader @1")

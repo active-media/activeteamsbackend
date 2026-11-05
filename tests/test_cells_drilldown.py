@@ -1,6 +1,7 @@
 """Run from the folder that contains `reporting_core` (activeteamsbackend):
     pytest tests/test_cells_drilldown.py
 External modules (auth, supabase) are stubbed so no database is needed."""
+import importlib
 import sys, types, pathlib
 from datetime import date
 
@@ -9,10 +10,18 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "activeteamsbackend"
 sys.path.insert(0, str(ROOT))
 
+# Stub only modules that are genuinely unavailable. Unconditionally injecting
+# a fake `auth` module poisons sys.modules for every test collected later in
+# the same process (e.g. tests/test_reporting_routes.py imports auth.models).
 for name, attrs in {
     "auth": {}, "auth.utils": {"get_current_user": lambda: None},
     "supabase_helpers": {}, "supabase_helpers.supabase_connection": {"supabase": None, "supabase_admin": None},
 }.items():
+    try:
+        importlib.import_module(name)
+        continue
+    except ImportError:
+        pass
     mod = types.ModuleType(name)
     mod.__dict__.update(attrs)
     sys.modules.setdefault(name, mod)

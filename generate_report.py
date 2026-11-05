@@ -22,7 +22,7 @@ def generate_excel_report(period="thisWeek", output_path="twelve_tasks_report.xl
         previous_tasks = [
             {"assignedfor": "leader1@example.com", "followup_date": _iso(start - timedelta(days=1))},
             {"assignedfor": "leader2@example.com", "followup_date": _iso(start - timedelta(days=4))},
-            {"assignedfor": "leader3@example.com", "followup,
+            {"assignedfor": "leader3@example.com", "followup_date": _iso(start - timedelta(days=2))},
         ]
 
         mock_cursor_current = MagicMock()

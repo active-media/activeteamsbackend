@@ -318,7 +318,7 @@ def _new_visitor_count(events: list[dict], sessions: list[dict], start: datetime
     try:
         rows = _execute_all_pages(
             lambda: supabase.table("event_new_people").select(
-                "id, event_id, session_date, added_at, is_checked_in"
+                "id, event_id, added_at, is_checked_in"
             ).in_("event_id", sorted(period_event_ids))
         )
     except Exception:
@@ -329,7 +329,7 @@ def _new_visitor_count(events: list[dict], sessions: list[dict], start: datetime
     for row in rows:
         if row.get("is_checked_in") is False:
             continue
-        date_value = row.get("session_date") or row.get("added_at")
+        date_value = row.get("added_at")
         try:
             visitor_date = date.fromisoformat(str(date_value or "")[:10])
         except ValueError:
