@@ -540,26 +540,25 @@ async def get_cell_events(
 
         today_day = today_date.strftime('%A')
      
-        if event_type == 'cells':
-            event_type ='Cells'
+        event_type_id = _get_event_type_id(event_type, current_user.get("org_id"))
 
         #parameters used when fetching the cells
         all_cells_params = {
-            "p_event_type": event_type,
+            "p_event_type_id": event_type_id,
             "p_event_leader_email": user_email,
             "p_org_id": current_user.get("org_id")
         }
         print('PARAMS',all_cells_params)
 
         personal_cells_params = {
-            "p_event_type": event_type,
+            "p_event_type_id": event_type_id,
             # "p_status": status,
             # "p_day": today_day,
             "p_leader_email": user_email
         }
 
         disciples_cells_params = {
-            "p_event_type": event_type,
+            "p_event_type_id": event_type_id,
             "p_leader12_email": current_user.get('email')
         }
 
@@ -931,11 +930,9 @@ async def get_other_events(
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
-        if event_type == "global_events" or is_global == True:
-            event_type = "global_events"
-
+        event_type_id = _get_event_type_id(event_type, org_id)  
         if not is_global:
-            fetched_other_events = supabase.rpc("get_general_events",{"p_event_type": event_type}).execute().data
+            fetched_other_events = supabase.rpc("get_general_events",{"p_event_type_id": event_type_id}).execute().data
         else:
             fetched_other_events = supabase.rpc("get_global_events").execute().data
 
@@ -3020,6 +3017,14 @@ def _get_event_type_category(event_type: str,org_id:str) -> str:
     result = supabase.table("event_types").select("event_type_category").eq("name", event_type).eq("org_id",org_id).execute().data
     if result and len(result) > 0:
         return result[0].get("event_type_category", "").lower()
+
+
+def _get_event_type_id(event_type: str,org_id:str) -> str:
+    """Helper function to categorize event type."""
+    supabase.table("event_types").select("event_type_id").eq("name", event_type).eq("org_id",org_id).execute().data
+    result = supabase.table("event_types").select("event_type_id").eq("name", event_type).eq("org_id",org_id).execute().data
+    if result and len(result) > 0:
+        return result[0].get("event_type_id", "").lower()
 
     
 @router.put("/events/{event_id}/persistent-attendees")
