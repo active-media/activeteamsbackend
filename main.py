@@ -13585,7 +13585,10 @@ def _build_target_org_filter(current_user: dict) -> None:
     """
     Returns org filter dict for target endpoints, or None for super_admins.
     """
-    is_super = current_user.get('is_supreme_admin') or current_user.get('role') == 'super_admin'
+    is_super = (
+        current_user.get('is_supreme_admin')
+        or current_user.get('role') in {'super_admin', 'supreme_admin'}
+    )
     if is_super:
         return None
     org = current_user.get('Organization') or current_user.get('organization')
@@ -13602,6 +13605,9 @@ async def set_service_target(
     Set a service target for a leader or person for a specific week.
     """
     try:
+        user_role = current_user.get('role', '').lower()
+        if user_role not in ['admin', 'supreme_admin']:
+            raise HTTPException(status_code=403, detail='Admin access required')
         leader_name = payload.get('leader_name')
         person_id = payload.get('person_id')
         target_count = payload.get('target_count', 0)
@@ -13631,7 +13637,10 @@ async def set_service_target(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Error setting service target: {str(e)}')
+        logger.exception('Error setting service target')
+        status = getattr(e, 'status_code', None) or getattr(e, 'code', None) or 500
+        detail = getattr(e, 'message', None) or str(e)
+        raise HTTPException(status_code=int(status), detail=detail)
 
 @app.post('/targets/twelve-tasks', response_model=dict)
 async def set_twelve_tasks_target(
@@ -13642,6 +13651,9 @@ async def set_twelve_tasks_target(
     Set a Twelve Tasks target for a specific person for a specific week.
     """
     try:
+        user_role = current_user.get('role', '').lower()
+        if user_role not in ['admin', 'supreme_admin']:
+            raise HTTPException(status_code=403, detail='Admin access required')
         person_id = payload.get('person_id')
         target = payload.get('target')
         week_identifier = payload.get('week_identifier')
@@ -13657,20 +13669,46 @@ async def set_twelve_tasks_target(
             'is_default': False,
             'updated_by': current_user.get('email', '').lower(),
         }
+        def supabase_write_error(error, operation):
+            raw_status = getattr(error, 'status_code', None)
+            try:
+                status = int(raw_status)
+            except (TypeError, ValueError):
+                status = 500
+            if status < 400 or status > 599:
+                status = 500
+            detail = getattr(error, 'message', None) or str(error)
+            logger.error(
+                'Twelve Tasks target %s failed (status=%s): %s',
+                operation,
+                status,
+                detail,
+            )
+            return HTTPException(status_code=status, detail=detail)
+
+        upsert_error = None
+        upsert_http_error = None
         try:
             result = (
                 supabase.table('twelve_tasks_targets')
                 .upsert(data, on_conflict=['person_id', 'week_identifier', 'organization'])
                 .execute())
             target_record = result.data[0] if result.data else None
-        except Exception:
+        except Exception as error:
+            upsert_error = error
+            upsert_http_error = supabase_write_error(error, 'upsert')
             target_record = None
         if not target_record:
             try:
                 result = supabase.table('twelve_tasks_targets').insert(data).execute()
                 target_record = result.data[0] if result.data else None
-            except Exception:
-                target_record = None
+            except Exception as error:
+                raise supabase_write_error(error, 'insert') from error
+        if not target_record:
+            if upsert_error is not None and upsert_http_error is not None:
+                raise upsert_http_error from upsert_error
+            logger.error('Twelve Tasks target insert returned no row (status=500)')
+            raise HTTPException(status_code=500, detail='Supabase did not return a Twelve Tasks target row')
         return {
             'status': 'success',
             'target': target_record,
@@ -13679,7 +13717,10 @@ async def set_twelve_tasks_target(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Error setting Twelve Tasks target: {str(e)}')
+        logger.exception('Error setting Twelve Tasks target')
+        status = getattr(e, 'status_code', None) or getattr(e, 'code', None) or 500
+        detail = getattr(e, 'message', None) or str(e)
+        raise HTTPException(status_code=int(status), detail=detail)
 
 @app.get('/targets/service', response_model=dict)
 async def get_service_targets(
@@ -13714,6 +13755,15 @@ async def get_available_weeks(
     current_user: dict = Depends(get_current_user),
 ):
     from supabase_helpers.supabase_connection import supabase_admin
+    is_super = (
+        current_user.get('is_supreme_admin')
+        or current_user.get('role') in {'super_admin', 'supreme_admin'}
+    )
+    if not is_super:
+        org_filter = _build_target_org_filter(current_user)
+        organization = (org_filter or {}).get('Organization')
+        if not organization:
+            raise HTTPException(status_code=403, detail='Organization not associated with user')
     weeks = set()
     for table in ("service_targets", "twelve_tasks_targets"):
         q = supabase_admin.table(table).select("week_identifier")
@@ -13726,12 +13776,26 @@ async def get_available_weeks(
 async def get_twelve_tasks_targets(
     week: Optional[str] = Query(None),
     person_id: Optional[str] = Query(None),
+    org: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
     """
     List Twelve Tasks targets, optionally filtered by week or person.
     """
     org_filter = _build_target_org_filter(current_user)
+    if org_filter is None:
+        is_super = (
+            current_user.get('is_supreme_admin')
+            or current_user.get('role') in {'super_admin', 'supreme_admin'}
+        )
+        if is_super and org:
+            org_filter = {'Organization': org}
+        elif not is_super:
+            organization = current_user.get('Organization') or current_user.get('organization')
+            if organization:
+                org_filter = {'Organization': organization}
+            else:
+                raise HTTPException(status_code=403, detail='Organization not associated with user')
     query = supabase.table('twelve_tasks_targets').select('*')
     if org_filter:
         query = query.eq('organization', org_filter.get('Organization'))
@@ -13783,7 +13847,7 @@ async def set_default_twelve_tasks_target(
             'is_default': True,
             'updated_by': current_user.get('email', '').lower(),
         }
-        conflict_keys = ['week_identifier', 'organization']
+        conflict_keys = ['person_id', 'week_identifier', 'organization']
         try:
             result = (
                 supabase.table('twelve_tasks_targets')

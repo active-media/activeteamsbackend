@@ -10,17 +10,12 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from supabase_helpers.supabase_connection import supabase_admin as supabase
+from supabase_helpers.weekly_buckets import build_week_buckets
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# NOTE / ASSUMPTION: this module assumes Tasks.assignedfor stores the
-# assignee's People/Users _id (a stable id), not a display name or raw
-# email string. The original code grouped by a lowercased name string,
-# which is fragile (casing/typo mismatches create phantom "people"). If
-# assignedfor is actually storing email, swap PERSON_KEY_FIELDS below to
-# match on email instead, but a stable id is strongly preferred since the
-# roster table keys on person_id.
+# Task assignees are reconciled to the current People IDs used by Admin target rows.
 # ---------------------------------------------------------------------------
 PERSON_KEY_FIELDS = ("assignedfor", "assigned_to_email")
 
@@ -214,24 +209,39 @@ def sb_remove_tracked_person(person_id: str, leader12_id: str) -> dict:
 # explicitly changed. Independent of any other report's target field.
 # ---------------------------------------------------------------------------
 
-def sb_get_targets(person_ids: list[str]) -> dict[str, int]:
-    """Return per-person target values from the persisted targets table.
+def sb_get_admin_task_targets(
+    org_filter: Optional[dict],
+    week_identifiers: list[str],
+) -> list[dict]:
+    """Return the Admin-defined Twelve Tasks targets for the selected org/weeks."""
+    org = (org_filter or {}).get("Organization") or (org_filter or {}).get("organization")
+    if not org or not week_identifiers:
+        return []
+    result = (
+        supabase.table("twelve_tasks_targets")
+        .select("person_id, target, week_identifier, organization, is_default")
+        .eq("organization", org)
+        .in_("week_identifier", week_identifiers)
+        .execute()
+    )
+    return [
+        row for row in (result.data or [])
+        if row.get("person_id") or row.get("is_default")
+    ]
 
-    Looks up targets for the given person_ids. Returns an empty dict
-    if person_ids is empty, or a dict mapping person_id -> target
-    for those who have a target set. Rows without a target are omitted.
-    """
+
+def _fetch_target_people(person_ids: list[str]) -> dict[str, dict]:
     if not person_ids:
         return {}
     rows = (
-        supabase.table("twelve_tasks_targets")
-        .select("person_id, target")
-        .in_("person_id", person_ids)
+        supabase.table("People")
+        .select("_id, Name, Surname, Gender, Email")
+        .in_("_id", person_ids)
         .execute()
         .data
         or []
     )
-    return {row["person_id"]: row["target"] for row in rows}
+    return {str(row["_id"]): row for row in rows if row.get("_id") is not None}
 
 
 def sb_set_target(person_id: str, target: int, updated_by: Optional[str] = None) -> dict:
@@ -266,7 +276,12 @@ def sb_set_target(person_id: str, target: int, updated_by: Optional[str] = None)
 # tasks that were merely due or newly created, not completed.
 # ---------------------------------------------------------------------------
 
-def _count_completed_by_person(tasks: list[dict], start: datetime, end: datetime) -> dict[str, int]:
+def _count_completed_by_person(
+    tasks: list[dict],
+    start: datetime,
+    end: datetime,
+    person_aliases: Optional[dict[str, str]] = None,
+) -> dict[str, int]:
     """Count completed tasks per person within the given period.
 
     Only tasks with status=="completed" are counted. Completion is
@@ -291,10 +306,15 @@ def _count_completed_by_person(tasks: list[dict], start: datetime, end: datetime
 
         person_key = None
         for field in PERSON_KEY_FIELDS:
-            value = (task.get(field) or "").strip()
+            value = str(task.get(field) or "").strip()
             if value:
-                person_key = value
-                break
+                mapped_person = (person_aliases or {}).get(value.casefold())
+                if mapped_person:
+                    person_key = mapped_person
+                    break
+                if person_aliases is None:
+                    person_key = value
+                    break
         if person_key:
             counts[person_key] += 1
 
@@ -328,9 +348,7 @@ def _fetch_completed_tasks(start: datetime, end: datetime, org_filter: Optional[
 
 
 # ---------------------------------------------------------------------------
-# Report assembly — roster-driven (left join), so everyone on the tracked
-# list appears even with 0 completed tasks, and the row order follows the
-# roster rather than being re-sorted by count.
+# Report assembly — Admin weekly target rows are the source of truth.
 # ---------------------------------------------------------------------------
 
 def sb_get_twelve_tasks_report(
@@ -344,76 +362,162 @@ def sb_get_twelve_tasks_report(
 ) -> dict:
     """Build the Twelve Tasks report dictionary.
 
-    Report structure (columns in the exported XLSX):
-      - Column A (Name)       -> persisted roster from sb_get_tracked_people
-      - Column B (Last week)  -> completed-task count for previous week Mon-Sun
-      - Column C (Targets)    -> persisted per-person target from sb_get_targets
-      - Column D (This week)  -> completed-task count for current Mon-Sun (so far)
-
-    The report is roster-driven (left join): everyone on the tracked list
-    appears even with 0 completed tasks, and row order follows the roster
-    rather than being re-sorted by count.
+    Rows are driven only by the per-person target rows created on the Admin
+    page for the requested organization and ISO week(s) in the selected period.
+    Target rows from all overlapping ISO weeks are aggregated into one row
+    per person. An organization default remains one Admin-defined row; it is
+    not expanded into fabricated person rows.
 
     Parameters:
       leader12_id:  if set, only return people assigned to this leader
       org_filter:   if set, only include tasks/people from this organization
 
-    Returns dict with keys: period, previous_period, rows
+    Returns period, previous_period, rows and a period-aware empty_state
+    message when no Admin targets are defined for the selected organization
+    and any overlapping week.
     """
     if start_date and end_date:
-        this_week_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
-        this_week_end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
-        duration = this_week_end.date() - this_week_start.date() + timedelta(days=1)
-        last_week_end = this_week_start - timedelta(microseconds=1)
-        last_week_start = last_week_end - duration + timedelta(microseconds=1)
+        period_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        period_end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
     else:
-        this_week_start, this_week_end = _period_range("thisWeek")
-        last_week_start, last_week_end = _period_range("previousWeek")
+        period_start, period_end = _period_range(period)
+
+    _, canonical_by_week, _ = build_week_buckets(
+        period_start.date(),
+        period_end.date(),
+    )
+    source_week_starts = list(canonical_by_week)
+    week_ranges = []
+    for cursor in source_week_starts:
+        iso_year, iso_week, _ = cursor.isocalendar()
+        week_identifier = f"{iso_year}-W{iso_week:02d}"
+        previous_start = datetime.combine(cursor - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
+        previous_end = datetime.combine(cursor - timedelta(days=1), datetime.max.time(), tzinfo=timezone.utc)
+        canonical_start = canonical_by_week[cursor]
+        canonical_year, canonical_week, _ = canonical_start.isocalendar()
+        canonical_identifier = f"{canonical_year}-W{canonical_week:02d}"
+        week_ranges.append((
+            week_identifier,
+            canonical_identifier,
+            previous_start,
+            previous_end,
+        ))
 
     try:
-        roster = sb_get_tracked_people(
-            leader12_id=leader12_id,
-            org_filter=org_filter,
-            visible_leader_ids=visible_leader_ids,
+        targets = sb_get_admin_task_targets(
+            org_filter,
+            [week_identifier for week_identifier, *_ in week_ranges],
         )
-        person_ids = [r["person_id"] for r in roster]
-        targets = sb_get_targets(person_ids)
+        if leader12_id:
+            leader_roster = sb_get_tracked_people(
+                leader12_id=leader12_id,
+                org_filter=org_filter,
+                visible_leader_ids=visible_leader_ids,
+            )
+            leader_person_ids = {str(person["person_id"]) for person in leader_roster}
+            targets = [
+                row for row in targets
+                if row.get("is_default") or str(row["person_id"]) in leader_person_ids
+            ]
+        if visible_leader_ids is not None:
+            targets = [
+                row for row in targets
+                if row.get("is_default") or str(row["person_id"]) in visible_leader_ids
+            ]
+        person_ids = list(
+            dict.fromkeys(str(row["person_id"]) for row in targets if row.get("person_id"))
+        )
+        people = _fetch_target_people(person_ids)
+        person_aliases = {}
+        for person_id, person in people.items():
+            person_aliases[person_id.casefold()] = person_id
+            email = str(person.get("Email") or "").strip().casefold()
+            if email:
+                person_aliases[email] = person_id
 
-        # Fetch once across the full span, then split in Python (cheaper than two round trips).
-        tasks = _fetch_completed_tasks(last_week_start, this_week_end, org_filter=org_filter)
-        last_week_counts = _count_completed_by_person(tasks, last_week_start, last_week_end)
-        this_week_counts = _count_completed_by_person(tasks, this_week_start, this_week_end)
+        if week_ranges:
+            fetch_start = min(period_start, week_ranges[0][2])
+            fetch_end = period_end
+            tasks = _fetch_completed_tasks(fetch_start, fetch_end, org_filter=org_filter)
+        else:
+            tasks = []
     except Exception:
         logger.exception("Unable to build twelve_tasks report data")
         raise
 
+    counts_by_week = {
+        week_identifier: _count_completed_by_person(tasks, previous_start, previous_end, person_aliases)
+        for week_identifier, _canonical_identifier, previous_start, previous_end in week_ranges
+    }
+    actuals_for_period = _count_completed_by_person(tasks, period_start, period_end, person_aliases)
+    previous_period_start = period_start - (period_end - period_start + timedelta(microseconds=1))
+    previous_period_end = period_start - timedelta(microseconds=1)
+    canonical_by_identifier = {
+        week_identifier: canonical_identifier
+        for week_identifier, canonical_identifier, _, _ in week_ranges
+    }
+    aggregate_by_person = {}
+    for target in targets:
+        person_id = str(target.get("person_id") or "")
+        is_default = bool(target.get("is_default"))
+        key = ("default", "") if is_default and not person_id else ("person", person_id)
+        week_identifier = str(target.get("week_identifier") or "")
+        if not is_default and not person_id:
+            continue
+        if key not in aggregate_by_person:
+            aggregate_by_person[key] = {
+                "person_id": person_id,
+                "target": 0,
+                "last_week": 0,
+                "weeks": set(),
+                "is_default": is_default,
+            }
+        aggregate = aggregate_by_person[key]
+        aggregate["target"] += target.get("target") or 0
+        aggregate["last_week"] += counts_by_week.get(week_identifier, {}).get(person_id, 0)
+        if week_identifier in canonical_by_identifier:
+            aggregate["weeks"].add(canonical_by_identifier[week_identifier])
+
     rows = []
-    for person in roster:
-        pid = person["person_id"]
+    for aggregate in aggregate_by_person.values():
+        pid = aggregate["person_id"]
+        person = people.get(pid, {})
+        name = "Leader default" if aggregate["is_default"] else " ".join(
+            str(person.get(field) or "").strip()
+            for field in ("Name", "Surname")
+            if str(person.get(field) or "").strip()
+        )
         rows.append(
             {
                 "person_id": pid,
-                "name": person.get("display_name") or pid,
-                "last_week": last_week_counts.get(pid, 0),
-                "target": targets.get(pid) if nullable_targets else targets.get(pid, 0),
-                "this_week": this_week_counts.get(pid, 0),
+                "name": name or pid,
+                "gender": person.get("Gender") or "",
+                "week_identifier": ", ".join(sorted(aggregate["weeks"])),
+                "last_week": aggregate["last_week"],
+                "target": aggregate["target"],
+                "this_week": actuals_for_period.get(pid, 0),
             }
         )
 
+    empty_message = (
+        "No tasks set for this week"
+        if period in {"thisWeek", "previousWeek"}
+        else "No tasks set for this period"
+    )
     return {
-        "period": {"start": this_week_start.date().isoformat(), "end": this_week_end.date().isoformat()},
+        "period": {"start": period_start.date().isoformat(), "end": period_end.date().isoformat()},
         "previous_period": {
-            "start": last_week_start.date().isoformat(),
-            "end": last_week_end.date().isoformat(),
+            "start": previous_period_start.date().isoformat(),
+            "end": previous_period_end.date().isoformat(),
         },
         "rows": rows,
+        "empty_state": empty_message if not rows else None,
     }
 
 
 # ---------------------------------------------------------------------------
-# XLSX export — reproduces the exact layout from the mockup: Name / Last
-# week / Targets / Actual this week, plus the Key legend, plus the
-# orange/red/green indicator coloring on both the "Last week" and
+# XLSX export — Weeks / Name / Prior-week actuals / Targets / Actual in period, plus
+# the Key legend and orange/red/green indicator coloring on both the "Last week" and
 # "Actual this week" columns (compared against that row's target).
 # ---------------------------------------------------------------------------
 
@@ -438,13 +542,13 @@ def export_twelve_tasks_xlsx(report: dict, path: str) -> str:
     """Export the Twelve Tasks report to an XLSX file matching the mockup layout.
 
     Layout:
-      - Row 1: headers — Name / Last week / Targets / Actual this week
+      - Row 1: headers — Weeks / Name / Prior-week actuals / Targets / Actual in period
         (bold font). Columns F-G contain a Key/legend block.
-      - Data rows (starting row 2): each person from the report roster.
-        - Column B (Last week)  : count + conditional fill (orange/red/green
+      - Data rows (starting row 2): each Admin-defined target row.
+        - Column C (Prior-week actuals) : count + conditional fill (orange/red/green
           vs. that row's target).
-        - Column C (Targets)    : persisted target value.
-        - Column D (Actual this week) : count + conditional fill vs. target.
+        - Column D (Targets)    : persisted target value.
+        - Column E (Actual in period) : count + conditional fill vs. target.
       - Columns F-G: Key legend rows with colored squares and labels.
 
     The function applies indicator fills via _indicator_fill so that
@@ -460,17 +564,18 @@ def export_twelve_tasks_xlsx(report: dict, path: str) -> str:
     ws = wb.active
     ws.title = "Sheet1"
 
-    headers = ["Name", " Last week ", "Targets", "Actual  this week"]
+    headers = ["Weeks", "Name", "Prior-week actuals", "Targets", "Actual in period"]
     for col, text in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=text)
         cell.font = HEADER_FONT
 
     for row_idx, row in enumerate(report["rows"], start=2):
-        ws.cell(row=row_idx, column=1, value=row["name"])
+        ws.cell(row=row_idx, column=1, value=row.get("week_identifier"))
+        ws.cell(row=row_idx, column=2, value=row["name"])
 
-        last_week_cell = ws.cell(row=row_idx, column=2, value=row["last_week"])
-        ws.cell(row=row_idx, column=3, value=row["target"])
-        this_week_cell = ws.cell(row=row_idx, column=4, value=row["this_week"])
+        last_week_cell = ws.cell(row=row_idx, column=3, value=row["last_week"])
+        ws.cell(row=row_idx, column=4, value=row["target"])
+        this_week_cell = ws.cell(row=row_idx, column=5, value=row["this_week"])
 
         fill = _indicator_fill(row["last_week"], row["target"])
         if fill:
@@ -491,7 +596,7 @@ def export_twelve_tasks_xlsx(report: dict, path: str) -> str:
         ws.cell(row=i, column=6).fill = fill
         ws.cell(row=i, column=7, value=label)
 
-    for col, width in zip("ABCDFG", (16, 12, 10, 16, 6, 20)):
+    for col, width in zip("ABCDEFG", (12, 20, 12, 10, 16, 6, 20)):
         ws.column_dimensions[col].width = width
 
     wb.save(path)

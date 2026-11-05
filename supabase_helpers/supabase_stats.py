@@ -43,6 +43,7 @@ from zoneinfo import ZoneInfo
 from typing import Optional
 
 from supabase_helpers.supabase_connection import supabase
+from supabase_helpers.weekly_buckets import build_week_buckets
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +340,7 @@ def _aggregate_reporting_dashboard(
 
     first_day = start.date()
     last_day = end.date()
+    week_keys, canonical_by_week, week_label_by_key = build_week_buckets(first_day, last_day)
     for session in sessions:
         event_id = str(session.get("event_id", ""))
         if event_id not in event_by_id:
@@ -360,11 +362,11 @@ def _aggregate_reporting_dashboard(
         })
         total_attendance += count
         week_start = session_day - timedelta(days=session_day.weekday())
-        week_label = max(week_start, first_day).isoformat()
-        sessions_by_week[week_label] += count
+        week_key = canonical_by_week[week_start].isoformat()
+        sessions_by_week[week_key] += count
         if campus_id is not None:
             campus_attendance[str(campus_id)] += count
-            campus_trends[str(campus_id)][week_label] += count
+            campus_trends[str(campus_id)][week_key] += count
 
     previous_by_event: dict[str, int] = defaultdict(int)
     for session in previous_sessions:
@@ -418,22 +420,20 @@ def _aggregate_reporting_dashboard(
         leader["sessions"] += cell["session_count"]
         for session in cell["sessions"]:
             session_day = date.fromisoformat(session["date"])
-            week_label = max(session_day - timedelta(days=session_day.weekday()), first_day).isoformat()
-            leader["attendance_by_week"][week_label] += session["attendance"]
-            cells_by_week[week_label].add(cell["id"])
+            week_start = session_day - timedelta(days=session_day.weekday())
+            week_key = canonical_by_week[week_start].isoformat()
+            leader["attendance_by_week"][week_key] += session["attendance"]
+            cells_by_week[week_key].add(cell["id"])
             leader["last"] = max(leader["last"], session["date"])
         leader["previous_attendance"] += cell["previous_attendance"]
 
-    week_labels = []
-    week_cursor = first_day - timedelta(days=first_day.weekday())
-    while week_cursor <= last_day:
-        week_labels.append(max(week_cursor, first_day).isoformat())
-        week_cursor += timedelta(days=7)
+    week_labels = [week_label_by_key[key].isoformat() for key in week_keys]
+    week_key_labels = [key.isoformat() for key in week_keys]
 
     for leader in leaders_by_name.values():
         leader["average"] = round(leader["attendance"] / leader["sessions"], 1) if leader["sessions"] else 0
         leader["growth_rate"] = round((leader["attendance"] - leader["previous_attendance"]) / leader["previous_attendance"] * 100, 1) if leader["previous_attendance"] else (100.0 if leader["attendance"] else 0.0)
-        leader["attendance_by_week"] = [leader["attendance_by_week"].get(label, 0) for label in week_labels]
+        leader["attendance_by_week"] = [leader["attendance_by_week"].get(key, 0) for key in week_key_labels]
 
     return {
         "period": period,
@@ -444,14 +444,14 @@ def _aggregate_reporting_dashboard(
         "active_cells": len(active_cells),
         "active_cell_sessions": sum(cell["session_count"] for cell in active_cells),
         "active_leaders": len(leaders_by_name),
-        "active_cells_by_week": [len(cells_by_week.get(label, set())) for label in week_labels],
+        "active_cells_by_week": [len(cells_by_week.get(key, set())) for key in week_key_labels],
         "attendance_trend": {
             "labels": week_labels,
-            "values": [sessions_by_week.get(label, 0) for label in week_labels],
+            "values": [sessions_by_week.get(key, 0) for key in week_key_labels],
         },
         "attendance_by_campus": dict(campus_attendance),
         "attendance_trend_by_campus": {
-            campus: [weeks.get(label, 0) for label in week_labels]
+            campus: [weeks.get(key, 0) for key in week_key_labels]
             for campus, weeks in campus_trends.items()
         },
         "leaders": sorted(leaders_by_name.values(), key=lambda row: row["name"].lower()),
@@ -538,9 +538,24 @@ def sb_get_reporting_dashboard(
         ).lte("session_date", to_date.isoformat())
 
     sessions = _execute_all_pages(sessions_query(start.date(), end.date()))
+    today = datetime.now(timezone.utc).date()
     duration = end.date() - start.date()
-    previous_end = start.date() - timedelta(days=1)
-    previous_start = previous_end - duration
+    # For in-progress periods compare against the same elapsed span of the
+    # previous calendar period (e.g. Nov 1-3 vs Oct 1-3) instead of the
+    # immediately preceding equal-length window.
+    _PREVIOUS_TOKEN = {"thisMonth": "previousMonth", "thisWeek": "previousWeek", "today": "previous7"}
+    if end.date() >= today and period in _PREVIOUS_TOKEN:
+        try:
+            prev_start_dt, prev_end_dt = _period_range(_PREVIOUS_TOKEN[period])
+            elapsed = (today - start.date()).days
+            previous_start = prev_start_dt.date()
+            previous_end = min(prev_end_dt.date(), previous_start + timedelta(days=elapsed))
+        except Exception:
+            previous_end = start.date() - timedelta(days=1)
+            previous_start = previous_end - duration
+    else:
+        previous_end = start.date() - timedelta(days=1)
+        previous_start = previous_end - duration
     previous_sessions = _execute_all_pages(sessions_query(previous_start, previous_end))
 
     people_query = supabase.table("People").select("_id", count="exact")
