@@ -1220,20 +1220,20 @@ async def signup(user: UserCreate):
         if org_name:
             org_res = (
                 supabase.table("Organizations")
-                .select("org_id, name")
+                .select("_id, name")
                 .ilike("name", org_name)
                 .limit(1)
                 .execute()
             )
             if org_res.data:
-                org_id = org_res.data[0].get("org_id")
+                org_id = org_res.data[0].get("_id")
             if not org_id:
                 raise HTTPException(status_code=400, detail=f"Organization not found: {org_name}")
 
-        existing = supabase.table("Users").select("_id").eq("email", email).limit(1).execute()
-        print(org_id)
-        if len(existing.data):
-            raise HTTPException(status_code=400, detail="Email already registered")
+        # existing = supabase.table("Users").select("_id").eq("email", email).limit(1).execute()
+        # print(org_id)
+        # if len(existing.data):
+        #     raise HTTPException(status_code=400, detail="Email already registered")
 
         # Resolve the person_id: match an existing People row by email, then by
         # name+surname; otherwise create a new People row for this user.
@@ -1242,7 +1242,7 @@ async def signup(user: UserCreate):
             def people_query():
                 q = supabase.table("People").select("_id, person_id, Name, Surname, Email, org_id")
                 if org_id:
-                    q = q.eq("org_id", org_id)
+                    q = q.eq("_id", org_id)
                 return q
 
             # 1. match by email (case-insensitive exact)
