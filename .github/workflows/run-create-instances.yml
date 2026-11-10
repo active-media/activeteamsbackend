@@ -1,8 +1,6 @@
 name: Run scheduled job to create instances
 
 on:
-  push:
-    branches: [supabase-test]
   schedule:
     - cron: "45 9 * * *"   # every day at 06:00 UTC (08:00 in Johannesburg)
   workflow_dispatch:       # lets you trigger it manually from the Actions tab
