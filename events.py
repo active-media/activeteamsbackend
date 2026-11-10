@@ -297,6 +297,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "org_id": event_data.get("org_id"),
                 "class_level": event_data.get("class_level", 0),
                 "total_sessions": event_data.get("total_sessions", 0),
+                "required_sessions": event_data.get("required_sessions", 0),
             }  
 
          

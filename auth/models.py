@@ -154,6 +154,7 @@ class EventBase(BaseModel):
     deactivation_reason: Optional[str] = None
     class_level: Optional[int] = 0
     total_sessions: Optional[int] = 0
+    required_sessions: Optional[int] = 0
 
 class EventCreate(EventBase):
     pass
