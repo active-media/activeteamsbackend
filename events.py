@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, params
+from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, params, BackgroundTasks, Header
 from datetime import datetime, timedelta, date, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import Request
@@ -19,6 +19,7 @@ import os
 from supabase import Client
 from uuid import UUID
 from people import get_person_leader_fields, get_person_leaders
+import secrets
 
 router = APIRouter()
 DAY_INDEX = {
@@ -754,11 +755,14 @@ async def create_instances():
         raise HTTPException(status_code=500, detail="Error creating cell instances")
 
 
-scheduler = AsyncIOScheduler()    
-scheduler.add_job(create_instances, 'cron', day_of_week='sun', hour=1, minute=0)
-scheduler.start()
-sleep(10)
 
+@router.post("/internal/run-job")
+def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
+    expected = os.environ["CRON_SECRET"]
+    if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    background_tasks.add_task(create_instances)  # your existing job function
+    return {"status": "started"}
 
 #POPULATING DATA SCRIPTS
 @router.get("/update_event_table")
