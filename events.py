@@ -753,16 +753,14 @@ async def create_instances():
         print(f"Error creating cell instances: {e}")
         raise HTTPException(status_code=500, detail="Error creating cell instances")
 
-def run_job():
-    print("Running scheduled job to create event instances...")
-    print("Scheduled job completed.")
+
 
 @router.post("/internal/run-job")
 def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
     expected = os.environ["CRON_SECRET"]
     if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    background_tasks.add_task(run_job)  # your existing job function
+    background_tasks.add_task(create_instances)  # your existing job function
     return {"status": "started"}
 
 #POPULATING DATA SCRIPTS
