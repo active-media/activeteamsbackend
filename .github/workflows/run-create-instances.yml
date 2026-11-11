@@ -2,7 +2,7 @@ name: Run scheduled job to create instances
 
 on:
   schedule:
-    - cron: "45 9 * * *"   # every day at 06:00 UTC (08:00 in Johannesburg)
+    - cron: "0 8 * * *"   # every day at 06:00 UTC (08:00 in Johannesburg)
   workflow_dispatch:       # lets you trigger it manually from the Actions tab
 
 jobs:
