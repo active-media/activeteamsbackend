@@ -48,7 +48,7 @@ is a supreme admin).
 | updated_at | timestamptz | DEFAULT now() |
 
 Constraints:
-- Idempotent exclusion on `(person_id, daterange(start_date, COALESCE(end_date,'infinity'),'[]')) WHERE is_active` — prevents overlapping active ranges for the same person.
+- Idempotent exclusion on `(person_id, daterange(start_date, COALESCE(end_date,'infinity'),'[]')) WHERE is_active`, named `custom_targets_no_overlap_active` — prevents overlapping active ranges for the same person. If code or tests map DB errors by constraint name, use this real name (do not hardcode any earlier name).
 - No `week_identifier` column.
 - No unique on `(person_id, week_identifier, organization)` — that is the 12 Tasks per-week pattern and conflicts with versioning.
 
@@ -166,9 +166,12 @@ clear `400` message:
 ## Task types
 
 `Tasks.taskType` mixes names ("Follow Up", "Visit", ...) and ObjectId-like ids.
-Find (read-only) which table maps the ids to names. Count ALL completed tasks
-for now, but isolate the counting in one function with a pluggable `taskType`
-filter (empty by default).
+Find (read-only) which table maps the ids to names.
+
+**Decision (Option A):** count ALL completed tasks assigned to the person — do
+not filter by taskType by default. Keep the counting isolated in one function
+with a pluggable `taskType` filter (empty by default) so a per-target or
+global task-type list can be added later.
 
 ## LeaderPath column quoting
 
