@@ -69,6 +69,7 @@ from typing import Optional
 import pytz
 from bson import ObjectId
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 # ── Shared dependencies already set up in main.py ────────────────────────────
 # These imports work because this file is placed inside the same package as
@@ -1390,10 +1391,20 @@ async def debug_consolidations(
 # PATCH /events/{event_id}/toggle-status
 # ─────────────────────────────────────────────────────────────────────────────
 
+class ToggleStatusBody(BaseModel):
+    """Optional JSON body for the toggle-status PATCH.
+
+    The service check-in "Save" modal sends the confirmed service headcount
+    along with the close request; the value is persisted on the session row.
+    """
+    headcount: Optional[int] = None
+
+
 @router.patch("/events/{session_id}/{event_id}/toggle-status")
 async def toggle_event_status(
     session_id: str,
-    event_id:str,
+    event_id: str,
+    body: Optional[ToggleStatusBody] = None,
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -1403,6 +1414,9 @@ async def toggle_event_status(
     Writes the new status to Supabase event_sessions (recurring) or
     events (non-recurring) and mirrors it back to MongoDB for backward
     compatibility with any remaining Mongo-backed reads.
+
+    When closing, an optional {"headcount": <int>} body saves the confirmed
+    service headcount to event_sessions.total_headcounts.
     """
     try:
         base_mongo_id, instance_date = _parse_event_id(event_id)
@@ -1412,7 +1426,17 @@ async def toggle_event_status(
         sb_event_id = _supabase_event_id(base_mongo_id)
         now_iso = datetime.utcnow().isoformat()
 
-       
+        # Validate the optional headcount from the body (ignore invalid values
+        # rather than failing the whole toggle).
+        headcount_to_save: Optional[int] = None
+        if body is not None and body.headcount is not None:
+            try:
+                hc = int(body.headcount)
+                if hc >= 0:
+                    headcount_to_save = hc
+            except (TypeError, ValueError):
+                headcount_to_save = None
+
         session_resp = (
             supabase.table("event_sessions")
             .select("session_id, status")
@@ -1432,7 +1456,7 @@ async def toggle_event_status(
             new_status = "incomplete"
             action_msg = "reopened"
             log_action = "EVENT_REOPENED"
-            extra_fields = {"submitted_by": current_user.get("email", ""), "submitted_by_name": f"{current_user.get('name', '')} ({current_user.get('surname', '')})", "submitted_at": now_iso}
+            extra_fields = {"submitted_by": current_user.get("email", ""), "submitted_by_name": f"{current_user.get('name', '')} ({current_user.get('surname', '')})", "submitted_at": now_iso }
         else:
             new_status = "complete"
             action_msg = "closed"
@@ -1441,13 +1465,14 @@ async def toggle_event_status(
 
         # ── Write to Supabase ─────────────────────────────────────────────────
   
+        session_update = {"status": new_status, **extra_fields}
+        # Persist the confirmed headcount when the service is being closed.
+        if action_msg == "closed" and headcount_to_save is not None:
+            session_update["total_headcounts"] = headcount_to_save
         supabase.table("event_sessions").update(
-            {"status": new_status, **extra_fields}
+            session_update
         ).eq("session_id", session_id).execute()
-        # elif sb_event_id:
-        #     supabase.table("events").update(
-        #         {"status": new_status, **extra_fields}
-        #     ).eq("event_id", sb_event_id).execute()
+     
 
         await _log_activity(
             user_id=current_user.get("email", ""),
@@ -1460,6 +1485,7 @@ async def toggle_event_status(
         )
 
         event_name = event.get("event_name") or event.get("eventName", "Unknown")
+        is_closing = action_msg == "closed"
         return {
             "success": True,
             "already_closed": False,
@@ -1471,6 +1497,9 @@ async def toggle_event_status(
             "action": action_msg,
             "actioned_by": current_user.get("email", ""),
             "actioned_at": extra_fields.get("closed_at") or extra_fields.get("reopened_at"),
+            "closed_by": current_user.get("email", "") if is_closing else None,
+            "closed_at": extra_fields.get("closed_at") if is_closing else None,
+            "total_headcounts": headcount_to_save if is_closing else None,
         }
 
     except HTTPException:
@@ -1784,6 +1813,7 @@ async def get_service_checkin_events(
             "present_count": len(attendees),
             "new_people_count": session.get("new_people_total", 0) if session else 0,
             "consolidation_count": len(consolidations),
+            "headcount": session.get("total_headcounts", 0) if session else 0,
         }
     
     

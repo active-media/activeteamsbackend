@@ -756,7 +756,7 @@ async def create_instances():
 
 
 
-@router.post("/internal/run-job")
+@router.post("/run-job/create-instances")
 def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
     expected = os.environ["CRON_SECRET"]
     if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
@@ -1017,7 +1017,8 @@ async def get_other_events(
                     "time": i.get("time", "07:20") ,
                     "attendance":  i.get("checked_in_count", 0),
                     "new_people":i.get("new_people_total",0),
-                    "total_consolidation":i.get("decisions_total",0)    
+                    "total_consolidation":i.get("decisions_total",0),
+                    "headcount": i.get("total_headcounts", 0)
                 }
                 for i in general_events
             ]
@@ -1069,6 +1070,7 @@ async def get_other_events(
                     # "attendance": {},
                     "is_active": i.get("is_active"),
                     "time": i.get("time", "07:20") ,
+                    "headcount": i.get("total_headcounts", 0),
                     "price_tiers": i.get("price_tiers", "")
 
                 }
