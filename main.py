@@ -1438,30 +1438,6 @@ async def signup(user: UserCreate):
         )
         org_id = org_res.data[0].get("_id") if org_res.data else None
 
-        if not org_id and user.create_organization:
-            try:
-                row, warning = await _create_organization_record(
-                    org_name,
-                    "",
-                    user.organization_logo,
-                )
-                org_id = row.get("_id")
-                if warning:
-                    logger.warning(warning)
-            except HTTPException as exc:
-                if exc.status_code != 409:
-                    raise
-                retry = (
-                    supabase.table("Organizations")
-                    .select("_id, name")
-                    .ilike("name", org_name)
-                    .limit(1)
-                    .execute()
-                )
-                org_id = retry.data[0].get("_id") if retry.data else None
-                if not org_id:
-                    raise
-
         if not org_id:
             raise HTTPException(status_code=400, detail=f"Organization not found: {org_name}")
 

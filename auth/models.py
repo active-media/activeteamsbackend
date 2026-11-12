@@ -27,8 +27,6 @@ class UserCreate(BaseModel):
     password: str
     role: Optional[str] = None
     organization: Optional[str] = None  
-    create_organization: Optional[bool] = False
-    organization_logo: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
