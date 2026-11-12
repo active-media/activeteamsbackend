@@ -1472,7 +1472,7 @@ async def signup(user: UserCreate):
             def people_query():
                 q = supabase.table("People").select("_id, person_id, Name, Surname, Email, org_id")
                 if org_id:
-                    q = q.eq("_id", org_id)
+                    q = q.eq("org_id", org_id)
                 return q
 
             # 1. match by email (case-insensitive exact)
