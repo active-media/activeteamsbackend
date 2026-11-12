@@ -449,6 +449,214 @@ organizations_cache = {
 
 ORGANIZATIONS_CACHE_TTL_MINUTES = 10
 
+ORGANIZATION_LOGO_BUCKET = "organization-logos"
+ORGANIZATION_LOGO_MAX_BYTES = 5 * 1024 * 1024
+ORGANIZATION_LOGO_MIME_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/svg+xml": "svg",
+}
+LOGO_COLUMN_MISSING_WARNING = (
+    "The Organizations.logo column is missing in Supabase — apply "
+    "migration_organization_logo.sql so logos are stored there."
+)
+
+
+def invalidate_organizations_cache() -> None:
+    """Drop the in-memory organizations cache so the next read hits the database."""
+    organizations_cache["data"] = []
+    organizations_cache["last_loaded"] = None
+    organizations_cache["expires_at"] = None
+
+
+def _decode_logo_data_url(data_url: str) -> tuple[bytes, str, str]:
+    """Decode a base64 image data URL into (bytes, extension, content type)."""
+    match = re.match(
+        r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$",
+        (data_url or "").strip(),
+        re.DOTALL,
+    )
+    if not match:
+        raise HTTPException(status_code=400, detail="Logo must be a base64 image data URL")
+
+    content_type = match.group(1).lower()
+    extension = ORGANIZATION_LOGO_MIME_EXTENSIONS.get(content_type)
+    if not extension:
+        raise HTTPException(status_code=400, detail=f"Unsupported logo image type: {content_type}")
+
+    try:
+        content = base64.b64decode(match.group(2), validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Logo data is not valid base64")
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Logo data is empty")
+    if len(content) > ORGANIZATION_LOGO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Logo file too large — maximum 5 MB")
+
+    return content, extension, content_type
+
+
+def _upload_organization_logo(org_id: str, data_url: str) -> str:
+    """Upload a logo to Supabase Storage and return its public URL."""
+    content, extension, content_type = _decode_logo_data_url(data_url)
+    bucket = supabase_admin.storage.from_(ORGANIZATION_LOGO_BUCKET)
+    path = f"{org_id}/logo-{uuid.uuid4().hex}.{extension}"
+    bucket.upload(path, content, {"upsert": "true", "content-type": content_type})
+    public_url = bucket.get_public_url(path)
+    if isinstance(public_url, dict):
+        public_url = public_url.get("public_url")
+    return public_url
+
+
+def _delete_organization_logo_files(org_id: str) -> None:
+    """Remove every stored logo file belonging to an organization."""
+    try:
+        bucket = supabase_admin.storage.from_(ORGANIZATION_LOGO_BUCKET)
+        entries = bucket.list(f"{org_id}/") or []
+        paths = [f"{org_id}/{entry.get('name')}" for entry in entries if entry.get("name")]
+        if paths:
+            bucket.remove(paths)
+    except Exception as e:
+        logger.warning(f"Could not remove logo files for organization {org_id}: {e}")
+
+
+def _is_missing_logo_column_error(error: Exception) -> bool:
+    """True when Supabase rejected a write because Organizations.logo does not exist."""
+    code = getattr(error, "code", None)
+    message = f"{getattr(error, 'message', '')} {error}".lower()
+    if code in ("PGRST204", "42703"):
+        return "logo" in message
+    return False
+
+
+def _insert_supabase_organization(row: dict) -> str:
+    """Insert an organization row into Supabase; returns a warning if logo is unsupported."""
+    try:
+        supabase_admin.table("Organizations").insert(row).execute()
+        return ""
+    except Exception as e:
+        if "logo" in row and _is_missing_logo_column_error(e):
+            fallback = {k: v for k, v in row.items() if k != "logo"}
+            supabase_admin.table("Organizations").insert(fallback).execute()
+            logger.warning(LOGO_COLUMN_MISSING_WARNING)
+            return LOGO_COLUMN_MISSING_WARNING
+        raise
+
+
+def _update_supabase_organization(org_id: str, updates: dict) -> str:
+    """Update an organization row in Supabase; returns a warning if logo is unsupported."""
+    if not updates:
+        return ""
+    try:
+        supabase_admin.table("Organizations").update(updates).eq("_id", org_id).execute()
+        return ""
+    except Exception as e:
+        if "logo" in updates and _is_missing_logo_column_error(e):
+            fallback = {k: v for k, v in updates.items() if k != "logo"}
+            if fallback:
+                supabase_admin.table("Organizations").update(fallback).eq("_id", org_id).execute()
+            logger.warning(LOGO_COLUMN_MISSING_WARNING)
+            return LOGO_COLUMN_MISSING_WARNING
+        raise
+
+
+async def _merge_mongo_logos(orgs: list[dict]) -> None:
+    """Fill in logos from the Mongo mirror for rows the Supabase table has none for."""
+    missing = [org for org in orgs if not org.get("logo")]
+    if not missing:
+        return
+    try:
+        docs = await organizations_collection.find({"logo": {"$exists": True}}).to_list(length=None)
+    except Exception as e:
+        logger.warning(f"Could not load organization logos from Mongo: {e}")
+        return
+    logos_by_id = {str(doc.get("_id")): doc.get("logo") for doc in docs}
+    for org in missing:
+        logo = logos_by_id.get(str(org.get("_id")))
+        if logo:
+            org["logo"] = logo
+
+
+async def _create_organization_record(
+    name: str,
+    description: str = "",
+    logo_data_url: Optional[str] = None,
+) -> tuple[dict, str]:
+    """Create an organization in Supabase and Mongo.
+
+    Returns (row, warning). Raises 409 when the name already exists.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name is required")
+
+    existing = await organizations_collection.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
+    )
+    if not existing:
+        try:
+            rows = (
+                supabase_admin.table("Organizations")
+                .select("_id")
+                .ilike("name", name)
+                .limit(1)
+                .execute()
+                .data
+            )
+            existing = rows[0] if rows else None
+        except Exception as e:
+            logger.warning(f"Supabase duplicate check failed for organization '{name}': {e}")
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Organization '{name}' already exists")
+
+    org_id = str(ObjectId())
+    now = datetime.utcnow().isoformat()
+    logo_url = (
+        _upload_organization_logo(org_id, logo_data_url.strip())
+        if (logo_data_url or "").strip()
+        else None
+    )
+
+    row = {
+        "_id": org_id,
+        "name": name,
+        "description": (description or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    if logo_url:
+        row["logo"] = logo_url
+
+    warning = ""
+    try:
+        warning = _insert_supabase_organization(row)
+    except Exception:
+        if logo_url:
+            _delete_organization_logo_files(org_id)
+        raise
+
+    mirror = {
+        "_id": ObjectId(org_id),
+        "name": name,
+        "description": row["description"],
+        "created_at": now,
+        "updated_at": now,
+        "logo": logo_url,
+    }
+    try:
+        await organizations_collection.insert_one(mirror)
+    except Exception as e:
+        logger.warning(f"Could not mirror organization {org_id} to Mongo: {e}")
+
+    invalidate_organizations_cache()
+    logger.info(f"Organization created: {name} ({org_id})")
+    return row, warning
+
+
 async def get_organizations_cached() -> list[dict]:
     """Return organizations from a short-lived in-memory cache for fast lookups."""
     now = datetime.utcnow()
@@ -463,11 +671,12 @@ async def get_organizations_cached() -> list[dict]:
             # If parsing fails, fall through and reload
             pass
 
-   
-    orgs = supabase.table("Organizations").select("*").execute().data
+    orgs = supabase_admin.table("Organizations").select("*").execute().data
 
     for org in orgs:
-        org["org_id"] = str(org["org_id"])
+        org["org_id"] = str(org.get("org_id") or org.get("_id") or "")
+
+    await _merge_mongo_logos(orgs)
 
     organizations_cache["data"] = orgs
     organizations_cache["last_loaded"] = now.isoformat()
@@ -1212,28 +1421,49 @@ async def signup(user: UserCreate):
     
         email = user.email.lower().strip()
 
-        # Resolve the organization name to its org_id uuid
+        # Resolve the organization name to its org_id (Organizations._id)
         org_name = (user.organization or "").strip()
         if not org_name:
             raise HTTPException(status_code=400, detail="Organization is required for signup")
-        org_id = None
-        if org_name:
-            org_res = (
-                supabase.table("Organizations")
-                .select("_id, name")
-                .ilike("name", org_name)
-                .limit(1)
-                .execute()
-            )
-            if org_res.data:
-                org_id = org_res.data[0].get("_id")
-            if not org_id:
-                raise HTTPException(status_code=400, detail=f"Organization not found: {org_name}")
+        existing = supabase.table("Users").select("_id").eq("email", email).limit(1).execute()
+        if len(existing.data):
+            raise HTTPException(status_code=400, detail="Email already registered")
 
-        # existing = supabase.table("Users").select("_id").eq("email", email).limit(1).execute()
-        # print(org_id)
-        # if len(existing.data):
-        #     raise HTTPException(status_code=400, detail="Email already registered")
+        org_res = (
+            supabase.table("Organizations")
+            .select("_id, name")
+            .ilike("name", org_name)
+            .limit(1)
+            .execute()
+        )
+        org_id = org_res.data[0].get("_id") if org_res.data else None
+
+        if not org_id and user.create_organization:
+            try:
+                row, warning = await _create_organization_record(
+                    org_name,
+                    "",
+                    user.organization_logo,
+                )
+                org_id = row.get("_id")
+                if warning:
+                    logger.warning(warning)
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                retry = (
+                    supabase.table("Organizations")
+                    .select("_id, name")
+                    .ilike("name", org_name)
+                    .limit(1)
+                    .execute()
+                )
+                org_id = retry.data[0].get("_id") if retry.data else None
+                if not org_id:
+                    raise
+
+        if not org_id:
+            raise HTTPException(status_code=400, detail=f"Organization not found: {org_name}")
 
         # Resolve the person_id: match an existing People row by email, then by
         # name+surname; otherwise create a new People row for this user.
@@ -1320,6 +1550,7 @@ async def signup(user: UserCreate):
         supabase_uuid = auth_result.user.id
 
         user_doc = {
+            "_id": str(ObjectId()),
             "name": user.name,
             "surname": user.surname,
             "email": email,
@@ -1456,13 +1687,35 @@ async def list_organizations():
 
 @app.get("/organizations/{org_id}")
 async def get_organization(org_id: str):
-    """Return a single organization by ID."""
+    """Return a single organization by ID (Supabase primary, Mongo fallback)."""
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
-    org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
-    if not org:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    org["_id"] = str(org["_id"])
+
+    org = None
+    try:
+        rows = (
+            supabase_admin.table("Organizations")
+            .select("*")
+            .eq("_id", org_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            org = rows[0]
+    except Exception as e:
+        logger.warning(f"Supabase lookup failed for organization {org_id}: {e}")
+
+    if org is None:
+        mongo_org = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+        if not mongo_org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        mongo_org["_id"] = str(mongo_org["_id"])
+        org = mongo_org
+
+    org["org_id"] = str(org.get("org_id") or org.get("_id") or "")
+    await _merge_mongo_logos([org])
+    org.pop("org_id", None)
     return {"success": True, "organization": org}
 
 
@@ -1470,93 +1723,133 @@ async def get_organization(org_id: str):
 async def create_organization(data: dict = Body(...), current_user: dict = Depends(require_super_admin)):
     """
     Create a new organization.
-    Body: { "name": "City Church", "tag": "City Church", "description": "..." }
-    - 'name'  is the display name (must be unique, case-insensitive)
-    - 'tag'   is the badge label shown on user profiles (defaults to name)
+    Body: { "name": "City Church", "description": "...", "logo": "data:image/png;base64,..." }
+    - Supabase 'Organizations' is the primary store; Mongo is kept as a mirror.
+    - 'logo' is optional and sent as a base64 image data URL.
     """
     name = (data.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Organization name is required")
 
-    
-    existing = await organizations_collection.find_one(
-        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}
+    logo_value = data.get("logo")
+    if logo_value is not None and not isinstance(logo_value, str):
+        raise HTTPException(status_code=400, detail="Logo must be a string")
+
+    row, warning = await _create_organization_record(
+        name,
+        data.get("description") or "",
+        logo_value,
     )
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Organization '{name}' already exists")
 
-    tag = (data.get("tag") or name).strip()
-    doc = {
-        "name": name,
-        "description": (data.get("description") or "").strip(),
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
+    response = {
+        "success": True,
+        "message": "Organization created",
+        "organization": row,
     }
-    result = await organizations_collection.insert_one(doc)
-    doc["_id"] = str(result.inserted_id)
-    logger.info(f"Organization created: {name} (tag={tag})")
-    # Invalidate org cache so new org appears immediately
-    organizations_cache["data"] = []
-    organizations_cache["last_loaded"] = None
-    organizations_cache["expires_at"] = None
-    return {"success": True, "message": "Organization created", "organization": doc}
-
+    if warning:
+        response["logo_warning"] = warning
+    return response
 
 @app.put("/organizations/{org_id}")
 async def update_organization(org_id: str, data: dict = Body(...), current_user: dict = Depends(require_super_admin)):
     """
-    Update an existing organization's name.
-    This will ALSO update all users with the old organization name to the new name.
+    Update an existing organization.
+    Body: { "name", "description", "address", "phone", "email", "logo" }
+    - logo omitted = keep existing logo; logo "" = remove; data URL = replace
+    - Renaming also updates the matching users' organization name.
     """
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    existing = await organizations_collection.find_one({"_id": ObjectId(org_id)})
-    if not existing:
+    logo_value = data.get("logo")
+    if logo_value is not None and not isinstance(logo_value, str):
+        raise HTTPException(status_code=400, detail="Logo must be a string")
+
+    existing_supabase = None
+    try:
+        rows = (
+            supabase_admin.table("Organizations")
+            .select("*")
+            .eq("_id", org_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        existing_supabase = rows[0] if rows else None
+    except Exception as e:
+        logger.warning(f"Supabase lookup failed for organization {org_id}: {e}")
+
+    existing_mongo = await organizations_collection.find_one({"_id": ObjectId(org_id)})
+    if not existing_supabase and not existing_mongo:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    existing = existing_supabase or existing_mongo or {}
     old_name = existing.get("name", "")
-    update_fields = {}
-    
-    if "name" in data and data["name"]:
-        update_fields["name"] = data["name"].strip()
-    
-    if "address" in data:
-        update_fields["address"] = data["address"].strip()
-    if "phone" in data:
-        update_fields["phone"] = data["phone"].strip()
-    if "email" in data:
-        update_fields["email"] = data["email"].strip()
+    now = datetime.utcnow().isoformat()
 
-    if not update_fields:
+    supabase_updates = {}
+    mongo_updates = {}
+
+    if "name" in data and data["name"]:
+        new_name = data["name"].strip()
+        supabase_updates["name"] = new_name
+        mongo_updates["name"] = new_name
+    if "description" in data:
+        description = (data.get("description") or "").strip()
+        supabase_updates["description"] = description
+        mongo_updates["description"] = description
+    for field in ("address", "phone", "email"):
+        if field in data:
+            mongo_updates[field] = (data.get(field) or "").strip()
+
+    if logo_value is not None:
+        stripped_logo = logo_value.strip()
+        if stripped_logo:
+            _delete_organization_logo_files(org_id)
+            logo_url = _upload_organization_logo(org_id, stripped_logo)
+        else:
+            _delete_organization_logo_files(org_id)
+            logo_url = None
+        supabase_updates["logo"] = logo_url
+        mongo_updates["logo"] = logo_url
+
+    if not supabase_updates and not mongo_updates:
         return {"success": False, "message": "No fields to update"}
 
-    update_fields["updated_at"] = datetime.utcnow().isoformat()
-    
-    # Update the organization
-    await organizations_collection.update_one(
-        {"_id": ObjectId(org_id)}, 
-        {"$set": update_fields}
-    )
-    if "name" in update_fields and update_fields["name"] != old_name:
-        new_name = update_fields["name"]
-        print(f" Organization name changed from '{old_name}' to '{new_name}'")
-        print(f" Updating all users with organization '{old_name}' to '{new_name}'...")
-        
+    supabase_updates["updated_at"] = now
+    mongo_updates["updated_at"] = now
+
+    warning = _update_supabase_organization(org_id, supabase_updates)
+
+    try:
+        await organizations_collection.update_one(
+            {"_id": ObjectId(org_id)},
+            {"$set": mongo_updates},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"Could not mirror organization {org_id} update to Mongo: {e}")
+
+    new_name = supabase_updates.get("name") or mongo_updates.get("name")
+    if new_name and new_name != old_name:
+        logger.info(f"Organization renamed from '{old_name}' to '{new_name}'")
+
+        try:
+            supabase_admin.table("Users").update({"Organization": new_name}).ilike(
+                "Organization", old_name
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Could not propagate organization rename to Supabase users: {e}")
+
         update_result = await users_collection.update_many(
             {
                 "$or": [
-                    # Exact match
                     {"organization": old_name},
                     {"Organization": old_name},
-                    
                     {"organization": old_name.lower()},
                     {"Organization": old_name.lower()},
-                    
                     {"organization": old_name.upper()},
                     {"Organization": old_name.upper()},
-                    
-                    # Partial matches with regex (case insensitive)
                     {"organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}},
                     {"Organization": {"$regex": f"^{re.escape(old_name)}$", "$options": "i"}}
                 ]
@@ -1568,9 +1861,8 @@ async def update_organization(org_id: str, data: dict = Body(...), current_user:
                 }
             }
         )
-        
-        print(f" Updated {update_result.modified_count} users from '{old_name}' to '{new_name}'")
- 
+        logger.info(f"Updated {update_result.modified_count} Mongo users from '{old_name}' to '{new_name}'")
+
         additional_update = await users_collection.update_many(
             {
                 "$or": [
@@ -1587,37 +1879,53 @@ async def update_organization(org_id: str, data: dict = Body(...), current_user:
                 }
             }
         )
-        
         if additional_update.modified_count > 0:
-            print(f" Updated {additional_update.modified_count} additional users from other fields")
+            logger.info(f"Updated {additional_update.modified_count} additional Mongo users from other fields")
 
-    organizations_cache["data"] = []
-    organizations_cache["last_loaded"] = None
-    organizations_cache["expires_at"] = None
+    invalidate_organizations_cache()
 
-    # Get updated organization
-    updated = await organizations_collection.find_one({"_id": ObjectId(org_id)})
-    updated["_id"] = str(updated["_id"])
+    updated = dict(existing)
+    updated.update(supabase_updates)
+    updated.update({k: v for k, v in mongo_updates.items() if k not in updated or updated.get(k) in (None, "")})
+    updated["_id"] = org_id
 
-    return {
-        "success": True, 
-        "message": "Organization updated successfully", 
-        "organization": updated
+    response = {
+        "success": True,
+        "message": "Organization updated successfully",
+        "organization": updated,
     }
+    if warning:
+        response["logo_warning"] = warning
+    return response
+
 
 @app.delete("/organizations/{org_id}")
 async def delete_organization(org_id: str, current_user: dict = Depends(require_super_admin)):
-    """Delete an organization. Existing users keep their old org/tag strings (no auto-wipe)."""
+    """Delete an organization from Supabase, the Mongo mirror and storage."""
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    supabase_deleted = 0
+    try:
+        rows = (
+            supabase_admin.table("Organizations")
+            .delete()
+            .eq("_id", org_id)
+            .execute()
+            .data
+        )
+        supabase_deleted = len(rows or [])
+    except Exception as e:
+        logger.warning(f"Could not delete organization {org_id} from Supabase: {e}")
+
     result = await organizations_collection.delete_one({"_id": ObjectId(org_id)})
-    if result.deleted_count == 0:
+    _delete_organization_logo_files(org_id)
+
+    if result.deleted_count == 0 and supabase_deleted == 0:
         raise HTTPException(status_code=404, detail="Organization not found")
+
+    invalidate_organizations_cache()
     logger.info(f"Organization deleted: {org_id}")
-    # Invalidate org cache so deletions are reflected
-    organizations_cache["data"] = []
-    organizations_cache["last_loaded"] = None
-    organizations_cache["expires_at"] = None
     return {"success": True, "message": "Organization deleted"}
 
 SAST_TZ = pytz.timezone('Africa/Johannesburg')
