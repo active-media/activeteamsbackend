@@ -1425,7 +1425,6 @@ async def signup(user: UserCreate):
         org_name = (user.organization or "").strip()
         if not org_name:
             raise HTTPException(status_code=400, detail="Organization is required for signup")
-
         existing = supabase.table("Users").select("_id").eq("email", email).limit(1).execute()
         if len(existing.data):
             raise HTTPException(status_code=400, detail="Email already registered")

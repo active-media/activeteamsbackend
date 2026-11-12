@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, params
+from fastapi import APIRouter, HTTPException, Query, Path, Body, Depends, params, BackgroundTasks, Header
 from datetime import datetime, timedelta, date, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import Request
@@ -19,6 +19,7 @@ import os
 from supabase import Client
 from uuid import UUID
 from people import get_person_leader_fields, get_person_leaders
+import secrets
 
 router = APIRouter()
 DAY_INDEX = {
@@ -295,7 +296,8 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "Organization": event_data.get("Organization"),
                 "event_date": final_event_date.isoformat(),
                 "org_id": event_data.get("org_id"),
-                # **leaders
+                "class_level": event_data.get("class_level", 0),
+                "total_sessions": event_data.get("total_sessions", 0),
             }  
 
          
@@ -540,27 +542,29 @@ async def get_cell_events(
 
         today_day = today_date.strftime('%A')
      
-        if event_type == 'cells':
-            event_type ='Cells'
+        event_type_id = _get_event_type_id(event_type, current_user.get("org_id"))
 
         #parameters used when fetching the cells
         all_cells_params = {
-            "p_event_type": event_type,
+            "p_event_type_id": event_type_id,
             "p_event_leader_email": user_email,
             "p_org_id": current_user.get("org_id")
         }
         print('PARAMS',all_cells_params)
 
         personal_cells_params = {
-            "p_event_type": event_type,
+            "p_event_type_id": event_type_id,
             # "p_status": status,
             # "p_day": today_day,
             "p_leader_email": user_email
         }
 
         disciples_cells_params = {
-            "p_event_type": event_type,
+            "p_event_type_id": event_type_id,
             "p_leader12_email": current_user.get('email')
+            # "p_event_type": event_type,
+            # "p_leader12_email": "kennybebel@gmail.com"
+            # current_user.get('email')
         }
 
 
@@ -695,56 +699,54 @@ async def get_cell_events(
         print(f"Error in /events/cells: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/create_instances")
+
 async def create_instances():
     """ 
     creates instances of events every week
     """
     try:
         #getting all active cells
-        event_types = ['Cells']
-        for event_type in event_types:
-                params = {
-                    "p_event_type": event_type
+        events = supabase.rpc("get_all_unique_events_auto").execute().data  
+        print(f"Creating instances for {len(events)} events")
+         
+
+        #formulating current week's date
+        today_date = datetime.now() 
+
+        week_indetifier = today_date.strftime("%Y-%m-%d") 
+
+        #week number helps with getting date for a specific day tha week
+        week_no_int = int(today_date.strftime("%U")) +1
+        year_int = int(today_date.strftime("%Y"))
+
+        #iso calendar week format
+        days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        instances = []
+        num_of_errors = []
+        for event in events:
+            print(f"Creating instances for event: {event.get('event_name')} ({event.get('event_id')})")
+            for day in event.get("recurring_day", "").split(","):
+                weekday = days.index(day) + 1
+                
+                session_date = datetime.fromisocalendar(year_int, week_no_int, weekday).date().strftime("%Y-%m-%d")
+            
+                event = {
+                    "event_id": event.get("event_id"),
+                    "event_name":event.get("event_name"),
+                    "session_date": session_date,
+                    "week_identifier": week_indetifier,
+                    "status":"incomplete",
+                    "is_did_not_meet":False
                 }
-                events = supabase.rpc("get_all_unique_cells_auto", params).execute().data  
-
-                #formulating current week's date
-                today_date = datetime.now() 
-
-                week_indetifier = today_date.strftime("%Y-%m-%d") 
-
-                #week number helps with getting date for a specific day tha week
-                week_no_int = int(today_date.strftime("%U")) +1
-                year_int = int(today_date.strftime("%Y"))
-
-                #iso calendar week format
-                days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-                instances = []
-                num_of_errors = []
-                for event in events:
-                    for day in event.get("recurring_day", "").split(","):
-                        weekday = days.index(day) + 1
-                        
-                        session_date = datetime.fromisocalendar(year_int, week_no_int, weekday).date().strftime("%Y-%m-%d")
-                    
-                        event = {
-                            "event_id": event.get("event_id"),
-                            "event_name":event.get("event_name"),
-                            "session_date": session_date,
-                            "week_identifier": week_indetifier,
-                            "status":"incomplete",
-                            "is_did_not_meet":False
-                        }
-                        instances.append(event)
-                        
-                        new_instance = supabase.table("event_sessions").insert(event).execute()
-                        if not new_instance.data:
-                            num_of_errors.append(event)
-                print(f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances for {event_type}")
-                # return {
-                #     "message": f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances",
-                # }
+                instances.append(event)
+                
+                new_instance = supabase.table("event_sessions").insert(event).execute()
+                if not new_instance.data:
+                    num_of_errors.append(event)
+        print(f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)}")
+        # return {
+        #     "message": f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances",
+        # }
 
          
     except Exception as e:
@@ -752,12 +754,14 @@ async def create_instances():
         raise HTTPException(status_code=500, detail="Error creating cell instances")
 
 
-scheduler = AsyncIOScheduler()    
-# scheduler.add_job(create_instances,'cron',hour=12,minute=48,args=[['global_events','cells' ]]) 
-# scheduler.add_job(create_instances, 'cron', day_of_week='sun', hour=1, minute=0,args=['Global Events'])
-scheduler.start()
-sleep(10)
 
+@router.post("/internal/run-job")
+def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
+    expected = os.environ["CRON_SECRET"]
+    if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    background_tasks.add_task(create_instances)  # your existing job function
+    return {"status": "started"}
 
 #POPULATING DATA SCRIPTS
 @router.get("/update_event_table")
@@ -931,11 +935,9 @@ async def get_other_events(
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
-        if event_type == "global_events" or is_global == True:
-            event_type = "global_events"
-
+        event_type_id = _get_event_type_id(event_type, org_id)  
         if not is_global:
-            fetched_other_events = supabase.rpc("get_general_events",{"p_event_type": event_type}).execute().data
+            fetched_other_events = supabase.rpc("get_general_events",{"p_event_type_id": event_type_id}).execute().data
         else:
             fetched_other_events = supabase.rpc("get_global_events").execute().data
 
@@ -1749,122 +1751,26 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/event-types/{event_type_name}")
+@router.put("/event-types/{event_type_id}")
 async def update_event_type(
-    event_type_name: str,
-    updated_data: EventTypeCreate = Body(...)
+    event_type_id: str,
+    updated_data: EventTypeCreate = Body(...),
+    current_user: dict = Depends(get_current_user)
 ):
     try:
-        decoded_event_type_name = unquote(event_type_name)
-        
-        # Check if event type exists
-        existing_event_type = await events_collection.find_one({
-            "name": {"$regex": f"^{decoded_event_type_name}$", "$options": "i"},
-            "isEventType": True
-        })
-        
-        if not existing_event_type:
-            try:
-                existing_event_type = await events_collection.find_one({
-                    "_id": ObjectId(decoded_event_type_name),
-                    "isEventType": True
-                })
-            except:
-                pass
-            
-            if not existing_event_type:
-                raise HTTPException(status_code=404, detail=f"Event type '{decoded_event_type_name}' not found")
+        if event_type_id:
+            updated_event_type = supabase.table("event_types").update({
+                "name": updated_data.name,
+                "description": updated_data.description,
+                "is_ticketed": updated_data.isTicketed,
+                "is_training": updated_data.isTraining,
+                "is_global": updated_data.isGlobal
+            }).eq("event_type_id", event_type_id).execute().data
 
-        # Convert name to title case (first letter of each word uppercase)
-        new_name = updated_data.name.strip().title()
-        current_name = existing_event_type["name"]
-        name_changed = new_name.lower() != current_name.lower()
-        
-        # Check if isGlobal is being changed
-        current_is_global = existing_event_type.get("isGlobal", False)
-        new_is_global = updated_data.isGlobal if updated_data.isGlobal is not None else False
-        is_global_changed = current_is_global != new_is_global
-        
-        # Check for duplicate names (case insensitive)
-        if name_changed:
-            duplicate = await events_collection.find_one({
-                "name": {"$regex": f"^{re.escape(new_name)}$", "$options": "i"},
-                "isEventType": True,
-                "_id": {"$ne": existing_event_type["_id"]}
-            })
-            if duplicate:
-                raise HTTPException(status_code=400, detail="Event type with this name already exists")
-        
-        events_updated_count = 0
-        if name_changed or is_global_changed:
-            # Build base query
-            update_query = {
-                "$or": [
-                    {"eventType": current_name},
-                    {"eventTypeName": current_name}
-                ],
-                "isEventType": {"$ne": True}
-            }
-            
-            # Build update fields
-            update_fields = {
-                "updatedAt": datetime.utcnow()
-            }
-            
-            if name_changed:
-                update_fields["eventType"] = new_name
-                update_fields["eventTypeName"] = new_name
-            
-            if is_global_changed:
-                # Find events that don't have explicit isGlobal set
-                events_without_explicit_isglobal = await events_collection.find({
-                    **update_query,
-                    "$or": [
-                        {"isGlobal": {"$exists": False}},
-                        {"isGlobal": None},
-                        {"isGlobal": ""},
-                        {"isGlobal": current_is_global}
-                    ]
-                }).to_list(length=None)
-                
-                events_updated_count = len(events_without_explicit_isglobal)
-                
-                if events_updated_count > 0:
-                    update_fields["isGlobal"] = new_is_global
-            
-            # Apply the update
-            if name_changed or (is_global_changed and events_updated_count > 0):
-                await events_collection.update_many(
-                    update_query,
-                    {"$set": update_fields}
-                )
-
-        # Prepare update data
-        update_data_dict = updated_data.dict()
-        update_data_dict["name"] = new_name
-        update_data_dict["eventType"] = new_name 
-        update_data_dict["eventTypeName"] = new_name  
-        update_data_dict["updatedAt"] = datetime.utcnow()
-        
-        update_data_dict = {k: v for k, v in update_data_dict.items() if v is not None}
-        
-        immutable_fields = ["_id", "UUID", "createdAt", "isEventType"]
-        for field in immutable_fields:
-            update_data_dict.pop(field, None)
-
-        # Update the event type document
-        result = await events_collection.update_one(
-            {"_id": existing_event_type["_id"]},
-            {"$set": update_data_dict}
-        )
-
-        if result.modified_count == 0:
-            existing_event_type["_id"] = str(existing_event_type["_id"])
-            return existing_event_type
-
-        updated_event_type = await events_collection.find_one({"_id": existing_event_type["_id"]})
-        updated_event_type["_id"] = str(updated_event_type["_id"])
-        
+            updated_events = supabase.table("events").update({
+                "event_type_name": updated_data.name,}).eq("event_type_id", event_type_id).execute().data
+            if not updated_event_type:
+                raise HTTPException(status_code=404, detail=f"Event type with ID '{event_type_id}' not found")
         return updated_event_type
 
     except HTTPException:
@@ -1872,123 +1778,17 @@ async def update_event_type(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event type: {str(e)}")
 
-@router.delete("/event-types/{event_type_name}")
+@router.delete("/event-types/{event_type_id}")
 async def delete_event_type(
-    event_type_name: str,
-    force: bool = Query(False, description="Force delete even if events exist")
+    event_type_id: str,
 ):
     try:
-        decoded_event_type_name = unquote(event_type_name)
-       
-        print(f" DELETE EVENT TYPE: {decoded_event_type_name}, force={force}")
-       
-        existing_event_type = await events_collection.find_one({
-            "$or": [
-                {"name": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
-                {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
-                {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
-            ],
-            "isEventType": True
-        })
-       
-        if not existing_event_type:
-            print(f" Event type '{decoded_event_type_name}' not found")
-            raise HTTPException(
-                status_code=404,
-                detail=f"Event type '{decoded_event_type_name}' not found"
-            )
-       
-        actual_identifier = (
-            existing_event_type.get("name") or
-            existing_event_type.get("eventType") or
-            existing_event_type.get("eventTypeName")
-        )
-        
-        # PREVENT DELETION OF "CELLS" EVENT TYPE (BUILT-IN)
-        actual_identifier_lower = actual_identifier.lower()
-        if any(keyword in actual_identifier_lower for keyword in ["cell", "cells"]):
-            raise HTTPException(
-                status_code=400,
-                detail=f"'{actual_identifier}' is a reserved built-in event type and cannot be modified or deleted."
-            )
-       
-        print(f" Found event type: {actual_identifier}")
-       
-        events_query = {
-            "$and": [
-                {
-                    "$or": [
-                        {"eventType": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
-                        {"eventTypeName": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
-                        {"Event Type": {"$regex": f"^{re.escape(actual_identifier)}$", "$options": "i"}},
-                        {"eventType": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
-                        {"eventTypeName": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}},
-                        {"Event Type": {"$regex": f"^{re.escape(decoded_event_type_name)}$", "$options": "i"}}
-                    ]
-                },
-                {"isEventType": {"$ne": True}},
-                {"$or": [
-                    {"eventName": {"$exists": True}},
-                    {"Event Name": {"$exists": True}},
-                    {"date": {"$exists": True}},
-                    {"Date Of Event": {"$exists": True}}
-                ]}
-            ]
-        }
-       
-        print(f" Searching for events with query: {events_query}")
-       
-        events_using_type = await events_collection.find(events_query).to_list(length=None)
-        events_count = len(events_using_type)
-       
-        print(f" Found {events_count} events using '{actual_identifier}'")
-       
-        if events_count > 0:
-            event_details = []
-            for event in events_using_type[:20]: 
-                detail = {
-                    "id": str(event["_id"]),
-                    "name": event.get("eventName") or event.get("Event Name", "Unnamed"),
-                    "type": event.get("eventType") or event.get("Event Type"),
-                    "typeName": event.get("eventTypeName"),
-                    "date": str(event.get("date") or event.get("Date Of Event", "")),
-                    "leader": event.get("eventLeaderName") or event.get("Leader", ""),
-                    "status": event.get("status", "unknown")
-                }
-                event_details.append(detail)
-                print(f"  Event: {detail['name']} (ID: {detail['id']}, Status: {detail['status']})")
-           
-            if not force:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "message": f"Cannot delete event type '{actual_identifier}': {events_count} event(s) are using it.",
-                        "events_count": events_count,
-                        "event_samples": event_details,
-                        "suggestion": "Please delete these events first, or use force=true to delete everything"
-                    }
-                )
-            else:
-                print(f" FORCE DELETE: Deleting {events_count} events...")
-               
-                delete_result = await events_collection.delete_many(events_query)
-                print(f" Deleted {delete_result.deleted_count} events")
-       
-        result = await events_collection.delete_one({"_id": existing_event_type["_id"]})
-       
-        if result.deleted_count == 1:
-            print(f" Event type '{actual_identifier}' deleted successfully")
-            return {
-                "success": True,
-                "message": f"Event type '{actual_identifier}' deleted successfully",
-                "events_deleted": events_count if force else 0
-            }
+        deleted = supabase.table("event_types").delete().eq("event_type_id", event_type_id).execute()
+
+        if not deleted.data:
+            raise HTTPException(status_code=404, detail=f"Event type with ID '{event_type_id}' not found")
         else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to delete event type from database"
-            )
-           
+            return {"message": f"Event type with ID '{event_type_id}' deleted successfully"}
     except HTTPException:
         raise
     except Exception as e:
@@ -3019,7 +2819,15 @@ def _get_event_type_category(event_type: str,org_id:str) -> str:
     supabase.table("event_types").select("event_type_category").eq("name", event_type).execute().data
     result = supabase.table("event_types").select("event_type_category").eq("name", event_type).eq("org_id",org_id).execute().data
     if result and len(result) > 0:
-        return result[0].get("event_type_category", "").lower()
+        return result[0].get("event_type_category", "") 
+
+
+def _get_event_type_id(event_type: str,org_id:str) -> str:
+    """Helper function to categorize event type."""
+    supabase.table("event_types").select("event_type_id").eq("name", event_type).eq("org_id",org_id).execute().data
+    result = supabase.table("event_types").select("event_type_id").eq("name", event_type).eq("org_id",org_id).execute().data
+    if result and len(result) > 0:
+        return result[0].get("event_type_id", "").lower()
 
     
 @router.put("/events/{event_id}/persistent-attendees")
@@ -3042,6 +2850,7 @@ async def update_persistent_attendees(
 
         # Choose the correct table based on event type
         event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
+        print(f"Event type '{event_type}' categorized as '{event_type_category}'")
         match event_type_category:
             case "small_gatherings":
                 query_function = "get_persistent_attendees"
@@ -3540,8 +3349,8 @@ async def get_persistent_attendees(
         per_params = {"p_event_id":event_id, "p_event_name": event_name}
         query_function = "get_persistent_attendees"
         table = "event_small_gatherings"
-
         event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
+        print(f"Event type '{event_type}' categorized as '{event_type_category}'")
         match event_type_category:
             case "small_gatherings":
                 query_function = "get_persistent_attendees"
@@ -3604,9 +3413,9 @@ async def get_persistent_attendees(
                         "fullName": p.get("full_name"),
                         "email": p.get("email"),
                         "phone": p.get("phone",""),
-                        "leader1":       p.get("leader1", ""),
-                        "leader12":      p.get("leader12", ""),
-                        "leader144":     p.get("leader144", ""),
+                        "leader1":       p.get("leader_at_1", ""),
+                        "leader12":      p.get("leader_at_12", ""),
+                        "leader144":     p.get("leader_at_144", ""),
                         "invitedBy": p.get("invited_by", ""),
                         "isPersistent": p.get("is_persistent", True),
                         "priceName":     p.get("priceName", ""),

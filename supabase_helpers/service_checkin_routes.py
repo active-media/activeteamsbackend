@@ -1746,6 +1746,12 @@ async def get_service_checkin_events(
         # if session_date:
         #     new_people_resp = new_people_resp.eq("session_date", session_date)
         new_people = new_people_resp.execute().data or []
+        for i in new_people:
+            for attendee in attendees:
+                if i.get("person_id") == attendee.get("person_id"):
+                    i["leader_at_1"] = attendee.get("leader_at_1")
+                    i["leader_at_12"] = attendee.get("leader_at_12")
+                    i["leader_at_144"] = attendee.get("leader_at_144")
 
         cons_resp = (
             supabase.table("event_consolidations")
@@ -1755,6 +1761,12 @@ async def get_service_checkin_events(
         # if session_date:
         #     cons_resp = cons_resp.eq("session_date", session_date)
         consolidations = cons_resp.execute().data or []
+        for i in consolidations:
+            for attendee in attendees:
+                if i.get("person_id") == attendee.get("person_id"):
+                    i["leader_at_1"] = attendee.get("leader_at_1")
+                    i["leader_at_12"] = attendee.get("leader_at_12")
+                    i["leader_at_144"] = attendee.get("leader_at_144")
 
         event_payload = {
             **base_event,
