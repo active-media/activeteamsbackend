@@ -21,6 +21,7 @@ router = APIRouter(tags=["Daily Tasks"])
 # Constants
 SAST = pytz.timezone("Africa/Johannesburg")
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
+COMPLETED_STATUSES = ("completed", "done", "closed", "finished")
 
 TABLE = 'Tasks' 
 
@@ -64,6 +65,58 @@ def _localize_iso(iso_str: Optional[str]) -> Optional[str]:
         return dt.astimezone(SAST).isoformat()
     except Exception:
         return iso_str
+
+
+# Scheduling rules
+def _is_completed_status(status) -> bool:
+    return str(status or "").strip().lower() in COMPLETED_STATUSES
+
+
+def _today_sast():
+    return datetime.now(SAST).date()
+
+
+def _sast_date(iso_str: Optional[str]):
+    """Calendar date (in SAST) of an ISO timestamp. Naive values are treated as UTC."""
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(SAST).date()
+
+
+def _validate_task_schedule(
+    followup_iso: Optional[str],
+    status,
+    original_iso: Optional[str] = None,
+    is_update: bool = False,
+) -> None:
+    """
+    Enforce the scheduling rules (compared by calendar date in SAST):
+      1. A due date in the past is rejected, except when updating a task and
+         leaving its date unchanged (so overdue tasks can still be edited/completed).
+      2. A task due on a future date cannot be marked as completed.
+    """
+    due = _sast_date(followup_iso)
+    if due is None:
+        return
+
+    today = _today_sast()
+
+    if due < today:
+        unchanged = is_update and _sast_date(original_iso) == due
+        if not unchanged:
+            raise HTTPException(status_code=400, detail="Due date cannot be in the past.")
+
+    if due > today and _is_completed_status(status):
+        raise HTTPException(
+            status_code=400,
+            detail="A task scheduled for a future date can't be marked as completed yet.",
+        )
 
 
 def _format_task_row(row: dict) -> dict:
@@ -205,14 +258,20 @@ async def create_task(
         if isinstance(cp, str):
             cp = {}
 
+        followup_iso = _parse_followup_date(d.get("followup_date"))
+        status       = d.get("status", "Open")
+
+        # Reject past due dates and "completed" on future-dated tasks
+        _validate_task_schedule(followup_iso, status, is_update=False)
+
         row = {
             "_id":                   _new_id(),
             "memberID":              d.get("memberID") or d.get("member_id") or "",
             "name":                  d.get("name", ""),
             "taskType":              d.get("taskType", ""),
             "description":           d.get("description", ""),
-            "followup_date":         _parse_followup_date(d.get("followup_date")),
-            "status":                d.get("status", "Open"),
+            "followup_date":         followup_iso,
+            "status":                status,
             "assignedfor":           assignedfor,
             "assigned_to_email":     assigned_to_email,
             "assigned_to_user_id":   d.get("assigned_to_user_id", ""),
@@ -648,6 +707,23 @@ async def bulk_update_tasks(
                     detail="You can only bulk-update tasks assigned to you.",
                 )
 
+        # Tasks scheduled for a future date can't be completed yet
+        if action == "complete":
+            today = _today_sast()
+            future_ids = [
+                task_id
+                for task_id in task_ids
+                if (_sast_date(rows_by_id[task_id].get("followup_date")) or today) > today
+            ]
+            if future_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{len(future_ids)} task(s) are scheduled for a future date "
+                        "and can't be marked as completed yet."
+                    ),
+                )
+
         now_iso = datetime.utcnow().isoformat()
         if action == "delete":
             deleted = (
@@ -750,6 +826,15 @@ async def update_task(
                 payload["completedAt"] = datetime.utcnow().isoformat()
             elif normalized in ("open", "pending", "incomplete"):
                 payload["completedAt"] = None
+
+        # Validate the resulting schedule (new values, falling back to the stored ones)
+        if "followup_date" in payload or "status" in payload:
+            _validate_task_schedule(
+                payload.get("followup_date", row.get("followup_date")),
+                payload.get("status", row.get("status")),
+                original_iso=row.get("followup_date"),
+                is_update=True,
+            )
 
         if "assignedfor" in updated_task:
             payload["assignedfor"] = updated_task["assignedfor"].lower()
