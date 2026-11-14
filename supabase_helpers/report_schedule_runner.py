@@ -1,20 +1,9 @@
 """
 supabase_helpers/report_schedule_runner.py
 
-A lightweight in-process scheduler for Scheduled Reports. Runs a check every
-minute: for each active report_schedule, if it's due (next_run_at <= now),
-it generates the report and emails it, then records the outcome.
-
-This is an in-process APScheduler job, not a separate worker — it starts
-inside the same FastAPI process via start_report_schedule_runner() on
-startup. That's fine for a single-instance deployment. If Active Teams v2
-ever runs multiple backend instances, this needs to move to a real worker
-(e.g. a dedicated cron dyno) or gain a locking mechanism, since every
-instance would otherwise send duplicate emails.
-
-The runner is SYNC — no await/asyncio inside. All Supabase helpers are
-called synchronously. A manual /run-now endpoint uses asyncio.to_thread
-to invoke the same sync function from an async route.
+Synchronous entry point for an external daily cron. It processes active
+report schedules whose next_run_at falls on today's date in Johannesburg,
+then generates and emails each report before recording the outcome.
 """
 
 import logging
@@ -27,9 +16,8 @@ from datetime import datetime, timezone, timedelta
 
 from zoneinfo import ZoneInfo
 
-from apscheduler.schedulers.background import BackgroundScheduler
-
 from supabase_helpers import report_schedules as report_schedules_helpers
+from supabase_helpers.supabase_connection import supabase_admin as supabase
 
 logger = logging.getLogger("report_schedule_runner")
 
@@ -339,83 +327,100 @@ def _generate_report(schedule: dict) -> bytes:
     raise ValueError(f"Report generation not fully wired for '{canonical}' format '{fmt}'")
 
 
-def start_report_schedule_runner():
-    global _scheduler
-    if _scheduler is not None:
-        return _scheduler
+def _schedule_run_date(schedule: dict):
+    """Return the scheduled date in Johannesburg, or None if it is invalid."""
+    next_run = schedule.get("next_run_at")
+    if not next_run:
+        logger.warning("Schedule %s has no next_run_at; skipping", schedule.get("id"))
+        return None
 
-    _scheduler = BackgroundScheduler(timezone="UTC")
-    _scheduler.add_job(_run_due_schedules, "cron", minute="*", id="report_schedule_check")
-    _scheduler.start()
-    logger.info("Report schedule runner started (checking every minute)")
-    return _scheduler
+    try:
+        run_at = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        logger.warning(
+            "Schedule %s has invalid next_run_at: %r",
+            schedule.get("id"),
+            next_run,
+        )
+        return None
+
+    if run_at.tzinfo is None:
+        run_at = run_at.replace(tzinfo=timezone.utc)
+    return run_at.astimezone(SAST).date(), run_at
 
 
-def stop_report_schedule_runner():
-    global _scheduler
-    if _scheduler is not None:
-        _scheduler.shutdown(wait=False)
-        _scheduler = None
-
-
-_scheduler: object = None  # type: ignore
-
-
-# Legacy: _run_due_schedules is the main synchronous runner loop
-def _run_due_schedules():
-    """Synchronous scheduler job: check due schedules and run them.
-
-    This is called by APScheduler every minute. It is SYNC — no await/asyncio.
-    Uses the atomic next_run_at claim pattern (amendment 4).
-    """
-    now = datetime.now(timezone.utc)
+def run_due_schedules() -> dict:
+    """Run active schedules due today in Johannesburg; intended for daily cron."""
+    today = datetime.now(SAST).date()
     try:
         schedules = report_schedules_helpers.list_all_active_schedules()
     except Exception:
         logger.exception("Failed to fetch active report schedules")
-        return
+        raise
 
+    summary = {"date": today.isoformat(), "processed": 0, "succeeded": 0, "failed": 0, "skipped": 0}
     for schedule in schedules:
-        # Amendment 4: due = active and next_run_at <= now
-        # Atomic claim: try to update next_run_at to new value where old value matches
         if not schedule.get("active"):
             continue
-        if not schedule.get("next_run_at"):
-            from supabase_helpers.report_schedule_runner import compute_next_run
-            new_next = compute_next_run(schedule, now)
-        else:
-            from supabase_helpers.report_schedule_runner import compute_next_run
-            new_next = compute_next_run(schedule, datetime.fromisoformat(schedule["next_run_at"]))
-
-        # Atomic claim — only proceed if we are the first to update next_run_at
-        updated = supabase.table("report_schedules").update({
-            "next_run_at": new_next,
-        }).eq("id", schedule["id"]).eq("next_run_at", schedule.get("next_run_at")).execute()
-
-        if not updated.data:
-            # Another instance already claimed this schedule; skip
+        scheduled = _schedule_run_date(schedule)
+        if scheduled is None:
+            summary["skipped"] += 1
+            continue
+        scheduled_date, scheduled_at = scheduled
+        if scheduled_date != today:
             continue
 
-        # Schedule claimed successfully — now generate and send
+        new_next = report_schedules_helpers.compute_next_run(schedule, scheduled_at)
+        updated = (
+            supabase.table("report_schedules")
+            .update({"next_run_at": new_next})
+            .eq("id", schedule["id"])
+            .eq("active", True)
+            .eq("next_run_at", schedule["next_run_at"])
+            .execute()
+        )
+
+        if not updated.data:
+            summary["skipped"] += 1
+            logger.info("Schedule %s was claimed elsewhere; skipping", schedule.get("id"))
+            continue
+
+        summary["processed"] += 1
+        status, error = "success", None
         try:
             report_bytes = _generate_report(schedule)
             from auth.email_utils import send_report_email
             recipients = schedule.get("recipients", [])
-            if recipients:
-                send_report_email(
-                    to_email=recipients[0],
-                    subject=f"Scheduled Report: {schedule['report_type']}",
-                    body=f"Your {schedule['report_type']} report has been generated.",
-                    attachment_bytes=report_bytes,
-                    filename=f"{schedule['report_type']}.{schedule['format']}",
-                    mimetype=f"application/{schedule['format']}",
-                )
-            from supabase_helpers.report_schedules import mark_schedule_run
-            mark_schedule_run(schedule["id"], status="success", next_run_at=new_next)
-        except ValueError as ve:
-            # Unsupported report_type or format = error status with message
-            from supabase_helpers.report_schedules import mark_schedule_run
-            mark_schedule_run(schedule["id"], status="error", error=str(ve))
+            if not recipients:
+                raise ValueError(f"Schedule {schedule['id']} has no recipients")
+            send_report_email(
+                to_email=recipients[0],
+                subject=f"Scheduled Report: {schedule['report_type']}",
+                body=f"Your {schedule['report_type']} report has been generated.",
+                attachment_bytes=report_bytes,
+                filename=f"{schedule['report_type']}.{schedule['format']}",
+                mimetype=f"application/{schedule['format']}",
+            )
         except Exception as e:
-            from supabase_helpers.report_schedules import mark_schedule_run
-            mark_schedule_run(schedule["id"], status="error", error=str(e))
+            logger.exception("Failed to process report schedule %s", schedule.get("id"))
+            status, error = "error", str(e)
+
+        try:
+            report_schedules_helpers.mark_schedule_run(
+                schedule["id"], status=status, error=error, next_run_at=new_next,
+            )
+        except Exception:
+            summary["failed"] += 1
+            logger.exception("Failed to record outcome for report schedule %s", schedule.get("id"))
+            continue
+
+        summary["succeeded" if status == "success" else "failed"] += 1
+
+    logger.info("Daily report schedule run complete: %s", summary)
+    return summary
+
+
+if __name__ == "__main__":
+    result = run_due_schedules()
+    if result["failed"]:
+        raise SystemExit(1)
