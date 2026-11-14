@@ -124,7 +124,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         # Check if it's a CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             print("Creating CELLS event with built-in type")
-            event_data["eventTypeId"] = event_type[0]["event_type_id"] 
+            event_data["eventTypeId"] = event_type["event_type_id"]
             event_data["eventTypeName"] = "Cells"
             event_data["hasPersonSteps"] = True
             event_data["isGlobal"] = False
@@ -225,6 +225,26 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         else:
             reference_date = datetime.now().date()
 
+        final_event_date = event_data.get("date") or reference_date
+        final_data = {
+            "event_name": event_data.get("eventName", "No Event Name"),
+            "event_type_name": event_data.get("eventTypeName", "No Event Type"),
+            "event_type_id": event_data.get("eventTypeId"),
+            "location": event_data.get("location", "No Location"),
+            "description": event_data.get("description", "No Description"),
+            "event_leader": event_data.get("eventLeader", "No Leader"),
+            "event_leader_email": event_data.get("eventLeaderEmail", "No Leader Email"),
+            "is_ticketed": event_data.get("isTicketed", False),
+            "is_global": event_data.get("isGlobal", False),
+            "is_active": event_data.get("is_active", True),
+            "has_person_steps": event_data.get("hasPersonSteps", False),
+            "status": event_data.get("status", "open"),
+            "recurring_day": ",".join(event_data.get("recurring_day", [""])),
+            "is_recurring": bool(event_data.get("recurring_day")),
+            "event_date": final_event_date.isoformat(),
+            "org_id": event_data.get("org_id"),
+        }
+
         if recurring_days:
             first_day_lower = recurring_days[0].lower().strip()
             if first_day_lower in DAY_INDEX:
@@ -246,9 +266,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
             print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}, Organization: {event_data['Organization']}")
             print("Final event object", event_data)
-
-            final_event_date = event_data.get("date")
-            final_created_date = event_data.get("created_at")
 
             current_person = supabase.table("People").select("*").eq("Email", event_data.get("eventLeaderEmail")).execute().data
             #leader of created cell
@@ -277,31 +294,6 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "leader_at_12_email": leader12email,
             }
 
-            
-            final_data = {
-                "event_name": event_data.get("eventName","No Event Name"),
-                "event_type_name": event_data.get("eventTypeName","No Event Type"),
-                "event_type_id":event_data.get("eventTypeId"),
-                "location": event_data.get("location","No Location"),
-                "description": event_data.get("description","No Description"),
-                "event_leader": event_data.get("eventLeader","No Leader"),
-                "event_leader_email": event_data.get("eventLeaderEmail","No Leader Email"),
-                "is_ticketed": event_data.get("isTicketed", False),
-                "is_global": event_data.get("isGlobal", False),
-                "is_active": event_data.get("is_active", True),
-                "has_person_steps": event_data.get("hasPersonSteps", False),
-                "status": event_data.get("status", "open"),
-                "recurring_day": ",".join(event_data.get("recurring_day",[""])),
-                "is_recurring": bool(event_data.get("recurring_day")),
-                "Organization": event_data.get("Organization"),
-                "event_date": final_event_date.isoformat(),
-                "org_id": event_data.get("org_id"),
-                "class_level": event_data.get("class_level", 0),
-                "total_sessions": event_data.get("total_sessions", 0),
-            }  
-
-         
-            
             post_event = supabase.table("events").insert(final_data).execute()
             result = post_event.data[0]["event_id"]
             
@@ -935,9 +927,8 @@ async def get_other_events(
         timezone = pytz.timezone("Africa/Johannesburg")
         now = datetime.now(timezone)
         today = now.date()
-        event_type_id = _get_event_type_id(event_type, org_id)  
         if not is_global:
-            fetched_other_events = supabase.rpc("get_general_events",{"p_event_type_id": event_type_id}).execute().data
+            fetched_other_events = supabase.rpc("get_general_events", {"p_event_type": event_type}).execute().data
         else:
             fetched_other_events = supabase.rpc("get_global_events").execute().data
 
