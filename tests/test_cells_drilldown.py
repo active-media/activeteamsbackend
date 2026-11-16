@@ -1,21 +1,13 @@
-"""Run from the folder that contains `reporting_core` (activeteamsbackend):
-    pytest tests/test_cells_drilldown.py
-External modules (auth, supabase) are stubbed so no database is needed."""
-import sys, types, pathlib
+"""Cells drilldown tests; Supabase and network access are blocked by conftest."""
+import pathlib
+import sys
 from datetime import date
 
 import pytest
 
-ROOT = pathlib.Path(__file__).resolve().parents[1] / "activeteamsbackend"
-sys.path.insert(0, str(ROOT))
-
-for name, attrs in {
-    "auth": {}, "auth.utils": {"get_current_user": lambda: None},
-    "supabase_helpers": {}, "supabase_helpers.supabase_connection": {"supabase": None, "supabase_admin": None},
-}.items():
-    mod = types.ModuleType(name)
-    mod.__dict__.update(attrs)
-    sys.modules.setdefault(name, mod)
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from fastapi import HTTPException  # noqa: E402
 from reporting_core import scope as S  # noqa: E402

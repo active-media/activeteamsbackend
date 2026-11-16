@@ -119,7 +119,8 @@ migration must be applied to the database before weekly targets can persist
 independently. No live database migration was run.
 
 For bucket resolution, the report uses `build_week_buckets` from
-`supabase_helpers/weekly_buckets.py`. Every source ISO week intersecting the
+`supabase_helpers/weekly_buckets.py`. ISO week keys are computed from
+`Africa/Johannesburg` calendar dates. Every source ISO week intersecting the
 period is queried (for November 2026: `2026-W44` through `2026-W49`); when the
 attendance bucketing rule folds a trailing partial week, its canonical display
 bucket is mapped to the preceding bucket. Targets are aggregated to one row
@@ -127,6 +128,25 @@ per person: targets are summed across that person's in-period weekly rows, and
 actuals are summed over completed tasks whose completion timestamps fall in
 the selected period. The current implementation also sums the preceding-week
 actual for each target row into the “Prior-week actuals” column.
+
+`sb_get_completed_task_actuals` is the shared calculation used by both the
+Twelve Tasks report and `GET /targets/twelve-tasks`. It scopes `Tasks` to the
+organization and UTC-converted SAST date ranges, maps `assignedfor` first and
+falls back to `assigned_to_email`, case-insensitively, resolving IDs and email
+addresses from `Users` with a `People` fallback. Both endpoints treat
+`completed`, `done`, `closed`, and `finished` as completion statuses,
+case-insensitively. The Admin target response keeps its existing fields and
+adds `actual`; the Targets tab displays this calculated value rather than a
+missing-value fallback.
+
+Twelve Tasks period boundaries are calendar dates in
+`Africa/Johannesburg` (`UTC+02:00`) converted to UTC for the database query.
+Ranges use an inclusive start and exclusive start-of-next-day upper bound, so
+the entire final day is included without depending on timestamp precision.
+Stored `completedAt` values are parsed as aware datetimes; naive values are
+treated as UTC, and all comparisons are made after conversion to UTC. The
+ISO-week target keys are based on the SAST dates, not the UTC date of the
+converted boundary.
 
 Rows are not padded or truncated to twelve. If a person has since been deleted
 from `People`, their target row remains visible under the person ID and the

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -15,9 +16,11 @@ from supabase_helpers.weekly_buckets import build_week_buckets
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Task assignees are reconciled to the current People IDs used by Admin target rows.
+# Task assignees are reconciled to the user IDs used by Admin target rows.
 # ---------------------------------------------------------------------------
 PERSON_KEY_FIELDS = ("assignedfor", "assigned_to_email")
+SAST = ZoneInfo("Africa/Johannesburg")
+COMPLETED_STATUSES = frozenset({"completed", "done", "closed", "finished"})
 
 # ---------------------------------------------------------------------------
 # Indicator colors — must match the legend in the exported report.
@@ -31,50 +34,50 @@ FILL_MORE_THAN_TARGET = PatternFill("solid", fgColor="00B050")  # green — coun
 HEADER_FONT = Font(bold=True)
 
 
+def _sast_midnight_utc(day: date) -> datetime:
+    return datetime.combine(day, time.min, tzinfo=SAST).astimezone(timezone.utc)
+
+
+def _iso_week_range(week_identifier: str) -> tuple[datetime, datetime]:
+    try:
+        year_text, week_text = week_identifier.split("-W", 1)
+        monday = date.fromisocalendar(int(year_text), int(week_text), 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid ISO week identifier: {week_identifier!r}") from exc
+    return _sast_midnight_utc(monday), _sast_midnight_utc(monday + timedelta(days=7))
+
+
 def _period_range(period: str) -> tuple[datetime, datetime]:
-    """Return (start, end) UTC-aware datetimes for the requested period.
-
-    Supported periods:
-      - today/daily:       midnight today → 23:59:59.999999 today
-      - thisWeek/weekly:   Monday 00:00 → Sunday 23:59:59.999999 (current week)
-      - thisMonth/monthly: 1st of current month → last day of current month
-      - previousWeek:      Monday 00:0 → Sunday 23:59:59.999999 (prior week)
-      - previousMonth:     1st of prior month → last day of prior month
-    Raises ValueError for unknown period strings.
-    """
-    now = datetime.now(timezone.utc)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
+    """Return the requested period as UTC-aware [start, end) bounds from SAST dates."""
+    today = datetime.now(SAST).date()
     if period in ("today", "daily"):
-        return today, today.replace(hour=23, minute=59, second=59, microsecond=999_999)
+        return _sast_midnight_utc(today), _sast_midnight_utc(today + timedelta(days=1))
 
     if period in ("thisWeek", "weekly"):
-        start = today - timedelta(days=today.weekday())  # Monday
-        return start, start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        monday = today - timedelta(days=today.weekday())
+        return _sast_midnight_utc(monday), _sast_midnight_utc(monday + timedelta(days=7))
 
     if period in ("thisMonth", "monthly"):
-        start = today.replace(day=1)
+        month_start = today.replace(day=1)
         if today.month == 12:
-            end = datetime(today.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+            next_month = date(today.year + 1, 1, 1)
         else:
-            end = datetime(today.year, today.month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
-        return start, end
+            next_month = date(today.year, today.month + 1, 1)
+        return _sast_midnight_utc(month_start), _sast_midnight_utc(next_month)
 
     if period == "previousWeek":
-        last = today - timedelta(weeks=1)
-        start = last - timedelta(days=last.weekday())
-        return start, start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        current_monday = today - timedelta(days=today.weekday())
+        previous_monday = current_monday - timedelta(days=7)
+        return _sast_midnight_utc(previous_monday), _sast_midnight_utc(current_monday)
 
     if period == "previousMonth":
-        year, month = today.year, today.month - 1
-        if month == 0:
-            year, month = year - 1, 12
-        start = datetime(year, month, 1, tzinfo=timezone.utc)
-        if month == 12:
-            end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+        current_month = today.replace(day=1)
+        current_month_start = _sast_midnight_utc(current_month)
+        if current_month.month == 1:
+            previous_month = date(current_month.year - 1, 12, 1)
         else:
-            end = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
-        return start, end
+            previous_month = date(current_month.year, current_month.month - 1, 1)
+        return _sast_midnight_utc(previous_month), current_month_start
 
     raise ValueError(f"Unknown period: {period!r}")
 
@@ -312,24 +315,35 @@ def _count_completed_by_person(
 ) -> dict[str, int]:
     """Count completed tasks per person within the given period.
 
-    Only tasks with status=="completed" are counted. Completion is
-    determined by the completedAt field only (not followup_date or
-    created_at, which previously inflated counts with non-completed work).
-
-    Tasks are matched by person key using PERSON_KEY_FIELDS ("assignedfor"
-    preferred, fallback "assigned_to_email"). The result is a dict mapping
-    person_id -> count of completed tasks whose completedAt falls within
-    [start, end] inclusive.
+    Completion is determined by completedAt only. Bounds are timezone-aware
+    UTC datetimes and use an inclusive start, exclusive end.
     """
-    start_iso, end_iso = _iso(start), _iso(end)
     counts: dict[str, int] = defaultdict(int)
 
     for task in tasks:
-        if task.get("status") != "completed":
+        if str(task.get("status") or "").strip().casefold() not in COMPLETED_STATUSES:
             continue
 
-        completed_at = str(task.get("completedAt") or "")
-        if not (start_iso <= completed_at <= end_iso):
+        raw_completed_at = task.get("completedAt")
+        if not raw_completed_at:
+            continue
+        if isinstance(raw_completed_at, datetime):
+            completed_at = raw_completed_at
+        else:
+            completed_at_text = str(raw_completed_at).strip()
+            if completed_at_text.endswith("+00"):
+                completed_at_text += ":00"
+            elif completed_at_text.endswith("Z"):
+                completed_at_text = completed_at_text[:-1] + "+00:00"
+            try:
+                completed_at = datetime.fromisoformat(completed_at_text)
+            except ValueError:
+                continue
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+        else:
+            completed_at = completed_at.astimezone(timezone.utc)
+        if not (start <= completed_at < end):
             continue
 
         person_key = None
@@ -350,21 +364,17 @@ def _count_completed_by_person(
 
 
 def _fetch_completed_tasks(start: datetime, end: datetime, org_filter: Optional[dict] = None) -> list[dict]:
-    """Fetch all completed Tasks within the given date span.
+    """Fetch tasks with completed status spellings and completion times in [start, end)."""
 
-    Filters on status='completed' and completedAt between start/end (ISO
-    strings via _iso). If org_filter is provided, only tasks matching
-    that Organization value are included.
-
-    Returns a list of task dicts from Supabase. This single fetch covers
-    both the "last week" and "this week" periods, avoiding two round-trips.
-    """
     task_q = (
         supabase.table("Tasks")
         .select("_id, name, taskType, status, completedAt, assignedfor, assigned_to_email")
-        .eq("status", "completed")
         .gte("completedAt", _iso(start))
-        .lte("completedAt", _iso(end))
+        .lt("completedAt", _iso(end))
+        .or_(
+            "status.ilike.completed,status.ilike.done,"
+            "status.ilike.closed,status.ilike.finished"
+        )
     )
 
     if org_filter:
@@ -373,6 +383,34 @@ def _fetch_completed_tasks(start: datetime, end: datetime, org_filter: Optional[
             task_q = task_q.eq("Organization", org_value)
 
     return task_q.execute().data or []
+
+
+def sb_get_completed_task_actuals(
+    org_filter: Optional[dict],
+    date_ranges: dict[str, tuple[datetime, datetime]],
+    person_ids: list[str],
+) -> dict[str, dict[str, int]]:
+    """Return completed-task totals per person for each named UTC date range."""
+    if not date_ranges or not person_ids:
+        return {key: {} for key in date_ranges}
+
+    people = _fetch_target_people(person_ids)
+    person_aliases = {}
+    for person_id in person_ids:
+        person_id = str(person_id)
+        person_aliases[person_id.casefold()] = person_id
+        person = people.get(person_id, {})
+        email = str(person.get("Email") or "").strip().casefold()
+        if email:
+            person_aliases[email] = person_id
+
+    fetch_start = min(start for start, _ in date_ranges.values())
+    fetch_end = max(end for _, end in date_ranges.values())
+    tasks = _fetch_completed_tasks(fetch_start, fetch_end, org_filter=org_filter)
+    return {
+        key: _count_completed_by_person(tasks, start, end, person_aliases)
+        for key, (start, end) in date_ranges.items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -405,22 +443,24 @@ def sb_get_twelve_tasks_report(
     and any overlapping week.
     """
     if start_date and end_date:
-        period_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
-        period_end = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
+        period_start = _sast_midnight_utc(start_date)
+        period_end = _sast_midnight_utc(end_date + timedelta(days=1))
     else:
         period_start, period_end = _period_range(period)
 
+    period_first_sast_day = period_start.astimezone(SAST).date()
+    period_last_sast_day = period_end.astimezone(SAST).date() - timedelta(days=1)
     _, canonical_by_week, _ = build_week_buckets(
-        period_start.date(),
-        period_end.date(),
+        period_first_sast_day,
+        period_last_sast_day,
     )
     source_week_starts = list(canonical_by_week)
     week_ranges = []
     for cursor in source_week_starts:
         iso_year, iso_week, _ = cursor.isocalendar()
         week_identifier = f"{iso_year}-W{iso_week:02d}"
-        previous_start = datetime.combine(cursor - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
-        previous_end = datetime.combine(cursor - timedelta(days=1), datetime.max.time(), tzinfo=timezone.utc)
+        previous_start = _sast_midnight_utc(cursor - timedelta(days=7))
+        previous_end = _sast_midnight_utc(cursor)
         canonical_start = canonical_by_week[cursor]
         canonical_year, canonical_week, _ = canonical_start.isocalendar()
         canonical_identifier = f"{canonical_year}-W{canonical_week:02d}"
@@ -456,30 +496,20 @@ def sb_get_twelve_tasks_report(
             dict.fromkeys(str(row["person_id"]) for row in targets if row.get("person_id"))
         )
         people = _fetch_target_people(person_ids)
-        person_aliases = {}
-        for person_id, person in people.items():
-            person_aliases[person_id.casefold()] = person_id
-            email = str(person.get("Email") or "").strip().casefold()
-            if email:
-                person_aliases[email] = person_id
-
-        if week_ranges:
-            fetch_start = min(period_start, week_ranges[0][2])
-            fetch_end = period_end
-            tasks = _fetch_completed_tasks(fetch_start, fetch_end, org_filter=org_filter)
-        else:
-            tasks = []
+        actual_ranges = {"period": (period_start, period_end)}
+        actual_ranges.update(
+            {
+                f"previous:{week_identifier}": (previous_start, previous_end)
+                for week_identifier, _canonical_identifier, previous_start, previous_end in week_ranges
+            }
+        )
+        actuals = sb_get_completed_task_actuals(org_filter, actual_ranges, person_ids)
     except Exception:
         logger.exception("Unable to build twelve_tasks report data")
         raise
 
-    counts_by_week = {
-        week_identifier: _count_completed_by_person(tasks, previous_start, previous_end, person_aliases)
-        for week_identifier, _canonical_identifier, previous_start, previous_end in week_ranges
-    }
-    actuals_for_period = _count_completed_by_person(tasks, period_start, period_end, person_aliases)
-    previous_period_start = period_start - (period_end - period_start + timedelta(microseconds=1))
-    previous_period_end = period_start - timedelta(microseconds=1)
+    previous_period_start = period_start - (period_end - period_start)
+    previous_period_end = period_start
     canonical_by_identifier = {
         week_identifier: canonical_identifier
         for week_identifier, canonical_identifier, _, _ in week_ranges
@@ -502,7 +532,9 @@ def sb_get_twelve_tasks_report(
             }
         aggregate = aggregate_by_person[key]
         aggregate["target"] += target.get("target") or 0
-        aggregate["last_week"] += counts_by_week.get(week_identifier, {}).get(person_id, 0)
+        aggregate["last_week"] += actuals.get(
+            f"previous:{week_identifier}", {}
+        ).get(person_id, 0)
         if week_identifier in canonical_by_identifier:
             aggregate["weeks"].add(canonical_by_identifier[week_identifier])
 
@@ -523,7 +555,7 @@ def sb_get_twelve_tasks_report(
                 "week_identifier": ", ".join(sorted(aggregate["weeks"])),
                 "last_week": aggregate["last_week"],
                 "target": aggregate["target"],
-                "this_week": actuals_for_period.get(pid, 0),
+                "this_week": actuals.get("period", {}).get(pid, 0),
             }
         )
 
@@ -533,10 +565,13 @@ def sb_get_twelve_tasks_report(
         else "No tasks set for this period"
     )
     return {
-        "period": {"start": period_start.date().isoformat(), "end": period_end.date().isoformat()},
+        "period": {
+            "start": period_first_sast_day.isoformat(),
+            "end": period_last_sast_day.isoformat(),
+        },
         "previous_period": {
-            "start": previous_period_start.date().isoformat(),
-            "end": previous_period_end.date().isoformat(),
+            "start": previous_period_start.astimezone(SAST).date().isoformat(),
+            "end": (previous_period_end.astimezone(SAST).date() - timedelta(days=1)).isoformat(),
         },
         "rows": rows,
         "empty_state": empty_message if not rows else None,

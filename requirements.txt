@@ -58,3 +58,4 @@ apscheduler==3.10.4
 
 # Chart Generation
 openpyxl>=3.1.0
+tzdata
