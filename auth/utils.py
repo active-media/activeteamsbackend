@@ -1,7 +1,12 @@
 import os
 import secrets
+import logging
+import math
+import re
+import time
 from datetime import datetime, time as time_type, timedelta
 from typing import Optional, Dict, Any
+import httpx
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
@@ -9,7 +14,6 @@ from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from database import users_collection
 from bson import ObjectId
-from datetime import datetime
 
 # ==============================
 # CONFIG
@@ -18,7 +22,16 @@ JWT_SECRET = os.getenv("JWT_SECRET", "replace_me_with_a_strong_secret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_API_KEY = (
+    os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+).strip()
+SUPABASE_JWT_ISSUER = os.getenv(
+    "SUPABASE_JWT_ISSUER", f"{SUPABASE_URL}/auth/v1"
+).strip().rstrip("/")
+SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "authenticated").strip()
 SUPREME_ADMIN_EMAIL = "tkgenia1234@gmail.com"
+logger = logging.getLogger(__name__)
 ORG_ID_MAP = {
     "active-church": "active-teams",
     "active church": "active-teams",
@@ -150,97 +163,180 @@ def verify_password_reset_token(token: str) -> Optional[str]:
 # ==============================
 # FASTAPI DEPENDENCIES
 # ==============================
-# In utils.py
-async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
+def _validate_supabase_claims(token: str) -> Dict[str, Any]:
     try:
-        # First, check if token is None or empty
-        if not token or not token.credentials:
-            raise HTTPException(status_code=401, detail="No token provided")
-        
-        payload = decode_access_token(token.credentials)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
-        
-        # Try different possible user ID fields
-        user_id = payload.get("user_id") or payload.get("sub") or payload.get("id")
-        
-        if not user_id:
-            raise HTTPException(status_code=401, detail="User ID not found in token")
-        
-        # Convert user_id to string if it's not already
-        user_id = str(user_id)
-        
-        # Check if it's a valid ObjectId
-        if not ObjectId.is_valid(user_id):
-            raise HTTPException(status_code=401, detail=f"Invalid user ID format: {user_id}")
-        
-        user = await users_collection.find_one({"_id": ObjectId(user_id)})
-        if not user:
-            raise HTTPException(status_code=401, detail=f"User not found with ID: {user_id}")
-        
-        # Convert ObjectId to string for JSON serialization
-        user_id_str = str(user["_id"])
-        
-        email = user.get("email", "")
-        is_supreme = email == SUPREME_ADMIN_EMAIL or user.get("is_supreme_admin", False)
-        db_role = user.get("role", "user")
-        
-        # Handle both uppercase and lowercase Organization fields
-        organization = user.get("Organization") or user.get("organization", "")
-        
-        # Get org_id, handle if missing
-        org_id = user.get("org_id")
-        if not org_id and organization:
-            org_id = organization.lower().replace(" ", "-")
-        if not org_id:
-            org_id = "active-teams"
-        
-        # Apply ORG_ID_MAP if it exists
-        if org_id.lower() in ORG_ID_MAP:
-            org_id = ORG_ID_MAP[org_id.lower()]
-        
-        return {
-            "user_id": user_id_str,
-            "email": email,
-            "role": db_role,
-            "is_supreme_admin": is_supreme,
-            "organization": organization,
-            "Organization": organization,  # Include both for compatibility
-            "org_id": org_id,
-            "name": user.get("name", ""),
-            "surname": user.get("surname", ""),
-            "_id": user_id_str
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Authentication error: {str(e)}")  # Add logging
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        claims = jwt.get_unverified_claims(token)
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    if claims.get("iss") != SUPABASE_JWT_ISSUER:
+        raise HTTPException(status_code=401, detail="Invalid token issuer")
+
+    audience = claims.get("aud")
+    if not (
+        audience == SUPABASE_JWT_AUDIENCE
+        or (
+            isinstance(audience, list)
+            and SUPABASE_JWT_AUDIENCE in audience
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Invalid token audience")
+
+    expiration = claims.get("exp")
+    if (
+        isinstance(expiration, bool)
+        or not isinstance(expiration, (int, float))
+        or (isinstance(expiration, float) and not math.isfinite(expiration))
+        or expiration <= time.time()
+    ):
+        raise HTTPException(status_code=401, detail="Token has expired or is invalid")
+
+    if not isinstance(claims.get("sub"), str) or not claims["sub"]:
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+
+    return claims
+
+
+async def _get_supabase_user(token: str) -> Dict[str, Any]:
+    if (
+        not SUPABASE_URL
+        or not SUPABASE_API_KEY
+        or not SUPABASE_JWT_ISSUER
+        or not SUPABASE_JWT_AUDIENCE
+    ):
+        logger.error("Supabase authentication is not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service is not configured",
+        )
+
+    claims = _validate_supabase_claims(token)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={
+                    "apikey": SUPABASE_API_KEY,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.warning("Supabase Auth request failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service is unavailable",
+        ) from exc
+
+    if response.status_code in (400, 401, 403):
+        raise HTTPException(status_code=401, detail="Invalid or expired access token")
+    if response.status_code != 200:
+        logger.error("Supabase Auth returned HTTP %s", response.status_code)
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service is unavailable",
+        )
+
+    try:
+        supabase_user = response.json()
+    except ValueError as exc:
+        logger.error("Supabase Auth returned an invalid user response")
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service returned an invalid response",
+        ) from exc
+
+    if (
+        not isinstance(supabase_user, dict)
+        or supabase_user.get("id") != claims["sub"]
+    ):
+        raise HTTPException(status_code=401, detail="Invalid access token subject")
+
+    return supabase_user
+
+
+async def get_current_user(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
+    if not token or not token.credentials:
+        raise HTTPException(status_code=401, detail="No token provided")
+
+    supabase_user = await _get_supabase_user(token.credentials)
+    supabase_user_id = supabase_user["id"]
+    user = await users_collection.find_one({"supabase_user_id": supabase_user_id})
+
+    email = supabase_user.get("email")
+    if not user and isinstance(email, str) and email.strip():
+        if not supabase_user.get("email_confirmed_at"):
+            raise HTTPException(
+                status_code=403,
+                detail="A confirmed email is required to link this account",
+            )
+        user = await users_collection.find_one(
+            {
+                "email": {
+                    "$regex": f"^{re.escape(email.strip())}$",
+                    "$options": "i",
+                }
+            }
+        )
+
+    if not user:
+        raise HTTPException(
+            status_code=403,
+            detail="Supabase user is not linked to an application account",
+        )
+
+    user_id = str(user["_id"])
+    user_email = user.get("email") or ""
+    if not isinstance(user_email, str):
+        user_email = ""
+    is_supreme = (
+        user_email.lower() == SUPREME_ADMIN_EMAIL.lower()
+        or user.get("is_supreme_admin", False)
+    )
+    db_role = user.get("role", "user")
+    organization = user.get("Organization") or user.get("organization", "")
+
+    org_id = user.get("org_id")
+    if not org_id and organization:
+        org_id = organization.lower().replace(" ", "-")
+    if not org_id:
+        org_id = "active-teams"
+    if org_id.lower() in ORG_ID_MAP:
+        org_id = ORG_ID_MAP[org_id.lower()]
+
+    return {
+        "user_id": user_id,
+        "email": user_email,
+        "role": db_role,
+        "is_supreme_admin": is_supreme,
+        "organization": organization,
+        "Organization": organization,
+        "org_id": org_id,
+        "name": user.get("name", ""),
+        "surname": user.get("surname", ""),
+        "_id": user_id,
+    }
 
 def require_role(*allowed_roles: str):
-    async def _checker(token: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-        payload = decode_access_token(token.credentials)
-        role = payload.get("role")
-        is_supreme = payload.get("is_supreme_admin", False)
+    async def _checker(current_user: Dict[str, Any] = Depends(get_current_user)):
+        role = current_user.get("role")
+        is_supreme = current_user.get("is_supreme_admin", False)
         
         # Supreme admins have access to everything
         if is_supreme:
-            return payload
+            return current_user
         
         if not role:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Role not present in token")
         
         # Admin has access to everything
         if role == "admin":
-            return payload
+            return current_user
         
         # Check system roles
         SYSTEM_ROLES = ['admin', 'leader', 'leaderAt12', 'user', 'registrant']
         if role in SYSTEM_ROLES:
             if role in allowed_roles:
-                return payload
+                return current_user
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, 
                 detail="Insufficient permissions"
@@ -248,7 +344,7 @@ def require_role(*allowed_roles: str):
         
         # Custom roles
         if 'user' in allowed_roles:
-            return payload
+            return current_user
         
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
