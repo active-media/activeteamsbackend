@@ -1,0 +1,21 @@
+name: Run scheduled job to create instances
+
+on:
+  schedule:
+    - cron: "7 23 * * 6"   # every day at 06:00 UTC (08:00 in Johannesburg)
+  workflow_dispatch:       # lets you trigger it manually from the Actions tab
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call job endpoint
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail --silent --show-error \
+            --retry 3 --retry-delay 30 --retry-all-errors \
+            --max-time 180 \
+            -X POST "$APP_URL/run-job/create-instances" \
+            -H "X-Cron-Secret: $CRON_SECRET"

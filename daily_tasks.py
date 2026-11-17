@@ -1,17 +1,18 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 import pytz
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 
 from auth.models import TaskModel
 from auth.utils import get_current_user
 from database import users_collection          # still needed for userId lookups
-from supabase_helpers.supabase_client import supabase
+from supabase_helpers.activity_log import log_activity
+from supabase_helpers.supabase_client import supabase_admin as supabase
 
 logger = logging.getLogger("daily_tasks")
 
@@ -20,6 +21,7 @@ router = APIRouter(tags=["Daily Tasks"])
 # Constants
 SAST = pytz.timezone("Africa/Johannesburg")
 EXCLUDED_TASK_TYPES_FROM_COMPLETED = ["no answer", "Awaiting Call"]
+COMPLETED_STATUSES = ("completed", "done", "closed", "finished")
 
 TABLE = 'Tasks' 
 
@@ -63,6 +65,58 @@ def _localize_iso(iso_str: Optional[str]) -> Optional[str]:
         return dt.astimezone(SAST).isoformat()
     except Exception:
         return iso_str
+
+
+# Scheduling rules
+def _is_completed_status(status) -> bool:
+    return str(status or "").strip().lower() in COMPLETED_STATUSES
+
+
+def _today_sast():
+    return datetime.now(SAST).date()
+
+
+def _sast_date(iso_str: Optional[str]):
+    """Calendar date (in SAST) of an ISO timestamp. Naive values are treated as UTC."""
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(SAST).date()
+
+
+def _validate_task_schedule(
+    followup_iso: Optional[str],
+    status,
+    original_iso: Optional[str] = None,
+    is_update: bool = False,
+) -> None:
+    """
+    Enforce the scheduling rules (compared by calendar date in SAST):
+      1. A due date in the past is rejected, except when updating a task and
+         leaving its date unchanged (so overdue tasks can still be edited/completed).
+      2. A task due on a future date cannot be marked as completed.
+    """
+    due = _sast_date(followup_iso)
+    if due is None:
+        return
+
+    today = _today_sast()
+
+    if due < today:
+        unchanged = is_update and _sast_date(original_iso) == due
+        if not unchanged:
+            raise HTTPException(status_code=400, detail="Due date cannot be in the past.")
+
+    if due > today and _is_completed_status(status):
+        raise HTTPException(
+            status_code=400,
+            detail="A task scheduled for a future date can't be marked as completed yet.",
+        )
 
 
 def _format_task_row(row: dict) -> dict:
@@ -121,6 +175,47 @@ def _format_task_row(row: dict) -> dict:
 def _new_id() -> str:
     return str(uuid.uuid4())
 
+
+def _task_owned_by_user(row: dict, current_user: dict) -> bool:
+    """Mirror the ownership rules used by GET /tasks for bulk mutations."""
+    email = (current_user.get("email") or "").strip().lower()
+    full_name = (
+        f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
+    )
+
+    assignedfor = (row.get("assignedfor") or "").strip().lower()
+    assigned_to_email = (row.get("assigned_to_email") or "").strip().lower()
+    created_by = (row.get("created_by") or "").strip().lower()
+    leader_name = row.get("leader_name") or ""
+    leader_assigned = row.get("leader_assigned") or ""
+
+    if not email:
+        return False
+
+    return (
+        assignedfor == email
+        or assigned_to_email == email
+        or created_by == email
+        or (
+            bool(row.get("is_consolidation_task"))
+            and full_name
+            and (leader_name == full_name or leader_assigned == full_name)
+        )
+    )
+
+
+def _task_org_allowed(row: dict, org_name: str, current_user: dict) -> bool:
+    role_key = (
+        str(current_user.get("role") or "")
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+    )
+    if role_key in {"superadmin", "supremeadmin"}:
+        return True
+    task_org = (row.get("Organization") or "").strip().lower()
+    return not task_org or task_org == (org_name or "").strip().lower()
+
 @router.get("/test-supabase")
 async def test_supabase():
     try:
@@ -163,14 +258,20 @@ async def create_task(
         if isinstance(cp, str):
             cp = {}
 
+        followup_iso = _parse_followup_date(d.get("followup_date"))
+        status       = d.get("status", "Open")
+
+        # Reject past due dates and "completed" on future-dated tasks
+        _validate_task_schedule(followup_iso, status, is_update=False)
+
         row = {
             "_id":                   _new_id(),
             "memberID":              d.get("memberID") or d.get("member_id") or "",
             "name":                  d.get("name", ""),
             "taskType":              d.get("taskType", ""),
             "description":           d.get("description", ""),
-            "followup_date":         _parse_followup_date(d.get("followup_date")),
-            "status":                d.get("status", "Open"),
+            "followup_date":         followup_iso,
+            "status":                status,
             "assignedfor":           assignedfor,
             "assigned_to_email":     assigned_to_email,
             "assigned_to_user_id":   d.get("assigned_to_user_id", ""),
@@ -200,9 +301,21 @@ async def create_task(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create task")
 
+        created = result.data[0]
+        log_activity(
+            current_user.get("email", ""),
+            "TASK_CREATED",
+            (
+                f'Created task "{created.get("name", "Untitled")}" '
+                f'({created.get("taskType", "task")}) assigned to '
+                f'{created.get("assigned_to_email") or assignedfor}'
+            ),
+            org_name,
+        )
+
         return {
             "status": "success",
-            "task":   jsonable_encoder(_format_task_row(result.data[0])),
+            "task":   jsonable_encoder(_format_task_row(created)),
         }
 
     except HTTPException:
@@ -214,19 +327,29 @@ async def create_task(
 
 # GET /tasks/my-special-tasks
 @router.get("/tasks/my-special-tasks")
-async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
+async def get_my_special_tasks(
+    page:          int           = Query(1, ge=1),
+    limit:         int           = Query(50, ge=1, le=500),
+    email:         Optional[str] = Query(None),
+    start_date:    Optional[str] = Query(None),
+    end_date:      Optional[str] = Query(None),
+    task_type:     Optional[str] = Query(None),
+    status:        Optional[str] = Query(None),
+    current_user:  dict          = Depends(get_current_user),
+):
     try:
         org_name   = _org_name_from_user(current_user)
-        user_email = current_user.get("email", "").strip().lower()
+        user_email = (email or current_user.get("email", "")).strip().lower()
         user_name  = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
         if not org_name:
             raise HTTPException(status_code=403, detail="No organization found")
 
-        result = (
+        query = (
             supabase.table("Tasks")
             .select("*")
-            .eq('"Organization"', org_name)
+            .eq('Organization', org_name)
+            .eq('assigned_to_email', user_email)
             .or_(
                 'is_consolidation_task.eq.true,'
                 '"taskType".ilike.consolidation,'
@@ -235,12 +358,24 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
                 'consolidation_source.eq.cell_consolidation,'
                 'consolidation_source.eq.service_consolidation'
             )
+            .neq('consolidation_source', 'manual')
+            .neq('source_display', 'Manual')
             .order("followup_date", desc=True)
-            .limit(200)
-            .execute()
         )
 
-        rows = result.data or []
+        # Optional date range filters
+        if start_date:
+            query = query.gte("followup_date", start_date)
+        if end_date:
+            query = query.lte("followup_date", f"{end_date}T23:59:59.999999")
+
+        # Optional task type / status filters (case-insensitive contains)
+        if task_type:
+            query = query.ilike("taskType", f"%{task_type}%")
+        if status:
+            query = query.ilike("status", f"%{status}%")
+
+        rows = (query.limit(5000).execute().data) or []
 
         def is_mine(row: dict) -> bool:
             return (
@@ -252,7 +387,19 @@ async def get_my_special_tasks(current_user: dict = Depends(get_current_user)):
             )
 
         tasks = [_format_task_row(r) for r in rows if is_mine(r)]
-        return {"tasks": tasks, "total": len(tasks), "status": "success"}
+        total = len(tasks)
+        start = (page - 1) * limit
+        page_tasks = tasks[start:start + limit]
+
+        return {
+            "tasks":       page_tasks,
+            "total":       total,
+            "total_tasks": total,
+            "has_more":    start + limit < total,
+            "page":        page,
+            "limit":       limit,
+            "status":      "success",
+        }
 
     except HTTPException:
         raise
@@ -268,7 +415,15 @@ async def get_user_tasks(
     assigned_to_email: Optional[str] = Query(None),
     assignedfor:       Optional[str] = Query(None),
     userId:            Optional[str] = Query(None),
+    start_date:        Optional[str] = Query(None),
+    end_date:          Optional[str] = Query(None),
+    all_dates:         bool          = Query(False),
+    task_type:         Optional[str] = Query(None),
+    task_stage:        Optional[str] = Query(None),
+    status:            Optional[str] = Query(None),
     view_all:          bool          = Query(False),
+    page:              int           = Query(1, ge=1),
+    limit:             int           = Query(50, ge=1, le=500),
     current_user:      dict          = Depends(get_current_user),
 ):
     try:
@@ -278,35 +433,107 @@ async def get_user_tasks(
 
         is_super_admin = current_user.get("role") == "super_admin"
         is_leader      = current_user.get("role") in ["admin", "leader", "manager", "org_admin"]
+        view_all_scope = bool(view_all and (is_leader or is_super_admin))
+        current_user_email = (current_user.get("email") or "").strip().lower()
 
-        # Resolve target email
+        # Resolve target email(s) - support multiple emails for disciples view
+        emails = []
+        explicit_email_filter = False
         if email:
-            user_email = email.strip().lower()
+            explicit_email_filter = True
+            # Support multiple emails (comma-separated or repeated param)
+            if isinstance(email, str):
+                emails = [e.strip().lower() for e in email.split(",") if e.strip()]
+            else:
+                emails = [e.strip().lower() for e in email if e.strip()]
         elif assigned_to_email:
-            user_email = assigned_to_email.strip().lower()
+            explicit_email_filter = True
+            emails = [assigned_to_email.strip().lower()]
         elif assignedfor:
-            user_email = assignedfor.strip().lower()
+            explicit_email_filter = True
+            emails = [assignedfor.strip().lower()]
         elif userId:
             user_doc   = await users_collection.find_one({"_id": ObjectId(userId)})
             user_email = (user_doc.get("email", "") if user_doc else "").lower()
-        else:
-            user_email = current_user.get("email", "").lower()
+            if user_email:
+                emails = [user_email]
+                explicit_email_filter = True
+        elif current_user_email:
+            emails = [current_user_email]
 
-        if not user_email and not (is_leader and view_all):
+        # Non-leaders may only query their own tasks, even if they pass another email.
+        if explicit_email_filter and not (is_leader or is_super_admin):
+            emails = [e for e in emails if e == current_user_email] or [current_user_email]
+
+        if not emails and not view_all_scope:
             return {"error": "User email not found", "status": "failed"}
 
         user_name = f"{current_user.get('name', '')} {current_user.get('surname', '')}".strip()
 
-        query = supabase.table("Tasks").select("*").order("followup_date", desc=True).limit(500)
+        # Build base query
+        query = supabase.table("Tasks").select("*")
+
+        # Filter by email(s) unless this is an organization-wide view.
+        if emails and not view_all_scope:
+            if len(emails) == 1:
+                query = query.eq("assigned_to_email", emails[0])
+            else:
+                # Use OR for multiple emails
+                email_conditions = ",".join([f"assigned_to_email.eq.{e}" for e in emails])
+                query = query.or_(email_conditions)
+
+        # Date range filters
+        if start_date or end_date:
+            if start_date:
+                query = query.gte("followup_date", start_date)
+            if end_date:
+                query = query.lte("followup_date", f"{end_date}T23:59:59.999999")
+        elif not all_dates:
+            sixty_days_ago = (
+                datetime.now(timezone.utc) - timedelta(days=60)
+            ).isoformat()
+            query = query.gte("followup_date", sixty_days_ago)
+
+        query = query.order("followup_date", desc=True)
 
         if is_super_admin and view_all:
             pass
         else:
-            query = query.eq('"Organization"', org_name)
+            query = query.eq('Organization', org_name)
 
-        rows = (query.execute().data) or []
+        # Optional task type filter (case-insensitive contains)
+        if task_type:
+            query = query.ilike("taskType", f"%{task_type}%")
+        
+        # Optional task stage filter. "Overdue" is derived from the due date,
+        # so it is applied in Python after the rows are fetched.
+        stage_filter = (task_stage or status or "").strip().lower()
+        if stage_filter and stage_filter != "overdue":
+            query = query.ilike("status", f"%{stage_filter}%")
 
-        if not (is_super_admin and view_all) and not (is_leader and view_all):
+        rows = (query.limit(5000).execute().data) or []
+
+        if stage_filter == "overdue":
+            now_utc = datetime.now(timezone.utc)
+
+            def overdue(row: dict) -> bool:
+                stage = (row.get("status") or "").strip().lower()
+                if stage in ("completed", "done", "closed", "finished", "cancelled", "deleted"):
+                    return False
+                due_raw = row.get("followup_date")
+                if not due_raw:
+                    return False
+                try:
+                    due = datetime.fromisoformat(str(due_raw).replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+                if due.tzinfo is None:
+                    due = due.replace(tzinfo=timezone.utc)
+                return due < now_utc
+
+            rows = [r for r in rows if overdue(r)]
+
+        if not view_all_scope and not explicit_email_filter:
             def owned(row: dict) -> bool:
                 af  = (row.get("assignedfor") or "").lower()
                 ate = (row.get("assigned_to_email") or "").lower()
@@ -314,9 +541,9 @@ async def get_user_tasks(
                 ln  = row.get("leader_name", "")
                 la  = row.get("leader_assigned", "")
                 return (
-                    af == user_email
-                    or ate == user_email
-                    or cbe == user_email
+                    af == current_user_email
+                    or ate == current_user_email
+                    or cbe == current_user_email
                     or (ln == user_name and row.get("is_consolidation_task"))
                     or (la == user_name and row.get("is_consolidation_task"))
                 )
@@ -328,12 +555,20 @@ async def get_user_tasks(
             reverse=True,
         )
 
+        total = len(tasks)
+        start = (page - 1) * limit
+        page_tasks = tasks[start:start + limit]
+
         return {
-            "user_email":     "all_users" if (is_leader and view_all) else current_user.get("email"),
-            "total_tasks":    len(tasks),
-            "tasks":          tasks,
+            "user_email":     "all_users" if view_all_scope else current_user.get("email"),
+            "total_tasks":    total,
+            "total":          total,
+            "has_more":       start + limit < total,
+            "page":           page,
+            "limit":          limit,
+            "tasks":          page_tasks,
             "status":         "success",
-            "is_leader_view": is_leader and view_all,
+            "is_leader_view": view_all_scope,
             "Organization":   org_name,
         }
 
@@ -402,6 +637,150 @@ async def get_leader_tasks(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# POST /tasks/bulk — complete, reopen or delete several owned tasks at once.
+@router.post("/tasks/bulk")
+async def bulk_update_tasks(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        org_name = _org_name_from_user(current_user)
+        if not org_name:
+            raise HTTPException(
+                status_code=403, detail="You don't have access to this church's data."
+            )
+
+        raw_ids = payload.get("task_ids") or []
+        action = str(payload.get("action") or "").strip().lower()
+        action = {
+            "completed": "complete",
+            "done": "complete",
+            "open": "reopen",
+            "pending": "reopen",
+            "remove": "delete",
+        }.get(action, action)
+
+        if action not in {"complete", "reopen", "delete"}:
+            raise HTTPException(
+                status_code=400,
+                detail="action must be one of: complete, reopen, delete",
+            )
+
+        task_ids = list(dict.fromkeys(str(task_id) for task_id in raw_ids if task_id))
+        if not task_ids:
+            raise HTTPException(status_code=400, detail="task_ids is required")
+        if len(task_ids) > 200:
+            raise HTTPException(status_code=400, detail="A maximum of 200 tasks can be changed at once")
+
+        result = (
+            supabase.table("Tasks")
+            .select("*")
+            .in_("_id", task_ids)
+            .execute()
+        )
+        rows = result.data or []
+        rows_by_id = {str(row.get("_id")): row for row in rows}
+        missing = [task_id for task_id in task_ids if task_id not in rows_by_id]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Tasks not found: {', '.join(missing[:10])}",
+            )
+
+        role_key = (
+            str(current_user.get("role") or "")
+            .lower()
+            .replace(" ", "")
+            .replace("_", "")
+        )
+        privileged = role_key in {"admin", "superadmin", "supremeadmin", "manager", "orgadmin"}
+        for task_id in task_ids:
+            row = rows_by_id[task_id]
+            if not _task_org_allowed(row, org_name, current_user):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You don't have access to one or more of these tasks.",
+                )
+            if not privileged and not _task_owned_by_user(row, current_user):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You can only bulk-update tasks assigned to you.",
+                )
+
+        # Tasks scheduled for a future date can't be completed yet
+        if action == "complete":
+            today = _today_sast()
+            future_ids = [
+                task_id
+                for task_id in task_ids
+                if (_sast_date(rows_by_id[task_id].get("followup_date")) or today) > today
+            ]
+            if future_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{len(future_ids)} task(s) are scheduled for a future date "
+                        "and can't be marked as completed yet."
+                    ),
+                )
+
+        now_iso = datetime.utcnow().isoformat()
+        if action == "delete":
+            deleted = (
+                supabase.table("Tasks")
+                .delete()
+                .in_("_id", task_ids)
+                .execute()
+                .data
+                or []
+            )
+            changed_count = len(deleted) or len(task_ids)
+        else:
+            update_payload = {
+                "status": "completed" if action == "complete" else "open",
+                "completedAt": now_iso if action == "complete" else None,
+                "updated_at": now_iso,
+            }
+            changed = (
+                supabase.table("Tasks")
+                .update(update_payload)
+                .in_("_id", task_ids)
+                .execute()
+                .data
+                or []
+            )
+            changed_count = len(changed)
+
+        sample_names = ", ".join(
+            (rows_by_id[task_id].get("name") or task_id)[:60]
+            for task_id in task_ids[:5]
+        )
+        action_label = {
+            "complete": "TASKS_BULK_COMPLETED",
+            "reopen": "TASKS_BULK_REOPENED",
+            "delete": "TASKS_BULK_DELETED",
+        }[action]
+        log_activity(
+            current_user.get("email", ""),
+            action_label,
+            f"{action_label.split('_')[-1].title()} {len(task_ids)} task(s): {sample_names}",
+            org_name,
+        )
+
+        return {
+            "status": "success",
+            "action": action,
+            "task_ids": task_ids,
+            "updated_count": changed_count,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"bulk_update_tasks error: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # PUT /tasks/{task_id}
 @router.put("/tasks/{task_id}")
 async def update_task(
@@ -448,6 +827,15 @@ async def update_task(
             elif normalized in ("open", "pending", "incomplete"):
                 payload["completedAt"] = None
 
+        # Validate the resulting schedule (new values, falling back to the stored ones)
+        if "followup_date" in payload or "status" in payload:
+            _validate_task_schedule(
+                payload.get("followup_date", row.get("followup_date")),
+                payload.get("status", row.get("status")),
+                original_iso=row.get("followup_date"),
+                is_update=True,
+            )
+
         if "assignedfor" in updated_task:
             payload["assignedfor"] = updated_task["assignedfor"].lower()
 
@@ -467,6 +855,19 @@ async def update_task(
         result = supabase.table("Tasks").update(payload).eq("_id", task_id).execute()
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to update task")
+
+        changed_fields = ", ".join(
+            field for field in sorted(payload) if field != "updated_at"
+        ) or "details"
+        log_activity(
+            current_user.get("email", ""),
+            "TASK_UPDATED",
+            (
+                f'Updated task "{result.data[0].get("name") or task_id}" '
+                f"({changed_fields})"
+            ),
+            org_name,
+        )
 
         return {"updatedTask": _format_task_row(result.data[0])}
 

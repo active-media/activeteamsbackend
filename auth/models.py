@@ -70,9 +70,15 @@ class AttendanceSubmission(BaseModel):
     attendees: List[Attendee]
     leaderEmail: str
     leaderName: str
+    leader12: str
     did_not_meet: bool = False
     isTicketed: bool = False
     invitedBy: Optional[str] = None
+    session_id: str
+    event_id: str
+    event_name: str
+    event_type: Optional[str] = "Cells"  # "Cells" or "Global Events"
+    
 
     @field_validator("attendees", mode="before")
     def validate_attendance(cls, v, info):
@@ -89,17 +95,22 @@ class PersonCreate(BaseModel):
     dob: str
     address: str
     leaders: list[str]
+    leader1Id: Optional[str] = None
+    leader12Id: Optional[str] = None
+    leader144Id: Optional[str] = None
     stage: Literal["Win"]
 
 # ===== EventTypes - FIXED =====
 class EventTypeCreate(BaseModel):
+    event_type_id: Optional[str] = None
     name: str
     description: str
-    isTicketed: Optional[bool] = False
+    event_category: str = "small_gatherings"  # Default to "Global"
     isGlobal: Optional[bool] = None
+    isTicketed: Optional[bool] = None
+    isTraining: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
     createdAt: Optional[datetime] = None
-    isEventType: Optional[bool] = True
 
 # ===== Attendance =====
 class CheckIn(BaseModel):
@@ -141,6 +152,8 @@ class EventBase(BaseModel):
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
     deactivation_reason: Optional[str] = None
+    class_level: Optional[int] = 0
+    total_sessions: Optional[int] = 0
 
 class EventCreate(EventBase):
     pass
@@ -172,6 +185,7 @@ class EventUpdate(BaseModel):
     deactivation_start: Optional[datetime] = None
     deactivation_end: Optional[datetime] = None
     deactivation_reason: Optional[str] = None
+
 class CellDeactivateRequest(BaseModel):
     weeks: int = Field(1, ge=1, le=12, description="Number of weeks to deactivate (1-12)")
     reason: Optional[str] = Field(None, max_length=200, description="Reason for deactivation")
@@ -417,10 +431,15 @@ class ConsolidationCreate(BaseModel):
     assigned_to_email: Optional[str] = None
     leaders: list = Field(default_factory=list)
     event_id: Optional[str] = None
-    is_check_in: bool = False
-    attendance_status: str = "checked_in"
+    is_check_in: Optional[bool] = False
+    attendance_status: Optional[str] = "checked_in"
     notes: Optional[str] = ""
     source: ConsolidationSource = ConsolidationSource.MANUAL
+    task_type: Optional[str] = "consolidation"
+    person_id:str
+    session_id:str
+    event_leader_name:Optional[str] = None
+    event_leader_email: Optional[str] = None
 
 class ConsolidationTask(TaskModel):
     consolidation_id: str

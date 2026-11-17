@@ -252,7 +252,7 @@ async def get_current_user(
             _supabase_admin.table("Users")
             .select(
                 "_id, name, surname, email, role, "
-                "Organization, org_id, is_supreme_admin"
+                "Organization, org_id, is_supreme_admin, person_id"
             )
             .eq("email", sb_email)
             .order("created_at", desc=True)   # prefer the most recently created row if duplicates exist
@@ -299,6 +299,7 @@ async def get_current_user(
         "Organization": organization,
         "organization": organization,
         "org_id": org_id,
+        "person_id": db_user.get("person_id"),
         "name": db_user.get("name", ""),
         "surname": db_user.get("surname", ""),
     }
