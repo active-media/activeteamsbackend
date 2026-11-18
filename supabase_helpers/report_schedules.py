@@ -184,6 +184,9 @@ def create_report_schedule(payload: dict, organization: str, created_by: str) ->
         "recipients": payload["recipients"],
         "active": True,
         "created_by": created_by,
+        "last_run_at": None,
+        "next_run_at": compute_next_run(payload, datetime.now(timezone.utc)),
+        
     }
 
     res = supabase.table(TABLE).insert(row).execute()

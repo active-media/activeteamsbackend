@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, date, timezone
 import time
 from bson import ObjectId
 import re
-from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends, BackgroundTasks, File, UploadFile
+from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends, BackgroundTasks, File, UploadFile, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserCreater, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate, TaskTypeIn, TaskTypeOut, LeaderStatusResponse, UserProfile, OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
@@ -17,7 +17,7 @@ import io
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, organizations_collection, org_config_collection
 from bson import ObjectId
 from supabase_helpers import report_schedules as report_schedules_helpers
-from supabase_helpers.report_schedule_runner import start_report_schedule_runner
+from supabase_helpers.report_schedule_runner import run_due_schedules
 from supabase_helpers.supabase_client import supabase
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
 from supabase_helpers.supabase_connection import supabase as supabase_anon, supabase_admin
@@ -42,6 +42,7 @@ from events import router as events_router
 from reports import router as reports_router
 from people import router as people_router
 from profile_router import router as profile_router
+from push_notifications import router as push_notifications_router
 
 #add routers here:
 def include_router(app):
@@ -66,6 +67,7 @@ app.add_middleware(
         "https://teams.theactivechurch.org",
         "http://localhost:8000",
         "http://localhost:5173",  
+        "http://localhost:4001", 
         "https://test-active-teams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
         "https://active-teams-frontend.onrender.com"
@@ -1632,6 +1634,15 @@ async def login(user: UserLogin):
     except Exception as e:
         logger.error(f"Login error for {user.email}: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+@app.post("/run-job/run-due-schedules")
+def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
+    expected = os.environ["CRON_SECRET"]
+    if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    background_tasks.add_task(run_due_schedules)  # your existing job function
+    return {"status": "started"}
+
 
 async def logout(user_id: str = Body(..., embed=True)):
     await users_collection.update_one(
@@ -3585,6 +3596,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost:4001", 
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
@@ -3608,6 +3620,7 @@ app.include_router(reports_router)
 app.include_router(reporting_router)
 app.include_router(people_router)
 app.include_router(profile_router)
+app.include_router(push_notifications_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -11470,7 +11483,6 @@ async def migrate_user_fields():
 # Startup event
 @app.on_event("startup")
 async def startup_event():
-    start_report_schedule_runner()
     """Run on application startup"""
     print("=" * 50)
     print("Starting up application...")

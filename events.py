@@ -298,6 +298,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "org_id": event_data.get("org_id"),
                 "class_level": event_data.get("class_level", 0),
                 "total_sessions": event_data.get("total_sessions", 0),
+                "required_sessions": event_data.get("required_sessions", 0),
             }  
 
          
@@ -596,6 +597,7 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting every event small gatherings sessions",len(events))
+            print(e.get('event_name') for e in events)
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids
@@ -608,6 +610,7 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting all event small gatherings sessions",len(events))
+            print([f"{e.get('event_name')} {e.get("event_id")}" for e in events])
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids, status
@@ -634,9 +637,10 @@ async def get_cell_events(
         #getting event details & event attendees for each session
         for session in event_sessions:
             for event in events:
-                if session.get("event_name") == event.get("event_name"): #checking for event associated with session
+                if session.get("event_id") == event.get("event_id"): #checking for event associated with session
                     cell_events.append({**event, **session})
-        
+                
+                    
         cells = []
         for i in cell_events: 
             cells.append({
@@ -664,7 +668,8 @@ async def get_cell_events(
                 "original_event_id": i.get("mongo_id"),
                 "attendance": {},
                 "is_active": i.get("is_active"),
-                "time": i.get("time", "07:20") 
+                "time": i.get("time", "07:20") ,
+                "reminder_emails":i.get("reminder_emails", []),
             })
 
         if day and day.strip().lower() != "all":
@@ -755,13 +760,16 @@ async def create_instances():
 
 
 
-@router.post("/internal/run-job")
+@router.post("/run-job/create-instances")
 def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
-    expected = os.environ["CRON_SECRET"]
-    if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    # expected = os.environ["CRON_SECRET"]
+    # if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+    #     raise HTTPException(status_code=401, detail="Unauthorized")
     background_tasks.add_task(create_instances)  # your existing job function
     return {"status": "started"}
+
+
+
 
 #POPULATING DATA SCRIPTS
 @router.get("/update_event_table")
@@ -1016,7 +1024,8 @@ async def get_other_events(
                     "time": i.get("time", "07:20") ,
                     "attendance":  i.get("checked_in_count", 0),
                     "new_people":i.get("new_people_total",0),
-                    "total_consolidation":i.get("decisions_total",0)    
+                    "total_consolidation":i.get("decisions_total",0),
+                    "headcount": i.get("total_headcounts", 0)
                 }
                 for i in general_events
             ]
@@ -1068,6 +1077,7 @@ async def get_other_events(
                     # "attendance": {},
                     "is_active": i.get("is_active"),
                     "time": i.get("time", "07:20") ,
+                    "headcount": i.get("total_headcounts", 0),
                     "price_tiers": i.get("price_tiers", "")
 
                 }
@@ -1517,6 +1527,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             'Event Name':'event_name',
             'eventLeaderEmail': 'event_leader_email',
             'Email': 'event_leader_email', 
+            'reminder_emails': 'reminder_emails',
             'Day': 'recurring_day', 
             'day': 'recurring_day', 
             'location': 'location',
@@ -1527,6 +1538,12 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             'Time': 'time', 
             'is_permanent_deact':'is_permanent_deact'
         }
+
+        if "reminder_emails" in update_data:
+            reminder_emails = update_data["reminder_emails"]
+            if not isinstance(reminder_emails, list) or not all(isinstance(email, str) for email in reminder_emails):
+                raise HTTPException(status_code=422, detail="reminder_emails must be a list of email addresses")
+            update_data["reminder_emails"] = list(dict.fromkeys(email.strip() for email in reminder_emails if email.strip()))
         
         for i in update_data:
             if not normalized.get(i):
@@ -1568,6 +1585,8 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
             "sample_time_stored": updated_event[0].get('time') if updated_event[0] else None
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error updating events: {str(e)}")
         import traceback
@@ -2297,6 +2316,7 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             'Event Name':'event_name',
             'eventLeaderEmail': 'event_leader_email',
             'Email': 'event_leader_email', 
+            'reminder_emails': 'reminder_emails',
             'Day': 'recurring_day', 
             'day': 'recurring_day', 
             'location': 'location',
@@ -2307,6 +2327,12 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
             'Time': 'time', 
             'is_permanent_deact':'is_permanent_deact'
         }
+
+        if "reminder_emails" in update_data:
+            reminder_emails = update_data["reminder_emails"]
+            if not isinstance(reminder_emails, list) or not all(isinstance(email, str) for email in reminder_emails):
+                raise HTTPException(status_code=422, detail="reminder_emails must be a list of email addresses")
+            update_data["reminder_emails"] = list(dict.fromkeys(email.strip() for email in reminder_emails if email.strip()))
         
         for i in update_data:
             if not normalized.get(i):
