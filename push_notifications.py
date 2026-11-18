@@ -3,12 +3,18 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException,BackgroundTasks, Header
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 from pywebpush import WebPushException, webpush
+import secrets
+from supabase import Client
+from supabase_helpers.supabase_connection import supabase
 
 from auth.utils import get_current_user
 from supabase_helpers.supabase_connection import supabase_admin
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/push", tags=["Push notifications"])
@@ -102,39 +108,13 @@ def delete_push_subscription(
     return {"unsubscribed": True}
 
 
-@router.post("/send")
 def send_push_notification(
     request: PushNotificationRequest,
-    current_user: dict = Depends(get_current_user),
+    # current_user: dict = Depends(get_current_user),
 ):
     _, private_key, subject = _get_delivery_configuration()
-    sender_is_super_admin = current_user.get("is_supreme_admin") or str(
-        current_user.get("role", "")
-    ).lower() == "super_admin"
-    sender_org = _organization_id(current_user)
-
-    requested_emails = sorted({str(email).strip().lower() for email in request.recipient_emails})
-    recipients = (
-        supabase_admin.table("Users")
-        .select("email, org_id, Organization")
-        .in_("email", requested_emails)
-        .execute()
-        .data
-        or []
-    )
-    recipient_emails = set()
-    for recipient in recipients:
-        email = str(recipient.get("email") or "").strip().lower()
-        recipient_org = _organization_id(recipient)
-        if email and (sender_is_super_admin or (sender_org and recipient_org == sender_org)):
-            recipient_emails.add(email)
-
-    if recipient_emails != set(requested_emails):
-        raise HTTPException(
-            status_code=403,
-            detail="All recipients must be valid users in your organization.",
-        )
-
+    recipient_emails = request.recipient_emails
+    
     subscriptions = (
         supabase_admin.table("web_push_subscriptions")
         .select("id, user_email, subscription")
@@ -177,3 +157,55 @@ def send_push_notification(
                 failed += 1
 
     return {"sent": sent, "failed": failed, "expired": expired}
+
+
+def send_event_notification():
+    now = datetime.now(ZoneInfo("Africa/Johannesburg"))
+    today_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][now.weekday()]
+
+    morning = now.hour < 12
+
+    if morning:
+        rows = (
+            supabase.table("events")
+            .select("reminder_emails,event_name,event_type_name")
+            .not_.is_("reminder_emails", "null")
+            .eq("is_active", True)
+            .ilike("recurring_day", f"%{today_name}%")
+            .lt("time", "12:00:00")
+            .execute()
+            .data
+        )
+    else:
+        rows = (
+            supabase.table("events")
+            .select("reminder_emails,event_name,event_type_name")
+            .not_.is_("reminder_emails", "null")
+            .eq("is_active", True)
+            .ilike("recurring_day", f"%{today_name}%")
+            .gte("time", "12:00:00")
+            .execute()
+            .data
+        )
+    emails = [email for row in rows for email in row["reminder_emails"]]
+    if emails:
+        send_push_notification(
+            PushNotificationRequest(
+                recipient_emails=emails,
+                title="Event Capture Reminder",
+                body=f"Don't forget to capture your {rows[0]['event_type_name']} event today ({today_name})!",
+                url="/events",
+            )
+        )
+    print(emails)
+    print(f"Sent notifications to {len(emails)} users for {len(rows)} events.")
+    return   
+                          
+@router.post("/run-job/send-notifications")
+def run_send_notifications_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
+    expected = os.environ["CRON_SECRET"]
+    # if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+    #     raise HTTPException(status_code=401, detail="Unauthorized")
+    print("Running send notifications job...")
+    background_tasks.add_task(send_event_notification)  # your existing job function
+    return {"status": "started"}

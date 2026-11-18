@@ -67,6 +67,7 @@ app.add_middleware(
         "https://teams.theactivechurch.org",
         "http://localhost:8000",
         "http://localhost:5173",  
+        "http://localhost:4001", 
         "https://test-active-teams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
         "https://active-teams-frontend.onrender.com"
@@ -3311,6 +3312,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost:4001", 
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
