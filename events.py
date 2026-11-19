@@ -1754,12 +1754,54 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"Config found: {config is not None}")  
 
         if config is None:
-            raise HTTPException(status_code=404, detail=f"No org config found for org_id: {org_id}")
-        
-        config["org_id"] = str(config["_id"])
-        config.pop("_id", None)
-        return config
+            sample_people = await people_collection.find(
+                {"org_id": org_id}
+            ).limit(10).to_list(10)
 
+            standard_fields = {
+                "_id", "Name", "Surname", "Email", "Number", "Phone", "Gender",
+                "Address", "Birthday", "org_id", "Org_id", "Organisation",
+                "DateCreated", "UpdatedAt", "Stage", "InvitedBy", "LeaderId",
+                "LeaderPath", "FullName", "Date Created"
+            }
+
+            detected_fields = {}
+            for person in sample_people:
+                for key, value in person.items():
+                    if key not in standard_fields and not key.startswith("_") and value:
+                        detected_fields[key] = True
+
+            detected_hierarchy = [
+                {
+                    "level": i + 1,
+                    "field": key,
+                    "label": key.replace("_", " ").title()
+                }
+                for i, key in enumerate(detected_fields.keys())
+            ]
+
+            config = {
+                "_id": org_id,
+                "org_id": org_id,
+                "org_name": current_user.get("organization") or current_user.get("org_tag") or org_id,
+                "recurring_event_type": "Gatherings",
+                "hierarchy": detected_hierarchy,
+                "top_leaders": {"male": "", "female": ""},
+                "permissions": {
+                    "admin_create_event": True,
+                    "admin_create_event_type": True,
+                },
+                "created_at": datetime.utcnow(),
+            }
+            await org_config_collection.insert_one(dict(config))
+
+        result = dict(config)
+        result["org_id"] = str(result.get("_id", org_id))
+        result.pop("_id", None)
+        return result
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"ORG CONFIG ERROR: {str(e)}") 
         import traceback
