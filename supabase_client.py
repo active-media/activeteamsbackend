@@ -8,7 +8,13 @@ load_dotenv(find_dotenv(usecwd=True))
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_SERVICE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    or os.getenv("SUPABASE_SECRET_KEY")
+    or os.getenv("SUPABASE_SERVICE_KEY")
+)
+if not SUPABASE_SERVICE_KEY and (os.getenv("SUPABASE_KEY") or "").startswith("sb_secret_"):
+    SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_KEY")
 
 
 @lru_cache(maxsize=1)

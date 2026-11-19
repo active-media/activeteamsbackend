@@ -40,7 +40,7 @@ from time import sleep
 from supreme_admin import router as supreme_admin_router
 from events import router as events_router
 from reports import router as reports_router
-from people import router as people_router
+from people import router as people_router, get_people_paginated, get_all_people_minimal
 from profile_router import router as profile_router
 from push_notifications import router as push_notifications_router
 from routers.staff_intern import router as staff_intern_router
@@ -68,9 +68,12 @@ app.add_middleware(
         "https://teams.theactivechurch.org",
         "http://localhost:8000",
         "http://localhost:5173",  
-        "http://localhost:4001", 
+        "http://localhost:4001",
+        "https://activeteams-api-core.onrender.com",
         "https://test-active-teams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
+        "https://activeteamsbackend-production.up.railway.app",
+        "https://activeteamsbackend.onrender.com",
         "https://active-teams-frontend.onrender.com"
     ],
     allow_credentials=True,
@@ -104,7 +107,7 @@ from supabase_helpers.school_cell_report import (
 from supabase_helpers.service_checkin_routes import router as service_checkin_router
 from fastapi.responses import StreamingResponse
 from events import router as events_router
-from people import get_people_paginated, get_all_people_minimal
+from events import scheduler as events_scheduler
 from admin import router as admin_router
 from admin import event_type_router as admin_event_type_router
 from admin import task_type_router as admin_task_type_router
@@ -3584,11 +3587,17 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.start()
+    if not scheduler.running:
+        scheduler.start()
+    if not events_scheduler.running:
+        events_scheduler.start()
 
     yield
 
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
+    if events_scheduler.running:
+        events_scheduler.shutdown()
 
 
 app.router.lifespan_context = lifespan
@@ -3603,7 +3612,11 @@ app.add_middleware(
         "http://localhost:4001", 
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
+        "https://activeteams-api-core.onrender.com",
+        "https://test-active-teams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
+        "https://activeteamsbackend-production.up.railway.app",
+        "https://activeteamsbackend.onrender.com",
         "https://active-teams-frontend.onrender.com"
     ],
     allow_credentials=True,

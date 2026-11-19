@@ -39,7 +39,21 @@ router = APIRouter(tags=["auth-migration"])
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+
+def _configured_service_key() -> Optional[str]:
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SECRET_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+    )
+    if key:
+        return key
+    anon_key = os.getenv("SUPABASE_KEY") or ""
+    return anon_key if anon_key.startswith("sb_secret_") else None
+
+
+SUPABASE_SERVICE_KEY = _configured_service_key()
 
 # Fields copied from the Mongo user document into the Supabase profile row.
 PROFILE_FIELDS = (
@@ -87,6 +101,25 @@ def _admin_client():
 
 def _is_blank(value: Any) -> bool:
     return value in EMPTY_VALUES
+
+
+SENSITIVE_PROFILE_FIELDS = frozenset(
+    {
+        "password",
+        "confirm_password",
+        "refresh_token_hash",
+        "refresh_token_id",
+        "refresh_token_expires",
+    }
+)
+
+
+def _public_profile(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in (profile or {}).items()
+        if key not in SENSITIVE_PROFILE_FIELDS
+    }
 
 
 def _normalize_email(email: str) -> str:
@@ -258,11 +291,12 @@ def _find_auth_user(admin, email: str):
 
 def _admin_rest(method: str, path: str, payload: Optional[Dict[str, Any]] = None):
     """Call the Supabase admin REST API with the configured server key."""
-    if not (SUPABASE_URL and SUPABASE_ANON_KEY):
+    key = SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY
+    if not (SUPABASE_URL and key):
         return None
     headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
     try:
@@ -404,8 +438,9 @@ def _create_with_anon_key(email: str, password: str) -> Dict[str, Any]:
         raise HTTPException(
             status_code=502,
             detail=(
-                "The account could not be created automatically. Ask an administrator "
-                "for the service role key, or use “Forgot password”."
+                "The account could not be created automatically. Set "
+                "SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY on the backend, "
+                "or use “Forgot password”."
             ),
         ) from exc
 
@@ -427,8 +462,9 @@ def _create_with_anon_key(email: str, password: str) -> Dict[str, Any]:
     raise HTTPException(
         status_code=502,
         detail=(
-            "The account could not be created automatically. Ask an administrator "
-            "for the service role key, or use “Forgot password”."
+            "The account could not be created automatically. Set "
+            "SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY on the backend, "
+            "or use “Forgot password”."
         ),
     )
 
@@ -528,15 +564,7 @@ async def migrate_legacy_account(payload: dict = Body(...)):
         **session,
         "migrated": True,
         "account_created": created,
-        "profile": {
-            "_id": profile.get("_id"),
-            "name": profile.get("name"),
-            "surname": profile.get("surname"),
-            "email": profile.get("email"),
-            "role": profile.get("role"),
-            "Organization": profile.get("Organization"),
-            "org_id": profile.get("org_id"),
-        },
+        "profile": _public_profile(profile),
     }
 
 

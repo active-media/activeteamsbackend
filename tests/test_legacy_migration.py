@@ -209,6 +209,9 @@ def test_migration_returns_a_session_and_creates_the_profile(client):
     assert body["refresh_token"] == "refresh-token"
     assert body["migrated"] is True
     assert body["profile"]["role"] == "leader"
+    assert body["profile"]["person_id"] == PERSON_UUID
+    assert "password" not in body["profile"]
+    assert "confirm_password" not in body["profile"]
 
     created = supabase["value"].table("Users").inserted
     assert len(created) == 1
@@ -383,6 +386,48 @@ def test_admin_rest_api_updates_an_existing_auth_account(client, monkeypatch):
     assert updates, "expected the existing auth account to be updated"
     assert updates[0][1] == "admin/users/auth-uuid"
     assert updates[0][2]["password"] == LEGACY_PASSWORD
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_KEY"],
+)
+def test_service_key_accepts_common_env_names(monkeypatch, env_var):
+    for name in (
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_SECRET_KEY",
+        "SUPABASE_SERVICE_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_var, "configured-key")
+
+    assert auth_migration._configured_service_key() == "configured-key"
+
+
+def test_admin_rest_prefers_the_service_role_key(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"users": []}
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        calls.append((method, url, headers))
+        return FakeResponse()
+
+    monkeypatch.setattr(auth_migration.httpx, "request", fake_request)
+    monkeypatch.setattr(auth_migration, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(auth_migration, "SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setattr(auth_migration, "SUPABASE_SERVICE_KEY", "service-key")
+
+    auth_migration._admin_rest("GET", "admin/users")
+
+    assert calls[0][0] == "GET"
+    assert calls[0][1] == "https://example.supabase.co/auth/v1/admin/users"
+    assert calls[0][2]["Authorization"] == "Bearer service-key"
+    assert calls[0][2]["apikey"] == "service-key"
 
 
 def test_account_exists_endpoint_does_not_leak_information(client):

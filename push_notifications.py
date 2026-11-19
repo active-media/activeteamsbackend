@@ -5,7 +5,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException,BackgroundTasks, Header
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
-from pywebpush import WebPushException, webpush
+try:
+    from pywebpush import WebPushException, webpush
+except ImportError:
+    class WebPushException(Exception):
+        pass
+
+    def webpush(*args, **kwargs):
+        raise RuntimeError("pywebpush is required to send push notifications")
 import secrets
 from supabase import Client
 from supabase_helpers.supabase_connection import supabase
