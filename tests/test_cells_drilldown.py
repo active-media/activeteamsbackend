@@ -1,13 +1,25 @@
 """Run from the folder that contains `reporting_core` (activeteamsbackend):
     pytest tests/test_cells_drilldown.py
-"""
+External modules (auth, supabase) are stubbed so no database is needed."""
+import sys, types, pathlib
 from datetime import date
 
 import pytest
 
-from fastapi import HTTPException
-from reporting_core import scope as S
-from reporting_core import cells_drilldown as C
+ROOT = pathlib.Path(__file__).resolve().parents[1] / "activeteamsbackend"
+sys.path.insert(0, str(ROOT))
+
+for name, attrs in {
+    "auth": {}, "auth.utils": {"get_current_user": lambda: None},
+    "supabase_helpers": {}, "supabase_helpers.supabase_connection": {"supabase": None, "supabase_admin": None},
+}.items():
+    mod = types.ModuleType(name)
+    mod.__dict__.update(attrs)
+    sys.modules.setdefault(name, mod)
+
+from fastapi import HTTPException  # noqa: E402
+from reporting_core import scope as S  # noqa: E402
+from reporting_core import cells_drilldown as C  # noqa: E402
 
 
 def person(pid, name, surname, leader_id=None, path=()):
