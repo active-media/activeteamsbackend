@@ -6,15 +6,22 @@ load_dotenv()
 
 load_dotenv()
 
+SUPABASE_SERVICE_KEY = (
+    os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+    or os.getenv('SUPABASE_SECRET_KEY')
+    or os.getenv('SUPABASE_SERVICE_KEY')
+)
+if not SUPABASE_SERVICE_KEY and (os.getenv('SUPABASE_KEY') or '').startswith('sb_secret_'):
+    SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_KEY')
+
 print("========== SUPABASE DEBUG ==========")
 print("SUPABASE URL:", os.getenv("SUPABASE_URL"))
 print("SUPABASE ANON KEY LOADED:", bool(os.getenv("SUPABASE_KEY")))
-print("SUPABASE SERVICE KEY LOADED:", bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")))
+print("SUPABASE SERVICE KEY LOADED:", bool(SUPABASE_SERVICE_KEY))
 print("=====================================")
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
 
 
 if not SUPABASE_URL or not SUPABASE_KEY:

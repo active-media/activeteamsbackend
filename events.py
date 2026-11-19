@@ -10,7 +10,6 @@ import pytz
 import re
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from time import sleep
 from urllib.parse import unquote
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
@@ -1694,10 +1693,8 @@ async def auto_reactivate_expired_events():
         print(f"Auto-reactivation error: {e}")
 
 
-scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10) 
-scheduler.start()
-sleep(10)
+scheduler = AsyncIOScheduler()
+scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10)
 
 
 @router.post("/event-types")
