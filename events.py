@@ -648,9 +648,9 @@ async def get_cell_events(
                 "eventType": i.get("event_type_name"),
                 "eventLeaderName": i.get("event_leader"),
                 "eventLeaderEmail": i.get("event_leader_email"),
-                "leader1": i.get("leader_at_1", ""),  # Fallback to empty string if missing
-                "leader12": i.get("leader_at_12", ""),
-                "leader12email": i.get("leader_at_12_email", ""),
+                "leader@1": i.get("leader_at_1", ""),  # Fallback to empty string if missing
+                "leader@12": i.get("leader_at_12", ""),
+                "leader@12email": i.get("leader_at_12_email", ""),
                 "day": i.get("recurring_day"),
                 "date": i.get("session_date"),
                 "display_date": "-".join(reversed(i.get("session_date", "").split("-"))) if i.get("session_date") else "", # Converts YYYY-MM-DD to DD-MM-YYYY
@@ -664,7 +664,9 @@ async def get_cell_events(
                 "original_event_id": i.get("mongo_id"),
                 "attendance": {},
                 "is_active": i.get("is_active"),
-                "time": i.get("time", "07:20") 
+                "eventTime": i.get("time", "07:20"),
+                "event_description": i.get("description", ""),
+                "organization": i.get("Organization", "")
             })
 
         if day and day.strip().lower() != "all":
@@ -995,9 +997,9 @@ async def get_other_events(
                     "eventType": i.get("event_type_name"),
                     "eventLeaderName": i.get("event_leader"),
                     "eventLeaderEmail": i.get("event_leader_email"),
-                    "leader1": i.get("leader_at_1", ""),  # Fallback to empty string if missing
-                    "leader12": i.get("leader_at_12", ""),
-                    "leader12email": i.get("leader_at_12_email", ""),
+                    "leader@1": i.get("leader_at_1", ""),  # Fallback to empty string if missing
+                    "leader@12": i.get("leader_at_12", ""),
+                    "leader@12email": i.get("leader_at_12_email", ""),
                     "day": i.get("recurring_day"),
                     "date": i.get("session_date"),
                     "display_date": "-".join(reversed(i.get("session_date", "").split("-"))) if i.get("session_date") else "", # Converts YYYY-MM-DD to DD-MM-YYYY
@@ -1016,7 +1018,10 @@ async def get_other_events(
                     "time": i.get("time", "07:20") ,
                     "attendance":  i.get("checked_in_count", 0),
                     "new_people":i.get("new_people_total",0),
-                    "total_consolidation":i.get("decisions_total",0)    
+                    "total_consolidation":i.get("decisions_total",0),
+                "eventTime": i.get("time", "07:20"),
+                "event_description": i.get("description", ""),
+                "organization": i.get("Organization", "")    
                 }
                 for i in general_events
             ]
@@ -1050,9 +1055,9 @@ async def get_other_events(
                     "eventType": i.get("event_type_name"),
                     "eventLeaderName": i.get("event_leader"),
                     "eventLeaderEmail": i.get("event_leader_email"),
-                    "leader1": i.get("leader_at_1", ""),  # Fallback to empty string if missing
-                    "leader12": i.get("leader_at_12", ""),
-                    "leader12email": i.get("leader_at_12_email", ""),
+                    "leader@1": i.get("leader_at_1", ""),  # Fallback to empty string if missing
+                    "leader@12": i.get("leader_at_12", ""),
+                    "leader@12email": i.get("leader_at_12_email", ""),
                     "day": i.get("recurring_day"),
                     "date": i.get("session_date"),
                     "display_date": "-".join(reversed(i.get("session_date", "").split("-"))) if i.get("session_date") else "", # Converts YYYY-MM-DD to DD-MM-YYYY
@@ -1068,8 +1073,10 @@ async def get_other_events(
                     # "attendance": {},
                     "is_active": i.get("is_active"),
                     "time": i.get("time", "07:20") ,
-                    "price_tiers": i.get("price_tiers", "")
-
+                    "price_tiers": i.get("price_tiers", ""),
+                "eventTime": i.get("time", "07:20"),
+                "event_description": i.get("description", ""),
+                "organization": i.get("Organization", "")
                 }
                 for i in general_events
             ]
@@ -1697,7 +1704,6 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
         if existing:
             raise HTTPException(status_code=400, detail=f"Event type '{name}' already exists")
 
-        
         event_type_data = {
             "name": name, 
             "event_type_category": event_type.event_category,
@@ -1708,6 +1714,7 @@ async def create_event_type(event_type: EventTypeCreate, current_user: dict = De
             "org_id": org_id,
             # "created_at": datetime.utcnow(),
             "is_training": event_type.event_category == "training" if hasattr(event_type, 'event_category') else False,
+            "display_fields": event_type.display_fields ,
         }
 
         print("NEW TYPE", event_type_data)

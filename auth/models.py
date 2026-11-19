@@ -111,6 +111,7 @@ class EventTypeCreate(BaseModel):
     isTraining: Optional[bool] = None
     hasPersonSteps: Optional[bool] = None
     createdAt: Optional[datetime] = None
+    display_fields: Optional[list] = None
 
 # ===== Attendance =====
 class CheckIn(BaseModel):
