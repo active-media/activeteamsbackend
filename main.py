@@ -583,6 +583,39 @@ async def _merge_mongo_logos(orgs: list[dict]) -> None:
             org["logo"] = logo
 
 
+def _is_super_admin_user(current_user: dict) -> bool:
+    """True for supreme admins (and the legacy super-admin role)."""
+    flag = current_user.get("is_supreme_admin")
+    is_supreme = flag is True or str(flag).strip().lower() in ("true", "t", "1", "yes")
+    return is_supreme or str(current_user.get("role", "")).lower() in (
+        "super_admin",
+        "superadmin",
+        "supremeadmin",
+    )
+
+
+def _organization_belongs_to_user(org: dict, current_user: dict) -> bool:
+    """True when the organization is the one the current user belongs to."""
+    user_org = (
+        current_user.get("Organization") or current_user.get("organization") or ""
+    ).strip().lower()
+    user_org_id = (current_user.get("org_id") or "").strip().lower()
+    user_org_slug = ORG_ID_MAP.get(user_org.replace(" ", "-"), user_org.replace(" ", "-"))
+
+    org_values = {
+        str(org.get("name") or "").strip().lower(),
+        str(org.get("org_id") or "").strip().lower(),
+        str(org.get("_id") or "").strip().lower(),
+    }
+    org_values.discard("")
+
+    user_values = {user_org, user_org_id, user_org_slug}
+    user_values.discard("")
+    user_values.update(ORG_ID_MAP.get(value, value) for value in list(user_values))
+
+    return bool(user_values & org_values)
+
+
 async def _create_organization_record(
     name: str,
     description: str = "",
@@ -1738,12 +1771,14 @@ async def create_organization(data: dict = Body(...), current_user: dict = Depen
     return response
 
 @app.put("/organizations/{org_id}")
-async def update_organization(org_id: str, data: dict = Body(...), current_user: dict = Depends(require_super_admin)):
+async def update_organization(org_id: str, data: dict = Body(...), current_user: dict = Depends(get_current_user)):
     """
     Update an existing organization.
     Body: { "name", "description", "address", "phone", "email", "logo" }
     - logo omitted = keep existing logo; logo "" = remove; data URL = replace
     - Renaming also updates the matching users' organization name.
+    - Admins may only update the logo of their own organization; all other
+      changes require a supreme admin.
     """
     if not ObjectId.is_valid(org_id):
         raise HTTPException(status_code=400, detail="Invalid organization ID")
@@ -1771,6 +1806,23 @@ async def update_organization(org_id: str, data: dict = Body(...), current_user:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     existing = existing_supabase or existing_mongo or {}
+
+    is_super_admin = _is_super_admin_user(current_user)
+    if not is_super_admin:
+        if str(current_user.get("role", "")).lower() != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        if not _organization_belongs_to_user(existing, current_user):
+            raise HTTPException(
+                status_code=403,
+                detail="You can only edit the logo of your own organization",
+            )
+        unexpected_fields = [key for key in data.keys() if key != "logo"]
+        if unexpected_fields:
+            raise HTTPException(
+                status_code=403,
+                detail="Admins can only update the organization logo",
+            )
+
     old_name = existing.get("name", "")
     now = datetime.utcnow().isoformat()
 
