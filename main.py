@@ -8,7 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Path, Request, Depends,
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth.models import EventCreate, DecisionType, UserProfile, ConsolidationCreate, UserProfileUpdate, CheckIn, UncaptureRequest, UserCreate, UserCreater, UserLogin, CellEventCreate, AddMemberNamesRequest, RemoveMemberRequest, RefreshTokenRequest, ForgotPasswordRequest, ResetPasswordRequest, TaskModel, TaskTypeUpdate, PersonCreate, EventTypeCreate, UserListResponse, UserList, MessageResponse, PermissionUpdate, RoleUpdate, AttendanceSubmission, TaskUpdate, EventUpdate, TaskTypeIn, TaskTypeOut, LeaderStatusResponse, UserProfile, OrganizationCreate, OrganizationUpdate, OrganizationResponse, OrganizationList, PeopleResponse, PeopleList
-from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role, require_super_admin
+from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token, task_type_serializer, get_current_user, require_role, require_super_admin, SUPREME_ADMIN_EMAIL
 import math
 import secrets
 from database import db, events_collection, people_collection, users_collection, tasks_collection, tasktypes_collection, consolidations_collection, organizations_collection, org_config_collection
@@ -40,9 +40,10 @@ from time import sleep
 from supreme_admin import router as supreme_admin_router
 from events import router as events_router
 from reports import router as reports_router
-from people import router as people_router
+from people import router as people_router, get_people_paginated, get_all_people_minimal
 from profile_router import router as profile_router
 from push_notifications import router as push_notifications_router
+from routers.staff_intern import router as staff_intern_router
 
 #add routers here:
 def include_router(app):
@@ -67,9 +68,12 @@ app.add_middleware(
         "https://teams.theactivechurch.org",
         "http://localhost:8000",
         "http://localhost:5173",  
-        "http://localhost:4001", 
+        "http://localhost:4001",
+        "https://activeteams-api-core.onrender.com",
         "https://test-active-teams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
+        "https://activeteamsbackend-production.up.railway.app",
+        "https://activeteamsbackend.onrender.com",
         "https://active-teams-frontend.onrender.com"
     ],
     allow_credentials=True,
@@ -103,6 +107,7 @@ from supabase_helpers.school_cell_report import (
 from supabase_helpers.service_checkin_routes import router as service_checkin_router
 from fastapi.responses import StreamingResponse
 from events import router as events_router
+from events import scheduler as events_scheduler
 from admin import router as admin_router
 from admin import event_type_router as admin_event_type_router
 from admin import task_type_router as admin_task_type_router
@@ -113,6 +118,7 @@ from contextlib import asynccontextmanager
 from daily_tasks import router as tasks_router
 from people import router as people_router
 from task_types import router as task_types_router
+from auth_migration import router as auth_migration_router
 
 oauth2_scheme = HTTPBearer()
 
@@ -124,6 +130,7 @@ def _unique_operation_id(route):
     path = re.sub(r"[^a-zA-Z0-9_]+", "_", route.path).strip("_")
     module = endpoint.__module__.replace(".", "_")
     return f"{module}_{route.name}_{source_line}_{method}_{path}"
+
 
 
 app = FastAPI(generate_unique_id_function=_unique_operation_id)
@@ -3632,11 +3639,17 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.start()
+    if not scheduler.running:
+        scheduler.start()
+    if not events_scheduler.running:
+        events_scheduler.start()
 
     yield
 
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
+    if events_scheduler.running:
+        events_scheduler.shutdown()
 
 
 app.router.lifespan_context = lifespan
@@ -3651,7 +3664,11 @@ app.add_middleware(
         "http://localhost:4001", 
         "https://new-active-teams.netlify.app",
         "https://activeteams.netlify.app",
+        "https://activeteams-api-core.onrender.com",
+        "https://test-active-teams.netlify.app",
         "https://activeteamsbackend2.0.onrender.com",
+        "https://activeteamsbackend-production.up.railway.app",
+        "https://activeteamsbackend.onrender.com",
         "https://active-teams-frontend.onrender.com"
     ],
     allow_credentials=True,
@@ -3665,6 +3682,8 @@ app.include_router(tasks_router)
 app.include_router(task_types_router)
 app.include_router(service_checkin_router)
 app.include_router(supreme_admin_router)
+app.include_router(staff_intern_router)
+app.include_router(auth_migration_router)
 app.include_router(admin_router)
 app.include_router(admin_event_type_router)
 app.include_router(admin_task_type_router)
@@ -9136,6 +9155,81 @@ async def change_password(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
 
+@app.put("/people/{person_id}/staff-intern")
+async def update_staff_intern(
+    person_id: str,
+    update_data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a person's Staff/Intern classification and service figures."""
+    try:
+        role_text = (current_user.get("role") or "").lower().strip()
+        email_text = (current_user.get("email") or "").lower().strip()
+        is_supreme = (
+            current_user.get("is_supreme_admin", False) or
+            email_text == SUPREME_ADMIN_EMAIL.lower()
+        )
+        allowed = (
+            is_supreme or
+            role_text == "admin" or
+            "admin" in role_text or
+            role_text == "leaderat12" or
+            "leaderat12" in role_text or
+            "leader at 12" in role_text or
+            "leader@12" in role_text
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Not authorized to update staff/intern data")
+
+        if not ObjectId.is_valid(person_id):
+            raise HTTPException(status_code=400, detail="Invalid person ID")
+
+        set_fields: dict = {}
+        if "staffStatus" in update_data:
+            status = update_data.get("staffStatus")
+            status = status.strip().lower() if isinstance(status, str) else ""
+            if status not in {"none", "staff", "intern"}:
+                raise HTTPException(status_code=400, detail="staffStatus must be one of: none, staff, intern")
+            set_fields["staffStatus"] = status
+
+        for key in ("fridayServiceTarget", "sundayServiceTarget", "fridayActual", "sundayActual"):
+            if key in update_data and update_data[key] is not None:
+                value = update_data[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise HTTPException(status_code=400, detail=f"{key} must be a non-negative integer")
+                set_fields[key] = value
+
+        if not set_fields:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        set_fields["UpdatedAt"] = datetime.utcnow().isoformat()
+
+        result = await people_collection.update_one(
+            {"_id": ObjectId(person_id)},
+            {"$set": set_fields}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        if people_cache.get("data"):
+            for i, person in enumerate(people_cache["data"]):
+                if str(person.get("_id")) == person_id:
+                    for field, new_value in set_fields.items():
+                        people_cache["data"][i][field] = new_value
+                    break
+
+        return {
+            "success": True,
+            "message": "Staff/intern data updated successfully",
+            "person_id": person_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating staff/intern data for {person_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating staff/intern data: {str(e)}")
+
 # ========== EVENT-SPECIFIC PEOPLE ENDPOINT - RETURNS ALL PEOPLE WITH COMPLETE FIELDS ==========
 @app.get("/events/{event_id}/all-people-for-attendance")
 async def get_all_people_for_event(
@@ -9852,6 +9946,67 @@ async def search_people(
 #         print(f"Error in search-fast: {str(e)}")
 #         return {"results": [], "error": str(e)}
     
+@app.get("/people/leaders-only")
+async def get_leaders_only():
+    """
+    Get only people who are leaders (have people under them)
+    Optimized for signup form where we mostly need leaders
+    """
+    try:
+        # Find people who appear as leaders in other people's records
+        pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"Leader @1": {"$exists": True, "$ne": ""}},
+                        {"Leader @12": {"$exists": True, "$ne": ""}},
+                        {"Leader @144": {"$exists": True, "$ne": ""}},
+                        {"Leader @1728": {"$exists": True, "$ne": ""}}
+                    ]
+                }
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "Name": 1,
+                    "Surname": 1,
+                    "Email": 1,
+                    "Phone": 1,
+                    "Leader @1": 1,
+                    "Leader @12": 1,
+                    "Leader @144": 1,
+                    "Leader @1728": 1
+                }
+            },
+            {"$limit": 500}  # Leaders only, so smaller set
+        ]
+       
+        cursor = people_collection.aggregate(pipeline)
+        leaders = []
+       
+        async for person in cursor:
+            leaders.append({
+                "_id": str(person["_id"]),
+                "Name": person.get("Name", ""),
+                "Surname": person.get("Surname", ""),
+                "Email": person.get("Email", ""),
+                "Phone": person.get("Phone", ""),
+                "Leader @1": person.get("Leader @1", ""),
+                "Leader @12": person.get("Leader @12", ""),
+                "Leader @144": person.get("Leader @144", ""),
+                "Leader @1728": person.get("Leader @1728", "")
+            })
+       
+        return {"leaders": leaders}
+       
+    except Exception as e:
+        print(f"Error fetching leaders: {e}")
+        return {"leaders": []}
+
+
+app.add_api_route("/people/paginated", get_people_paginated, methods=["GET"], tags=["people"])
+app.add_api_route("/people/all-minimal", get_all_people_minimal, methods=["GET"], tags=["people"])
+
 @app.get("/people/{person_id}")
 async def get_person(
     person_id: str,

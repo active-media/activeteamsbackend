@@ -4,7 +4,7 @@ import base64
 import json
 from datetime import datetime, time as time_type, timedelta
 from typing import Optional, Dict, Any
-from passlib.context import CryptContext
+import bcrypt
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
 from fastapi import HTTPException, status, Depends
@@ -41,18 +41,39 @@ def is_true(value):
     return bool(value)
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
-
-
 # ==============================
 # PASSWORD UTILS
 # ==============================
+
+MAX_PASSWORD_BYTES = 72
+BCRYPT_ROUNDS = 12
+
+
+def _truncate_password(password: str) -> bytes:
+    if not password:
+        return b""
+    encoded = password.encode("utf-8")
+    return encoded[:MAX_PASSWORD_BYTES]
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(
+        _truncate_password(password), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+    ).decode("utf-8")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    if not plain_password or not hashed_password:
+        return False
+    try:
+        hashed_bytes = (
+            hashed_password.encode("utf-8")
+            if isinstance(hashed_password, str)
+            else hashed_password
+        )
+        return bcrypt.checkpw(_truncate_password(plain_password), hashed_bytes)
+    except (ValueError, TypeError):
+        return False
 
 
 # ==============================

@@ -108,6 +108,11 @@ def map_person(person: dict) -> dict:
         "Stage": person.get("Stage") or "Win",
         "Date Created": person.get("Date Created") or utcnow_iso(),
         "UpdatedAt": person.get("UpdatedAt") or utcnow_iso(),
+        "staffStatus": person.get("staffStatus") or person.get("StaffStatus") or "none",
+        "fridayServiceTarget": person.get("fridayServiceTarget") or 0,
+        "sundayServiceTarget": person.get("sundayServiceTarget") or 0,
+        "fridayActual": person.get("fridayActual") or 0,
+        "sundayActual": person.get("sundayActual") or 0,
     }
 
 @router.get("/people")

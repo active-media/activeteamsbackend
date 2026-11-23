@@ -10,7 +10,6 @@ import pytz
 import re
 from apscheduler.schedulers.background import BackgroundScheduler, BlockingScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from time import sleep
 from urllib.parse import unquote
 from database import db, events_collection, people_collection, users_collection, tasks_collection ,tasktypes_collection,consolidations_collection, organizations_collection, org_config_collection
 from auth.utils import hash_password, verify_password, get_next_occurrence_single, parse_time_string, get_leader_cell_name_async, create_access_token, decode_access_token , task_type_serializer, get_current_user 
@@ -1694,10 +1693,8 @@ async def auto_reactivate_expired_events():
         print(f"Auto-reactivation error: {e}")
 
 
-scheduler = AsyncIOScheduler()    
-scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10) 
-scheduler.start()
-sleep(10)
+scheduler = AsyncIOScheduler()
+scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10)
 
 
 @router.post("/event-types")
@@ -1757,12 +1754,54 @@ async def get_org_config(current_user: dict = Depends(get_current_user)):
         print(f"Config found: {config is not None}")  
 
         if config is None:
-            raise HTTPException(status_code=404, detail=f"No org config found for org_id: {org_id}")
-        
-        config["org_id"] = str(config["_id"])
-        config.pop("_id", None)
-        return config
+            sample_people = await people_collection.find(
+                {"org_id": org_id}
+            ).limit(10).to_list(10)
 
+            standard_fields = {
+                "_id", "Name", "Surname", "Email", "Number", "Phone", "Gender",
+                "Address", "Birthday", "org_id", "Org_id", "Organisation",
+                "DateCreated", "UpdatedAt", "Stage", "InvitedBy", "LeaderId",
+                "LeaderPath", "FullName", "Date Created"
+            }
+
+            detected_fields = {}
+            for person in sample_people:
+                for key, value in person.items():
+                    if key not in standard_fields and not key.startswith("_") and value:
+                        detected_fields[key] = True
+
+            detected_hierarchy = [
+                {
+                    "level": i + 1,
+                    "field": key,
+                    "label": key.replace("_", " ").title()
+                }
+                for i, key in enumerate(detected_fields.keys())
+            ]
+
+            config = {
+                "_id": org_id,
+                "org_id": org_id,
+                "org_name": current_user.get("organization") or current_user.get("org_tag") or org_id,
+                "recurring_event_type": "Gatherings",
+                "hierarchy": detected_hierarchy,
+                "top_leaders": {"male": "", "female": ""},
+                "permissions": {
+                    "admin_create_event": True,
+                    "admin_create_event_type": True,
+                },
+                "created_at": datetime.utcnow(),
+            }
+            await org_config_collection.insert_one(dict(config))
+
+        result = dict(config)
+        result["org_id"] = str(result.get("_id", org_id))
+        result.pop("_id", None)
+        return result
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"ORG CONFIG ERROR: {str(e)}") 
         import traceback
