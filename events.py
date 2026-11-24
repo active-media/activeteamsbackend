@@ -116,14 +116,14 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
         #check for org id
         event_type = supabase.table("event_types").select("*").eq("name", event_type_name).execute().data
-        print("event_type query result:", event_type,org_id,event_type_name)
+        print("event_type query result:", event_type,org_id,event_type_name )
         if len(event_type) == 0:
             raise HTTPException(status_code=404, detail="Event type not found")
         event_type = event_type[0] if event_type and len(event_type) > 0 else None
         # Check if it's a CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             print("Creating CELLS event with built-in type")
-            event_data["eventTypeId"] = event_type[0]["event_type_id"] 
+            event_data["eventTypeId"] = event_type.get("event_type_id")
             event_data["eventTypeName"] = "Cells"
             event_data["hasPersonSteps"] = True
             event_data["isGlobal"] = False
@@ -167,7 +167,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
        
         event_data.pop("eventType", None)
-        event_data['eventLeaderEmail'] = "divinentambwe28@gmail.com"
+       
         if not event_data.get("eventLeaderEmail"):
             raise HTTPException(status_code=400, detail="eventLeaderEmail is required")
 
@@ -298,7 +298,11 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "class_level": event_data.get("class_level", 0),
                 "total_sessions": event_data.get("total_sessions", 0),
                 "required_sessions": event_data.get("required_sessions", 0),
-            }  
+                "leader_at_1": leader1,
+                  "leader_at_12": leader12,
+                "leader_at_12_email": leader12email,
+            } 
+            print("Final event creation data",final_data) 
 
          
             
@@ -369,7 +373,8 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 "id": result,
                 "count": 1
             }
-
+        else:
+            
         post_event = supabase.table("events").insert(final_data).execute()
         inserted_id = post_event.data[0]["event_id"]
         created_event = post_event.data[0]
@@ -956,7 +961,8 @@ async def get_other_events(
             "p_event_ids": fetched_event_ids
         }
         isTicketed = False
-        if (event_type == "Ticketed Events" or event_type == "ticketed_events"):
+        category =  _get_event_type_category(event_type,org_id)
+        if (category == "ticketed"):
             price_tiers = supabase.rpc("get_price_tiers",params).execute().data
             isTicketed = True
 
@@ -1039,7 +1045,7 @@ async def get_other_events(
                                 pr ={
                                     'name': pr.get('tier_name', ''),
                                     'price': pr.get('price', 0),
-                                    'ageGroup': pr.get('ageGroup', ''),
+                                    'ageGroup': pr.get('age_group', ''),
                                     'paymentMethod': pr.get('paymentMethod', 'cash')
 
                                 }
@@ -2333,8 +2339,16 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
         if event_data.get("priceTiers",[]) and isinstance(event_data.get("priceTiers"), list):
             price_tiers = event_data.get("priceTiers",[])
             for pt in price_tiers:
+
                 if pt.get("tier_id",""):
-                    supabase.table("event_price_tiers").update(pt).eq("tier_id",pt.get("tier_id")).execute().data
+                    updated_price_tier = {
+                    "tier_name": pt.get("name"),
+                    "price":pt.get("price"),
+                    "age_group":pt.get("ageGroup"),
+                    "member_type":pt.get("memberType"),
+                    "payment_method": pt.get("paymentMethod"),
+                    }
+                    supabase.table("event_price_tiers").update(updated_price_tier).eq("tier_id",pt.get("tier_id")).execute().data
                 else:
                     price_tier = {
                         "event_id": event_id,
