@@ -3400,8 +3400,8 @@ async def get_persistent_attendees(
     event_name:str,
     session_id:str,
     event_leader:str,
-    leader_at_12:str,
     event_type:str,
+    leader_at_12:Optional[str] = "",
     current_user: dict = Depends(get_current_user)
 ):
     """
