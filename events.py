@@ -476,7 +476,7 @@ def _fetch_all_event_sessions(start_date, end_date, event_ids, status=None):
 
 @router.get("/events/cells")
 async def get_cell_events(
-    current_user: dict = Depends(get_current_user),
+    # current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
     status: Optional[str] = Query('incomplete'),
@@ -498,7 +498,13 @@ async def get_cell_events(
     must_paginate: Optional[bool] = Query(True)
 ):
     try:
+        current_user={
+            'email':'divinentambwe28@gmail.com',
+            'role':'admin',
+            'name':'Divine Ntambwe',
+            'org_id':'69c63afc4c3e2fdfc5a4840d'
 
+        }
         # 1 - getting currenr user details
         user_email = current_user.get("email", "")
         role = current_user.get("role", "").lower().strip()
@@ -598,7 +604,6 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting every event small gatherings sessions",len(events))
-            print(e.get('event_name') for e in events)
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids
@@ -611,7 +616,7 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting all event small gatherings sessions",len(events))
-            print([f"{e.get('event_name')} {e.get("event_id")}" for e in events])
+            print([f"{e.get('event_name')}" for e in events])
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids, status
@@ -685,6 +690,7 @@ async def get_cell_events(
             skip = (page - 1) * limit
             # paginated = cell_instances[skip:skip + limit]
             # print("SENDING ALL EVENTS", cell_instances)
+
             return {
                 "events": cells,
                 "total_events": total_count,
@@ -705,7 +711,6 @@ async def get_cell_events(
         print(f"Error in /events/cells: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 async def create_instances():
     """ 
     creates instances of events every week
@@ -714,7 +719,6 @@ async def create_instances():
         #getting all active cells
         events = supabase.rpc("get_all_unique_events_auto").execute().data  
         print(f"Creating instances for {len(events)} events")
-         
 
         #formulating current week's date
         today_date = datetime.now() 
@@ -730,12 +734,16 @@ async def create_instances():
         instances = []
         num_of_errors = []
         for event in events:
-            print(f"Creating instances for event: {event.get('event_name')} ({event.get('event_id')})")
+            # print(f"Creating instances for event: {event.get('event_name')} ({event.get('event_id')})")
             for day in event.get("recurring_day", "").split(","):
                 weekday = days.index(day) + 1
                 
                 session_date = datetime.fromisocalendar(year_int, week_no_int, weekday).date().strftime("%Y-%m-%d")
-            
+
+                existing = supabase.table('event_sessions').select('*').eq('session_date',session_date).eq('event_id',event.get('event_id')).execute().data
+
+                if existing:
+                    continue
                 event = {
                     "event_id": event.get("event_id"),
                     "event_name":event.get("event_name"),
@@ -745,31 +753,180 @@ async def create_instances():
                     "is_did_not_meet":False
                 }
                 instances.append(event)
+                print(f"Creating... instances for event: {event.get('event_name')} ({event.get('event_id')})")
                 
                 new_instance = supabase.table("event_sessions").insert(event).execute()
                 if not new_instance.data:
                     num_of_errors.append(event)
         print(f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)}")
-        # return {
-        #     "message": f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances",
-        # }
+        return {
+            "message": f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances",
+        }
+        # return instances
 
          
     except Exception as e:
         print(f"Error creating cell instances: {e}")
         raise HTTPException(status_code=500, detail="Error creating cell instances")
 
+#----------------Deactivate cells Endpoints------------
+@router.put("/events/deactivate") 
+async def deactivate_event(
+    cell_identifier: str = Query(..., description="Cell name or Person name"),
+    weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
+    reason: Optional[str] = Query(None, description="Reason for deactivation"),
+    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
+    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
+    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
+    event_id: str = Query(..., description="ID of the event to deactivate")
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+        deactivation_end = current_time + timedelta(weeks=weeks)
+        
+        updates = {
+            "is_active": False,
+            "deactivation_start": current_time.isoformat(),
+            "deactivation_end": deactivation_end.isoformat(),
+            "deactivation_reason": reason,
+            "last_status_change": current_time.isoformat(),
+            "is_permanent_deact": is_permanent_deact,
+        }
+      
+        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
+        
+        return {
+            "success": True, 
+            "message": f"successfully deactivated event",
+            "weeks": weeks,
+            "deactivation_end": deactivation_end.isoformat(),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/cells/reactivate")
+async def reactivate_cell(
+    cell_identifier: str = Query(..., description="Cell name or Person name"),
+    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
+    day_of_week: Optional[str] = Query(None, description="Specific day to reactivate"),
+    event_id: str = Query(..., description="ID of the event to deactivate")
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+        
+        updates = {
+            "is_active": True,
+            "deactivation_end": None,
+            "deactivation_start": None,
+            "deactivation_reason": None,
+            "last_status_change": current_time
+        }
+        
+
+        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
+        
+        return {
+            "success": True,
+            "message": f"Cell reactivated",
+            "cell_count": len(event.data)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def auto_reactivate_expired_events():
+    try:
+       
+        next_week = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        
+        updates = {
+            "is_active": True,
+            "deactivation_end": None,
+            "deactivation_start": None,
+            "deactivation_reason": None,
+            "last_status_change": next_week
+        }
+
+        result = (
+            supabase.table("events")
+            .update(updates)
+            .eq("is_active", False)
+            .lte("deactivation_end", next_week)
+            .not_.is_("deactivation_end", "null")
+            .neq("is_permanent_deact", True)
+            .execute()
+            .data
+        )
+  
+        if len(result) > 0:
+            print(f"Auto-reactivated {len(result)} cells")
+            
+    except Exception as e:
+        print(f"Auto-reactivation error: {e}")
+
+
+scheduler = AsyncIOScheduler()
+# scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10)
 
 
 @router.post("/run-job/create-instances")
 def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
-    # expected = os.environ["CRON_SECRET"]
-    # if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
-    #     raise HTTPException(status_code=401, detail="Unauthorized")
+    expected = os.environ["CRON_SECRET"]
+    if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    background_tasks.add_task(auto_reactivate_expired_events)
     background_tasks.add_task(create_instances)  # your existing job function
     return {"status": "started"}
 
 
+@router.put("/events/deactivate_event_type") 
+async def deactivate_event_type(
+    event_type: str = Query(...),
+    reason: str = Query(...),
+    weeks: int = Query(..., ge=1, le=12, description="Number of weeks to deactivate (1-12)"),
+    # current_user: dict = Depends(get_current_user),
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+        deactivation_end = current_time + timedelta(weeks=weeks)
+        
+        updates = {
+            # "is_active": False,
+            # "deactivation_start": current_time.isoformat(),
+            # "deactivation_end": deactivation_end.isoformat(),
+            "deactivation_reason": reason,
+            # "last_status_change": current_time.isoformat(),
+            # "is_permanent_deact": False,
+        }
+      
+        event = (
+            supabase.table("events")
+            .update(updates)
+            .eq("event_type_name", event_type)
+            .eq("is_active", True)
+            .eq("running",True)
+            .execute()
+        )
+        deactivated_count = len(event.data or [])
+        
+        return {
+            "success": True, 
+            "message": f"Successfully deactivated {deactivated_count} event(s) in {event_type}.",
+            "deactivated_count": deactivated_count,
+            "weeks": weeks,
+            "deactivation_end": deactivation_end.isoformat(),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 #POPULATING DATA SCRIPTS
@@ -1595,109 +1752,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-#----------------Deactivate cells Endpoints------------
-@router.put("/events/deactivate") 
-async def deactivate_event(
-    cell_identifier: str = Query(..., description="Cell name or Person name"),
-    weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
-    reason: Optional[str] = Query(None, description="Reason for deactivation"),
-    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
-    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
-    event_id: str = Query(..., description="ID of the event to deactivate")
-):
-    try:
-        current_time = datetime.now(timezone.utc)
-        deactivation_end = current_time + timedelta(weeks=weeks)
-        
-        updates = {
-            "is_active": False,
-            "deactivation_start": current_time.isoformat(),
-            "deactivation_end": deactivation_end.isoformat(),
-            "deactivation_reason": reason,
-            "last_status_change": current_time.isoformat(),
-            "is_permanent_deact": is_permanent_deact,
-        }
-      
-        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
-        
-        return {
-            "success": True, 
-            "message": f"successfully deactivated event",
-            "weeks": weeks,
-            "deactivation_end": deactivation_end.isoformat(),
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.put("/cells/reactivate")
-async def reactivate_cell(
-    cell_identifier: str = Query(..., description="Cell name or Person name"),
-    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to reactivate"),
-    event_id: str = Query(..., description="ID of the event to deactivate")
-):
-    try:
-        current_time = datetime.now(timezone.utc)
-        
-        updates = {
-            "is_active": True,
-            "deactivation_end": None,
-            "deactivation_start": None,
-            "deactivation_reason": None,
-            "last_status_change": current_time
-        }
-        
-
-        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
-        
-        return {
-            "success": True,
-            "message": f"Cell reactivated",
-            "cell_count": len(event.data)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-async def auto_reactivate_expired_events():
-    try:
-        current_time = datetime.now(timezone.utc).isoformat()
-        
-        updates = {
-            "is_active": True,
-            "deactivation_end": None,
-            "deactivation_start": None,
-            "deactivation_reason": None,
-            "last_status_change": current_time
-        }
-
-        result = (
-            supabase.table("events")
-            .update(updates)
-            .eq("is_active", False)
-            .lte("deactivation_end", current_time)
-            .not_.is_("deactivation_end", "null")
-            .neq("is_permanent_deact", True)
-            .execute()
-            .data
-        )
-  
-        if len(result) > 0:
-            print(f"Auto-reactivated {len(result)} cells")
-            
-    except Exception as e:
-        print(f"Auto-reactivation error: {e}")
-
-
-scheduler = AsyncIOScheduler()
-scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10)
 
 
 @router.post("/event-types")
@@ -3436,8 +3491,8 @@ async def get_persistent_attendees(
     event_name:str,
     session_id:str,
     event_leader:str,
-    leader_at_12:str,
     event_type:str,
+    leader_at_12: Optional[str] = "",
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -3471,13 +3526,7 @@ async def get_persistent_attendees(
     
         persistent_attendees = supabase.rpc(query_function, per_params).execute().data
         attendees = supabase.table(table).select("*").eq("session_id",session_id).eq("is_checked_in",True).execute().data
-        # price_tiers = supabase.table("event_price_tiers").select("*").eq("event_id", event.get("event_id")).execute().data
-        # for pa in persistent_attendees:
-        #     leaders = get_person_leader_fields(pa.get("person_id"))
-        #     if leaders:
-        #         pa["leader1"] = leaders.get("Leader @1")
-        #         pa["leader12"] = leaders.get("Leader @12")
-        #         pa["leader144"] = leaders.get("Leader @144")
+        
 
 
         return {
