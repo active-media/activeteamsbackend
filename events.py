@@ -476,7 +476,7 @@ def _fetch_all_event_sessions(start_date, end_date, event_ids, status=None):
 
 @router.get("/events/cells")
 async def get_cell_events(
-    # current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
     page: int = Query(1, ge=1),
     limit: int = Query(25, ge=1, le=100),
     status: Optional[str] = Query('incomplete'),
@@ -498,13 +498,13 @@ async def get_cell_events(
     must_paginate: Optional[bool] = Query(True)
 ):
     try:
-        current_user={
-            'email':'divinentambwe28@gmail.com',
-            'role':'admin',
-            'name':'Divine Ntambwe',
-            'org_id':'69c63afc4c3e2fdfc5a4840d'
+        # current_user={
+        #     'email':'divinentambwe28@gmail.com',
+        #     'role':'admin',
+        #     'name':'Divine Ntambwe',
+        #     'org_id':'69c63afc4c3e2fdfc5a4840d'
 
-        }
+        # }
         # 1 - getting currenr user details
         user_email = current_user.get("email", "")
         role = current_user.get("role", "").lower().strip()
@@ -558,7 +558,7 @@ async def get_cell_events(
             "p_event_leader_email": user_email,
             "p_org_id": current_user.get("org_id")
         }
-        print('PARAMS',all_cells_params)
+     
 
         personal_cells_params = {
             "p_event_type_id": event_type_id,
@@ -570,9 +570,7 @@ async def get_cell_events(
         disciples_cells_params = {
             "p_event_type_id": event_type_id,
             "p_leader12_email": current_user.get('email')
-            # "p_event_type": event_type,
             # "p_leader12_email": "kennybebel@gmail.com"
-            # current_user.get('email')
         }
 
 
@@ -616,7 +614,6 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting all event small gatherings sessions",len(events))
-            print([f"{e.get('event_name')}" for e in events])
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids, status
@@ -626,11 +623,16 @@ async def get_cell_events(
             print("getting personal cells")
             #getting events of leader:
             events = supabase.rpc("get_personal_unique_events", personal_cells_params).execute().data
-            for i in events:
-                #getting relevent sessions for each event
-                session = supabase.table("event_sessions").select("*").gte("session_date", start_str).lte("session_date", end_str).eq("event_name", i.get("event_name")).eq("status", status).execute().data
-                if session:
-                    event_sessions.extend(session)
+            fetched_event_ids = [
+                event.get("event_id") for event in events
+            ]
+            print("getting personal event small gatherings sessions",len(events))
+            print([f"{e.get('event_id')}" for e in events])
+
+            event_sessions = _fetch_all_event_sessions(
+                start_str, end_str, fetched_event_ids, status
+            )
+            print("number of sessions found: ",len(event_sessions))
         elif disciples_cells:
             print("getting disciples cells")
             events = supabase.rpc("get_disciples_cells",disciples_cells_params).execute().data
@@ -639,13 +641,14 @@ async def get_cell_events(
                 if session:
                     for s in session:
                         event_sessions.append(s)
-        
+            print("number of sessions found: ",len(event_sessions))
+
         #getting event details & event attendees for each session
         for session in event_sessions:
             for event in events:
                 if session.get("event_id") == event.get("event_id"): #checking for event associated with session
                     cell_events.append({**event, **session})
-                
+            
                     
         cells = []
         for i in cell_events: 
@@ -669,7 +672,7 @@ async def get_cell_events(
                 "status": i.get("status"),
                 "Status": i.get("status", "").capitalize() if i.get("status") else "",
                 "did_not_meet": i.get("is_did_not_meet", False),
-                "_is_overdue": i.get("_is_overdue", True), # Inferred from the schema target
+                "_is_overdue": i.get("_is_overdue", False),
                 "is_recurring": i.get("is_recurring"),
                 "original_event_id": i.get("mongo_id"),
                 "attendance": {},
@@ -688,11 +691,10 @@ async def get_cell_events(
             total_count = len(cells)
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
             skip = (page - 1) * limit
-            # paginated = cell_instances[skip:skip + limit]
-            # print("SENDING ALL EVENTS", cell_instances)
+            paginated = cells[skip:skip + limit]
 
             return {
-                "events": cells,
+                "events": paginated,
                 "total_events": total_count,
                 "total_pages": total_pages,
                 "current_page": page,
