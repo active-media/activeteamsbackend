@@ -116,14 +116,14 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
         #check for org id
         event_type = supabase.table("event_types").select("*").eq("name", event_type_name).execute().data
-        print("event_type query result:", event_type,org_id,event_type_name)
+        print("event_type query result:", event_type,org_id,event_type_name )
         if len(event_type) == 0:
             raise HTTPException(status_code=404, detail="Event type not found")
         event_type = event_type[0] if event_type and len(event_type) > 0 else None
         # Check if it's a CELLS type
         if event_type_name.upper() in ["CELLS", "ALL CELLS"]:
             print("Creating CELLS event with built-in type")
-            event_data["eventTypeId"] = event_type[0]["event_type_id"] 
+            event_data["eventTypeId"] = event_type.get("event_type_id")
             event_data["eventTypeName"] = "Cells"
             event_data["hasPersonSteps"] = True
             event_data["isGlobal"] = False
@@ -167,7 +167,7 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
 
        
         event_data.pop("eventType", None)
-        event_data['eventLeaderEmail'] = "divinentambwe28@gmail.com"
+       
         if not event_data.get("eventLeaderEmail"):
             raise HTTPException(status_code=400, detail="eventLeaderEmail is required")
 
@@ -224,116 +224,104 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
         else:
             reference_date = datetime.now().date()
 
-        if recurring_days:
-            first_day_lower = recurring_days[0].lower().strip()
-            if first_day_lower in DAY_INDEX:
-                target_weekday = DAY_INDEX[first_day_lower]
-                days_until = (target_weekday - reference_date.weekday()) % 7
-                first_event_date = reference_date + timedelta(days=days_until)
-            else:
-                first_event_date = reference_date
+       
+    
 
-            # event_data["date"] = first_event_date.isoformat()
+        # event_data["date"] = first_event_date.isoformat()
+        if recurring_days:
             event_data["day"] = recurring_days[0].capitalize()
             event_data["recurring_day"] = recurring_days
-            event_data["attendance"] = {}
 
-            try:
-                event_data["Date Of Event"] = datetime.combine(first_event_date, datetime.min.time()).isoformat() + "Z"
-            except Exception:
-                event_data["Date Of Event"] = first_event_date.isoformat()
+        event_data["attendance"] = {}
 
-            print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}, Organization: {event_data['Organization']}")
-            print("Final event object", event_data)
+        
 
-            final_event_date = event_data.get("date")
-            final_created_date = event_data.get("created_at")
+        print(f"[RECURRING CREATE] Single doc -> day: {event_data['day']}, date: {event_data['date']}, eventName: {event_data.get('eventName') or event_data.get('Event Name')}, Organization: {event_data['Organization']}")
+        print("Final event object", event_data)
 
-            current_person = supabase.table("People").select("*").eq("Email", event_data.get("eventLeaderEmail")).execute().data
-            #leader of created cell
+        final_event_date = event_data.get("date")
+        final_created_date = event_data.get("created_at")
 
-            leader = current_person[0] if current_person else None
+        current_person = supabase.table("People").select("*").eq("Email", event_data.get("eventLeaderEmail")).execute().data
+        #leader of created cell
+        
 
-            if not current_person:
-                raise HTTPException(400,"Person not found") 
+        leader = current_person[0] if current_person else None
+        print("LEADER",leader)
+        if not current_person:
+            raise HTTPException(400,"Person not found") 
 
-            #temp solution
-            if leader.get("LeaderPath[0]") == "692d97e550555e9dfdccea4e":
-                leader1 = "Gavin Enslin"
-            elif leader.get("LeaderPath[0]") == "692d97ec50555e9dfdccecee":
-                leader1 = "Vicky Enslin"
+        leader1 = leader.get("Leader @1")
+        leader12 = leader.get("Leader @12")
+        leader144 = leader.get("Leader @144")
 
-            leader12Query = supabase.table("People").select("*").eq("_id", leader.get("LeaderPath[1]")).limit(1).execute().data
-            leader12 = ""
-            leader12email= ''
-            if len(leader12Query) > 0:
-                leader12 = f"{leader12Query[0].get("Name")} {leader12Query[0].get("Surname")}"
-                leader12email = leader12Query[0].get("Email")
+        leader12Query = supabase.table("People").select("*").eq("_id", leader.get("LeaderPath[1]")).limit(1).execute().data
+        leader12email= ''
 
-            leaders = {
-                "leader_at_1": leader1,
-                "leader_at_12": leader12,
-                "leader_at_12_email": leader12email,
-            }
+        if len(leader12Query) > 0:
+            leader12email = leader12Query[0].get("Email")
 
-            
-            final_data = {
-                "event_name": event_data.get("eventName","No Event Name"),
-                "event_type_name": event_data.get("eventTypeName","No Event Type"),
-                "event_type_id":event_data.get("eventTypeId"),
-                "location": event_data.get("location","No Location"),
-                "description": event_data.get("description","No Description"),
-                "event_leader": event_data.get("eventLeader","No Leader"),
-                "event_leader_email": event_data.get("eventLeaderEmail","No Leader Email"),
-                "is_ticketed": event_data.get("isTicketed", False),
-                "is_global": event_data.get("isGlobal", False),
-                "is_active": event_data.get("is_active", True),
-                "has_person_steps": event_data.get("hasPersonSteps", False),
-                "status": event_data.get("status", "open"),
-                "recurring_day": ",".join(event_data.get("recurring_day",[""])),
-                "is_recurring": bool(event_data.get("recurring_day")),
-                "Organization": event_data.get("Organization"),
-                "event_date": final_event_date.isoformat(),
-                "org_id": event_data.get("org_id"),
-                "class_level": event_data.get("class_level", 0),
-                "total_sessions": event_data.get("total_sessions", 0),
-                "required_sessions": event_data.get("required_sessions", 0),
-            }  
+        
+        final_data = {
+            "event_name": event_data.get("eventName","No Event Name"),
+            "event_type_name": event_data.get("eventTypeName","No Event Type"),
+            "event_type_id":event_data.get("eventTypeId"),
+            "location": event_data.get("location","No Location"),
+            "description": event_data.get("description","No Description"),
+            "event_leader": event_data.get("eventLeader","No Leader"),
+            "event_leader_email": event_data.get("eventLeaderEmail","No Leader Email"),
+            "is_ticketed": event_data.get("isTicketed", False),
+            "is_global": event_data.get("isGlobal", False),
+            "is_active": event_data.get("is_active", True),
+            "has_person_steps": event_data.get("hasPersonSteps", False),
+            "status": event_data.get("status", "open"),
+            "recurring_day": ",".join(event_data.get("recurring_day",[""])),
+            "is_recurring": bool(event_data.get("recurring_day")),
+            "Organization": event_data.get("Organization"),
+            "event_date": final_event_date.isoformat(),
+            "org_id": event_data.get("org_id"),
+            "class_level": event_data.get("class_level", 0),
+            "total_sessions": event_data.get("total_sessions", 0),
+            "required_sessions": event_data.get("required_sessions", 0),
+            "leader_at_1": leader1,
+            "leader_at_12": leader12,
+            "leader_at_12_email": leader12email,
+        } 
+        print("Final event creation data",final_data) 
 
-         
-            
-            post_event = supabase.table("events").insert(final_data).execute()
-            result = post_event.data[0]["event_id"]
-            
-            print(f"[RECURRING CREATE] Inserted _id: {result}")
-            
-            #creating price tiers if 
-            if event_type.get('is_ticketed') and event.priceTiers:
-                price_tiers = event.priceTiers
-                for pr in price_tiers:
-                    tier = {
-                        'event_id': result,
-                        'org_id': event_data.get("org_id"),
-                        'tier_name': pr.get('name'),
-                        'price': pr.get('price'),
-                        'member_type': pr.get('memberType','normal'),
-                        'age_group': pr.get('ageGroup'),
-                        'currency': pr.get('currency','ZAR'),
-                        'is_active': True
-                    }
-                    print('tier',tier)
-                    supabase.table('event_price_tiers').insert(tier).execute()
-                print('created price tiers')
+        post_event = supabase.table("events").insert(final_data).execute()
+        result = post_event.data[0]["event_id"]
+        
+        print(f"[RECURRING CREATE] Inserted _id: {result}")
+        
+        #creating price tiers if 
+        if event_type.get('is_ticketed') and event.priceTiers:
+            price_tiers = event.priceTiers
+            for pr in price_tiers:
+                tier = {
+                    'event_id': result,
+                    'org_id': event_data.get("org_id"),
+                    'tier_name': pr.get('name'),
+                    'price': pr.get('price'),
+                    'member_type': pr.get('memberType','normal'),
+                    'age_group': pr.get('ageGroup'),
+                    'currency': pr.get('currency','ZAR'),
+                    'is_active': True
+                }
+                print('tier',tier)
+                supabase.table('event_price_tiers').insert(tier).execute()
+            print('created price tiers')
 
-            #creating first cell instance/s
-            start_date =event.date
-            
-            week_indetifier = start_date.strftime("%Y-%m-%d") 
-    
-            #week number helps with getting date for a specific day tha week
-            week_no_int = int(start_date.strftime("%U")) + 1
-            year_int = int(start_date.strftime("%Y"))
-    
+        #creating first cell instance/s
+        start_date = event.date
+        
+        week_indetifier = start_date.strftime("%Y-%m-%d") 
+
+        #week number helps with getting date for a specific day tha week
+        week_no_int = int(start_date.strftime("%U")) + 1
+        year_int = int(start_date.strftime("%Y"))
+
+        if recurring_days:
             #iso calendar week format
             days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
             cell_instances = []
@@ -358,18 +346,32 @@ async def create_event(event: EventCreate, current_user: dict = Depends(get_curr
                 new_instance = supabase.table("event_sessions").insert(cell_event).execute()
                 if not new_instance.data:
                     num_of_errors.append(cell_event)
-    
+
             print(cell_instances)
-            
-
-            return {
-                "success": True,
-                "message": "Recurring event created successfully",
-                "created_event_ids": result,
-                "id": result,
-                "count": 1
+        else:
+            session_date = event.date.date().strftime("%Y-%m-%d")
+                            
+            cell_event = {
+                "event_id": result,
+                "event_name":final_data.get("event_name"),
+                "session_date": session_date,
+                "week_identifier": week_indetifier,
+                "status":"incomplete",
+                "is_did_not_meet":False
             }
+            
+            new_instance = supabase.table("event_sessions").insert(cell_event).execute()
 
+
+        return {
+            "success": True,
+            "message": "Recurring event created successfully",
+            "created_event_ids": result,
+            "id": result,
+            "count": 1
+        }
+        
+            
         post_event = supabase.table("events").insert(final_data).execute()
         inserted_id = post_event.data[0]["event_id"]
         created_event = post_event.data[0]
@@ -496,7 +498,13 @@ async def get_cell_events(
     must_paginate: Optional[bool] = Query(True)
 ):
     try:
+        # current_user={
+        #     'email':'divinentambwe28@gmail.com',
+        #     'role':'admin',
+        #     'name':'Divine Ntambwe',
+        #     'org_id':'69c63afc4c3e2fdfc5a4840d'
 
+        # }
         # 1 - getting currenr user details
         user_email = current_user.get("email", "")
         role = current_user.get("role", "").lower().strip()
@@ -550,7 +558,7 @@ async def get_cell_events(
             "p_event_leader_email": user_email,
             "p_org_id": current_user.get("org_id")
         }
-        print('PARAMS',all_cells_params)
+     
 
         personal_cells_params = {
             "p_event_type_id": event_type_id,
@@ -562,9 +570,7 @@ async def get_cell_events(
         disciples_cells_params = {
             "p_event_type_id": event_type_id,
             "p_leader12_email": current_user.get('email')
-            # "p_event_type": event_type,
             # "p_leader12_email": "kennybebel@gmail.com"
-            # current_user.get('email')
         }
 
 
@@ -596,7 +602,6 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting every event small gatherings sessions",len(events))
-            print(e.get('event_name') for e in events)
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids
@@ -609,7 +614,6 @@ async def get_cell_events(
                 event.get("event_id") for event in events
             ]
             print("getting all event small gatherings sessions",len(events))
-            print([f"{e.get('event_name')} {e.get("event_id")}" for e in events])
 
             event_sessions = _fetch_all_event_sessions(
                 start_str, end_str, fetched_event_ids, status
@@ -619,11 +623,16 @@ async def get_cell_events(
             print("getting personal cells")
             #getting events of leader:
             events = supabase.rpc("get_personal_unique_events", personal_cells_params).execute().data
-            for i in events:
-                #getting relevent sessions for each event
-                session = supabase.table("event_sessions").select("*").gte("session_date", start_str).lte("session_date", end_str).eq("event_name", i.get("event_name")).eq("status", status).execute().data
-                if session:
-                    event_sessions.extend(session)
+            fetched_event_ids = [
+                event.get("event_id") for event in events
+            ]
+            print("getting personal event small gatherings sessions",len(events))
+            print([f"{e.get('event_id')}" for e in events])
+
+            event_sessions = _fetch_all_event_sessions(
+                start_str, end_str, fetched_event_ids, status
+            )
+            print("number of sessions found: ",len(event_sessions))
         elif disciples_cells:
             print("getting disciples cells")
             events = supabase.rpc("get_disciples_cells",disciples_cells_params).execute().data
@@ -632,13 +641,14 @@ async def get_cell_events(
                 if session:
                     for s in session:
                         event_sessions.append(s)
-        
+            print("number of sessions found: ",len(event_sessions))
+
         #getting event details & event attendees for each session
         for session in event_sessions:
             for event in events:
                 if session.get("event_id") == event.get("event_id"): #checking for event associated with session
                     cell_events.append({**event, **session})
-                
+            
                     
         cells = []
         for i in cell_events: 
@@ -662,7 +672,7 @@ async def get_cell_events(
                 "status": i.get("status"),
                 "Status": i.get("status", "").capitalize() if i.get("status") else "",
                 "did_not_meet": i.get("is_did_not_meet", False),
-                "_is_overdue": i.get("_is_overdue", True), # Inferred from the schema target
+                "_is_overdue": i.get("_is_overdue", False),
                 "is_recurring": i.get("is_recurring"),
                 "original_event_id": i.get("mongo_id"),
                 "attendance": {},
@@ -681,10 +691,10 @@ async def get_cell_events(
             total_count = len(cells)
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
             skip = (page - 1) * limit
-            # paginated = cell_instances[skip:skip + limit]
-            # print("SENDING ALL EVENTS", cell_instances)
+            paginated = cells[skip:skip + limit]
+
             return {
-                "events": cells,
+                "events": paginated,
                 "total_events": total_count,
                 "total_pages": total_pages,
                 "current_page": page,
@@ -703,7 +713,6 @@ async def get_cell_events(
         print(f"Error in /events/cells: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 async def create_instances():
     """ 
     creates instances of events every week
@@ -712,7 +721,6 @@ async def create_instances():
         #getting all active cells
         events = supabase.rpc("get_all_unique_events_auto").execute().data  
         print(f"Creating instances for {len(events)} events")
-         
 
         #formulating current week's date
         today_date = datetime.now() 
@@ -728,12 +736,16 @@ async def create_instances():
         instances = []
         num_of_errors = []
         for event in events:
-            print(f"Creating instances for event: {event.get('event_name')} ({event.get('event_id')})")
+            # print(f"Creating instances for event: {event.get('event_name')} ({event.get('event_id')})")
             for day in event.get("recurring_day", "").split(","):
                 weekday = days.index(day) + 1
                 
                 session_date = datetime.fromisocalendar(year_int, week_no_int, weekday).date().strftime("%Y-%m-%d")
-            
+
+                existing = supabase.table('event_sessions').select('*').eq('session_date',session_date).eq('event_id',event.get('event_id')).execute().data
+
+                if existing:
+                    continue
                 event = {
                     "event_id": event.get("event_id"),
                     "event_name":event.get("event_name"),
@@ -743,31 +755,180 @@ async def create_instances():
                     "is_did_not_meet":False
                 }
                 instances.append(event)
+                print(f"Creating... instances for event: {event.get('event_name')} ({event.get('event_id')})")
                 
                 new_instance = supabase.table("event_sessions").insert(event).execute()
                 if not new_instance.data:
                     num_of_errors.append(event)
         print(f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)}")
-        # return {
-        #     "message": f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances",
-        # }
+        return {
+            "message": f"Successfully created {len(instances) - len(num_of_errors)} / {len(instances)} cell instances",
+        }
+        # return instances
 
          
     except Exception as e:
         print(f"Error creating cell instances: {e}")
         raise HTTPException(status_code=500, detail="Error creating cell instances")
 
+#----------------Deactivate cells Endpoints------------
+@router.put("/events/deactivate") 
+async def deactivate_event(
+    cell_identifier: str = Query(..., description="Cell name or Person name"),
+    weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
+    reason: Optional[str] = Query(None, description="Reason for deactivation"),
+    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
+    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
+    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
+    event_id: str = Query(..., description="ID of the event to deactivate")
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+        deactivation_end = current_time + timedelta(weeks=weeks)
+        
+        updates = {
+            "is_active": False,
+            "deactivation_start": current_time.isoformat(),
+            "deactivation_end": deactivation_end.isoformat(),
+            "deactivation_reason": reason,
+            "last_status_change": current_time.isoformat(),
+            "is_permanent_deact": is_permanent_deact,
+        }
+      
+        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
+        
+        return {
+            "success": True, 
+            "message": f"successfully deactivated event",
+            "weeks": weeks,
+            "deactivation_end": deactivation_end.isoformat(),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/cells/reactivate")
+async def reactivate_cell(
+    cell_identifier: str = Query(..., description="Cell name or Person name"),
+    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
+    day_of_week: Optional[str] = Query(None, description="Specific day to reactivate"),
+    event_id: str = Query(..., description="ID of the event to deactivate")
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+        
+        updates = {
+            "is_active": True,
+            "deactivation_end": None,
+            "deactivation_start": None,
+            "deactivation_reason": None,
+            "last_status_change": current_time
+        }
+        
+
+        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
+        
+        return {
+            "success": True,
+            "message": f"Cell reactivated",
+            "cell_count": len(event.data)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def auto_reactivate_expired_events():
+    try:
+       
+        next_week = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        
+        updates = {
+            "is_active": True,
+            "deactivation_end": None,
+            "deactivation_start": None,
+            "deactivation_reason": None,
+            "last_status_change": next_week
+        }
+
+        result = (
+            supabase.table("events")
+            .update(updates)
+            .eq("is_active", False)
+            .lte("deactivation_end", next_week)
+            .not_.is_("deactivation_end", "null")
+            .neq("is_permanent_deact", True)
+            .execute()
+            .data
+        )
+  
+        if len(result) > 0:
+            print(f"Auto-reactivated {len(result)} cells")
+            
+    except Exception as e:
+        print(f"Auto-reactivation error: {e}")
+
+
+scheduler = AsyncIOScheduler()
+# scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10)
 
 
 @router.post("/run-job/create-instances")
 def trigger_job(background_tasks: BackgroundTasks, x_cron_secret: str = Header(None)):
-    # expected = os.environ["CRON_SECRET"]
-    # if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
-    #     raise HTTPException(status_code=401, detail="Unauthorized")
+    expected = os.environ["CRON_SECRET"]
+    if not x_cron_secret or not secrets.compare_digest(x_cron_secret, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    background_tasks.add_task(auto_reactivate_expired_events)
     background_tasks.add_task(create_instances)  # your existing job function
     return {"status": "started"}
 
 
+@router.put("/events/deactivate_event_type") 
+async def deactivate_event_type(
+    event_type: str = Query(...),
+    reason: str = Query(...),
+    weeks: int = Query(..., ge=1, le=12, description="Number of weeks to deactivate (1-12)"),
+    # current_user: dict = Depends(get_current_user),
+):
+    try:
+        current_time = datetime.now(timezone.utc)
+        deactivation_end = current_time + timedelta(weeks=weeks)
+        
+        updates = {
+            # "is_active": False,
+            # "deactivation_start": current_time.isoformat(),
+            # "deactivation_end": deactivation_end.isoformat(),
+            "deactivation_reason": reason,
+            # "last_status_change": current_time.isoformat(),
+            # "is_permanent_deact": False,
+        }
+      
+        event = (
+            supabase.table("events")
+            .update(updates)
+            .eq("event_type_name", event_type)
+            .eq("is_active", True)
+            .eq("running",True)
+            .execute()
+        )
+        deactivated_count = len(event.data or [])
+        
+        return {
+            "success": True, 
+            "message": f"Successfully deactivated {deactivated_count} event(s) in {event_type}.",
+            "deactivated_count": deactivated_count,
+            "weeks": weeks,
+            "deactivation_end": deactivation_end.isoformat(),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 #POPULATING DATA SCRIPTS
@@ -956,7 +1117,8 @@ async def get_other_events(
             "p_event_ids": fetched_event_ids
         }
         isTicketed = False
-        if (event_type == "Ticketed Events" or event_type == "ticketed_events"):
+        category =  _get_event_type_category(event_type,org_id)
+        if (category == "ticketed"):
             price_tiers = supabase.rpc("get_price_tiers",params).execute().data
             isTicketed = True
 
@@ -1039,7 +1201,7 @@ async def get_other_events(
                                 pr ={
                                     'name': pr.get('tier_name', ''),
                                     'price': pr.get('price', 0),
-                                    'ageGroup': pr.get('ageGroup', ''),
+                                    'ageGroup': pr.get('age_group', ''),
                                     'paymentMethod': pr.get('paymentMethod', 'cash')
 
                                 }
@@ -1592,109 +1754,7 @@ async def update_events_by_person_event_and_day(person_name: str, event_name: st
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-#----------------Deactivate cells Endpoints------------
-@router.put("/events/deactivate") 
-async def deactivate_event(
-    cell_identifier: str = Query(..., description="Cell name or Person name"),
-    weeks: int = Query(..., description="Number of weeks to deactivate (1-12)"),
-    reason: Optional[str] = Query(None, description="Reason for deactivation"),
-    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to deactivate (e.g., 'Wednesday')"),
-    is_permanent_deact: bool = Query(None,description="Determines whether it is a permanent or a temporary deactivation"),
-    event_id: str = Query(..., description="ID of the event to deactivate")
-):
-    try:
-        current_time = datetime.now(timezone.utc)
-        deactivation_end = current_time + timedelta(weeks=weeks)
-        
-        updates = {
-            "is_active": False,
-            "deactivation_start": current_time.isoformat(),
-            "deactivation_end": deactivation_end.isoformat(),
-            "deactivation_reason": reason,
-            "last_status_change": current_time.isoformat(),
-            "is_permanent_deact": is_permanent_deact,
-        }
-      
-        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
-        
-        return {
-            "success": True, 
-            "message": f"successfully deactivated event",
-            "weeks": weeks,
-            "deactivation_end": deactivation_end.isoformat(),
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.put("/cells/reactivate")
-async def reactivate_cell(
-    cell_identifier: str = Query(..., description="Cell name or Person name"),
-    person_name: Optional[str] = Query(None, description="Person name (if cell_identifier is a cell name)"),
-    day_of_week: Optional[str] = Query(None, description="Specific day to reactivate"),
-    event_id: str = Query(..., description="ID of the event to deactivate")
-):
-    try:
-        current_time = datetime.now(timezone.utc)
-        
-        updates = {
-            "is_active": True,
-            "deactivation_end": None,
-            "deactivation_start": None,
-            "deactivation_reason": None,
-            "last_status_change": current_time
-        }
-        
-
-        event = supabase.table("events").update(updates).eq("event_id", event_id).execute()
-        
-        return {
-            "success": True,
-            "message": f"Cell reactivated",
-            "cell_count": len(event.data)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-async def auto_reactivate_expired_events():
-    try:
-        current_time = datetime.now(timezone.utc).isoformat()
-        
-        updates = {
-            "is_active": True,
-            "deactivation_end": None,
-            "deactivation_start": None,
-            "deactivation_reason": None,
-            "last_status_change": current_time
-        }
-
-        result = (
-            supabase.table("events")
-            .update(updates)
-            .eq("is_active", False)
-            .lte("deactivation_end", current_time)
-            .not_.is_("deactivation_end", "null")
-            .neq("is_permanent_deact", True)
-            .execute()
-            .data
-        )
-  
-        if len(result) > 0:
-            print(f"Auto-reactivated {len(result)} cells")
-            
-    except Exception as e:
-        print(f"Auto-reactivation error: {e}")
-
-
-scheduler = AsyncIOScheduler()
-scheduler.add_job(auto_reactivate_expired_events,'cron',hour=17,minute=10)
 
 
 @router.post("/event-types")
@@ -1839,8 +1899,33 @@ async def update_event_type(
 @router.delete("/event-types/{event_type_id}")
 async def delete_event_type(
     event_type_id: str,
+    current_user: dict = Depends(get_current_user)
 ):
     try:
+        event_type = supabase.table("event_types").select("*").eq("event_type_id",event_type_id).execute().data
+        name = event_type[0].get("name")
+        cat = event_type[0].get("event_type_category")
+      
+        match cat:
+            case "small_gatherings":
+                table = "event_small_gatherings"
+            case "service":
+                table = "event_service_attendees"
+            case 'ticketed':
+                table = "event_ticketed_attendees"
+            case 'training':
+                table = "event_training_attendance"
+            case _:
+                table = "event_small_gatherings"
+
+        events = supabase.table("events").select("event_id").eq("event_type_id",event_type_id).execute().data
+        event_ids = [e.get("event_id") for e in events]
+   
+        if event_ids:
+            deleted_att = supabase.table(table).delete().in_("event_id", event_ids).execute()
+            deleted_sess = supabase.table('event_sessions').delete().in_("event_id", event_ids).execute()
+
+        deleted_events = supabase.table('events').delete().eq("event_type_id", event_type_id).execute()
         deleted = supabase.table("event_types").delete().eq("event_type_id", event_type_id).execute()
 
         if not deleted.data:
@@ -2333,8 +2418,16 @@ async def update_event(event_id: str, event_data: dict, current_user: dict = Dep
         if event_data.get("priceTiers",[]) and isinstance(event_data.get("priceTiers"), list):
             price_tiers = event_data.get("priceTiers",[])
             for pt in price_tiers:
+
                 if pt.get("tier_id",""):
-                    supabase.table("event_price_tiers").update(pt).eq("tier_id",pt.get("tier_id")).execute().data
+                    updated_price_tier = {
+                    "tier_name": pt.get("name"),
+                    "price":pt.get("price"),
+                    "age_group":pt.get("ageGroup"),
+                    "member_type":pt.get("memberType"),
+                    "payment_method": pt.get("paymentMethod"),
+                    }
+                    supabase.table("event_price_tiers").update(updated_price_tier).eq("tier_id",pt.get("tier_id")).execute().data
                 else:
                     price_tier = {
                         "event_id": event_id,
@@ -3401,7 +3494,7 @@ async def get_persistent_attendees(
     session_id:str,
     event_leader:str,
     event_type:str,
-    leader_at_12:Optional[str] = "",
+    leader_at_12: Optional[str] = "",
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -3435,13 +3528,7 @@ async def get_persistent_attendees(
     
         persistent_attendees = supabase.rpc(query_function, per_params).execute().data
         attendees = supabase.table(table).select("*").eq("session_id",session_id).eq("is_checked_in",True).execute().data
-        # price_tiers = supabase.table("event_price_tiers").select("*").eq("event_id", event.get("event_id")).execute().data
-        # for pa in persistent_attendees:
-        #     leaders = get_person_leader_fields(pa.get("person_id"))
-        #     if leaders:
-        #         pa["leader1"] = leaders.get("Leader @1")
-        #         pa["leader12"] = leaders.get("Leader @12")
-        #         pa["leader144"] = leaders.get("Leader @144")
+        
 
 
         return {
@@ -4350,18 +4437,18 @@ async def submit_attendance(
         today_str = date.today().strftime("%Y-%m-%d")
         # Route to the correct table based on event type if submission.event_type else "cells"
         event_type = submission.event_type
-        match event_type:
-            case "cells": 
-                query_function = "get_persistent_attendees"
+        event_type_category = _get_event_type_category(event_type, current_user.get("org_id"))
+        # Route to the correct table based on event type
+        match event_type_category:
+            case "small_gatherings":
                 table = "event_small_gatherings"
-            case "global_events":
-                query_function = "get_persistent_attendees_service"
+            case "service":
                 table = "event_service_attendees"
-            case 'ticketed_events':
-                query_function = "get_persistent_attendees_ticketed"
+            case 'ticketed':
                 table = "event_ticketed_attendees"
+            case 'training':
+                table = "event_training_attendance"
             case _:
-                query_function = "get_persistent_attendees"
                 table = "event_small_gatherings"
         print(f"submit_attendance: event_type={submission.event_type!r} → table={table}")
 
